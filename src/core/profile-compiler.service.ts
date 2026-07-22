@@ -86,7 +86,8 @@ function buildContextMarkdown(merged: ProfileLayer, input: CompileInput): string
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
-      `  \`pup session done "<one-line summary>"\`\n` +
+      '  `pup session done "<one-line summary>"`\n' +
+      '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
       '- If you are blocked on something only a human can decide, say so and stop.',
   ];
   return sections.filter(Boolean).join('\n\n');
