@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { initProject, NoAdapterError } from '../core/init.service.js';
 import { listLedgerEntries } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId } from '../core/paths.utils.js';
@@ -26,7 +27,33 @@ const stub = (name: string) => () => {
 program
   .command('init')
   .description('Onboard a repo: detect stack, baseline, conventions')
-  .action(stub('init'));
+  .action(() => {
+    const { repoPath, db } = resolveProject();
+    let report: ReturnType<typeof initProject>;
+    try {
+      report = initProject(db, repoPath, [typescriptAdapter]);
+    } catch (error) {
+      if (error instanceof NoAdapterError) {
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+    console.log(`Project ${report.projectId} (${repoPath})`);
+    console.log(`adapters: ${report.baseline.adapters.join(', ')}`);
+    for (const s of report.baseline.stages) {
+      console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
+      if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
+    }
+    if (report.findings.length > 0) {
+      console.log('findings:');
+      for (const f of report.findings) console.log(`  - ${f}`);
+    }
+    console.log(
+      'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
+    );
+  });
 
 program
   .command('new <goal>')

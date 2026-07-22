@@ -34,8 +34,35 @@ export interface NewSessionInput {
   transcriptPath?: string;
 }
 
+export interface ProjectRow {
+  id: string;
+  repo_path: string;
+  /** JSON array of adapter ids. */
+  adapters: string;
+  /** JSON ProjectBaseline; null until `pup init` runs. */
+  baseline: string | null;
+  created_at: string;
+}
+
 export function ensureProject(db: Database, id: string, repoPath: string): void {
   db.prepare('INSERT OR IGNORE INTO projects (id, repo_path) VALUES (?, ?)').run(id, repoPath);
+}
+
+export function getProject(db: Database, id: string): ProjectRow | undefined {
+  return db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+}
+
+export function saveProjectBaseline(
+  db: Database,
+  id: string,
+  adapters: string[],
+  baseline: string,
+): void {
+  db.prepare('UPDATE projects SET adapters = ?, baseline = ? WHERE id = ?').run(
+    JSON.stringify(adapters),
+    baseline,
+    id,
+  );
 }
 
 export function insertTask(
