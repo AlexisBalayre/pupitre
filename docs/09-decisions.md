@@ -35,21 +35,32 @@ changes back into those docs is pending.
 
 ## Config & profiles
 
-9. **Full isolation via `CLAUDE_CONFIG_DIR`**: each session gets a compiler-owned config dir, so
-   the profile hash covers the entire behavior surface. User-level `~/.claude` never leaks in.
-10. **A repo's committed `.claude/` is a native fourth layer.** Compiled output lives at the
-    isolated user level; the repo's skills/agents/CLAUDE.md ride along untouched as the project
-    layer. The compiler reads the repo layer to count it against the context budget and flag
+9. **Sessions inherit the user's `~/.claude` (revised 2026-07-22, supersedes full
+   `CLAUDE_CONFIG_DIR` isolation).** Rationale: an isolated config dir has no login state, and
+   every workaround (setup-token, keychain replication) is programmatic access that plan policy
+   could restrict — inheriting the normal interactive login makes a session indistinguishable
+   from the user running `claude` in a terminal. Attributability is preserved by snapshotting
+   and hashing the user config at session launch (drift is detected, not prevented); the
+   profile hash covers compiled output + user-config snapshot hash.
+10. **Compiled profile is delivered per session via `--settings <compiled.json>`** (hooks,
+    permissions) **plus worktree-level files** (CLAUDE.md additions, agents, skills) kept out
+    of diffs with per-worktree `.git/info/exclude`. A repo's committed `.claude/` rides along
+    untouched as the project layer; the compiler reads it to count context budget and flag
     convention conflicts at init. The compiler never modifies tracked files.
 11. **Gate-time Claude work runs as one-shot `claude -p` utilities** (reviewer pass, decision-record
-    drafting, init audit): fixed prompt in, structured output out, same config isolation, read-only
-    tools. Not sessions — no state machine entry, just a logged `utility_call` event.
+    drafting, init audit): fixed prompt in, structured output out, read-only tools. Not
+    sessions — no state machine entry, just a logged `utility_call` event.
+
+12. **No programmatic auth.** Sessions and gate utilities use the user's existing interactive
+    login (Max subscription); Pupitre never handles tokens, API keys, or credential files.
+    Trust for new worktree paths is pre-seeded in `~/.claude.json` at `pup new` (same
+    mechanism Claude Code itself uses when the user accepts the dialog).
 
 ## Gate metrics
 
-12. **Coverage = patch coverage vs a ratcheting baseline**: only added/modified lines are measured;
+13. **Coverage = patch coverage vs a ratcheting baseline**: only added/modified lines are measured;
     their coverage ratio must meet the repo baseline. Deletions are free by construction.
-13. **v1 gate slims to**: build, tests, lint, scope audit, diff-size flag, minimal ledger with
+14. **v1 gate slims to**: build, tests, lint, scope audit, diff-size flag, minimal ledger with
     `--accept-debt`. Patch coverage and the full debt-delta stage (duplication, dead code,
     complexity) move to v1.1 with the ratchet.
 
