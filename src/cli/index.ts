@@ -8,6 +8,7 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { listLedgerEntries } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId } from '../core/paths.utils.js';
+import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
 import type { GateReport } from '../core/types/merge-gate.types.js';
@@ -98,7 +99,47 @@ program
 program
   .command('review [session]')
   .description('Risk-ordered review queue, or one branch in detail')
-  .action(stub('review'));
+  .action((session?: string) => {
+    const { repoPath, db } = resolveProject();
+    if (!session) {
+      const queue = buildReviewQueue(db, repoPath);
+      if (queue.length === 0) {
+        console.log('Nothing awaiting review.');
+        return;
+      }
+      console.log('RISK   SESSION                      ±LINES  FILES  REJ  VIOL  OVERLAP  GOAL');
+      for (const e of queue) {
+        console.log(
+          `${e.risk.toFixed(1).padStart(5)}  ${e.sessionId.padEnd(28)} ${String(e.changedLines).padStart(5)}  ${String(e.filesChanged).padStart(5)}  ${String(e.rejectCount).padStart(3)}  ${String(e.scopeViolations).padStart(4)}  ${String(e.overlaps).padStart(7)}  ${e.goal}`,
+        );
+      }
+      return;
+    }
+    const detail = buildSessionReview(db, repoPath, session);
+    console.log(`${detail.entry.sessionId}  (${detail.state}, risk ${detail.entry.risk})`);
+    console.log(`branch: ${detail.entry.branch}  worktree: ${detail.worktreePath}`);
+    console.log(`goal: ${detail.spec.goal}`);
+    console.log(`scope-in: ${detail.spec.scopeIn.join(', ')}`);
+    if (detail.spec.scopeOut?.length) console.log(`scope-out: ${detail.spec.scopeOut.join(', ')}`);
+    console.log(`acceptance: ${detail.spec.acceptance.join('; ')}`);
+    console.log(
+      `rejections: ${detail.entry.rejectCount}  scope violations: ${detail.entry.scopeViolations}  overlaps: ${detail.entry.overlaps}`,
+    );
+    console.log('files:');
+    for (const f of detail.files) {
+      const added = f.added === null ? '-' : `+${f.added}`;
+      const deleted = f.deleted === null ? '-' : `-${f.deleted}`;
+      console.log(`  ${added.padStart(6)} ${deleted.padStart(6)}  ${f.path}`);
+    }
+    if (detail.lastGateReport) {
+      console.log('last gate report:');
+      for (const s of detail.lastGateReport.stages) {
+        console.log(
+          `  ${s.stage.padEnd(16)} ${s.status.toUpperCase()}${s.detail ? `  ${s.detail}` : ''}`,
+        );
+      }
+    }
+  });
 function printGateReport(report: GateReport): void {
   for (const stage of report.stages) {
     console.log(

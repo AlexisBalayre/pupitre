@@ -3,6 +3,7 @@ import { mkdirSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
+import { gitDiffNumstat, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import {
   DIFF_SIZE_FLAG_LINES,
@@ -29,16 +30,6 @@ import type {
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
-/**
- * Environment without the GIT_DIR family: when `pup merge` itself runs inside a
- * git hook, those inherited vars would point every child git call (and any git
- * usage in gate commands) at the hook's repo instead of the target path.
- */
-function scrubbedGitEnv(): NodeJS.ProcessEnv {
-  const scrubbed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !scrubbed.includes(key)));
-}
-
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
@@ -61,31 +52,14 @@ function commandFailureDetail(error: unknown): string {
   return (output || (failure.message ?? 'command failed')).slice(-GATE_OUTPUT_TAIL_CHARS);
 }
 
-/**
- * Repo-relative paths changed on the branch. NUL-delimited (`-z`) so git never
- * C-quotes non-ASCII names — the scope audit must see the exact byte paths, or
- * a quoted `.claude/…` path would slip past the protected-glob backstop.
- */
-function diffPaths(repoPath: string, target: string, branch: string): string[] {
-  return git(repoPath, 'diff', '-z', '--name-only', `${target}...${branch}`)
-    .split('\0')
-    .filter(Boolean);
-}
-
 /** Adds + deletes across the branch diff, excluding lockfiles and binary files. */
-function countChangedLines(repoPath: string, target: string, branch: string): number {
-  // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
-  // paths as two separate NUL fields.
-  const fields = git(repoPath, 'diff', '-z', '--numstat', `${target}...${branch}`).split('\0');
+export function countChangedLines(repoPath: string, target: string, branch: string): number {
   let changed = 0;
-  for (let i = 0; i < fields.length; i++) {
-    const field = fields[i];
-    if (!field) continue;
-    const [added, deleted, inlinePath] = field.split('\t');
-    const path = inlinePath || fields[i + 2];
-    if (!inlinePath) i += 2;
-    if (!path || added === '-' || LOCKFILE_NAMES.includes(path)) continue;
-    changed += Number(added) + Number(deleted);
+  for (const stat of gitDiffNumstat(repoPath, target, branch)) {
+    if (stat.added === null || stat.deleted === null || LOCKFILE_NAMES.includes(stat.path)) {
+      continue;
+    }
+    changed += stat.added + stat.deleted;
   }
   return changed;
 }
@@ -208,7 +182,7 @@ function gateAndMerge(
     }
   }
 
-  const changedPaths = diffPaths(req.repoPath, target, session.branch);
+  const changedPaths = gitDiffPaths(req.repoPath, target, session.branch);
   const specRow = db
     .prepare('SELECT project_id, spec FROM tasks WHERE id = ?')
     .get(session.task_id) as { project_id: string; spec: string };
