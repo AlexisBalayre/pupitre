@@ -2,9 +2,15 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { steerSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
-import { listSessions } from '../core/session.repository.js';
+import { listLedgerEntries } from '../core/ledger.repository.js';
+import { runMergeGate } from '../core/merge-gate.service.js';
+import { projectId } from '../core/paths.utils.js';
+import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
+import type { GateReport } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { resolveProject } from './project.utils.js';
 
@@ -67,7 +73,18 @@ program
 program
   .command('steer <session> <message>')
   .description('Inject a correction into a running session')
-  .action(stub('steer'));
+  .action((session: string, message: string) => {
+    const { db } = resolveProject();
+    const row = getSession(db, session);
+    if (!row) {
+      console.error(`No session ${session}.`);
+      process.exitCode = 1;
+      return;
+    }
+    steerSession(session, message);
+    appendEvent(db, session, 'steer', { kind: 'manual' });
+    console.log(`Steered session ${session}.`);
+  });
 
 program
   .command('kill <session>')
@@ -82,14 +99,77 @@ program
   .command('review [session]')
   .description('Risk-ordered review queue, or one branch in detail')
   .action(stub('review'));
+function printGateReport(report: GateReport): void {
+  for (const stage of report.stages) {
+    console.log(
+      `  ${stage.stage.padEnd(16)} ${stage.status.toUpperCase()}${stage.detail ? `  ${stage.detail}` : ''}`,
+    );
+  }
+}
+
 program
   .command('merge <session>')
   .description('Run the gate pipeline and merge on pass')
-  .option('--accept-debt <reason>')
-  .option('--review-by <condition>')
-  .action(stub('merge'));
+  .option('--accept-debt <reason>', 'merge despite a flagged shortcut, creating a ledger entry')
+  .option('--review-by <condition>', 'review-by condition for the ledger entry')
+  .action((session: string, opts: { acceptDebt?: string; reviewBy?: string }) => {
+    if (Boolean(opts.acceptDebt) !== Boolean(opts.reviewBy)) {
+      console.error('--accept-debt and --review-by must be passed together.');
+      process.exitCode = 1;
+      return;
+    }
+    const { repoPath, db } = resolveProject();
+    if (!typescriptAdapter.detect(repoPath)) {
+      console.error('No adapter detected for this repo (v1 supports TypeScript only).');
+      process.exitCode = 1;
+      return;
+    }
+    const outcome = runMergeGate(db, {
+      repoPath,
+      sessionId: session,
+      adapter: typescriptAdapter,
+      acceptDebt:
+        opts.acceptDebt && opts.reviewBy
+          ? { reason: opts.acceptDebt, reviewBy: opts.reviewBy }
+          : undefined,
+    });
+    printGateReport(outcome.report);
+    switch (outcome.status) {
+      case 'merged':
+        console.log(`Merged ${session}; worktree and branch cleaned up.`);
+        break;
+      case 'refused':
+        console.log(
+          'Merge refused: diff-size flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to shrink the diff.',
+        );
+        break;
+      case 'rejected':
+        console.log(
+          `Gate failed; report re-injected into the session (rejection ${outcome.rejectCount}/2).`,
+        );
+        break;
+      case 'blocked':
+        console.log('Gate failed; session parked as blocked — needs a human.');
+        break;
+    }
+    if (outcome.status !== 'merged') process.exitCode = 1;
+  });
 program.command('map [module]').description('Code map').option('--open').action(stub('map'));
-program.command('debt').description('Open ledger entries, oldest first').action(stub('debt'));
+program
+  .command('debt')
+  .description('Open ledger entries, oldest first')
+  .action(() => {
+    const { repoPath, db } = resolveProject();
+    const entries = listLedgerEntries(db, projectId(repoPath));
+    if (entries.length === 0) {
+      console.log('No open ledger entries.');
+      return;
+    }
+    for (const entry of entries) {
+      console.log(`${entry.created_at}  ${entry.description}`);
+      console.log(`  reason: ${entry.reason}  review by: ${entry.review_by}`);
+    }
+  });
 program.command('log [module]').description('Decision records').action(stub('log'));
 program
   .command('profile <action> [name]')

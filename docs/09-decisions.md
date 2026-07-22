@@ -33,6 +33,17 @@ changes back into those docs is pending.
    mechanically**; only conflicts go back to the session as a re-steer ("rebase onto main and
    resolve"). Merges are serialized under a lock.
 
+15. **Rebase-conflict re-steers count toward the reject cap.** One counter (`reject_count`)
+    bounds every automatic re-steer path; after two, the third failure of any kind parks the
+    session as `blocked`. Conflicts are not tracked separately.
+16. **Merge is `--ff-only` with full cleanup.** After the auto-rebase the branch is a
+    descendant of the target, so the merge fast-forwards (linear history). On pass:
+    session → `merged`, tmux killed, worktree removed, branch deleted — everything is in main.
+17. **Diff-size flag blocks unless `--accept-debt`.** The v1 soft stage follows stage-4
+    semantics from 04-gates-and-debt: a flagged oversize diff refuses to merge unless
+    `--accept-debt "<reason>" --review-by "<condition>"` is passed, which writes a ledger
+    entry. Threshold is a tunable constant; lockfiles are excluded from the count.
+
 ## Config & profiles
 
 9. **Sessions inherit the user's `~/.claude` (revised 2026-07-22, supersedes full
