@@ -49,6 +49,37 @@ function readEvents(eventsFile: string): { hook_event_name?: string; pup_session
     .map((line) => JSON.parse(line) as { hook_event_name?: string; pup_session_id?: string });
 }
 
+// --- auth ---------------------------------------------------------------------
+// Isolated config dirs have no login state (spike finding #4). Sessions
+// authenticate via a long-lived OAuth token from `claude setup-token`,
+// injected as CLAUDE_CODE_OAUTH_TOKEN (docs/09-decisions.md).
+
+function readTokenFromEnvFile(path: string): string | undefined {
+  if (!existsSync(path)) return undefined;
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .find((l) => l.startsWith('CLAUDE_CODE_OAUTH_TOKEN='))
+    ?.split('=')[1]
+    ?.replace(/^["']|["']$/g, '')
+    .trim();
+}
+
+const repoRoot = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+  encoding: 'utf8',
+})
+  .trim()
+  .replace(/\/\.git$/, '');
+const oauthToken =
+  process.env.CLAUDE_CODE_OAUTH_TOKEN ??
+  readTokenFromEnvFile(join(process.cwd(), '.env')) ??
+  readTokenFromEnvFile(join(repoRoot, '.env'));
+if (!oauthToken) {
+  console.log(
+    'No CLAUDE_CODE_OAUTH_TOKEN found (env or .env). Run `claude setup-token` and add it to the repo .env.',
+  );
+  process.exit(1);
+}
+
 // --- workspace + isolated config ---------------------------------------------
 
 // realpath everything: macOS tmpdir is a /var -> /private/var symlink, and the
@@ -123,6 +154,8 @@ tmux(
   `CLAUDE_CONFIG_DIR=${configDir}`,
   '-e',
   `PUP_SESSION_ID=${SESSION_ID}`,
+  '-e',
+  `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`,
   claudeBin,
   '--model',
   'haiku',
@@ -167,12 +200,36 @@ console.log('prompt sent; steer message pasted mid-turn');
 
 // --- wait for completion ------------------------------------------------------
 
+// Steering is verified against the transcript's assistant messages, never the
+// pane: the pasted prompt text echoes in the pane, so a pane match proves nothing.
+function assistantSaid(word: string): boolean {
+  const projectsRoot = join(configDir, 'projects');
+  if (!existsSync(projectsRoot)) return false;
+  const files = execFileSync('find', [projectsRoot, '-name', '*.jsonl'], { encoding: 'utf8' })
+    .split('\n')
+    .filter(Boolean);
+  return files.some((f) =>
+    readFileSync(f, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .some((line) => {
+        const entry = JSON.parse(line) as {
+          type?: string;
+          message?: { content?: { type?: string; text?: string }[] };
+        };
+        if (entry.type !== 'assistant') return false;
+        return (entry.message?.content ?? []).some(
+          (block) => block.type === 'text' && block.text?.includes(word),
+        );
+      }),
+  );
+}
+
 const runDeadline = Date.now() + RUN_TIMEOUT_MS;
 let stops = 0;
 while (Date.now() < runDeadline) {
   stops = readEvents(eventsFile).filter((e) => e.hook_event_name === 'Stop').length;
-  const pane = capturePane();
-  if (stops >= 1 && /STEERED/.test(pane)) break;
+  if (stops >= 1 && assistantSaid('STEERED')) break;
   await sleep(2000);
 }
 
@@ -191,8 +248,9 @@ console.log(`   tagged with PUP_SESSION_ID: ${tagged}/${events.length}`);
 
 const pane = capturePane();
 console.log(
-  `3. steering: ${/STEERED/.test(pane) ? 'steered message processed' : 'STEERED not seen in pane'}`,
+  `3. steering: ${assistantSaid('STEERED') ? 'assistant processed the mid-turn message' : 'STEERED not found in assistant output'}`,
 );
+console.log(`   first prompt completed: ${assistantSaid('DONE-SPIKE')}`);
 
 const projectsDir = join(configDir, 'projects');
 let transcripts: string[] = [];

@@ -45,11 +45,17 @@ changes back into those docs is pending.
     drafting, init audit): fixed prompt in, structured output out, same config isolation, read-only
     tools. Not sessions — no state machine entry, just a logged `utility_call` event.
 
+12. **Session auth via `claude setup-token`** (2026-07-22 spike finding): an isolated
+    `CLAUDE_CONFIG_DIR` has no login state, so every session gets `CLAUDE_CODE_OAUTH_TOKEN`
+    injected into its environment. The token comes from a one-time interactive `claude
+    setup-token` and lives in the repo-root `.env` (gitignored). No keychain/oauth internals
+    are replicated into session config dirs.
+
 ## Gate metrics
 
-12. **Coverage = patch coverage vs a ratcheting baseline**: only added/modified lines are measured;
+13. **Coverage = patch coverage vs a ratcheting baseline**: only added/modified lines are measured;
     their coverage ratio must meet the repo baseline. Deletions are free by construction.
-13. **v1 gate slims to**: build, tests, lint, scope audit, diff-size flag, minimal ledger with
+14. **v1 gate slims to**: build, tests, lint, scope audit, diff-size flag, minimal ledger with
     `--accept-debt`. Patch coverage and the full debt-delta stage (duplication, dead code,
     complexity) move to v1.1 with the ratchet.
 
