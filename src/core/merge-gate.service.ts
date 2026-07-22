@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
 import { gitDiffNumstat, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
-import { insertLedgerEntry } from './ledger.repository.js';
+import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
   DIFF_SIZE_FLAG_LINES,
   GATE_COMMAND_TIMEOUT_MS,
@@ -204,6 +204,15 @@ function gateAndMerge(
     detail: `${changedPaths.length} files in scope`,
   });
 
+  // Snapshot before any --accept-debt entry from THIS merge is written, so a
+  // merge never flags its own fresh debt as closeable.
+  const debtCandidates = listLedgerEntries(db, specRow.project_id)
+    .filter((entry) => {
+      const files = JSON.parse(entry.files) as string[];
+      return files.some((f) => changedPaths.includes(f));
+    })
+    .map((entry) => ({ id: entry.id, description: entry.description }));
+
   const changedLines = countChangedLines(req.repoPath, target, session.branch);
   if (changedLines > DIFF_SIZE_FLAG_LINES) {
     if (!req.acceptDebt) {
@@ -244,7 +253,7 @@ function gateAndMerge(
   killTmux(session.id);
   git(req.repoPath, 'worktree', 'remove', '--force', worktree);
   git(req.repoPath, 'branch', '-d', session.branch);
-  return { status: 'merged', report, rejectCount: session.reject_count };
+  return { status: 'merged', report, rejectCount: session.reject_count, debtCandidates };
 }
 
 function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {

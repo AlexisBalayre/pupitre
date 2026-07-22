@@ -144,4 +144,16 @@ describe('review service', { timeout: 20_000 }, () => {
 
     expect(() => buildSessionReview(db, repo, 's-gone')).toThrow('No live session');
   });
+
+  it('shows detail for a blocked session so a human can unblock it', () => {
+    const worktree = seedSession(db, repo, 's-blocked');
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    transitionSession(db, 's-blocked', 'rejected');
+    transitionSession(db, 's-blocked', 'blocked');
+
+    const detail = buildSessionReview(db, repo, 's-blocked');
+
+    expect(detail.state).toBe('blocked');
+    expect(detail.entry.sessionId).toBe('s-blocked');
+  });
 });

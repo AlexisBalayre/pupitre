@@ -6,7 +6,11 @@ import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { initProject, NoAdapterError } from '../core/init.service.js';
-import { listLedgerEntries } from '../core/ledger.repository.js';
+import {
+  closeLedgerEntry,
+  listLedgerEntries,
+  listOverdueLedgerEntries,
+} from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId } from '../core/paths.utils.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
@@ -85,16 +89,26 @@ program
 
 program
   .command('status')
-  .description('Sessions by state')
+  .description('Sessions by state, blocked first; overdue debt on top')
   .action(() => {
-    const { db } = resolveProject();
+    const { repoPath, db } = resolveProject();
+    const overdue = listOverdueLedgerEntries(db, projectId(repoPath), new Date());
+    for (const entry of overdue) {
+      console.log(
+        `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.review_by})`,
+      );
+    }
     const rows = listSessions(db);
     if (rows.length === 0) {
       console.log('No sessions.');
       return;
     }
-    for (const r of rows) {
-      console.log(`${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}`);
+    const blockedFirst = [...rows].sort(
+      (a, b) => Number(b.state === 'blocked') - Number(a.state === 'blocked'),
+    );
+    for (const r of blockedFirst) {
+      const marker = r.state === 'blocked' ? `  needs a human (${r.reject_count} rejections)` : '';
+      console.log(`${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}`);
     }
   });
 
@@ -205,6 +219,11 @@ program
     switch (outcome.status) {
       case 'merged':
         console.log(`Merged ${session}; worktree and branch cleaned up.`);
+        for (const c of outcome.debtCandidates ?? []) {
+          console.log(
+            `This merge touched files of open debt #${c.id} (${c.description}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,
+          );
+        }
         break;
       case 'refused':
         console.log(
@@ -223,19 +242,29 @@ program
     if (outcome.status !== 'merged') process.exitCode = 1;
   });
 program.command('map [module]').description('Code map').option('--open').action(stub('map'));
-program
-  .command('debt')
-  .description('Open ledger entries, oldest first')
-  .action(() => {
-    const { repoPath, db } = resolveProject();
-    const entries = listLedgerEntries(db, projectId(repoPath));
-    if (entries.length === 0) {
-      console.log('No open ledger entries.');
-      return;
-    }
-    for (const entry of entries) {
-      console.log(`${entry.created_at}  ${entry.description}`);
-      console.log(`  reason: ${entry.reason}  review by: ${entry.review_by}`);
+const debt = program.command('debt').description('Open ledger entries, oldest first');
+debt.action(() => {
+  const { repoPath, db } = resolveProject();
+  const entries = listLedgerEntries(db, projectId(repoPath));
+  if (entries.length === 0) {
+    console.log('No open ledger entries.');
+    return;
+  }
+  for (const entry of entries) {
+    console.log(`#${entry.id}  ${entry.created_at}  ${entry.description}`);
+    console.log(`  reason: ${entry.reason}  review by: ${entry.review_by}`);
+  }
+});
+debt
+  .command('close <id>')
+  .description('Close a ledger entry once a merge has removed the shortcut')
+  .action((id: string) => {
+    const { db } = resolveProject();
+    if (closeLedgerEntry(db, Number(id))) {
+      console.log(`Closed ledger entry #${id}.`);
+    } else {
+      console.error(`No open ledger entry #${id}.`);
+      process.exitCode = 1;
     }
   });
 program.command('log [module]').description('Decision records').action(stub('log'));
