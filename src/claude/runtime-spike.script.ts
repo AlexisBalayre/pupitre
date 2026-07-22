@@ -1,10 +1,10 @@
 #!/usr/bin/env tsx
-// Throwaway spike for the session runtime (docs/09-decisions.md, decisions 1-4).
-// Validates, against a real `claude` in tmux:
-//   1. launch with an isolated CLAUDE_CONFIG_DIR (no ~/.claude leakage, no onboarding/trust prompts)
+// Throwaway spike for the session runtime (docs/09-decisions.md, decisions 1-4, 9-10, 12).
+// Validates, against a real `claude` in tmux using the user's normal interactive login:
+//   1. launch with inherited ~/.claude config, per-session settings via --settings
 //   2. hook events (PostToolUse/Stop/Notification) flow out as JSONL tagged with PUP_SESSION_ID
 //   3. a message pasted mid-turn queues and is processed (steering)
-//   4. the transcript JSONL is discoverable under the isolated config dir
+//   4. the transcript JSONL is discoverable under ~/.claude/projects for the session worktree
 // Run: pnpm exec tsx src/claude/runtime-spike.script.ts
 
 import { execFileSync } from 'node:child_process';
@@ -17,7 +17,7 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SESSION = 'pup-spike';
@@ -49,46 +49,13 @@ function readEvents(eventsFile: string): { hook_event_name?: string; pup_session
     .map((line) => JSON.parse(line) as { hook_event_name?: string; pup_session_id?: string });
 }
 
-// --- auth ---------------------------------------------------------------------
-// Isolated config dirs have no login state (spike finding #4). Sessions
-// authenticate via a long-lived OAuth token from `claude setup-token`,
-// injected as CLAUDE_CODE_OAUTH_TOKEN (docs/09-decisions.md).
+// --- workspace + compiled per-session settings --------------------------------
 
-function readTokenFromEnvFile(path: string): string | undefined {
-  if (!existsSync(path)) return undefined;
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .find((l) => l.startsWith('CLAUDE_CODE_OAUTH_TOKEN='))
-    ?.split('=')[1]
-    ?.replace(/^["']|["']$/g, '')
-    .trim();
-}
-
-const repoRoot = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-  encoding: 'utf8',
-})
-  .trim()
-  .replace(/\/\.git$/, '');
-const oauthToken =
-  process.env.CLAUDE_CODE_OAUTH_TOKEN ??
-  readTokenFromEnvFile(join(process.cwd(), '.env')) ??
-  readTokenFromEnvFile(join(repoRoot, '.env'));
-if (!oauthToken) {
-  console.log(
-    'No CLAUDE_CODE_OAUTH_TOKEN found (env or .env). Run `claude setup-token` and add it to the repo .env.',
-  );
-  process.exit(1);
-}
-
-// --- workspace + isolated config ---------------------------------------------
-
-// realpath everything: macOS tmpdir is a /var -> /private/var symlink, and the
-// trust pre-seed is keyed by the resolved workspace path.
+// realpath: macOS tmpdir is a /var -> /private/var symlink, and the transcript
+// directory under ~/.claude/projects is keyed by the resolved workspace path.
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'pup-spike-')));
-const configDir = join(root, 'config');
 const workspace = join(root, 'workspace');
 const eventsFile = join(root, 'events.jsonl');
-mkdirSync(configDir, { recursive: true });
 mkdirSync(workspace, { recursive: true });
 
 const hookScript = join(root, 'event-hook.sh');
@@ -99,29 +66,11 @@ writeFileSync(
 chmodSync(hookScript, 0o755);
 
 const hookEntry = [{ hooks: [{ type: 'command', command: hookScript, timeout: 10 }] }];
+const compiledSettings = join(root, 'compiled-settings.json');
 writeFileSync(
-  join(configDir, 'settings.json'),
+  compiledSettings,
   JSON.stringify(
-    {
-      skipDangerousModePermissionPrompt: true,
-      hooks: { PostToolUse: hookEntry, Stop: hookEntry, Notification: hookEntry },
-    },
-    null,
-    2,
-  ),
-);
-
-// Pre-seed global state so the isolated instance skips onboarding, the trust
-// dialog, and the bypass-permissions confirmation. Key names are version-coupled
-// (Claude Code 2.1.x) — exactly the coupling this spike exists to surface.
-writeFileSync(
-  join(configDir, '.claude.json'),
-  JSON.stringify(
-    {
-      hasCompletedOnboarding: true,
-      bypassPermissionsModeAccepted: true,
-      projects: { [workspace]: { hasTrustDialogAccepted: true } },
-    },
+    { hooks: { PostToolUse: hookEntry, Stop: hookEntry, Notification: hookEntry } },
     null,
     2,
   ),
@@ -151,43 +100,42 @@ tmux(
   '-c',
   workspace,
   '-e',
-  `CLAUDE_CONFIG_DIR=${configDir}`,
-  '-e',
   `PUP_SESSION_ID=${SESSION_ID}`,
-  '-e',
-  `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`,
   claudeBin,
   '--model',
   'haiku',
   '--dangerously-skip-permissions',
+  '--settings',
+  compiledSettings,
 );
 
 const readyDeadline = Date.now() + READY_TIMEOUT_MS;
 let ready = false;
-let preseedFallback = false;
+let trustFallback = false;
 while (Date.now() < readyDeadline) {
   const pane = capturePane();
   if (/\? for shortcuts|bypass permissions on/i.test(pane)) {
     ready = true;
     break;
   }
+  // Production seeds trust into ~/.claude.json at `pup new`; the spike answers
+  // the dialog by keystroke instead of touching the user's real config.
   if (/trust this folder|Is this a project you created/i.test(pane)) {
-    preseedFallback = true;
+    trustFallback = true;
     tmux('send-keys', '-t', SESSION, 'Enter');
   } else if (/Yes, I accept/i.test(pane)) {
-    preseedFallback = true;
     tmux('send-keys', '-t', SESSION, '2');
   }
   await sleep(1000);
 }
-if (preseedFallback)
-  console.log('NOTE: .claude.json pre-seed did not cover a prompt; fell back to keystrokes');
+if (trustFallback) console.log('trust dialog appeared (answered by keystroke, as expected)');
 if (!ready) {
   console.log('NOT READY within timeout. Pane:');
   console.log(capturePane());
   process.exit(1);
 }
-console.log('1. launch: UI ready, no onboarding/trust prompts');
+const loggedOut = /Not logged in/i.test(capturePane());
+console.log(`1. launch: UI ready, inherited login ${loggedOut ? 'MISSING' : 'active'}`);
 
 // --- 2 + 3. prompt, then steer mid-turn ---------------------------------------
 
@@ -200,12 +148,15 @@ console.log('prompt sent; steer message pasted mid-turn');
 
 // --- wait for completion ------------------------------------------------------
 
-// Steering is verified against the transcript's assistant messages, never the
-// pane: the pasted prompt text echoes in the pane, so a pane match proves nothing.
+// Transcripts for an inherited config live under ~/.claude/projects/<munged path>.
+const munged = workspace.replace(/[^a-zA-Z0-9]/g, '-');
+const transcriptDir = join(homedir(), '.claude', 'projects', munged);
+
+// Verified against the transcript's assistant messages, never the pane: the
+// pasted prompt text echoes in the pane, so a pane match proves nothing.
 function assistantSaid(word: string): boolean {
-  const projectsRoot = join(configDir, 'projects');
-  if (!existsSync(projectsRoot)) return false;
-  const files = execFileSync('find', [projectsRoot, '-name', '*.jsonl'], { encoding: 'utf8' })
+  if (!existsSync(transcriptDir)) return false;
+  const files = execFileSync('find', [transcriptDir, '-name', '*.jsonl'], { encoding: 'utf8' })
     .split('\n')
     .filter(Boolean);
   return files.some((f) =>
@@ -246,25 +197,17 @@ const tagged = events.filter((e) => e.pup_session_id === SESSION_ID).length;
 console.log('2. hook events:', JSON.stringify(Object.fromEntries(byType)));
 console.log(`   tagged with PUP_SESSION_ID: ${tagged}/${events.length}`);
 
-const pane = capturePane();
 console.log(
   `3. steering: ${assistantSaid('STEERED') ? 'assistant processed the mid-turn message' : 'STEERED not found in assistant output'}`,
 );
 console.log(`   first prompt completed: ${assistantSaid('DONE-SPIKE')}`);
 
-const projectsDir = join(configDir, 'projects');
-let transcripts: string[] = [];
-if (existsSync(projectsDir)) {
-  transcripts = execFileSync('find', [projectsDir, '-name', '*.jsonl'], { encoding: 'utf8' })
-    .split('\n')
-    .filter(Boolean);
-}
 console.log(
-  `4. transcripts under isolated config: ${transcripts.length ? transcripts.join(', ') : 'NONE FOUND'}`,
+  `4. transcript dir for worktree: ${existsSync(transcriptDir) ? transcriptDir : `NONE at ${transcriptDir}`}`,
 );
 
 console.log('--- pane tail ---');
-console.log(pane.trim().split('\n').slice(-12).join('\n'));
+console.log(capturePane().trim().split('\n').slice(-12).join('\n'));
 
 tmux('kill-session', '-t', SESSION);
 console.log(`artifacts kept at: ${root}`);
