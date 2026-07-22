@@ -44,7 +44,15 @@ describe('typescriptAdapter', () => {
       'tsconfig.json': '{}',
     });
     expect(typescriptAdapter.gateCommands(repo)).toEqual([
-      { stage: 'build', command: 'npx', args: ['tsc', '--noEmit'] },
+      { stage: 'build', command: 'npx', args: ['--no-install', 'tsc', '--noEmit'] },
     ]);
+  });
+
+  it('emits no build fallback when typescript is not a declared dependency', () => {
+    const repo = makeRepo({
+      'package.json': JSON.stringify({ private: true }),
+      'tsconfig.json': '{}',
+    });
+    expect(typescriptAdapter.gateCommands(repo)).toEqual([]);
   });
 });

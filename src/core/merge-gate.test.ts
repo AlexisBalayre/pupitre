@@ -13,7 +13,7 @@ vi.mock('../claude/session-runtime.service.js', () => ({
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { killSession, steerSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
-import { listLedgerEntries } from './ledger.repository.js';
+import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate } from './merge-gate.service.js';
 import {
@@ -224,6 +224,33 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'worktree-clean', status: 'fail' });
+  });
+
+  it('flags open debt entries whose files the merged diff touched, but never its own', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+    const openId = insertLedgerEntry(db, {
+      projectId: 'proj-1',
+      description: 'shortcut in feature.ts',
+      files: ['src/feature.ts'],
+      reason: 'r',
+      acceptedBy: 'human',
+      reviewBy: 'c',
+    });
+    insertLedgerEntry(db, {
+      projectId: 'proj-1',
+      description: 'unrelated shortcut',
+      files: ['src/other.ts'],
+      reason: 'r',
+      acceptedBy: 'human',
+      reviewBy: 'c',
+    });
+
+    const outcome = merge(passingAdapter, { reason: 'deadline', reviewBy: 'before v2' });
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.debtCandidates).toEqual([{ id: openId, description: 'shortcut in feature.ts' }]);
   });
 
   it('refuses an oversize diff without --accept-debt and leaves the session reviewable', () => {

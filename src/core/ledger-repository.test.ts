@@ -1,8 +1,26 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
-import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
+import {
+  closeLedgerEntry,
+  insertLedgerEntry,
+  listLedgerEntries,
+  listOverdueLedgerEntries,
+  type NewLedgerEntryInput,
+} from './ledger.repository.js';
 import { ensureProject } from './session.repository.js';
+
+function entryInput(overrides: Partial<NewLedgerEntryInput> = {}): NewLedgerEntryInput {
+  return {
+    projectId: 'proj-1',
+    description: 'shortcut',
+    files: [],
+    reason: 'r',
+    acceptedBy: 'human',
+    reviewBy: 'c',
+    ...overrides,
+  };
+}
 
 describe('ledger repository', () => {
   let db: Database;
@@ -45,5 +63,27 @@ describe('ledger repository', () => {
     });
     expect(listLedgerEntries(db, 'proj-1').map((e) => e.description)).toEqual(['first', 'second']);
     expect(listLedgerEntries(db, 'proj-1', 'closed')).toEqual([]);
+  });
+
+  it('closes an open entry once, then reports it as gone', () => {
+    const id = insertLedgerEntry(db, entryInput());
+
+    expect(closeLedgerEntry(db, id)).toBe(true);
+    expect(closeLedgerEntry(db, id)).toBe(false);
+    expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
+    expect(listLedgerEntries(db, 'proj-1', 'closed')).toHaveLength(1);
+  });
+
+  it('reports only date-parseable review-by conditions in the past as overdue', () => {
+    insertLedgerEntry(db, entryInput({ description: 'past', reviewBy: '2026-01-01' }));
+    insertLedgerEntry(db, entryInput({ description: 'future', reviewBy: '2099-12-31' }));
+    insertLedgerEntry(
+      db,
+      entryInput({ description: 'event', reviewBy: 'before adding a second provider' }),
+    );
+
+    const overdue = listOverdueLedgerEntries(db, 'proj-1', new Date('2026-07-22'));
+
+    expect(overdue.map((e) => e.description)).toEqual(['past']);
   });
 });

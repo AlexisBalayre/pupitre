@@ -44,3 +44,27 @@ export function listLedgerEntries(
     )
     .all(projectId, status) as LedgerEntryRow[];
 }
+
+/** Returns false when the entry does not exist or is already closed. */
+export function closeLedgerEntry(db: Database, id: number): boolean {
+  const result = db
+    .prepare("UPDATE ledger_entries SET status = 'closed' WHERE id = ? AND status = 'open'")
+    .run(id);
+  return result.changes === 1;
+}
+
+/**
+ * Open entries whose review-by condition is a date in the past (docs/04:
+ * surfaced by `pup status`). Free-text conditions ("before adding a second
+ * provider") cannot be evaluated mechanically and are never reported here.
+ */
+export function listOverdueLedgerEntries(
+  db: Database,
+  projectId: string,
+  now: Date,
+): LedgerEntryRow[] {
+  return listLedgerEntries(db, projectId).filter((entry) => {
+    const reviewBy = Date.parse(entry.review_by);
+    return !Number.isNaN(reviewBy) && reviewBy < now.getTime();
+  });
+}

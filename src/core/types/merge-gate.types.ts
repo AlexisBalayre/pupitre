@@ -38,4 +38,9 @@ export interface MergeOutcome {
   status: MergeStatus;
   report: GateReport;
   rejectCount: number;
+  /**
+   * On merge: open ledger entries whose files this diff touched — candidates
+   * for `pup debt close`, pending human confirmation (docs/04).
+   */
+  debtCandidates?: { id: number; description: string }[];
 }

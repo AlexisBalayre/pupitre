@@ -113,17 +113,21 @@ export function buildReviewQueue(db: Database, repoPath: string): ReviewQueueEnt
     .sort((a, b) => b.risk - a.risk);
 }
 
-/** Full detail for one branch: spec, per-file diff stats, last gate report. */
+/**
+ * Full detail for one branch: spec, per-file diff stats, last gate report.
+ * Blocked sessions are included — a human needs the failure history to
+ * unblock them (decision 7).
+ */
 export function buildSessionReview(
   db: Database,
   repoPath: string,
   sessionId: string,
 ): SessionReviewDetail {
   const target = targetBranch(repoPath);
-  const live = listSessions(db, ['running', 'awaiting-review']);
+  const live = listSessions(db, ['running', 'awaiting-review', 'blocked']);
   const session = live.find((s) => s.id === sessionId);
   if (!session)
-    throw new Error(`No live session ${sessionId} (must be running or awaiting-review).`);
+    throw new Error(`No live session ${sessionId} (must be running, awaiting-review, or blocked).`);
   const liveDiffs = liveSessionDiffs(repoPath, target, live);
   return {
     entry: buildEntry(db, repoPath, target, session, liveDiffs),

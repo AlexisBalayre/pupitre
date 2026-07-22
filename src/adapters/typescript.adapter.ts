@@ -35,14 +35,24 @@ export const typescriptAdapter: Adapter = {
   },
 
   gateCommands(repoPath: string): GateCommand[] {
-    const scripts = readManifest(repoPath)?.scripts ?? {};
+    const manifest = readManifest(repoPath);
+    const scripts = manifest?.scripts ?? {};
+    const hasTypescript = Boolean(
+      manifest?.devDependencies?.typescript ?? manifest?.dependencies?.typescript,
+    );
     const pm = packageManager(repoPath);
     const commands: GateCommand[] = [];
     for (const stage of GATE_STAGES) {
       if (scripts[stage]) {
         commands.push({ stage, command: pm, args: ['run', stage] });
-      } else if (stage === 'build' && existsSync(join(repoPath, 'tsconfig.json'))) {
-        commands.push({ stage, command: 'npx', args: ['tsc', '--noEmit'] });
+      } else if (
+        stage === 'build' &&
+        hasTypescript &&
+        existsSync(join(repoPath, 'tsconfig.json'))
+      ) {
+        // --no-install: bare `npx tsc` in a repo without typescript would
+        // auto-install the deprecated `tsc` squatter package from npm.
+        commands.push({ stage, command: 'npx', args: ['--no-install', 'tsc', '--noEmit'] });
       }
     }
     return commands;
