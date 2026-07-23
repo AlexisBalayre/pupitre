@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
@@ -18,6 +19,7 @@ import {
   listOverdueLedgerEntries,
 } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
+import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
@@ -314,17 +316,24 @@ program
   });
 program
   .command('map [module]')
-  .description('Code map: text tree, or one module in detail')
-  .option('--open', 'interactive mind-map (v1.2, not implemented yet)')
+  .description('Code map: text tree, or one module in detail; --open for the mind-map')
+  .option('--open', 'render the interactive mind-map and open it in the browser')
   .action((module: string | undefined, opts: { open?: boolean }) => {
-    if (opts.open) {
-      console.error('pup map --open: not implemented yet (v1.2).');
-      process.exitCode = 1;
-      return;
-    }
     const { repoPath, db } = resolveProject();
     const nodes = buildCodeMap(db, projectId(repoPath), repoPath, typescriptAdapter);
-    console.log(renderCodeMap(nodes, module));
+    if (!opts.open) {
+      console.log(renderCodeMap(nodes, module));
+      return;
+    }
+    const html = renderMindMapHtml(repoPath, nodes, listDecisionRecords(db));
+    const outFile = join(projectPaths(repoPath).root, 'map.html');
+    writeFileSync(outFile, html);
+    console.log(`Mind-map written to ${outFile}`);
+    try {
+      execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [outFile]);
+    } catch {
+      console.log('Could not open a browser; open the file manually.');
+    }
   });
 const debt = program.command('debt').description('Open ledger entries, oldest first');
 debt.action(() => {
