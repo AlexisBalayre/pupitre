@@ -10,9 +10,15 @@ vi.mock('../claude/session-runtime.service.js', () => ({
   steerSession: vi.fn(),
 }));
 
+// Without this, every merging test would spawn a real `claude -p` call.
+vi.mock('../claude/utility.service.js', () => ({
+  runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
+}));
+
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { killSession, steerSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
+import { listDecisionRecords } from './decision-record.repository.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -133,6 +139,19 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(worktree)).toBe(false);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+  });
+
+  it('writes a decision record for the merged files even when the draft utility fails', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+    const outcome = merge();
+
+    expect(outcome.status).toBe('merged');
+    const [record] = listDecisionRecords(db, 'src/feature.ts');
+    expect(record?.session_id).toBe(SESSION_ID);
+    expect(record?.summary).toContain('test goal');
+    expect(JSON.parse(record?.files ?? '[]')).toEqual(['src/feature.ts']);
   });
 
   it('auto-rebases a stale branch and merges with linear history', () => {
