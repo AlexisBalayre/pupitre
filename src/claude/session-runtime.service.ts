@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+
+import { scrubbedGitEnv } from '../core/git-diff.client.js';
+import { hasUnsubmittedInput } from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
 // (decision 1); state comes from hooks + transcripts, never pane scraping.
@@ -26,6 +29,9 @@ const READY_POLL_MS = 1000;
  * sits unsubmitted (observed on Claude Code 2.1.218 with multi-KB kickoffs).
  */
 const PASTE_SETTLE_MS = 700;
+/** After Enter, how long to wait before checking that the input box cleared. */
+const SUBMIT_VERIFY_MS = 1000;
+const SUBMIT_RETRY_LIMIT = 2;
 
 function tmux(...args: string[]): string {
   return execFileSync('tmux', args, { encoding: 'utf8' });
@@ -40,15 +46,37 @@ export function tmuxTarget(sessionId: string): string {
   return `pup-${sessionId}`;
 }
 
-/** Pre-seed trust for a worktree so the launched session skips the trust dialog. */
-export function preseedTrust(worktreePath: string): void {
-  const config = existsSync(CLAUDE_JSON)
-    ? (JSON.parse(readFileSync(CLAUDE_JSON, 'utf8')) as Record<string, unknown>)
+/**
+ * Pre-seed trust so the launched session skips the trust dialog. Claude Code
+ * keys the dialog on the git common-dir ROOT, not the launch cwd (verified on
+ * 2.1.218: a trusted worktree under an untrusted repo still shows the dialog,
+ * and accepting it writes `hasTrustDialogAccepted` on the repo root) — so both
+ * paths are seeded. `claudeJsonPath` is overridable for tests only.
+ */
+export function preseedTrust(worktreePath: string, claudeJsonPath = CLAUDE_JSON): void {
+  const config = existsSync(claudeJsonPath)
+    ? (JSON.parse(readFileSync(claudeJsonPath, 'utf8')) as Record<string, unknown>)
     : {};
   const projects = (config.projects ?? {}) as Record<string, Record<string, unknown>>;
-  projects[worktreePath] = { ...projects[worktreePath], hasTrustDialogAccepted: true };
+  for (const path of new Set([worktreePath, ...mainRepoRoot(worktreePath)])) {
+    projects[path] = { ...projects[path], hasTrustDialogAccepted: true };
+  }
   config.projects = projects;
-  writeFileSync(CLAUDE_JSON, JSON.stringify(config, null, 2));
+  writeFileSync(claudeJsonPath, JSON.stringify(config, null, 2));
+}
+
+/** Empty when the path is not a git checkout. */
+function mainRepoRoot(worktreePath: string): string[] {
+  try {
+    const commonDir = execFileSync(
+      'git',
+      ['-C', worktreePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', env: scrubbedGitEnv() },
+    ).trim();
+    return [realpathSync(dirname(commonDir))];
+  } catch {
+    return [];
+  }
 }
 
 export function launchSession(opts: LaunchOptions): { target: string } {
@@ -82,13 +110,24 @@ export function launchSession(opts: LaunchOptions): { target: string } {
   return { target };
 }
 
-/** Steer a running session mid-turn. paste-buffer keeps arbitrary text intact. */
+/**
+ * Steer a running session mid-turn. paste-buffer keeps arbitrary text intact.
+ * Enter can land while the UI is still folding a large paste and leave the
+ * message unsubmitted (kickoff `delivered:false` in the wild), so submission is
+ * verified against the pane and Enter retried. An extra Enter on an already
+ * empty input box is a no-op, so a false "still pending" read is harmless.
+ */
 export function steerSession(sessionId: string, message: string): void {
   const target = tmuxTarget(sessionId);
   execFileSync('tmux', ['load-buffer', '-'], { input: message });
   tmux('paste-buffer', '-d', '-t', target);
   syncSleep(PASTE_SETTLE_MS);
   tmux('send-keys', '-t', target, 'Enter');
+  for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
+    syncSleep(SUBMIT_VERIFY_MS);
+    if (!hasUnsubmittedInput(capturePane(sessionId))) return;
+    tmux('send-keys', '-t', target, 'Enter');
+  }
 }
 
 /** Wait until the session UI is interactive. Returns false on timeout. */
