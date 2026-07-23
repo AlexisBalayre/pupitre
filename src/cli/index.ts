@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
+import { listDecisionRecords } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { initProject, NoAdapterError } from '../core/init.service.js';
 import {
@@ -267,7 +268,24 @@ debt
       process.exitCode = 1;
     }
   });
-program.command('log [module]').description('Decision records').action(stub('log'));
+program
+  .command('log [module]')
+  .description('Decision records, newest first, optionally filtered by module or file')
+  .action((module?: string) => {
+    const { db } = resolveProject();
+    const records = listDecisionRecords(db, module);
+    if (records.length === 0) {
+      console.log(module ? `No decision records touching ${module}.` : 'No decision records.');
+      return;
+    }
+    for (const record of records) {
+      console.log(`#${record.id}  ${record.created_at}  session ${record.session_id}`);
+      console.log(`  ${record.summary}`);
+      if (record.alternatives) console.log(`  alternatives: ${record.alternatives}`);
+      if (record.conventions) console.log(`  conventions: ${record.conventions}`);
+      console.log(`  files: ${(JSON.parse(record.files) as string[]).join(', ')}`);
+    }
+  });
 program
   .command('profile <action> [name]')
   .description('Manage profile layers (list|show|edit|stale)')

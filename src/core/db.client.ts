@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS decision_records (
   summary TEXT NOT NULL,
   alternatives TEXT,
   conventions TEXT,
+  files TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -88,11 +89,28 @@ CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
 CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger_entries(project_id, status);
 `;
 
+/** Additive columns missing from stores created before the column existed. */
+const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+  {
+    table: 'decision_records',
+    column: 'files',
+    ddl: "ALTER TABLE decision_records ADD COLUMN files TEXT NOT NULL DEFAULT '[]'",
+  },
+];
+
+function applyMigrations(db: Database.Database): void {
+  for (const migration of MIGRATIONS) {
+    const columns = db.pragma(`table_info(${migration.table})`) as { name: string }[];
+    if (!columns.some((c) => c.name === migration.column)) db.exec(migration.ddl);
+  }
+}
+
 export function openStore(dbPath: string): Database.Database {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  applyMigrations(db);
   return db;
 }

@@ -3,6 +3,7 @@ import { mkdirSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
+import { draftDecisionRecord } from './decision-record.service.js';
 import { gitDiffNumstat, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
@@ -245,10 +246,20 @@ function gateAndMerge(
   }
 
   const report: GateReport = { sessionId: session.id, passed: true, stages };
+  const commitSubjects = git(
+    req.repoPath,
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${target}..${session.branch}`,
+  )
+    .split('\n')
+    .filter(Boolean);
   git(req.repoPath, 'merge', '--ff-only', session.branch);
   transitionSession(db, session.id, 'merged', { report });
   appendEvent(db, session.id, 'merge', { branch: session.branch, target, files: changedPaths });
   db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(session.task_id);
+  draftDecisionRecord(db, { sessionId: session.id, spec, files: changedPaths, commitSubjects });
 
   killTmux(session.id);
   git(req.repoPath, 'worktree', 'remove', '--force', worktree);
