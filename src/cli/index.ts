@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Database } from 'better-sqlite3';
 import { Command } from 'commander';
 import { stringify } from 'yaml';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
@@ -10,7 +11,12 @@ import { steerSession } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
-import { listDecisionRecords } from '../core/decision-record.repository.js';
+import {
+  deleteDecisionRecord,
+  getDecisionRecord,
+  listDecisionRecords,
+  updateDecisionRecordSummary,
+} from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { initProject, NoAdapterError } from '../core/init.service.js';
 import {
@@ -45,6 +51,68 @@ import { repoRoot, resolveProject } from './project.utils.js';
 
 const program = new Command();
 program.name('pup').description('Control plane for parallel Claude Code sessions').version('0.1.0');
+
+/**
+ * One-keystroke approval of the decision record a merge just drafted. TTY
+ * only — scripted/CI merges keep the draft untouched, same as before this
+ * existed, so nothing interactive ever blocks automation.
+ */
+function reviewDecisionRecord(db: Database, recordId: number): void {
+  const record = getDecisionRecord(db, recordId);
+  if (!record || !process.stdin.isTTY) return;
+  console.log(`\nDecision record #${record.id}:`);
+  console.log(`  ${record.summary}`);
+  if (record.alternatives) console.log(`  alternatives: ${record.alternatives}`);
+  if (record.conventions) console.log(`  conventions: ${record.conventions}`);
+  process.stdout.write('[Enter/k] keep   [e] edit summary   [d] discard > ');
+  const key = readKeystroke();
+  console.log('');
+  if (key === 'd') {
+    deleteDecisionRecord(db, record.id);
+    console.log(`Discarded decision record #${record.id}.`);
+    return;
+  }
+  if (key === 'e') {
+    const draft = join(mkdtempSync(join(tmpdir(), 'pup-record-')), 'summary.txt');
+    writeFileSync(draft, `${record.summary}\n`);
+    const editor = process.env.EDITOR ?? 'vi';
+    const edit = spawnSync(editor, [draft], { stdio: 'inherit' });
+    const edited = readFileSync(draft, 'utf8').trim();
+    if (edit.status === 0 && edited) {
+      updateDecisionRecordSummary(db, record.id, edited);
+      console.log(`Updated decision record #${record.id}.`);
+    } else {
+      console.log('Edit aborted; keeping the draft.');
+    }
+    return;
+  }
+  console.log(`Kept decision record #${record.id}.`);
+}
+
+/** Read one raw keypress from the tty; Ctrl-C aborts like it would anywhere. */
+function readKeystroke(): string {
+  process.stdin.setRawMode?.(true);
+  const buf = Buffer.alloc(8);
+  let n = 0;
+  try {
+    // Node keeps the tty non-blocking, so a bare readSync throws EAGAIN until
+    // a key arrives — poll instead of erroring out of the merge.
+    for (;;) {
+      try {
+        n = readSync(0, buf, 0, 8, null);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EAGAIN') throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      }
+    }
+  } finally {
+    process.stdin.setRawMode?.(false);
+  }
+  const key = buf.subarray(0, n).toString('utf8');
+  if (key === '\u0003') process.exit(130);
+  return key.toLowerCase();
+}
 
 function printInitReport(report: InitReport, repoPath: string): void {
   console.log(`Project ${report.projectId} (${repoPath})`);
@@ -309,6 +377,9 @@ program
           console.log(
             `This merge touched files of open debt #${c.id} (${c.description}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,
           );
+        }
+        if (outcome.decisionRecordId !== undefined) {
+          reviewDecisionRecord(db, outcome.decisionRecordId);
         }
         break;
       case 'refused':

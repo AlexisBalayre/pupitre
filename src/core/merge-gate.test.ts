@@ -152,6 +152,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(record?.session_id).toBe(SESSION_ID);
     expect(record?.summary).toContain('test goal');
     expect(JSON.parse(record?.files ?? '[]')).toEqual(['src/feature.ts']);
+    // The CLI's one-keystroke approval needs the id of the record just drafted.
+    expect(outcome.decisionRecordId).toBe(record?.id);
   });
 
   it('auto-rebases a stale branch and merges with linear history', () => {
