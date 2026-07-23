@@ -2,6 +2,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
+import { stringify } from 'yaml';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
@@ -14,13 +15,16 @@ import {
   listOverdueLedgerEntries,
 } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
-import { projectId } from '../core/paths.utils.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
+import { InvalidProfileError } from '../core/profile.errors.js';
+import { UnknownProfileError } from '../core/profile-store.errors.js';
+import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
 import type { GateReport } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import { resolveProject } from './project.utils.js';
+import { repoRoot, resolveProject } from './project.utils.js';
 
 const program = new Command();
 program.name('pup').description('Control plane for parallel Claude Code sessions').version('0.1.0');
@@ -310,7 +314,46 @@ program
 program
   .command('profile <action> [name]')
   .description('Manage profile layers (list|show|edit|stale)')
-  .action(stub('profile'));
+  .action((action: string, name?: string) => {
+    const { profilesDir } = projectPaths(repoRoot());
+    try {
+      switch (action) {
+        case 'list': {
+          console.log('NAME              EXTENDS           BUDGET');
+          for (const layer of listProfileLayers(profilesDir)) {
+            console.log(
+              `${layer.name.padEnd(18)}${(layer.extends ?? '-').padEnd(18)}${layer.contextBudget ?? '-'}`,
+            );
+          }
+          return;
+        }
+        case 'show': {
+          if (!name) {
+            console.error('Usage: pup profile show <name>');
+            process.exitCode = 1;
+            return;
+          }
+          console.log(stringify(getProfileLayer(profilesDir, name)).trimEnd());
+          return;
+        }
+        case 'edit':
+        case 'stale':
+          console.error(`pup profile ${action}: not implemented yet`);
+          process.exitCode = 1;
+          return;
+        default:
+          console.error(`Unknown profile action \`${action}\` (expected list|show|edit|stale).`);
+          process.exitCode = 1;
+      }
+    } catch (error) {
+      if (error instanceof UnknownProfileError || error instanceof InvalidProfileError) {
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+  });
 program.command('audit').description('Re-run the audit').option('--sweep').action(stub('audit'));
 
 const session = program.command('session').description('Session-internal protocol commands');
