@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { preseedTrust } from './session-runtime.service.js';
+import { launchArgs, preseedTrust } from './session-runtime.service.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -89,5 +89,34 @@ describe('preseedTrust', () => {
     const projects = readProjects(claudeJson);
     expect(projects[repo]?.hasTrustDialogAccepted).toBe(true);
     expect(Object.keys(projects)).toHaveLength(1);
+  });
+});
+
+const OPTS = {
+  sessionId: 's-1',
+  worktreePath: '/tmp/repo/.worktrees/s-1',
+  settingsPath: '/tmp/compiled/settings.json',
+};
+
+describe('launchArgs', () => {
+  it('restricts setting sources to user so repo ask-rules cannot wedge a session (decision 19)', () => {
+    const args = launchArgs(OPTS);
+
+    const flag = args.indexOf('--setting-sources');
+    expect(flag).toBeGreaterThan(-1);
+    expect(args[flag + 1]).toBe('user');
+  });
+
+  it('keeps bypass permissions and the compiled settings file', () => {
+    const args = launchArgs(OPTS);
+
+    expect(args).toContain('--dangerously-skip-permissions');
+    const flag = args.indexOf('--settings');
+    expect(args[flag + 1]).toBe(OPTS.settingsPath);
+  });
+
+  it('passes the model flag only when a model is set', () => {
+    expect(launchArgs(OPTS)).not.toContain('--model');
+    expect(launchArgs({ ...OPTS, model: 'opus' })).toContain('--model');
   });
 });
