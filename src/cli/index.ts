@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { stringify } from 'yaml';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
+import { auditProject } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
 import { listDecisionRecords } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
@@ -22,6 +23,7 @@ import { getProfileLayer, listProfileLayers } from '../core/profile-store.servic
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
+import type { InitReport } from '../core/types/init.types.js';
 import type { GateReport } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { repoRoot, resolveProject } from './project.utils.js';
@@ -34,12 +36,25 @@ const stub = (name: string) => () => {
   process.exitCode = 1;
 };
 
+function printInitReport(report: InitReport, repoPath: string): void {
+  console.log(`Project ${report.projectId} (${repoPath})`);
+  console.log(`adapters: ${report.baseline.adapters.join(', ')}`);
+  for (const s of report.baseline.stages) {
+    console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
+    if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
+  }
+  if (report.findings.length > 0) {
+    console.log('findings:');
+    for (const f of report.findings) console.log(`  - ${f}`);
+  }
+}
+
 program
   .command('init')
   .description('Onboard a repo: detect stack, baseline, conventions')
   .action(() => {
     const { repoPath, db } = resolveProject();
-    let report: ReturnType<typeof initProject>;
+    let report: InitReport;
     try {
       report = initProject(db, repoPath, [typescriptAdapter]);
     } catch (error) {
@@ -50,16 +65,7 @@ program
       }
       throw error;
     }
-    console.log(`Project ${report.projectId} (${repoPath})`);
-    console.log(`adapters: ${report.baseline.adapters.join(', ')}`);
-    for (const s of report.baseline.stages) {
-      console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
-      if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
-    }
-    if (report.findings.length > 0) {
-      console.log('findings:');
-      for (const f of report.findings) console.log(`  - ${f}`);
-    }
+    printInitReport(report, repoPath);
     console.log(
       'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
     );
@@ -354,7 +360,48 @@ program
       throw error;
     }
   });
-program.command('audit').description('Re-run the audit').option('--sweep').action(stub('audit'));
+program
+  .command('audit')
+  .description('Re-run the baseline stages and report drift against the stored baseline')
+  .option('--sweep', 'Claude-driven audit sessions (not implemented yet)')
+  .action((opts: { sweep?: boolean }) => {
+    if (opts.sweep) {
+      console.error('pup audit --sweep: not implemented yet.');
+      process.exitCode = 1;
+      return;
+    }
+    const { repoPath, db } = resolveProject();
+    let report: ReturnType<typeof auditProject>;
+    try {
+      report = auditProject(db, repoPath, [typescriptAdapter]);
+    } catch (error) {
+      if (error instanceof NoAdapterError) {
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+    if (!report.previous) {
+      console.log('No stored baseline yet — captured one now, like `pup init`.');
+      printInitReport(report, repoPath);
+      return;
+    }
+    console.log(`Project ${report.projectId} (${repoPath})`);
+    const fresh = new Map(report.baseline.stages.map((s) => [s.stage, s]));
+    for (const t of report.transitions) {
+      const move =
+        t.delta === 'unchanged'
+          ? t.after.toUpperCase()
+          : `${t.before.toUpperCase()} -> ${t.after.toUpperCase()}`;
+      const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
+      console.log(`  ${t.stage.padEnd(8)} ${move.padEnd(16)}${marker}`);
+      const detail = fresh.get(t.stage)?.detail;
+      if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
+    }
+    console.log('Baseline refreshed.');
+    if (report.hasRegression) process.exitCode = 1;
+  });
 
 const session = program.command('session').description('Session-internal protocol commands');
 session
