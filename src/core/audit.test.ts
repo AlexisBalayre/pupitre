@@ -4,12 +4,13 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
-import { auditProject } from './audit.service.js';
+import { auditProject, buildSweepTask } from './audit.service.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
+import type { TaskId } from './types/profile.types.js';
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   return {
@@ -111,5 +112,23 @@ describe('auditProject', () => {
       delta: 'regressed',
     });
     expect(report.hasRegression).toBe(true);
+  });
+});
+
+describe('buildSweepTask', () => {
+  it('builds a deletion-only task scoped to the whole repo with findings as context', () => {
+    const task = buildSweepTask('sw-1' as TaskId, ['test stage failing at baseline']);
+
+    expect(task.id).toBe('sw-1');
+    expect(task.goal).toMatch(/deletion-only/i);
+    expect(task.goal).toContain('test stage failing at baseline');
+    expect(task.scopeIn).toEqual(['**/*']);
+    expect(task.acceptance.some((a) => /only remove/i.test(a))).toBe(true);
+  });
+
+  it('omits the findings section when the audit is clean', () => {
+    const task = buildSweepTask('sw-2' as TaskId, []);
+
+    expect(task.goal).not.toMatch(/findings/i);
   });
 });
