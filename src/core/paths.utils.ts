@@ -19,6 +19,7 @@ export interface ProjectPaths {
   sessionDir(sessionId: string): string;
   compiledDir(sessionId: string): string;
   eventsFile(sessionId: string): string;
+  handoffFile(sessionId: string): string;
 }
 
 export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre')): ProjectPaths {
@@ -33,5 +34,6 @@ export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre'
     sessionDir,
     compiledDir: (sessionId) => join(sessionDir(sessionId), 'compiled'),
     eventsFile: (sessionId) => join(sessionDir(sessionId), 'events.jsonl'),
+    handoffFile: (sessionId) => join(sessionDir(sessionId), 'handoff.md'),
   };
 }

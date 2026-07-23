@@ -20,6 +20,12 @@ const CLAUDE_JSON = join(homedir(), '.claude.json');
 const READY_MARKER = /\? for shortcuts|bypass permissions on/i;
 const READY_TIMEOUT_MS = 45_000;
 const READY_POLL_MS = 1000;
+/**
+ * Delay between paste-buffer and Enter: the UI needs a beat to fold a large
+ * paste into its input box, or the Enter lands mid-processing and the prompt
+ * sits unsubmitted (observed on Claude Code 2.1.218 with multi-KB kickoffs).
+ */
+const PASTE_SETTLE_MS = 700;
 
 function tmux(...args: string[]): string {
   return execFileSync('tmux', args, { encoding: 'utf8' });
@@ -81,6 +87,7 @@ export function steerSession(sessionId: string, message: string): void {
   const target = tmuxTarget(sessionId);
   execFileSync('tmux', ['load-buffer', '-'], { input: message });
   tmux('paste-buffer', '-d', '-t', target);
+  syncSleep(PASTE_SETTLE_MS);
   tmux('send-keys', '-t', target, 'Enter');
 }
 
