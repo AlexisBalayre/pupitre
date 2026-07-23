@@ -1,11 +1,8 @@
 import { execFileSync } from 'node:child_process';
 
-export interface DiffFileStat {
-  path: string;
-  /** null for binary files (git reports `-`). */
-  added: number | null;
-  deleted: number | null;
-}
+import type { DiffFileStat } from './types/git-diff.types.js';
+
+export type { DiffFileStat };
 
 /**
  * Environment without the GIT_DIR family: when pup itself runs inside a git
