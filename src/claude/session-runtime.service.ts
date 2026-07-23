@@ -192,3 +192,43 @@ export function transcriptDir(worktreePath: string): string {
   const munged = worktreePath.replace(/[^a-zA-Z0-9]/g, '-');
   return join(homedir(), '.claude', 'projects', munged);
 }
+
+export function watcherTarget(repoProjectId: string): string {
+  return `pup-watch-${repoProjectId}`;
+}
+
+/**
+ * Run the conflict radar in a detached tmux session — tmux is pup's process
+ * supervisor everywhere else (decision 1), and it makes the radar log one
+ * `tmux attach` away. Absolute node + CLI paths, since the tmux server's PATH
+ * may not carry the dev toolchain.
+ */
+export function launchWatcher(repoProjectId: string, repoPath: string): { target: string } {
+  const target = watcherTarget(repoProjectId);
+  killIfExists(target);
+  tmux(
+    'new-session',
+    '-d',
+    '-s',
+    target,
+    '-c',
+    repoPath,
+    process.execPath,
+    process.argv[1] ?? 'pup',
+    'watch',
+  );
+  return { target };
+}
+
+export function watcherExists(repoProjectId: string): boolean {
+  try {
+    tmux('has-session', '-t', watcherTarget(repoProjectId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function killWatcher(repoProjectId: string): void {
+  killIfExists(watcherTarget(repoProjectId));
+}

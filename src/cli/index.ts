@@ -3,10 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { Database } from 'better-sqlite3';
 import { Command } from 'commander';
 import { stringify } from 'yaml';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
-import { steerSession } from '../claude/session-runtime.service.js';
+import { killWatcher, launchWatcher, steerSession } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
@@ -20,12 +21,19 @@ import {
 } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
+import { getWatcherBeat, listOverlaps } from '../core/overlap.repository.js';
+import { scanOverlaps, WATCH_INTERVAL_MS, WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
-import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
+import {
+  appendEvent,
+  getSession,
+  listSessions,
+  type SessionRow,
+} from '../core/session.repository.js';
 import { classifySessionActivity } from '../core/session-activity.utils.js';
 import {
   awaitHandoffReady,
@@ -146,7 +154,24 @@ program
         `${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${activityMarker(r.state, paths.eventsFile(r.id))}${ctx}`,
       );
     }
+    printConflictRadar(db, repoPath, rows);
   });
+
+/** The watcher's radar: same-file overlaps between live sessions (docs/08 v1.2). */
+function printConflictRadar(db: Database, repoPath: string, rows: SessionRow[]): void {
+  const live = rows.filter((r) => r.state === 'running' || r.state === 'awaiting-review');
+  const beat = getWatcherBeat(db, projectId(repoPath));
+  const stale = !beat || Date.now() - beat.getTime() > WATCH_STALE_AFTER_MS;
+  for (const pair of listOverlaps(db)) {
+    const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
+    console.log(
+      `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files[0]}${extra}${stale ? '  (stale)' : ''}`,
+    );
+  }
+  if (live.length >= 2 && stale) {
+    console.log('conflict radar off — start it with `pup watch --start`');
+  }
+}
 
 /** Decision 2: hook events, not pane contents, tell what a running session is doing. */
 function activityMarker(state: string, eventsFile: string): string {
@@ -158,6 +183,46 @@ function activityMarker(state: string, eventsFile: string): string {
   if (activity.kind === 'idle') return '  idle (turn ended, no done signal)';
   return '';
 }
+
+program
+  .command('watch')
+  .description('Conflict radar: scan live session diffs for same-file overlaps')
+  .option('--once', 'run a single scan, print it, and exit')
+  .option('--start', 'run the radar in a detached tmux session')
+  .option('--stop', 'stop the detached radar')
+  .option('--interval <seconds>', 'seconds between scans', String(WATCH_INTERVAL_MS / 1000))
+  .action((opts: { once?: boolean; start?: boolean; stop?: boolean; interval: string }) => {
+    const { repoPath, db } = resolveProject();
+    const pid = projectId(repoPath);
+    if (opts.stop) {
+      killWatcher(pid);
+      console.log('Conflict radar stopped.');
+      return;
+    }
+    if (opts.start) {
+      const { target } = launchWatcher(pid, repoPath);
+      console.log(`Conflict radar running (tmux: ${target}). Watch it: tmux attach -t ${target}`);
+      return;
+    }
+    const intervalMs = Math.max(1, Number(opts.interval)) * 1000;
+    let previous = '';
+    for (;;) {
+      const pairs = scanOverlaps(db, repoPath);
+      const snapshot = JSON.stringify(pairs);
+      if (snapshot !== previous) {
+        const stamp = new Date().toISOString();
+        if (pairs.length === 0) console.log(`${stamp}  clear — no overlaps`);
+        for (const pair of pairs) {
+          console.log(
+            `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files.join(', ')}`,
+          );
+        }
+        previous = snapshot;
+      }
+      if (opts.once) return;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, intervalMs);
+    }
+  });
 
 program
   .command('steer <session> <message>')

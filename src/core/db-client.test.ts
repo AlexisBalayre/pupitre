@@ -13,9 +13,11 @@ describe('openStore', () => {
       'decision_records',
       'events',
       'ledger_entries',
+      'overlaps',
       'projects',
       'sessions',
       'tasks',
+      'watcher_beats',
     ]);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     db.close();

@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS decision_records (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS overlaps (
+  session_a TEXT NOT NULL,
+  session_b TEXT NOT NULL,
+  files TEXT NOT NULL DEFAULT '[]',
+  detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_a, session_b)
+);
+
+CREATE TABLE IF NOT EXISTS watcher_beats (
+  project_id TEXT PRIMARY KEY,
+  beat_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
 CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger_entries(project_id, status);
