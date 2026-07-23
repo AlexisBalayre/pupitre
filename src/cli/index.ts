@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { stringify } from 'yaml';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
+import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
 import { listDecisionRecords } from '../core/decision-record.repository.js';
@@ -22,6 +23,15 @@ import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
+import {
+  awaitHandoffReady,
+  HANDOFF_WAIT_DEFAULT_MS,
+  isHandoffReady,
+  markHandoffReady,
+  RESPAWN_SUGGEST_TOKENS,
+  requestHandoff,
+  respawnSession,
+} from '../core/session-handoff.service.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
 import type { InitReport } from '../core/types/init.types.js';
 import type { GateReport } from '../core/types/merge-gate.types.js';
@@ -30,11 +40,6 @@ import { repoRoot, resolveProject } from './project.utils.js';
 
 const program = new Command();
 program.name('pup').description('Control plane for parallel Claude Code sessions').version('0.1.0');
-
-const stub = (name: string) => () => {
-  console.error(`pup ${name}: not implemented yet`);
-  process.exitCode = 1;
-};
 
 function printInitReport(report: InitReport, repoPath: string): void {
   console.log(`Project ${report.projectId} (${repoPath})`);
@@ -127,7 +132,12 @@ program
     );
     for (const r of blockedFirst) {
       const marker = r.state === 'blocked' ? `  needs a human (${r.reject_count} rejections)` : '';
-      console.log(`${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}`);
+      const tokens = r.transcript_path ? latestContextTokens(r.transcript_path) : undefined;
+      const ctx =
+        r.state === 'running' && tokens !== undefined
+          ? `  ctx ~${Math.round(tokens / 1000)}k${tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${r.id}\`` : ''}`
+          : '';
+      console.log(`${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${ctx}`);
     }
   });
 
@@ -154,6 +164,32 @@ program
     const { db } = resolveProject();
     killSession(db, session);
     console.log(`Killed session ${session}.`);
+  });
+
+program
+  .command('respawn <session>')
+  .description('Ask the session for a handoff, then relaunch it on a fresh context window')
+  .option(
+    '--wait <seconds>',
+    'how long to wait for the handoff',
+    String(HANDOFF_WAIT_DEFAULT_MS / 1000),
+  )
+  .action((session: string, opts: { wait: string }) => {
+    const { repoPath, db } = resolveProject();
+    if (!isHandoffReady(db, session)) {
+      const handoffPath = requestHandoff(db, repoPath, session);
+      console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
+      if (!awaitHandoffReady(db, session, Number(opts.wait) * 1000)) {
+        console.error(
+          `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
+            'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
+        );
+        process.exitCode = 1;
+        return;
+      }
+    }
+    respawnSession(db, repoPath, session);
+    console.log(`Respawned ${session} on a fresh context window with its handoff.`);
   });
 
 program
@@ -417,6 +453,22 @@ session
     const { db } = resolveProject();
     markSessionDone(db, sessionId, summary);
     console.log(`Session ${sessionId} marked done: ${summary}`);
+  });
+session
+  .command('handoff-done')
+  .description('Signal that the requested handoff document is written (run by the agent)')
+  .action(() => {
+    const sessionId = process.env.PUP_SESSION_ID;
+    if (!sessionId) {
+      console.error(
+        'pup session handoff-done must run inside a Pupitre session (PUP_SESSION_ID unset).',
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const { db } = resolveProject();
+    markHandoffReady(db, sessionId);
+    console.log(`Session ${sessionId} handoff recorded; Pupitre will respawn you shortly.`);
   });
 
 program.parse();

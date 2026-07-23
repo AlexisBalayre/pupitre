@@ -19,6 +19,8 @@ export type EventType =
   | 'steer'
   | 'config_drift'
   | 'session_done'
+  | 'handoff_ready'
+  | 'respawn'
   | 'utility_call';
 
 const SCHEMA = `
