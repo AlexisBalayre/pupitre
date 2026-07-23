@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
@@ -23,6 +24,7 @@ import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { appendEvent, getSession, listSessions } from '../core/session.repository.js';
+import { classifySessionActivity } from '../core/session-activity.utils.js';
 import {
   awaitHandoffReady,
   HANDOFF_WAIT_DEFAULT_MS,
@@ -130,6 +132,7 @@ program
     const blockedFirst = [...rows].sort(
       (a, b) => Number(b.state === 'blocked') - Number(a.state === 'blocked'),
     );
+    const paths = projectPaths(repoPath);
     for (const r of blockedFirst) {
       const marker = r.state === 'blocked' ? `  needs a human (${r.reject_count} rejections)` : '';
       const tokens = r.transcript_path ? latestContextTokens(r.transcript_path) : undefined;
@@ -137,9 +140,22 @@ program
         r.state === 'running' && tokens !== undefined
           ? `  ctx ~${Math.round(tokens / 1000)}k${tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${r.id}\`` : ''}`
           : '';
-      console.log(`${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${ctx}`);
+      console.log(
+        `${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${activityMarker(r.state, paths.eventsFile(r.id))}${ctx}`,
+      );
     }
   });
+
+/** Decision 2: hook events, not pane contents, tell what a running session is doing. */
+function activityMarker(state: string, eventsFile: string): string {
+  if (state !== 'running' || !existsSync(eventsFile)) return '';
+  const activity = classifySessionActivity(readFileSync(eventsFile, 'utf8'));
+  if (activity.kind === 'awaiting-input') {
+    return `  WAITING ON INPUT${activity.detail ? ` (${activity.detail})` : ''}`;
+  }
+  if (activity.kind === 'idle') return '  idle (turn ended, no done signal)';
+  return '';
+}
 
 program
   .command('steer <session> <message>')
