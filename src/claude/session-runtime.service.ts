@@ -79,6 +79,24 @@ function mainRepoRoot(worktreePath: string): string[] {
   }
 }
 
+/**
+ * Args for the `claude` process. Setting sources are restricted to `user`
+ * (decision 19): repo-committed ask-rules pierce bypass permissions and ask
+ * outranks allow ACROSS scopes (verified on 2.1.218), so the only way to keep a
+ * repo's `.claude/settings.json` from wedging a session on a prompt is to not
+ * load it. The compiled `--settings` file still applies (separate source).
+ */
+export function launchArgs(opts: LaunchOptions): string[] {
+  return [
+    ...(opts.model ? ['--model', opts.model] : []),
+    '--dangerously-skip-permissions',
+    '--settings',
+    opts.settingsPath,
+    '--setting-sources',
+    'user',
+  ];
+}
+
 export function launchSession(opts: LaunchOptions): { target: string } {
   const target = tmuxTarget(opts.sessionId);
   preseedTrust(opts.worktreePath);
@@ -102,10 +120,7 @@ export function launchSession(opts: LaunchOptions): { target: string } {
     '-e',
     `PUP_BIN=${process.argv[1] ?? 'pup'}`,
     claudeBin,
-    ...(opts.model ? ['--model', opts.model] : []),
-    '--dangerously-skip-permissions',
-    '--settings',
-    opts.settingsPath,
+    ...launchArgs(opts),
   );
   return { target };
 }
