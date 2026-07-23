@@ -5,6 +5,7 @@ import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
 import type { AuditReport, StageDelta, StageTransition } from './types/audit.types.js';
 import type { BaselineStageStatus, ProjectBaseline } from './types/init.types.js';
+import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 function classifyDelta(before: BaselineStageStatus, after: BaselineStageStatus): StageDelta {
   if (before === after) return 'unchanged';
@@ -46,5 +47,32 @@ export function auditProject(db: Database, repoPath: string, adapters: Adapter[]
     transitions,
     hasRegression: transitions.some((t) => t.delta === 'regressed'),
     findings: report.findings,
+  };
+}
+
+/**
+ * Task spec for a `pup audit --sweep` session (docs/02): deletion-only — the
+ * agent hunts dead code, unused exports, and unused dependencies, and removes
+ * them. The gate's build/test/lint stages are the safety net, so the scope is
+ * the whole repo rather than a curated glob list.
+ */
+export function buildSweepTask(id: TaskId, findings: string[]): TaskSpec {
+  const context = findings.length
+    ? `\n\nAudit findings to keep in mind (do not fix these, they are context):\n${findings
+        .map((finding) => `- ${finding}`)
+        .join('\n')}`
+    : '';
+  return {
+    id,
+    goal:
+      'Deletion-only sweep: find and remove dead code, unused exports, unused files, and ' +
+      'unused dependencies. Do not add features, rename, or refactor behaviour. Prefer tools ' +
+      `like knip, ts-prune, or depcheck to find candidates, then verify each before deleting.${context}`,
+    scopeIn: ['**/*'],
+    acceptance: [
+      'only remove code, files, and dependencies — no new functionality or renames',
+      'build, tests, and lint pass after every deletion',
+      'each deletion is independently justified in the commit message',
+    ],
   };
 }

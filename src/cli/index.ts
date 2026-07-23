@@ -7,7 +7,7 @@ import { stringify } from 'yaml';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
-import { auditProject } from '../core/audit.service.js';
+import { auditProject, buildSweepTask } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
 import { listDecisionRecords } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
@@ -415,13 +415,9 @@ program
 program
   .command('audit')
   .description('Re-run the baseline stages and report drift against the stored baseline')
-  .option('--sweep', 'Claude-driven audit sessions (not implemented yet)')
-  .action((opts: { sweep?: boolean }) => {
-    if (opts.sweep) {
-      console.error('pup audit --sweep: not implemented yet.');
-      process.exitCode = 1;
-      return;
-    }
+  .option('--sweep', 'spawn a deletion-only session from the audit findings')
+  .option('--model <model>', 'claude model for the sweep session (with --sweep)')
+  .action((opts: { sweep?: boolean; model?: string }) => {
     const { repoPath, db } = resolveProject();
     let report: ReturnType<typeof auditProject>;
     try {
@@ -433,6 +429,25 @@ program
         return;
       }
       throw error;
+    }
+    if (opts.sweep) {
+      if (report.hasRegression) {
+        console.error('Baseline regressed — fix the regression before sweeping.');
+        process.exitCode = 1;
+        return;
+      }
+      const task = buildSweepTask(`sweep-${Date.now().toString(36)}` as TaskId, report.findings);
+      const sessionId = createSession(db, {
+        repoPath,
+        base: DEFAULT_BASE_PROFILE,
+        task,
+        claudeUserDir: join(homedir(), '.claude'),
+        model: opts.model,
+        origin: 'audit',
+      });
+      console.log(`Launched sweep session ${sessionId} (tmux: pup-${sessionId}).`);
+      console.log(`Attach with: tmux attach -t pup-${sessionId}`);
+      return;
     }
     if (!report.previous) {
       console.log('No stored baseline yet — captured one now, like `pup init`.');

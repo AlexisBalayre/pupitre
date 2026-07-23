@@ -31,6 +31,8 @@ export interface NewSessionRequest {
   task: TaskSpec;
   claudeUserDir: string;
   model?: string;
+  /** Who created the task (tasks.origin); defaults to 'human'. */
+  origin?: string;
 }
 
 /** A short, filesystem- and tmux-safe id derived from the task id and a counter. */
@@ -83,6 +85,7 @@ export function createSession(db: Database, req: NewSessionRequest): string {
     projectId: pid,
     spec: JSON.stringify(req.task),
     role: req.role?.name,
+    origin: req.origin,
   });
   insertSession(db, {
     id: sessionId,
