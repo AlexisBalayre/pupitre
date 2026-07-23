@@ -35,6 +35,20 @@ export function insertDecisionRecord(db: Database, input: NewDecisionRecordInput
   return row.id;
 }
 
+export function getDecisionRecord(db: Database, id: number): DecisionRecordRow | undefined {
+  return db.prepare('SELECT * FROM decision_records WHERE id = ?').get(id) as
+    | DecisionRecordRow
+    | undefined;
+}
+
+export function updateDecisionRecordSummary(db: Database, id: number, summary: string): void {
+  db.prepare('UPDATE decision_records SET summary = ? WHERE id = ?').run(summary, id);
+}
+
+export function deleteDecisionRecord(db: Database, id: number): void {
+  db.prepare('DELETE FROM decision_records WHERE id = ?').run(id);
+}
+
 /**
  * Records newest first, optionally filtered to those touching a module — a
  * path prefix (`src/core`) or a single file (docs/02: `pup log core/net`).

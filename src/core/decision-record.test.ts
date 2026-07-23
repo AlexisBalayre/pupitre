@@ -10,7 +10,13 @@ vi.mock('../claude/utility.service.js', () => ({
 
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
-import { insertDecisionRecord, listDecisionRecords } from './decision-record.repository.js';
+import {
+  deleteDecisionRecord,
+  getDecisionRecord,
+  insertDecisionRecord,
+  listDecisionRecords,
+  updateDecisionRecordSummary,
+} from './decision-record.repository.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
@@ -46,6 +52,18 @@ describe('decision-record repository', () => {
     insertDecisionRecord(db, { sessionId: 's1', summary: 'second', files: ['src/b.ts'] });
 
     expect(listDecisionRecords(db).map((r) => r.summary)).toEqual(['second', 'first']);
+  });
+
+  it('gets, updates, and deletes a single record by id', () => {
+    const id = insertDecisionRecord(db, { sessionId: 's1', summary: 'draft', files: ['src/a.ts'] });
+
+    expect(getDecisionRecord(db, id)?.summary).toBe('draft');
+
+    updateDecisionRecordSummary(db, id, 'human-edited');
+    expect(getDecisionRecord(db, id)?.summary).toBe('human-edited');
+
+    deleteDecisionRecord(db, id);
+    expect(getDecisionRecord(db, id)).toBeUndefined();
   });
 
   it('filters by module prefix on whole path segments only', () => {

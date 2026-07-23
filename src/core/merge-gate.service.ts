@@ -259,12 +259,23 @@ function gateAndMerge(
   transitionSession(db, session.id, 'merged', { report });
   appendEvent(db, session.id, 'merge', { branch: session.branch, target, files: changedPaths });
   db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(session.task_id);
-  draftDecisionRecord(db, { sessionId: session.id, spec, files: changedPaths, commitSubjects });
+  const decisionRecordId = draftDecisionRecord(db, {
+    sessionId: session.id,
+    spec,
+    files: changedPaths,
+    commitSubjects,
+  });
 
   killTmux(session.id);
   git(req.repoPath, 'worktree', 'remove', '--force', worktree);
   git(req.repoPath, 'branch', '-d', session.branch);
-  return { status: 'merged', report, rejectCount: session.reject_count, debtCandidates };
+  return {
+    status: 'merged',
+    report,
+    rejectCount: session.reject_count,
+    debtCandidates,
+    decisionRecordId,
+  };
 }
 
 function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {

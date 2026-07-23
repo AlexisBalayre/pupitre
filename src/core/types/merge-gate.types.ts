@@ -43,4 +43,6 @@ export interface MergeOutcome {
    * for `pup debt close`, pending human confirmation (docs/04).
    */
   debtCandidates?: { id: number; description: string }[];
+  /** On merge: the drafted decision record, for one-keystroke human approval. */
+  decisionRecordId?: number;
 }
