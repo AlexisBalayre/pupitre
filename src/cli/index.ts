@@ -30,6 +30,7 @@ import { classifySessionActivity } from '../core/session-activity.utils.js';
 import {
   awaitHandoffReady,
   HANDOFF_WAIT_DEFAULT_MS,
+  hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
   RESPAWN_SUGGEST_TOKENS,
@@ -177,9 +178,21 @@ program
 
 program
   .command('kill <session>')
-  .description('Stop a session')
-  .action((session: string) => {
-    const { db } = resolveProject();
+  .description('Stop a session; --respawn relaunches it fresh instead (wedged-window escape hatch)')
+  .option('--respawn', 'kill the window but relaunch the session fresh, no handoff')
+  .action((session: string, opts: { respawn?: boolean }) => {
+    const { repoPath, db } = resolveProject();
+    if (opts.respawn) {
+      try {
+        hardRespawnSession(db, repoPath, session);
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Hard-respawned session ${session} (tmux: pup-${session}).`);
+      return;
+    }
     killSession(db, session);
     console.log(`Killed session ${session}.`);
   });

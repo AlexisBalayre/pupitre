@@ -108,10 +108,45 @@ export function respawnSession(
       `No handoff at ${handoffPath}. Run \`pup respawn ${sessionId}\` to request one first.`,
     );
   }
-  const compiledDir = paths.compiledDir(sessionId);
-  const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
   const handoff = readFileSync(handoffPath, 'utf8');
+  relaunchWindow(db, sessionId, session, paths.compiledDir(sessionId), {
+    promptSuffix: `\n\n## Handoff from your previous run\n${handoff}`,
+    eventPayload: { handoffBytes: handoff.length },
+  });
+}
 
+/**
+ * `pup kill --respawn`: the escape hatch for a wedged or crashed window that
+ * cannot answer a handoff steer. Same session, fresh window, no handoff — the
+ * kickoff tells the fresh run its predecessor was killed so it inspects the
+ * worktree instead of assuming a clean start.
+ */
+export function hardRespawnSession(
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  pathsBase?: string,
+): void {
+  const session = requireRunning(db, sessionId);
+  const paths = projectPaths(repoPath, pathsBase);
+  relaunchWindow(db, sessionId, session, paths.compiledDir(sessionId), {
+    promptSuffix:
+      '\n\n## Fresh start after a kill\n' +
+      'The previous run of this session was killed without writing a handoff (it was ' +
+      'likely wedged or crashed). The worktree may hold partial work: check `git status` ' +
+      'and `git log` before doing anything, keep what is sound, and continue the task.',
+    eventPayload: { hard: true },
+  });
+}
+
+function relaunchWindow(
+  db: Database,
+  sessionId: string,
+  session: SessionRow,
+  compiledDir: string,
+  extras: { promptSuffix: string; eventPayload: Record<string, unknown> },
+): void {
+  const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
   killTmux(sessionId);
   const { target } = launchSession({
     sessionId,
@@ -119,7 +154,6 @@ export function respawnSession(
     settingsPath: join(compiledDir, 'settings.json'),
   });
   db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(target, sessionId);
-  const prompt = `${contextMarkdown}\n\n## Handoff from your previous run\n${handoff}`;
-  const delivered = kickoff(sessionId, prompt);
-  appendEvent(db, sessionId, 'respawn', { delivered, handoffBytes: handoff.length });
+  const delivered = kickoff(sessionId, contextMarkdown + extras.promptSuffix);
+  appendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });
 }

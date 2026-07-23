@@ -26,6 +26,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import {
+  hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
   requestHandoff,
@@ -112,6 +113,37 @@ describe('session handoff', () => {
   it('refuses to respawn without a handoff file', () => {
     expect(() => respawnSessionWithTestPaths()).toThrow('No handoff at');
     expect(killSession).not.toHaveBeenCalled();
+  });
+
+  it('hard-respawns without a handoff, pointing the fresh run at the worktree state', () => {
+    const compiled = paths().compiledDir('s1');
+    mkdirSync(compiled, { recursive: true });
+    writeFileSync(join(compiled, 'context.md'), '# task context\n');
+    writeFileSync(join(compiled, 'settings.json'), '{}');
+
+    hardRespawnSession(db, repoPath, 's1', stateBase);
+
+    expect(killSession).toHaveBeenCalledWith('s1');
+    const prompt = vi.mocked(kickoff).mock.calls[0]?.[1] ?? '';
+    expect(prompt).toContain('# task context');
+    expect(prompt).toMatch(/previous run .* killed/i);
+    expect(prompt).toContain('git status');
+    expect(prompt).not.toContain('## Handoff from your previous run');
+    const event = db.prepare("SELECT payload FROM events WHERE type = 'respawn'").get() as {
+      payload: string;
+    };
+    expect(JSON.parse(event.payload)).toMatchObject({ delivered: true, hard: true });
+    const state = db.prepare("SELECT state FROM sessions WHERE id = 's1'").get() as {
+      state: string;
+    };
+    expect(state.state).toBe('running');
+  });
+
+  it('refuses a hard respawn on a session that is not running', () => {
+    transitionSession(db, 's1', 'killed');
+    expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
+      'only running sessions',
+    );
   });
 
   function respawnSessionWithTestPaths(): void {
