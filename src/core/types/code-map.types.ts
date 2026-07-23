@@ -9,3 +9,13 @@ export interface CodeMapNode {
   dependsOn: string[];
   usedBy: string[];
 }
+
+/** One node of the JSON payload embedded in the `pup map --open` HTML. */
+export interface MindMapNodeDatum {
+  id: string;
+  files: string[];
+  churn: number;
+  openDebt: number;
+  dependsOn: string[];
+  records: { id: number; summary: string; createdAt: string }[];
+}
