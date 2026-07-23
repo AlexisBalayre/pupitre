@@ -1,6 +1,6 @@
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { typescriptAdapter } from './typescript.adapter.js';
 
@@ -54,5 +54,64 @@ describe('typescriptAdapter', () => {
       'tsconfig.json': '{}',
     });
     expect(typescriptAdapter.gateCommands(repo)).toEqual([]);
+  });
+});
+
+describe('typescriptAdapter.depGraph', () => {
+  function makeSourceRepo(files: Record<string, string>): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-graph-')));
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true });
+      writeFileSync(join(dir, name), content);
+    }
+    return dir;
+  }
+
+  it('builds module nodes and edges from relative imports, ESM .js style included', () => {
+    const repo = makeSourceRepo({
+      'src/cli/index.ts': "import { run } from '../core/run.service.js';\nrun();\n",
+      'src/core/run.service.ts':
+        "import type { Cfg } from './types/run.types.js';\nexport const run = (c?: Cfg) => c;\n",
+      'src/core/types/run.types.ts': 'export interface Cfg { a: number }\n',
+    });
+
+    const graph = typescriptAdapter.depGraph?.(repo);
+
+    expect(Object.keys(graph?.modules ?? {}).sort()).toEqual([
+      'src/cli',
+      'src/core',
+      'src/core/types',
+    ]);
+    expect(graph?.edges).toEqual([
+      { from: 'src/cli', to: 'src/core' },
+      { from: 'src/core', to: 'src/core/types' },
+    ]);
+  });
+
+  it('resolves directory index imports and ignores package imports and node_modules', () => {
+    const repo = makeSourceRepo({
+      'src/app.ts':
+        "import { x } from './lib';\nimport ts from 'typescript';\nexport const a = [x, ts];\n",
+      'src/lib/index.ts': 'export const x = 1;\n',
+      'node_modules/pkg/index.ts': 'export const hidden = 1;\n',
+    });
+
+    const graph = typescriptAdapter.depGraph?.(repo);
+
+    expect(Object.keys(graph?.modules ?? {}).sort()).toEqual(['src', 'src/lib']);
+    expect(graph?.edges).toEqual([{ from: 'src', to: 'src/lib' }]);
+  });
+
+  it('groups top-level files under (root) and skips declaration files', () => {
+    const repo = makeSourceRepo({
+      'main.ts': "import './helper.js';\n",
+      'helper.ts': 'export {};\n',
+      'globals.d.ts': 'declare const g: number;\n',
+    });
+
+    const graph = typescriptAdapter.depGraph?.(repo);
+
+    expect(graph?.modules).toEqual({ '(root)': ['helper.ts', 'main.ts'] });
+    expect(graph?.edges).toEqual([]);
   });
 });

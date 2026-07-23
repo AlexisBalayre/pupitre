@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Command } from 'commander';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { steerSession } from '../claude/session-runtime.service.js';
+import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
 import { listDecisionRecords } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { initProject, NoAdapterError } from '../core/init.service.js';
@@ -77,6 +78,13 @@ program
       scopeOut: opts.scopeOut as string[] | undefined,
       acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
     };
+    // Best-effort: a broken map must never block a session launch.
+    try {
+      const map = buildCodeMap(db, projectId(repoPath), repoPath, typescriptAdapter);
+      task.knowledgeSlice = buildKnowledgeSlice(map, task.scopeIn) || undefined;
+    } catch {
+      task.knowledgeSlice = undefined;
+    }
     const sessionId = createSession(db, {
       repoPath,
       base: DEFAULT_BASE_PROFILE,
@@ -242,7 +250,20 @@ program
     }
     if (outcome.status !== 'merged') process.exitCode = 1;
   });
-program.command('map [module]').description('Code map').option('--open').action(stub('map'));
+program
+  .command('map [module]')
+  .description('Code map: text tree, or one module in detail')
+  .option('--open', 'interactive mind-map (v1.2, not implemented yet)')
+  .action((module: string | undefined, opts: { open?: boolean }) => {
+    if (opts.open) {
+      console.error('pup map --open: not implemented yet (v1.2).');
+      process.exitCode = 1;
+      return;
+    }
+    const { repoPath, db } = resolveProject();
+    const nodes = buildCodeMap(db, projectId(repoPath), repoPath, typescriptAdapter);
+    console.log(renderCodeMap(nodes, module));
+  });
 const debt = program.command('debt').description('Open ledger entries, oldest first');
 debt.action(() => {
   const { repoPath, db } = resolveProject();
