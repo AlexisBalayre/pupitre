@@ -1,4 +1,4 @@
-import type { DiffFileStat } from '../git-diff.client.js';
+import type { DiffFileStat } from './git-diff.types.js';
 import type { GateReport } from './merge-gate.types.js';
 import type { TaskSpec } from './profile.types.js';
 
