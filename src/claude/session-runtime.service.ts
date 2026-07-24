@@ -166,15 +166,6 @@ export function capturePane(sessionId: string): string {
   return tmux('capture-pane', '-p', '-t', tmuxTarget(sessionId));
 }
 
-export function sessionExists(sessionId: string): boolean {
-  try {
-    tmux('has-session', '-t', tmuxTarget(sessionId));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function killSession(sessionId: string): void {
   killIfExists(tmuxTarget(sessionId));
 }
@@ -218,15 +209,6 @@ export function launchWatcher(repoProjectId: string, repoPath: string): { target
     'watch',
   );
   return { target };
-}
-
-export function watcherExists(repoProjectId: string): boolean {
-  try {
-    tmux('has-session', '-t', watcherTarget(repoProjectId));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function killWatcher(repoProjectId: string): void {
