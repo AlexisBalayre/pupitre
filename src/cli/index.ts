@@ -51,7 +51,7 @@ import {
   respawnSession,
 } from '../core/session-handoff.service.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
-import type { InitReport } from '../core/types/init.types.js';
+import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { repoRoot, resolveProject } from './project.utils.js';
@@ -128,10 +128,26 @@ function printInitReport(report: InitReport, repoPath: string): void {
     console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
     if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
   }
+  console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   if (report.findings.length > 0) {
     console.log('findings:');
     for (const f of report.findings) console.log(`  - ${f}`);
   }
+}
+
+/** The gate flags only increases over these numbers, so the human should see the bar. */
+function describeDebtBaseline(debt: DebtBaseline | undefined): string {
+  if (!debt) return 'not measured — the debt-delta gate stages will be skipped';
+  const parts = [
+    debt.deadExports ? `${debt.deadExports.length} unused exports` : 'dead code not measured',
+    debt.duplicatedLines !== undefined
+      ? `${debt.duplicatedLines} duplicated lines`
+      : 'duplication not measured',
+    debt.coverageRatio !== undefined
+      ? `coverage ${Math.round(debt.coverageRatio * 1000) / 10}%`
+      : 'coverage not measured',
+  ];
+  return parts.join(', ');
 }
 
 program
