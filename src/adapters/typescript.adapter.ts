@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
+import { scrubbedGitEnv } from '../core/git-diff.client.js';
 import type {
   Adapter,
   CoverageReport,
@@ -225,6 +226,7 @@ export const typescriptAdapter: Adapter = {
           encoding: 'utf8',
           timeout: COVERAGE_RUN_TIMEOUT_MS,
           stdio: ['ignore', 'pipe', 'pipe'],
+          env: scrubbedGitEnv(),
         },
       );
       const raw = JSON.parse(
