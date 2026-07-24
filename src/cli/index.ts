@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { Command } from 'commander';
 import { stringify } from 'yaml';
-import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { ADAPTERS, detectAdapters } from '../adapters/adapter.registry.js';
 import { killWatcher, launchWatcher, steerSession } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask } from '../core/audit.service.js';
@@ -141,7 +141,7 @@ program
     const { repoPath, db } = resolveProject();
     let report: InitReport;
     try {
-      report = initProject(db, repoPath, [typescriptAdapter]);
+      report = initProject(db, repoPath, ADAPTERS);
     } catch (error) {
       if (error instanceof NoAdapterError) {
         console.error(error.message);
@@ -173,9 +173,11 @@ program
       scopeOut: opts.scopeOut as string[] | undefined,
       acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
     };
-    // Best-effort: a broken map must never block a session launch.
+    // Best-effort: a broken or unavailable map must never block a session launch.
     try {
-      const map = buildCodeMap(db, projectId(repoPath), repoPath, typescriptAdapter);
+      const [adapter] = detectAdapters(repoPath);
+      if (!adapter) throw new Error('no adapter detected');
+      const map = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
       task.knowledgeSlice = buildKnowledgeSlice(map, task.scopeIn) || undefined;
     } catch {
       task.knowledgeSlice = undefined;
@@ -419,15 +421,16 @@ program
       return;
     }
     const { repoPath, db } = resolveProject();
-    if (!typescriptAdapter.detect(repoPath)) {
-      console.error('No adapter detected for this repo (v1 supports TypeScript only).');
+    const [adapter] = detectAdapters(repoPath);
+    if (!adapter) {
+      console.error('No adapter detected for this repo (supported stacks: TypeScript, Python).');
       process.exitCode = 1;
       return;
     }
     const outcome = runMergeGate(db, {
       repoPath,
       sessionId: session,
-      adapter: typescriptAdapter,
+      adapter,
       acceptDebt:
         opts.acceptDebt && opts.reviewBy
           ? { reason: opts.acceptDebt, reviewBy: opts.reviewBy }
@@ -473,7 +476,13 @@ program
   .option('--open', 'render the interactive mind-map and open it in the browser')
   .action((module: string | undefined, opts: { open?: boolean }) => {
     const { repoPath, db } = resolveProject();
-    const nodes = buildCodeMap(db, projectId(repoPath), repoPath, typescriptAdapter);
+    const [adapter] = detectAdapters(repoPath);
+    if (!adapter) {
+      console.error('No adapter detected for this repo (supported stacks: TypeScript, Python).');
+      process.exitCode = 1;
+      return;
+    }
+    const nodes = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
     if (!opts.open) {
       console.log(renderCodeMap(nodes, module));
       return;
@@ -583,7 +592,7 @@ program
     const { repoPath, db } = resolveProject();
     let report: ReturnType<typeof auditProject>;
     try {
-      report = auditProject(db, repoPath, [typescriptAdapter]);
+      report = auditProject(db, repoPath, ADAPTERS);
     } catch (error) {
       if (error instanceof NoAdapterError) {
         console.error(error.message);
