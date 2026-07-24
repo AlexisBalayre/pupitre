@@ -14,7 +14,7 @@ import type {
 
 export class NoAdapterError extends Error {
   constructor(repoPath: string) {
-    super(`No adapter detected for ${repoPath} (v1 supports TypeScript only).`);
+    super(`No adapter detected for ${repoPath} (supported stacks: TypeScript, Python).`);
     this.name = 'NoAdapterError';
   }
 }
