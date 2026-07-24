@@ -60,7 +60,8 @@ export interface Adapter {
   detect(repoPath: string): boolean;
   gateCommands(repoPath: string): GateCommand[];
   depGraph?(repoPath: string): DepGraph;
-  deadCode?(repoPath: string): DeadExport[];
+  /** Undefined when the repo lacks dead-code tooling or the run failed. */
+  deadCode?(repoPath: string): DeadExport[] | undefined;
   duplication?(repoPath: string): DuplicationReport;
   complexity?(repoPath: string, files: string[]): FileComplexity[];
   /** Runs the suite with line coverage; undefined when the repo lacks the tooling. */
