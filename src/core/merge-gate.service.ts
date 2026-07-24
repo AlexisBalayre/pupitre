@@ -7,6 +7,8 @@ import { draftDecisionRecord } from './decision-record.service.js';
 import { gitDiffNumstat, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
+  COMPLEXITY_FILE_FLAG_DELTA,
+  DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_FLAG_LINES,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_OUTPUT_TAIL_CHARS,
@@ -18,11 +20,14 @@ import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.erro
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
+  getProject,
   getSession,
   incrementRejectCount,
   type SessionRow,
+  saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
+import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type {
   GateReport,
   GateStageResult,
@@ -95,11 +100,14 @@ export function formatGateReport(report: GateReport): string {
 
 /**
  * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), then the
- * v1 gate stages — build, tests, lint, scope audit, diff-size flag (decision 14).
- * Pass: ff-only merge and full cleanup (decision 16). Hard fail: re-steer with the
- * report, cap at two rejections then park as blocked (decisions 7, 15). Diff-size
- * flag without --accept-debt refuses the merge but leaves the session reviewable
- * (decision 17). The whole run holds the per-repo merge lock.
+ * hard stages — build, tests, lint, scope audit — and the soft debt stages:
+ * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
+ * decision 21). Pass: ff-only merge, full cleanup (decision 16), and the debt
+ * baseline ratchets to the merged state. Hard fail: re-steer with the report, cap
+ * at two rejections then park as blocked (decisions 7, 15). Any soft flag without
+ * --accept-debt refuses the merge but leaves the session reviewable (decision 17);
+ * with it, each flag writes a ledger entry. The whole run holds the per-repo
+ * merge lock.
  */
 export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   const session = getSession(db, req.sessionId);
@@ -214,35 +222,191 @@ function gateAndMerge(
     })
     .map((entry) => ({ id: entry.id, description: entry.description }));
 
+  const project = getProject(db, specRow.project_id);
+  const baseline = project?.baseline
+    ? (JSON.parse(project.baseline) as ProjectBaseline)
+    : undefined;
+  const measuredDebt: DebtBaseline = {};
+  const flaggedDebt: { description: string; files: string[] }[] = [];
+  const acceptHint =
+    'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
+  const flagDetail = (summary: string): string =>
+    req.acceptDebt
+      ? `${summary} — accepted as debt: ${req.acceptDebt.reason}`
+      : `${summary}. ${acceptHint}`;
+
   const changedLines = countChangedLines(req.repoPath, target, session.branch);
   if (changedLines > DIFF_SIZE_FLAG_LINES) {
-    if (!req.acceptDebt) {
+    flaggedDebt.push({
+      description: `Oversize diff (${changedLines} lines) merged from session ${session.id}`,
+      files: changedPaths,
+    });
+    stages.push({
+      stage: 'diff-size',
+      status: 'flagged',
+      detail: flagDetail(
+        `${changedLines} changed lines exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`,
+      ),
+    });
+  } else {
+    stages.push({ stage: 'diff-size', status: 'pass', detail: `${changedLines} changed lines` });
+  }
+
+  if (!req.adapter.deadCode) {
+    stages.push({
+      stage: 'dead-code',
+      status: 'skipped',
+      detail: 'not measured — adapter cannot detect dead code',
+    });
+  } else {
+    const current = req.adapter.deadCode(worktree);
+    measuredDebt.deadExports = current;
+    const known = baseline?.debt?.deadExports;
+    if (!known) {
       stages.push({
-        stage: 'diff-size',
-        status: 'flagged',
-        detail:
-          `${changedLines} changed lines exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag. ` +
-          'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to shrink the diff.',
+        stage: 'dead-code',
+        status: 'skipped',
+        detail: 'not measured — no debt baseline; run `pup init`',
       });
+    } else {
+      const knownKeys = new Set(known.map((d) => `${d.file}\u0000${d.exportName}`));
+      const fresh = current.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
+      if (fresh.length === 0) {
+        stages.push({ stage: 'dead-code', status: 'pass', detail: 'no new unused exports' });
+      } else {
+        const quoted = fresh
+          .slice(0, DEBT_DETAIL_SAMPLES)
+          .map((d) => `${d.file}#${d.exportName}`)
+          .join(', ');
+        const ellipsis = fresh.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+        flaggedDebt.push({
+          description: `New unused exports (${fresh.length}) merged from session ${session.id}`,
+          files: [...new Set(fresh.map((d) => d.file))],
+        });
+        stages.push({
+          stage: 'dead-code',
+          status: 'flagged',
+          detail: flagDetail(`${fresh.length} new unused export(s): ${quoted}${ellipsis}`),
+        });
+      }
+    }
+  }
+
+  if (!req.adapter.duplication) {
+    stages.push({
+      stage: 'duplication',
+      status: 'skipped',
+      detail: 'not measured — adapter cannot detect duplication',
+    });
+  } else {
+    const duplication = req.adapter.duplication(worktree);
+    measuredDebt.duplicatedLines = duplication.duplicatedLines;
+    const knownLines = baseline?.debt?.duplicatedLines;
+    if (knownLines === undefined) {
+      stages.push({
+        stage: 'duplication',
+        status: 'skipped',
+        detail: 'not measured — no debt baseline; run `pup init`',
+      });
+    } else if (duplication.duplicatedLines <= knownLines) {
+      stages.push({
+        stage: 'duplication',
+        status: 'pass',
+        detail: `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})`,
+      });
+    } else {
+      const changedSet = new Set(changedPaths);
+      const touchedBlocks = duplication.blocks.filter((b) =>
+        b.locations.some((l) => changedSet.has(l.file)),
+      );
+      const samples = (touchedBlocks.length > 0 ? touchedBlocks : duplication.blocks)
+        .slice(0, DEBT_DETAIL_SAMPLES)
+        .map((b) =>
+          b.locations
+            .slice(0, 2)
+            .map((l) => `${l.file}:${l.line}`)
+            .join(' ≈ '),
+        )
+        .join('; ');
+      const files = [
+        ...new Set(
+          touchedBlocks
+            .flatMap((b) => b.locations.map((l) => l.file))
+            .filter((f) => changedSet.has(f)),
+        ),
+      ];
+      flaggedDebt.push({
+        description: `Duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} in session ${session.id}`,
+        files: files.length > 0 ? files : changedPaths,
+      });
+      stages.push({
+        stage: 'duplication',
+        status: 'flagged',
+        detail: flagDetail(
+          `duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} (e.g. ${samples})`,
+        ),
+      });
+    }
+  }
+
+  if (!req.adapter.complexity) {
+    stages.push({
+      stage: 'complexity',
+      status: 'skipped',
+      detail: 'not measured — adapter cannot measure complexity',
+    });
+  } else {
+    // "Before" reads the main checkout, which the merge lock holds at the target
+    // branch — no historical checkout needed.
+    const before = new Map(
+      req.adapter.complexity(req.repoPath, changedPaths).map((f) => [f.file, f.complexity]),
+    );
+    const risen = req.adapter
+      .complexity(worktree, changedPaths)
+      .map((f) => ({ ...f, delta: f.complexity - (before.get(f.file) ?? 0) }))
+      .filter((f) => f.delta > COMPLEXITY_FILE_FLAG_DELTA);
+    if (risen.length === 0) {
+      stages.push({
+        stage: 'complexity',
+        status: 'pass',
+        detail: `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points`,
+      });
+    } else {
+      const quoted = risen
+        .slice(0, DEBT_DETAIL_SAMPLES)
+        .map((f) => `${f.file} (+${f.delta})`)
+        .join(', ');
+      const ellipsis = risen.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+      flaggedDebt.push({
+        description: `Complexity rise (+${risen.reduce((sum, f) => sum + f.delta, 0)} decision points) merged from session ${session.id}`,
+        files: risen.map((f) => f.file),
+      });
+      stages.push({
+        stage: 'complexity',
+        status: 'flagged',
+        detail: flagDetail(
+          `complexity rose sharply in ${risen.length} touched file(s): ${quoted}${ellipsis}`,
+        ),
+      });
+    }
+  }
+
+  if (flaggedDebt.length > 0) {
+    if (!req.acceptDebt) {
       const report: GateReport = { sessionId: session.id, passed: false, stages };
       appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
       return { status: 'refused', report, rejectCount: session.reject_count };
     }
-    stages.push({
-      stage: 'diff-size',
-      status: 'flagged',
-      detail: `${changedLines} changed lines accepted as debt: ${req.acceptDebt.reason}`,
-    });
-    insertLedgerEntry(db, {
-      projectId: specRow.project_id,
-      description: `Oversize diff (${changedLines} lines) merged from session ${session.id}`,
-      files: changedPaths,
-      reason: req.acceptDebt.reason,
-      acceptedBy: 'human',
-      reviewBy: req.acceptDebt.reviewBy,
-    });
-  } else {
-    stages.push({ stage: 'diff-size', status: 'pass', detail: `${changedLines} changed lines` });
+    for (const flag of flaggedDebt) {
+      insertLedgerEntry(db, {
+        projectId: specRow.project_id,
+        description: flag.description,
+        files: flag.files,
+        reason: req.acceptDebt.reason,
+        acceptedBy: 'human',
+        reviewBy: req.acceptDebt.reviewBy,
+      });
+    }
   }
 
   const report: GateReport = { sessionId: session.id, passed: true, stages };
@@ -258,6 +422,22 @@ function gateAndMerge(
   git(req.repoPath, 'merge', '--ff-only', session.branch);
   transitionSession(db, session.id, 'merged', { report });
   appendEvent(db, session.id, 'merge', { branch: session.branch, target, files: changedPaths });
+  if (
+    project &&
+    baseline &&
+    (measuredDebt.deadExports !== undefined || measuredDebt.duplicatedLines !== undefined)
+  ) {
+    // Ratchet (docs/04): the merged state becomes the new bar. Accepted-debt merges
+    // move it too — the accepted amount lives in the ledger, and re-flagging it would
+    // punish later sessions for debt they didn't add.
+    const next: ProjectBaseline = { ...baseline, debt: { ...baseline.debt, ...measuredDebt } };
+    saveProjectBaseline(
+      db,
+      specRow.project_id,
+      JSON.parse(project.adapters) as string[],
+      JSON.stringify(next),
+    );
+  }
   db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(session.task_id);
   const decisionRecordId = draftDecisionRecord(db, {
     sessionId: session.id,

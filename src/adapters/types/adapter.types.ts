@@ -14,16 +14,42 @@ export interface DepGraph {
   edges: { from: string; to: string }[];
 }
 
+/** An exported symbol no other repo file imports. */
+export interface DeadExport {
+  file: string;
+  exportName: string;
+}
+
+/** One duplicated block: every occurrence of the same normalized line window. */
+export interface DuplicateBlock {
+  locations: { file: string; line: number }[];
+}
+
+export interface DuplicationReport {
+  /** Normalized source lines that appear in at least one duplicated block. */
+  duplicatedLines: number;
+  blocks: DuplicateBlock[];
+}
+
+export interface FileComplexity {
+  file: string;
+  /** Decision points (branches, loops, logical operators) across the file. */
+  complexity: number;
+}
+
 /**
- * A toolchain plugin (docs/06-adapters.md), slimmed to the v1 gate surface.
- * Commands resolve from the repo's own config first (package.json scripts);
- * adapter defaults are the fallback. A missing stage is skipped and reported
- * as "not measured", never silently passed. A missing depGraph degrades the
- * code map, never the gate.
+ * A toolchain plugin (docs/06-adapters.md): the v1 gate surface plus the v1.1
+ * debt-delta capabilities. Commands resolve from the repo's own config first
+ * (package.json scripts); adapter defaults are the fallback. A missing stage
+ * or debt capability is skipped and reported as "not measured", never
+ * silently passed. A missing depGraph degrades the code map, never the gate.
  */
 export interface Adapter {
   id: string;
   detect(repoPath: string): boolean;
   gateCommands(repoPath: string): GateCommand[];
   depGraph?(repoPath: string): DepGraph;
+  deadCode?(repoPath: string): DeadExport[];
+  duplication?(repoPath: string): DuplicationReport;
+  complexity?(repoPath: string, files: string[]): FileComplexity[];
 }

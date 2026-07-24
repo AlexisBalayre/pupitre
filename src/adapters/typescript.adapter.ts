@@ -1,17 +1,31 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
-import type { Adapter, DepGraph, GateCommand, GateStage } from './types/adapter.types.js';
+import type {
+  Adapter,
+  DeadExport,
+  DepGraph,
+  DuplicationReport,
+  FileComplexity,
+  GateCommand,
+  GateStage,
+} from './types/adapter.types.js';
+import { findDeadExports, findDuplication, measureComplexity } from './typescript-debt.utils.js';
+import { isSourceFile, resolveImport } from './typescript-source.utils.js';
 
 interface PackageManifest {
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  main?: string;
+  module?: string;
+  types?: string;
+  bin?: string | Record<string, string>;
+  exports?: unknown;
 }
 
 const GATE_STAGES: GateStage[] = ['build', 'test', 'lint'];
 
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
 const SKIPPED_DIRS = new Set([
   'node_modules',
   'dist',
@@ -21,10 +35,6 @@ const SKIPPED_DIRS = new Set([
   '.worktrees',
   '.claude',
 ]);
-
-function isSourceFile(name: string): boolean {
-  return SOURCE_EXTENSIONS.some((ext) => name.endsWith(ext)) && !name.endsWith('.d.ts');
-}
 
 function walkSourceFiles(repoPath: string, dir = repoPath, found: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -39,24 +49,47 @@ function walkSourceFiles(repoPath: string, dir = repoPath, found: string[] = [])
   return found;
 }
 
+/** Repo-relative `/`-separated path -> content, sorted for deterministic metrics. */
+function readSources(repoPath: string): Record<string, string> {
+  const sources: Record<string, string> = {};
+  for (const file of walkSourceFiles(repoPath).sort()) {
+    sources[file.split(sep).join('/')] = readFileSync(join(repoPath, file), 'utf8');
+  }
+  return sources;
+}
+
+function collectExportPaths(value: unknown, found: string[]): void {
+  if (typeof value === 'string') {
+    found.push(value);
+  } else if (value && typeof value === 'object') {
+    for (const nested of Object.values(value)) collectExportPaths(nested, found);
+  }
+}
+
 /**
- * Resolve a relative import specifier to a repo file. Tries the literal path,
- * `.js`->`.ts` (ESM-style extensioned imports of TS sources), appended
- * extensions, and directory index files.
+ * Files package.json declares as entry points (main/module/types/bin/exports)
+ * — their exports are consumed from outside the repo, so dead-export analysis
+ * must not count them. Built `.js` targets map back to their `.ts` source.
  */
-function resolveImport(
-  fromFile: string,
-  specifier: string,
-  files: Set<string>,
-): string | undefined {
-  const base = normalize(join(dirname(fromFile), specifier));
-  if (base.startsWith('..')) return undefined;
-  const candidates = [base];
-  if (/\.js$/.test(base)) candidates.push(base.replace(/\.js$/, '.ts'));
-  if (/\.jsx$/.test(base)) candidates.push(base.replace(/\.jsx$/, '.tsx'));
-  for (const ext of SOURCE_EXTENSIONS) candidates.push(`${base}${ext}`);
-  for (const ext of SOURCE_EXTENSIONS) candidates.push(join(base, `index${ext}`));
-  return candidates.find((c) => files.has(c));
+function manifestEntryFiles(repoPath: string, fileSet: Set<string>): Set<string> {
+  const manifest = readManifest(repoPath);
+  const declared: string[] = [];
+  if (manifest) {
+    for (const field of [manifest.main, manifest.module, manifest.types]) {
+      if (field) declared.push(field);
+    }
+    if (typeof manifest.bin === 'string') declared.push(manifest.bin);
+    else if (manifest.bin) declared.push(...Object.values(manifest.bin));
+    collectExportPaths(manifest.exports, declared);
+  }
+  const entries = new Set<string>();
+  for (const raw of declared) {
+    const path = normalize(raw).split(sep).join('/');
+    for (const candidate of [path, path.replace(/\.js$/, '.ts')]) {
+      if (fileSet.has(candidate)) entries.add(candidate);
+    }
+  }
+  return entries;
 }
 
 function moduleId(file: string): string {
@@ -144,5 +177,23 @@ export const typescriptAdapter: Adapter = {
         return { from: from as string, to: to as string };
       }),
     };
+  },
+
+  deadCode(repoPath: string): DeadExport[] {
+    const sources = readSources(repoPath);
+    return findDeadExports(sources, manifestEntryFiles(repoPath, new Set(Object.keys(sources))));
+  },
+
+  duplication(repoPath: string): DuplicationReport {
+    return findDuplication(readSources(repoPath));
+  },
+
+  complexity(repoPath: string, files: string[]): FileComplexity[] {
+    return files
+      .filter((file) => isSourceFile(file) && existsSync(join(repoPath, file)))
+      .map((file) => ({
+        file,
+        complexity: measureComplexity(file, readFileSync(join(repoPath, file), 'utf8')),
+      }));
   },
 };
