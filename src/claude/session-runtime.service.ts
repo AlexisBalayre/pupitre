@@ -172,7 +172,10 @@ export function killSession(sessionId: string): void {
 
 function killIfExists(target: string): void {
   try {
-    tmux('kill-session', '-t', target);
+    // Expected to fail when the target (or the tmux server itself) does not
+    // exist; pipe stderr so the probe stays silent instead of leaking
+    // "error connecting to /tmp/tmux-*" to the operator's terminal.
+    execFileSync('tmux', ['kill-session', '-t', target], { stdio: ['ignore', 'ignore', 'pipe'] });
   } catch {
     // not running — nothing to kill
   }

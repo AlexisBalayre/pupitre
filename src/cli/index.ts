@@ -657,6 +657,7 @@ program
       const detail = fresh.get(t.stage)?.detail;
       if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
     }
+    console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
     console.log('Baseline refreshed.');
     if (report.hasRegression) process.exitCode = 1;
   });
