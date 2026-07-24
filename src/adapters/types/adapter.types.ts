@@ -37,6 +37,17 @@ export interface FileComplexity {
   complexity: number;
 }
 
+/** 1-based lines holding executable statements; covered is a subset of instrumented. */
+export interface FileLineCoverage {
+  covered: number[];
+  instrumented: number[];
+}
+
+/** Keyed by repo-relative `/`-separated path. */
+export interface CoverageReport {
+  files: Record<string, FileLineCoverage>;
+}
+
 /**
  * A toolchain plugin (docs/06-adapters.md): the v1 gate surface plus the v1.1
  * debt-delta capabilities. Commands resolve from the repo's own config first
@@ -52,4 +63,6 @@ export interface Adapter {
   deadCode?(repoPath: string): DeadExport[];
   duplication?(repoPath: string): DuplicationReport;
   complexity?(repoPath: string, files: string[]): FileComplexity[];
+  /** Runs the suite with line coverage; undefined when the repo lacks the tooling. */
+  coverage?(repoPath: string): CoverageReport | undefined;
 }

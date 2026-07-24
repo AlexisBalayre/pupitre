@@ -1,8 +1,11 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import type {
   Adapter,
+  CoverageReport,
   DeadExport,
   DepGraph,
   DuplicationReport,
@@ -10,6 +13,9 @@ import type {
   GateCommand,
   GateStage,
 } from './types/adapter.types.js';
+import type { IstanbulCoverageMap } from './types/istanbul.types.js';
+import { istanbulToCoverageReport } from './typescript-coverage.utils.js';
+import { COVERAGE_RUN_TIMEOUT_MS } from './typescript-debt.constants.js';
 import { findDeadExports, findDuplication, measureComplexity } from './typescript-debt.utils.js';
 import { isSourceFile, resolveImport } from './typescript-source.utils.js';
 
@@ -195,5 +201,42 @@ export const typescriptAdapter: Adapter = {
         file,
         complexity: measureComplexity(file, readFileSync(join(repoPath, file), 'utf8')),
       }));
+  },
+
+  coverage(repoPath: string): CoverageReport | undefined {
+    const manifest = readManifest(repoPath);
+    const deps = { ...manifest?.dependencies, ...manifest?.devDependencies };
+    const hasProvider = deps['@vitest/coverage-v8'] ?? deps['@vitest/coverage-istanbul'];
+    if (!deps.vitest || !hasProvider) return undefined;
+    const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
+    try {
+      execFileSync(
+        'npx',
+        [
+          '--no-install',
+          'vitest',
+          'run',
+          '--coverage.enabled',
+          '--coverage.reporter=json',
+          `--coverage.reportsDirectory=${outDir}`,
+        ],
+        {
+          cwd: repoPath,
+          encoding: 'utf8',
+          timeout: COVERAGE_RUN_TIMEOUT_MS,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      const raw = JSON.parse(
+        readFileSync(join(outDir, 'coverage-final.json'), 'utf8'),
+      ) as IstanbulCoverageMap;
+      return istanbulToCoverageReport(raw, repoPath);
+    } catch {
+      // A failed instrumented run (crash, timeout, threshold config) degrades to
+      // "not measured" — the plain test stage has already gated correctness.
+      return undefined;
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
   },
 };

@@ -383,7 +383,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = merge();
 
     expect(outcome.status).toBe('merged');
-    for (const stage of ['dead-code', 'duplication', 'complexity']) {
+    for (const stage of ['dead-code', 'duplication', 'complexity', 'coverage']) {
       expect(outcome.report.stages).toContainEqual(
         expect.objectContaining({
           stage,
@@ -557,5 +557,85 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }],
       duplicatedLines: 5,
     });
+  });
+
+  it('skips the coverage stage when the instrumented run is unavailable', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const adapter = debtAdapter({ coverage: () => undefined });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'coverage',
+        status: 'skipped',
+        detail: expect.stringContaining('unavailable'),
+      }),
+    );
+  });
+
+  it('refuses a patch whose coverage falls below the baseline ratio', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverage: () => ({ files: { 'src/feature.ts': { covered: [], instrumented: [1] } } }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'coverage',
+        status: 'flagged',
+        detail: expect.stringContaining('patch coverage 0% below repo baseline 80%'),
+      }),
+    );
+  });
+
+  it('passes a fully covered patch and ratchets the stored coverage ratio', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverage: () => ({
+        files: {
+          'src/feature.ts': { covered: [1], instrumented: [1] },
+          'src/app.ts': { covered: [1], instrumented: [1, 2] },
+        },
+      }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'coverage', status: 'pass' }),
+    );
+    const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.coverageRatio).toBeCloseTo(2 / 3);
+  });
+
+  it('passes the coverage stage when the diff has no instrumentable lines', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/notes.txt', 'prose only\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'coverage',
+        status: 'pass',
+        detail: 'no instrumentable changed lines',
+      }),
+    );
   });
 });

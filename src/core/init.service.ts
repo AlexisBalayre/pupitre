@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { repoCoverageRatio } from './coverage.utils.js';
 import { scrubbedGitEnv } from './git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
@@ -91,12 +92,15 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
       0,
     );
   }
+  const coverageReport = detected.find((a) => a.coverage)?.coverage?.(repoPath);
+  const coverageRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
+  if (coverageRatio !== undefined) debt.coverageRatio = coverageRatio;
 
   const baseline: ProjectBaseline = {
     capturedAt: new Date().toISOString(),
     adapters: detected.map((a) => a.id),
     stages,
-    ...(debt.deadExports !== undefined || debt.duplicatedLines !== undefined ? { debt } : {}),
+    ...(Object.keys(debt).length > 0 ? { debt } : {}),
   };
   saveProjectBaseline(db, pid, baseline.adapters, JSON.stringify(baseline));
   return { projectId: pid, baseline, findings };

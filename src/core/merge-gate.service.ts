@@ -3,11 +3,18 @@ import { mkdirSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
+import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
-import { gitDiffNumstat, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
+import {
+  gitDiffAddedLines,
+  gitDiffNumstat,
+  gitDiffPaths,
+  scrubbedGitEnv,
+} from './git-diff.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
   COMPLEXITY_FILE_FLAG_DELTA,
+  COVERAGE_RATIO_EPSILON,
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_FLAG_LINES,
   GATE_COMMAND_TIMEOUT_MS,
@@ -391,6 +398,68 @@ function gateAndMerge(
     }
   }
 
+  if (!req.adapter.coverage) {
+    stages.push({
+      stage: 'coverage',
+      status: 'skipped',
+      detail: 'not measured — adapter cannot measure coverage',
+    });
+  } else {
+    const coverageReport = req.adapter.coverage(worktree);
+    const repoRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
+    if (repoRatio !== undefined) measuredDebt.coverageRatio = repoRatio;
+    const baselineRatio = baseline?.debt?.coverageRatio;
+    if (!coverageReport || repoRatio === undefined) {
+      stages.push({
+        stage: 'coverage',
+        status: 'skipped',
+        detail: 'not measured — coverage tooling unavailable or the instrumented run failed',
+      });
+    } else if (baselineRatio === undefined) {
+      stages.push({
+        stage: 'coverage',
+        status: 'skipped',
+        detail: 'not measured — no coverage baseline; run `pup init`',
+      });
+    } else {
+      const patch = patchCoverage(
+        coverageReport,
+        gitDiffAddedLines(req.repoPath, target, session.branch),
+      );
+      const pct = (ratio: number): string => `${Math.round(ratio * 1000) / 10}%`;
+      if (patch.instrumented === 0) {
+        stages.push({
+          stage: 'coverage',
+          status: 'pass',
+          detail: 'no instrumentable changed lines',
+        });
+      } else if (patch.covered / patch.instrumented + COVERAGE_RATIO_EPSILON >= baselineRatio) {
+        stages.push({
+          stage: 'coverage',
+          status: 'pass',
+          detail: `patch coverage ${pct(patch.covered / patch.instrumented)} (baseline ${pct(baselineRatio)})`,
+        });
+      } else {
+        const quoted = patch.uncovered
+          .slice(0, DEBT_DETAIL_SAMPLES)
+          .map((u) => `${u.file}:${u.line}`)
+          .join(', ');
+        const ellipsis = patch.uncovered.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+        flaggedDebt.push({
+          description: `Patch coverage ${pct(patch.covered / patch.instrumented)} below baseline ${pct(baselineRatio)} merged from session ${session.id}`,
+          files: [...new Set(patch.uncovered.map((u) => u.file))],
+        });
+        stages.push({
+          stage: 'coverage',
+          status: 'flagged',
+          detail: flagDetail(
+            `patch coverage ${pct(patch.covered / patch.instrumented)} below repo baseline ${pct(baselineRatio)} (uncovered: ${quoted}${ellipsis})`,
+          ),
+        });
+      }
+    }
+  }
+
   if (flaggedDebt.length > 0) {
     if (!req.acceptDebt) {
       const report: GateReport = { sessionId: session.id, passed: false, stages };
@@ -425,7 +494,9 @@ function gateAndMerge(
   if (
     project &&
     baseline &&
-    (measuredDebt.deadExports !== undefined || measuredDebt.duplicatedLines !== undefined)
+    (measuredDebt.deadExports !== undefined ||
+      measuredDebt.duplicatedLines !== undefined ||
+      measuredDebt.coverageRatio !== undefined)
   ) {
     // Ratchet (docs/04): the merged state becomes the new bar. Accepted-debt merges
     // move it too — the accepted amount lives in the ledger, and re-flagging it would

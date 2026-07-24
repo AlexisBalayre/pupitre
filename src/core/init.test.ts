@@ -95,6 +95,17 @@ describe('initProject', () => {
     });
   });
 
+  it('captures the repo coverage ratio when the adapter can measure it', () => {
+    const adapter = makeAdapter({
+      coverage: () => ({ files: { 'src/a.ts': { covered: [1], instrumented: [1, 2] } } }),
+    });
+
+    initProject(db, repo, [adapter]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.coverageRatio).toBe(0.5);
+  });
+
   it('leaves debt metrics out of the baseline when no adapter can measure them', () => {
     initProject(db, repo, [makeAdapter()]);
 
