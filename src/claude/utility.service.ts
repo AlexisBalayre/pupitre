@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 // prompt in, text out, no tools, no session state. Uses the operator's normal
 // interactive login (decision 12) — never tokens or keys.
 
-export const UTILITY_TIMEOUT_MS = 120_000;
+const UTILITY_TIMEOUT_MS = 120_000;
 
 export interface UtilityResult {
   ok: boolean;

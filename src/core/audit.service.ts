@@ -14,10 +14,7 @@ function classifyDelta(before: BaselineStageStatus, after: BaselineStageStatus):
   return 'changed';
 }
 
-export function compareBaselines(
-  previous: ProjectBaseline,
-  fresh: ProjectBaseline,
-): StageTransition[] {
+function compareBaselines(previous: ProjectBaseline, fresh: ProjectBaseline): StageTransition[] {
   return fresh.stages.map((stage) => {
     // A stage absent from the old baseline was never measured — same as skipped.
     const before = previous.stages.find((s) => s.stage === stage.stage)?.status ?? 'skipped';

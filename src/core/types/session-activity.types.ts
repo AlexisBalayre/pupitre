@@ -1,4 +1,4 @@
-export type SessionActivityKind = 'working' | 'awaiting-input' | 'idle' | 'unknown';
+type SessionActivityKind = 'working' | 'awaiting-input' | 'idle' | 'unknown';
 
 export interface SessionActivity {
   kind: SessionActivityKind;

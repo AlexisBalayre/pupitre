@@ -1,7 +1,5 @@
 import type { SessionActivity } from './types/session-activity.types.js';
 
-export type { SessionActivity, SessionActivityKind } from './types/session-activity.types.js';
-
 /**
  * Classify what a running session is doing from its hook event log (decision 2:
  * PostToolUse = activity, Notification = blocked on input, Stop = turn end).

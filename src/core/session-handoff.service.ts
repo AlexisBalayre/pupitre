@@ -10,7 +10,7 @@ import {
 import { projectPaths } from './paths.utils.js';
 import { appendEvent, getSession, type SessionRow } from './session.repository.js';
 
-export const HANDOFF_POLL_MS = 5_000;
+const HANDOFF_POLL_MS = 5_000;
 export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
 /**
