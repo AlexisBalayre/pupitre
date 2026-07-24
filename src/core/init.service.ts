@@ -5,7 +5,12 @@ import { scrubbedGitEnv } from './git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, saveProjectBaseline } from './session.repository.js';
-import type { BaselineStageResult, InitReport, ProjectBaseline } from './types/init.types.js';
+import type {
+  BaselineStageResult,
+  DebtBaseline,
+  InitReport,
+  ProjectBaseline,
+} from './types/init.types.js';
 
 export class NoAdapterError extends Error {
   constructor(repoPath: string) {
@@ -76,10 +81,22 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
     }
   }
 
+  const debt: DebtBaseline = {};
+  if (detected.some((a) => a.deadCode)) {
+    debt.deadExports = detected.flatMap((a) => a.deadCode?.(repoPath) ?? []);
+  }
+  if (detected.some((a) => a.duplication)) {
+    debt.duplicatedLines = detected.reduce(
+      (sum, a) => sum + (a.duplication?.(repoPath).duplicatedLines ?? 0),
+      0,
+    );
+  }
+
   const baseline: ProjectBaseline = {
     capturedAt: new Date().toISOString(),
     adapters: detected.map((a) => a.id),
     stages,
+    ...(debt.deadExports !== undefined || debt.duplicatedLines !== undefined ? { debt } : {}),
   };
   saveProjectBaseline(db, pid, baseline.adapters, JSON.stringify(baseline));
   return { projectId: pid, baseline, findings };

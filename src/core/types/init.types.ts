@@ -1,3 +1,5 @@
+import type { DeadExport } from '../../adapters/types/adapter.types.js';
+
 export type BaselineStageStatus = 'pass' | 'fail' | 'skipped';
 
 export interface BaselineStageResult {
@@ -7,11 +9,22 @@ export interface BaselineStageResult {
   durationMs: number;
 }
 
+/**
+ * Repo-wide debt metrics the gate flags increases against. Ratcheted to the
+ * measured value on every merge (docs/04); a field is absent when no adapter
+ * can measure it, and the matching gate stage skips as "not measured".
+ */
+export interface DebtBaseline {
+  deadExports?: DeadExport[];
+  duplicatedLines?: number;
+}
+
 /** Stored on projects.baseline as JSON; day one blocks nothing (docs/04). */
 export interface ProjectBaseline {
   capturedAt: string;
   adapters: string[];
   stages: BaselineStageResult[];
+  debt?: DebtBaseline;
 }
 
 export interface InitReport {

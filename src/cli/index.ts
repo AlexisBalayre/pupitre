@@ -446,11 +446,16 @@ program
           reviewDecisionRecord(db, outcome.decisionRecordId);
         }
         break;
-      case 'refused':
+      case 'refused': {
+        const flagged = outcome.report.stages
+          .filter((s) => s.status === 'flagged')
+          .map((s) => s.stage)
+          .join(', ');
         console.log(
-          'Merge refused: diff-size flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to shrink the diff.',
+          `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address the flags.`,
         );
         break;
+      }
       case 'rejected':
         console.log(
           `Gate failed; report re-injected into the session (rejection ${outcome.rejectCount}/2).`,

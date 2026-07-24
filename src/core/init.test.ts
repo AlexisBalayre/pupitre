@@ -80,6 +80,28 @@ describe('initProject', () => {
     expect(stored.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
   });
 
+  it('captures debt metrics in the baseline when the adapter can measure them', () => {
+    const adapter = makeAdapter({
+      deadCode: () => [{ file: 'src/a.ts', exportName: 'orphan' }],
+      duplication: () => ({ duplicatedLines: 12, blocks: [] }),
+    });
+
+    initProject(db, repo, [adapter]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt).toEqual({
+      deadExports: [{ file: 'src/a.ts', exportName: 'orphan' }],
+      duplicatedLines: 12,
+    });
+  });
+
+  it('leaves debt metrics out of the baseline when no adapter can measure them', () => {
+    initProject(db, repo, [makeAdapter()]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt).toBeUndefined();
+  });
+
   it('throws when no adapter detects the repo', () => {
     const adapter = makeAdapter({ detect: () => false });
     expect(() => initProject(db, repo, [adapter])).toThrow(NoAdapterError);

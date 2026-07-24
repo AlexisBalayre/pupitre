@@ -12,6 +12,12 @@ export const LOCKFILE_NAMES = [
   'Cargo.lock',
 ];
 
+/** Per-file rise in decision points above which the complexity stage flags (docs/04 stage 4). */
+export const COMPLEXITY_FILE_FLAG_DELTA = 15;
+
+/** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
+export const DEBT_DETAIL_SAMPLES = 3;
+
 /** Paths no session may touch regardless of scope (decision 6: gate is the backstop). */
 export const PROTECTED_PATH_GLOBS = ['.claude/**'];
 

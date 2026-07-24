@@ -24,12 +24,15 @@ import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.erro
 import { runMergeGate } from './merge-gate.service.js';
 import {
   ensureProject,
+  getProject,
   getSession,
   incrementRejectCount,
   insertSession,
   insertTask,
+  saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
+import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 // Test repos must not inherit the developer's global git config (hooks, signing)
@@ -104,6 +107,16 @@ const failingBuildAdapter: Adapter = {
   detect: () => true,
   gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
 };
+
+function debtAdapter(overrides: Partial<Adapter> = {}): Adapter {
+  return {
+    ...passingAdapter,
+    deadCode: () => [],
+    duplication: () => ({ duplicatedLines: 0, blocks: [] }),
+    complexity: () => [],
+    ...overrides,
+  };
+}
 
 // Real git repos + worktrees per test — generous timeout so machine load can't flake it.
 describe('runMergeGate', { timeout: 20_000 }, () => {
@@ -281,7 +294,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = merge();
 
     expect(outcome.status).toBe('refused');
-    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'diff-size', status: 'flagged' });
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'diff-size', status: 'flagged' }),
+    );
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     expect(getSession(db, SESSION_ID)?.reject_count).toBe(0);
     expect(steerSession).not.toHaveBeenCalled();
@@ -306,7 +321,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = merge();
 
     expect(outcome.status).toBe('refused');
-    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'diff-size', status: 'flagged' });
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'diff-size', status: 'flagged' }),
+    );
   });
 
   it('parks the session as blocked once the reject cap is reached', () => {
@@ -349,5 +366,196 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     transitionSession(db, SESSION_ID, 'running');
 
     expect(() => merge()).toThrow(SessionNotReviewableError);
+  });
+
+  const seedDebtBaseline = (debt: DebtBaseline) =>
+    saveProjectBaseline(
+      db,
+      'proj-1',
+      ['fake'],
+      JSON.stringify({ capturedAt: 'now', adapters: ['fake'], stages: [], debt }),
+    );
+
+  it('skips the debt-delta stages as not measured when the adapter lacks them', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+    const outcome = merge();
+
+    expect(outcome.status).toBe('merged');
+    for (const stage of ['dead-code', 'duplication', 'complexity']) {
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage,
+          status: 'skipped',
+          detail: expect.stringContaining('not measured'),
+        }),
+      );
+    }
+  });
+
+  it('skips dead-code and duplication without a stored debt baseline', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+    const outcome = merge(debtAdapter());
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'dead-code',
+        status: 'skipped',
+        detail: expect.stringContaining('pup init'),
+      }),
+    );
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'duplication',
+        status: 'skipped',
+        detail: expect.stringContaining('pup init'),
+      }),
+    );
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'complexity', status: 'pass' }),
+    );
+  });
+
+  it('refuses a branch that introduces a new unused export', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    const adapter = debtAdapter({
+      deadCode: () => [{ file: 'src/feature.ts', exportName: 'feature' }],
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'dead-code',
+        status: 'flagged',
+        detail: expect.stringContaining('src/feature.ts#feature'),
+      }),
+    );
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  it('does not flag dead exports already recorded in the baseline', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({
+      deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }],
+      duplicatedLines: 0,
+    });
+    const adapter = debtAdapter({
+      deadCode: () => [{ file: 'src/legacy.ts', exportName: 'old' }],
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'dead-code', status: 'pass' }),
+    );
+  });
+
+  it('flags a duplication rise with sample locations from the branch diff', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 4 });
+    const adapter = debtAdapter({
+      duplication: () => ({
+        duplicatedLines: 16,
+        blocks: [
+          {
+            locations: [
+              { file: 'src/feature.ts', line: 3 },
+              { file: 'src/app.ts', line: 9 },
+            ],
+          },
+        ],
+      }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'duplication',
+        status: 'flagged',
+        detail: expect.stringContaining('rose from 4 to 16'),
+      }),
+    );
+  });
+
+  it('flags a touched file whose complexity rises past the threshold', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const adapter = debtAdapter({
+      complexity: (repoPath: string) => [
+        { file: 'src/feature.ts', complexity: repoPath === repo ? 2 : 40 },
+      ],
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'complexity',
+        status: 'flagged',
+        detail: expect.stringContaining('src/feature.ts (+38)'),
+      }),
+    );
+  });
+
+  it('merges flagged debt with --accept-debt, writing one ledger entry per flag', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    const adapter = debtAdapter({
+      deadCode: () => [{ file: 'src/feature.ts', exportName: 'feature' }],
+      duplication: () => ({
+        duplicatedLines: 8,
+        blocks: [{ locations: [{ file: 'src/feature.ts', line: 1 }] }],
+      }),
+    });
+
+    const outcome = merge(adapter, { reason: 'deadline', reviewBy: 'before v2' });
+
+    expect(outcome.status).toBe('merged');
+    const entries = listLedgerEntries(db, 'proj-1');
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.description).sort()).toEqual([
+      `Duplicated lines rose from 0 to 8 in session ${SESSION_ID}`,
+      `New unused exports (1) merged from session ${SESSION_ID}`,
+    ]);
+  });
+
+  it('ratchets the stored debt baseline to the merged state', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({
+      deadExports: [
+        { file: 'src/legacy.ts', exportName: 'old' },
+        { file: 'src/legacy.ts', exportName: 'older' },
+      ],
+      duplicatedLines: 9,
+    });
+    const adapter = debtAdapter({
+      deadCode: () => [{ file: 'src/legacy.ts', exportName: 'old' }],
+      duplication: () => ({ duplicatedLines: 5, blocks: [] }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt).toEqual({
+      deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }],
+      duplicatedLines: 5,
+    });
   });
 });
