@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import { scrubbedGitEnv } from '../core/git-diff.client.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,
   CUSTOM_COMMAND_TIMEOUT_MS,
@@ -46,6 +47,7 @@ function runJson<TOutput>(
       timeout: CUSTOM_COMMAND_TIMEOUT_MS,
       input: stdin,
       stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      env: scrubbedGitEnv(),
     });
   } catch (error) {
     const failure = error as { stderr?: string; message?: string };

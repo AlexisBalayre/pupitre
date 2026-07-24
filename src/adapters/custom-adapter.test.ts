@@ -73,4 +73,16 @@ describe('loadCustomAdapter', () => {
 
     expect(loadCustomAdapter(repo)?.coverage?.(repo)).toBeUndefined();
   });
+
+  it('scrubs the GIT_DIR family from capability command environments', () => {
+    // When pup runs inside a git hook, an inherited GIT_DIR would misdirect any
+    // git usage in the command at the hook's repo (same rationale as the gate).
+    const repo = makeRepo('deadCode: echo "[\\"${GIT_DIR:-scrubbed}\\"]"\n');
+    process.env.GIT_DIR = '/somewhere/.git';
+    try {
+      expect(loadCustomAdapter(repo)?.deadCode?.(repo)).toEqual(['scrubbed']);
+    } finally {
+      delete process.env.GIT_DIR;
+    }
+  });
 });
