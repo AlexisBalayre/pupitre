@@ -21,7 +21,7 @@ export function canTransition(from: SessionState, to: SessionState): boolean {
   return TRANSITIONS[from].includes(to);
 }
 
-export const TERMINAL_STATES: readonly SessionState[] = ['merged', 'killed'];
+const TERMINAL_STATES: readonly SessionState[] = ['merged', 'killed'];
 
 export function isTerminal(state: SessionState): boolean {
   return TERMINAL_STATES.includes(state);

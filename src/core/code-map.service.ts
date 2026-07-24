@@ -7,11 +7,11 @@ import { globToRegExp } from './glob.utils.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import type { CodeMapNode } from './types/code-map.types.js';
 
-export const CHURN_WINDOW = '30.days';
+const CHURN_WINDOW = '30.days';
 
 /** Nodes and per-node files are capped in the injected slice, not the map. */
-export const SLICE_MAX_NODES = 12;
-export const SLICE_MAX_FILES_PER_NODE = 10;
+const SLICE_MAX_NODES = 12;
+const SLICE_MAX_FILES_PER_NODE = 10;
 
 function moduleOf(file: string): string {
   const dir = dirname(file);

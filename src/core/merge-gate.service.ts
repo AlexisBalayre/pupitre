@@ -91,7 +91,7 @@ function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
   }
 }
 
-export function formatGateReport(report: GateReport): string {
+function formatGateReport(report: GateReport): string {
   const lines = report.stages.map(
     (s) => `- ${s.stage}: ${s.status.toUpperCase()}${s.detail ? ` — ${s.detail}` : ''}`,
   );

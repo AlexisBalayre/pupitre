@@ -2,7 +2,7 @@ export type SessionId = string & { readonly __brand: 'SessionId' };
 export type TaskId = string & { readonly __brand: 'TaskId' };
 
 /** One hook entry in Claude Code settings.json shape. */
-export interface HookCommand {
+interface HookCommand {
   type: 'command';
   command: string;
   timeout?: number;

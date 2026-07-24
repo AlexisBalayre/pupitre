@@ -1,6 +1,6 @@
 import type { Adapter } from '../../adapters/types/adapter.types.js';
 
-export type GateStageStatus = 'pass' | 'fail' | 'flagged' | 'skipped';
+type GateStageStatus = 'pass' | 'fail' | 'flagged' | 'skipped';
 
 export interface GateStageResult {
   stage: string;
@@ -14,7 +14,7 @@ export interface GateReport {
   stages: GateStageResult[];
 }
 
-export interface AcceptDebtRequest {
+interface AcceptDebtRequest {
   reason: string;
   reviewBy: string;
 }
@@ -32,7 +32,7 @@ export interface MergeRequest {
  * `rejected` re-steered the session with the report; `blocked` parked it
  * (reject cap reached or the session was unreachable).
  */
-export type MergeStatus = 'merged' | 'refused' | 'rejected' | 'blocked';
+type MergeStatus = 'merged' | 'refused' | 'rejected' | 'blocked';
 
 export interface MergeOutcome {
   status: MergeStatus;

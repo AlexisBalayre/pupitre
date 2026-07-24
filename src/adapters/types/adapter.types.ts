@@ -38,7 +38,7 @@ export interface FileComplexity {
 }
 
 /** 1-based lines holding executable statements; covered is a subset of instrumented. */
-export interface FileLineCoverage {
+interface FileLineCoverage {
   covered: number[];
   instrumented: number[];
 }

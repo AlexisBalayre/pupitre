@@ -35,7 +35,7 @@ export function parseProfileLayer(yamlText: string): ProfileLayer {
   return raw as unknown as ProfileLayer;
 }
 
-export function estimateTokens(text: string): number {
+function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 

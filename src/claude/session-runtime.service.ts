@@ -42,7 +42,7 @@ function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-export function tmuxTarget(sessionId: string): string {
+function tmuxTarget(sessionId: string): string {
   return `pup-${sessionId}`;
 }
 
@@ -146,7 +146,7 @@ export function steerSession(sessionId: string, message: string): void {
 }
 
 /** Wait until the session UI is interactive. Returns false on timeout. */
-export function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolean {
+function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolean {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (READY_MARKER.test(capturePane(sessionId))) return true;
@@ -162,17 +162,8 @@ export function kickoff(sessionId: string, prompt: string): boolean {
   return true;
 }
 
-export function capturePane(sessionId: string): string {
+function capturePane(sessionId: string): string {
   return tmux('capture-pane', '-p', '-t', tmuxTarget(sessionId));
-}
-
-export function sessionExists(sessionId: string): boolean {
-  try {
-    tmux('has-session', '-t', tmuxTarget(sessionId));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function killSession(sessionId: string): void {
@@ -193,7 +184,7 @@ export function transcriptDir(worktreePath: string): string {
   return join(homedir(), '.claude', 'projects', munged);
 }
 
-export function watcherTarget(repoProjectId: string): string {
+function watcherTarget(repoProjectId: string): string {
   return `pup-watch-${repoProjectId}`;
 }
 
@@ -218,15 +209,6 @@ export function launchWatcher(repoProjectId: string, repoPath: string): { target
     'watch',
   );
   return { target };
-}
-
-export function watcherExists(repoProjectId: string): boolean {
-  try {
-    tmux('has-session', '-t', watcherTarget(repoProjectId));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function killWatcher(repoProjectId: string): void {
