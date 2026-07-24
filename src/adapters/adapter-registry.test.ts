@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -38,5 +38,15 @@ describe('detectAdapters', () => {
 
   it('detects nothing in an empty repo', () => {
     expect(detectAdapters(makeRepo({}))).toEqual([]);
+  });
+
+  it('puts a repo-supplied custom adapter ahead of the built-ins', () => {
+    const repo = makeRepo({
+      'package.json': JSON.stringify({ devDependencies: { typescript: '^5' } }),
+    });
+    mkdirSync(join(repo, '.pupitre'));
+    writeFileSync(join(repo, '.pupitre', 'adapter.yml'), 'id: exotic\nbuild: make\n');
+
+    expect(detectAdapters(repo).map((a) => a.id)).toEqual(['exotic', 'typescript']);
   });
 });
