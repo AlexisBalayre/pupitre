@@ -17,6 +17,8 @@ export interface BaselineStageResult {
 export interface DebtBaseline {
   deadExports?: DeadExport[];
   duplicatedLines?: number;
+  /** Repo-wide covered/instrumented line ratio in [0, 1]; the patch-coverage bar. */
+  coverageRatio?: number;
 }
 
 /** Stored on projects.baseline as JSON; day one blocks nothing (docs/04). */

@@ -33,6 +33,33 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
     .filter(Boolean);
 }
 
+/**
+ * 1-based added/modified line numbers per changed file on the branch
+ * (merge-base diff). One `-U0` diff per file so hunk headers are the only
+ * thing parsed — file names never need de-quoting. Pure deletions yield no
+ * entry: deleted lines are free by construction (decision 13).
+ */
+export function gitDiffAddedLines(
+  repoPath: string,
+  target: string,
+  branch: string,
+): Record<string, number[]> {
+  const added: Record<string, number[]> = {};
+  for (const path of gitDiffPaths(repoPath, target, branch)) {
+    const lines: number[] = [];
+    const patch = git(repoPath, 'diff', '-U0', `${target}...${branch}`, '--', path);
+    for (const line of patch.split('\n')) {
+      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (!hunk) continue;
+      const start = Number(hunk[1]);
+      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      for (let at = start; at < start + count; at++) lines.push(at);
+    }
+    if (lines.length > 0) added[path] = lines;
+  }
+  return added;
+}
+
 /** Per-file add/delete counts for the branch diff (merge-base diff), rename-aware. */
 export function gitDiffNumstat(repoPath: string, target: string, branch: string): DiffFileStat[] {
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new

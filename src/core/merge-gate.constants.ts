@@ -18,6 +18,9 @@ export const COMPLEXITY_FILE_FLAG_DELTA = 15;
 /** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
 export const DEBT_DETAIL_SAMPLES = 3;
 
+/** Slack under the baseline ratio before the coverage stage flags — float noise, not policy. */
+export const COVERAGE_RATIO_EPSILON = 0.005;
+
 /** Paths no session may touch regardless of scope (decision 6: gate is the backstop). */
 export const PROTECTED_PATH_GLOBS = ['.claude/**'];
 
