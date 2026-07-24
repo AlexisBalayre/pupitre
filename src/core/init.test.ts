@@ -113,6 +113,13 @@ describe('initProject', () => {
     expect(stored.debt).toBeUndefined();
   });
 
+  it('does not store an empty dead-export baseline when the tooling is unavailable', () => {
+    initProject(db, repo, [makeAdapter({ deadCode: () => undefined })]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.deadExports).toBeUndefined();
+  });
+
   it('throws when no adapter detects the repo', () => {
     const adapter = makeAdapter({ detect: () => false });
     expect(() => initProject(db, repo, [adapter])).toThrow(NoAdapterError);

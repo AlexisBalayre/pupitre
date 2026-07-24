@@ -85,4 +85,16 @@ describe('pythonAdapter', () => {
 
     expect(stages).toEqual(['build', 'test', 'lint']);
   });
+
+  it('reports dead code as unmeasured when no config declares vulture', () => {
+    const repo = makeRepo({ 'requirements.txt': 'requests\n' });
+
+    expect(pythonAdapter.deadCode?.(repo)).toBeUndefined();
+  });
+
+  it('reports coverage as unmeasured when no config declares pytest-cov', () => {
+    const repo = makeRepo({ 'pyproject.toml': '[project]\ndependencies = ["pytest"]\n' });
+
+    expect(pythonAdapter.coverage?.(repo)).toBeUndefined();
+  });
 });

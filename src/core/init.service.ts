@@ -85,8 +85,11 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
   }
 
   const debt: DebtBaseline = {};
-  if (detected.some((a) => a.deadCode)) {
-    debt.deadExports = detected.flatMap((a) => a.deadCode?.(repoPath) ?? []);
+  // An adapter returning undefined never contributes an empty measurement: a
+  // baseline of [] would read as "0 dead exports" and flag every later finding.
+  const deadExports = detected.map((a) => a.deadCode?.(repoPath)).filter((r) => r !== undefined);
+  if (deadExports.length > 0) {
+    debt.deadExports = deadExports.flat();
   }
   if (detected.some((a) => a.duplication)) {
     debt.duplicatedLines = detected.reduce(

@@ -452,6 +452,24 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
+  it('skips the dead-code stage when the tooling is unavailable', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    const adapter = debtAdapter({ deadCode: () => undefined });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'dead-code',
+        status: 'skipped',
+        detail: expect.stringContaining('unavailable'),
+      }),
+    );
+  });
+
   it('does not flag dead exports already recorded in the baseline', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');

@@ -267,9 +267,15 @@ function gateAndMerge(
     });
   } else {
     const current = req.adapter.deadCode(worktree);
-    measuredDebt.deadExports = current;
+    if (current) measuredDebt.deadExports = current;
     const known = baseline?.debt?.deadExports;
-    if (!known) {
+    if (!current) {
+      stages.push({
+        stage: 'dead-code',
+        status: 'skipped',
+        detail: 'not measured — dead-code tooling unavailable or the run failed',
+      });
+    } else if (!known) {
       stages.push({
         stage: 'dead-code',
         status: 'skipped',
