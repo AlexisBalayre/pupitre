@@ -36,3 +36,11 @@ Commands are resolved from the repo's own config first (package.json scripts, py
 ## Custom adapters
 
 - A repo can supply `.pupitre/adapter.yml` mapping the five capabilities to shell commands with a defined JSON output contract. This is the escape hatch for exotic stacks without writing a plugin.
+- Contract (decision 24): every value is a shell command run via `sh -c` in the checkout under
+  measurement. `build`/`test`/`lint` gate on exit code. `depGraph`, `deadCode`, `duplication`,
+  `complexity`, and `coverage` must print the matching capability's JSON on stdout;
+  `complexity` receives the touched-file list as a JSON array on stdin. `id` names the adapter
+  (default `custom`). Unknown keys and non-string values are load errors, a failing capability
+  command fails loudly, and only `coverage` degrades to "not measured". When the file exists,
+  the custom adapter outranks the built-ins. `.pupitre/**` is a protected path: the merge gate
+  hard-fails any session diff that touches it, so only humans can change what the gate runs.

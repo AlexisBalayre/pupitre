@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { Command } from 'commander';
 import { stringify } from 'yaml';
-import { ADAPTERS, detectAdapters } from '../adapters/adapter.registry.js';
+import { detectAdapters } from '../adapters/adapter.registry.js';
 import { killWatcher, launchWatcher, steerSession } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask } from '../core/audit.service.js';
@@ -141,7 +141,7 @@ program
     const { repoPath, db } = resolveProject();
     let report: InitReport;
     try {
-      report = initProject(db, repoPath, ADAPTERS);
+      report = initProject(db, repoPath, detectAdapters(repoPath));
     } catch (error) {
       if (error instanceof NoAdapterError) {
         console.error(error.message);
@@ -423,7 +423,9 @@ program
     const { repoPath, db } = resolveProject();
     const [adapter] = detectAdapters(repoPath);
     if (!adapter) {
-      console.error('No adapter detected for this repo (supported stacks: TypeScript, Python).');
+      console.error(
+        'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
+      );
       process.exitCode = 1;
       return;
     }
@@ -478,7 +480,9 @@ program
     const { repoPath, db } = resolveProject();
     const [adapter] = detectAdapters(repoPath);
     if (!adapter) {
-      console.error('No adapter detected for this repo (supported stacks: TypeScript, Python).');
+      console.error(
+        'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
+      );
       process.exitCode = 1;
       return;
     }
@@ -592,7 +596,7 @@ program
     const { repoPath, db } = resolveProject();
     let report: ReturnType<typeof auditProject>;
     try {
-      report = auditProject(db, repoPath, ADAPTERS);
+      report = auditProject(db, repoPath, detectAdapters(repoPath));
     } catch (error) {
       if (error instanceof NoAdapterError) {
         console.error(error.message);

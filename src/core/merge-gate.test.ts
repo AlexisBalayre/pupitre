@@ -221,6 +221,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages.at(-1)?.detail).toContain('notes.txt');
   });
 
+  it('hard-fails a session that edits the adapter escape-hatch config', () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, '.pupitre/adapter.yml', 'test: echo ok\n');
+
+    const outcome = merge();
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
+    expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
+  });
+
   it('hard-fails a protected .claude path even when git would C-quote its name', () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.claude/café.md', 'smuggled hook config\n');

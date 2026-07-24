@@ -21,8 +21,12 @@ export const DEBT_DETAIL_SAMPLES = 3;
 /** Slack under the baseline ratio before the coverage stage flags — float noise, not policy. */
 export const COVERAGE_RATIO_EPSILON = 0.005;
 
-/** Paths no session may touch regardless of scope (decision 6: gate is the backstop). */
-export const PROTECTED_PATH_GLOBS = ['.claude/**'];
+/**
+ * Paths no session may touch regardless of scope (decision 6: gate is the
+ * backstop). `.pupitre/**` holds the adapter escape hatch (decision 24) — gate
+ * config a session could otherwise weaken for every future merge.
+ */
+export const PROTECTED_PATH_GLOBS = ['.claude/**', '.pupitre/**'];
 
 /** Serializes merges per repo (decision 8); lives in .git so it never lands in a diff. */
 export const MERGE_LOCK_DIRNAME = 'pup-merge.lock';
