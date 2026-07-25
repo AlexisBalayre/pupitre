@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -122,15 +129,23 @@ function debtAdapter(overrides: Partial<Adapter> = {}): Adapter {
 describe('runMergeGate', { timeout: 20_000 }, () => {
   let db: Database;
   let repo: string;
+  /** Where the fake gh records its argv, so a test can assert what it was asked to do. */
+  let ghLog: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     repo = initRepo();
+    ghLog = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-ghlog-'))), 'calls');
   });
 
   const merge = (adapter = passingAdapter, acceptDebt?: { reason: string; reviewBy: string }) =>
-    runMergeGate(db, { repoPath: repo, sessionId: SESSION_ID, adapter, acceptDebt });
+    runMergeGate(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapter,
+      acceptDebt: acceptDebt && { acceptedBy: 'human', ...acceptDebt },
+    });
 
   it('merges a clean in-scope branch ff-only and cleans everything up', () => {
     const worktree = seedSession(db, repo);
@@ -323,6 +338,21 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const [entry] = listLedgerEntries(db, 'proj-1');
     expect(entry).toMatchObject({ reason: 'deadline', review_by: 'before v2', status: 'open' });
     expect(JSON.parse(entry?.files ?? '[]')).toContain('src/big.ts');
+  });
+
+  it('records the acceptor the request names, not a hardcoded human', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+
+    const outcome = runMergeGate(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapter: passingAdapter,
+      acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: SESSION_ID },
+    });
+
+    expect(outcome.status).toBe('merged');
+    expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe(SESSION_ID);
   });
 
   it('counts a lockfile-named file outside the repo root toward the diff size', () => {
@@ -690,6 +720,30 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     }
   };
 
+  /**
+   * Fake gh: answers the `pr list` probe with `openPrs`, records every argv in
+   * `ghLog`, and echoes `pr create`'s argv as the PR URL so the created-PR
+   * tests can assert on the wiring.
+   */
+  const fakeGh = (openPrs: unknown[]): string =>
+    [
+      '#!/bin/sh',
+      `printf '%s\\n' "$*" >> ${ghLog}`,
+      '[ "$1" = "--version" ] && exit 0',
+      `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
+      'cat >/dev/null',
+      'echo "$@"',
+    ].join('\n');
+
+  const ghCalls = (): string[] =>
+    existsSync(ghLog) ? readFileSync(ghLog, 'utf8').split('\n').filter(Boolean) : [];
+
+  const openPrOnMain = {
+    url: 'https://github.com/owner/repo/pull/7',
+    baseRefName: 'main',
+    isCrossRepository: false,
+  };
+
   it('with openPr pushes the branch and opens a PR instead of merging locally', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -697,8 +751,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const bare = addOrigin();
     const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
 
-    // The fake gh echoes its argv, so prUrl doubles as a probe of the wiring.
-    const outcome = withFakeGh('#!/bin/sh\ncat >/dev/null\necho "$@"\n', () =>
+    const outcome = withFakeGh(fakeGh([]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -708,6 +761,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
 
     expect(outcome.status).toBe('merged');
+    expect(outcome.prWasAdopted).toBe(false);
     expect(outcome.prUrl).toContain('--repo github.com/owner/repo');
     expect(outcome.prUrl).toContain(`--head ${BRANCH}`);
     expect(outcome.prUrl).toContain('--base main');
@@ -720,6 +774,170 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The target has not moved, so the bar must not either — the post-PR audit ratchets.
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
+  });
+
+  it('with openPr retries cleanly after gh dies post-push, without duplicate ledger entries', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+    addOrigin();
+    const request = {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapter: passingAdapter,
+      acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
+      openPr: true,
+    };
+
+    // First attempt: the probe finds no PR, the push lands, `pr create` dies.
+    const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
+    expect(() => withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).toThrow();
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
+
+    const outcome = withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.prUrl).toBe(openPrOnMain.url);
+    expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
+  });
+
+  it('with openPr retries after the target moved, when the rebase rewrote the pushed branch', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+    const request = {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapter: passingAdapter,
+      openPr: true,
+    };
+    const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
+    expect(() => withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).toThrow();
+
+    // main moves, so the retry's auto-rebase rewrites the already-pushed branch.
+    commitIn(repo, 'README.md', '# moved on\n');
+    const outcome = withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.prUrl).toBe(openPrOnMain.url);
+  });
+
+  it('with openPr refuses an open PR that has auto-merge armed', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const bare = addOrigin();
+
+    expect(() =>
+      withFakeGh(fakeGh([{ ...openPrOnMain, autoMergeRequest: { enabledAt: 'now' } }]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow('auto-merge');
+    expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+  });
+
+  it('with openPr settles adoption before the gate runs, writing no ledger entry', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+    addOrigin();
+
+    expect(() =>
+      withFakeGh(fakeGh([{ ...openPrOnMain, baseRefName: 'release' }]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
+          openPr: true,
+        }),
+      ),
+    ).toThrow('release');
+    // Ten minutes of stages and a debt entry for a merge that cannot happen.
+    expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
+    expect(ghCalls().filter((call) => call.startsWith('pr'))).toHaveLength(1);
+  });
+
+  it('with openPr adopts an open PR onto the same base and rewrites its description', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+
+    const outcome = withFakeGh(fakeGh([openPrOnMain]), () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapter: passingAdapter,
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.prUrl).toBe(openPrOnMain.url);
+    expect(outcome.prWasAdopted).toBe(true);
+    // An adopted description is unverifiable, so the gate overwrites it.
+    expect(ghCalls()).toContainEqual(expect.stringContaining(`pr edit ${openPrOnMain.url}`));
+    expect(ghCalls()).not.toContainEqual(expect.stringContaining('pr create'));
+  });
+
+  it('with openPr refuses a same-named PR from a fork, before pushing', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const bare = addOrigin();
+
+    expect(() =>
+      withFakeGh(fakeGh([{ ...openPrOnMain, isCrossRepository: true }]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow('fork');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+  });
+
+  it('with openPr refuses an open PR that targets a different base', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+
+    expect(() =>
+      withFakeGh(fakeGh([{ ...openPrOnMain, baseRefName: 'release' }]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow('release');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  it('with openPr refuses to guess when several open PRs share the head branch', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+
+    expect(() =>
+      withFakeGh(
+        fakeGh([openPrOnMain, { ...openPrOnMain, url: 'https://github.com/owner/repo/pull/8' }]),
+        () =>
+          runMergeGate(db, {
+            repoPath: repo,
+            sessionId: SESSION_ID,
+            adapter: passingAdapter,
+            openPr: true,
+          }),
+      ),
+    ).toThrow('Several open pull requests');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
   it('with openPr fails fast when gh is unavailable, before any gate stage', () => {

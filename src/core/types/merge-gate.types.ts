@@ -17,6 +17,12 @@ export interface GateReport {
 interface AcceptDebtRequest {
   reason: string;
   reviewBy: string;
+  /**
+   * Who the ledger records as accepting the debt: the session id when the
+   * merge runs inside a session, `'human'` otherwise — the audit trail must
+   * not claim human attribution for an agent's call (decision 27).
+   */
+  acceptedBy: string;
 }
 
 export interface MergeRequest {
@@ -43,6 +49,12 @@ export interface MergeOutcome {
   rejectCount: number;
   /** With `openPr`: the pull request the gate opened on pass. */
   prUrl?: string;
+  /**
+   * True when `prUrl` was an open PR pupitre found rather than created — a
+   * retry of a run that died after the push. Its description was rewritten
+   * with the real gate report, but the operator is told it was adopted.
+   */
+  prWasAdopted?: boolean;
   /**
    * On merge: open ledger entries whose files this diff touched — candidates
    * for `pup debt close`, pending human confirmation (docs/04).
