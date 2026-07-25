@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scrubbedGitEnv } from '../core/git-diff.client.js';
+import { gateChildEnv } from '../core/gate-env.utils.js';
 import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import {
   DEBT_COMMAND_MAX_BUFFER_BYTES,
@@ -68,7 +68,9 @@ function runCapability(repoPath: string, words: string[]): string {
     timeout: DEBT_COMMAND_TIMEOUT_MS,
     maxBuffer: DEBT_COMMAND_MAX_BUFFER_BYTES,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: scrubbedGitEnv(),
+    // Tool and config both come from the repo being measured, so the child
+    // gets an allowlist rather than the operator's shell (decision 28).
+    env: gateChildEnv(),
   });
 }
 

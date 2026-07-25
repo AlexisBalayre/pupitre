@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { repoCoverageRatio } from './coverage.utils.js';
-import { scrubbedGitEnv } from './git-diff.client.js';
+import { gateChildEnv } from './gate-env.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, saveProjectBaseline } from './session.repository.js';
@@ -34,7 +34,9 @@ function runBaselineStage(
       encoding: 'utf8',
       timeout: GATE_COMMAND_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: scrubbedGitEnv(),
+      // Main is "trusted" only in the sense that the gate let it in — these are
+      // still the scripts a session wrote, one merge earlier (decision 28).
+      env: gateChildEnv(),
     });
     return { stage, status: 'pass', durationMs: Date.now() - start };
   } catch (error) {

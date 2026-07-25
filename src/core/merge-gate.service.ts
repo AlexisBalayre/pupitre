@@ -5,6 +5,7 @@ import type { Database } from 'better-sqlite3';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
+import { gateChildEnv } from './gate-env.utils.js';
 import {
   gitDiffAddedLines,
   gitDiffNumstat,
@@ -52,8 +53,16 @@ import type {
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
+/**
+ * Every git call the gate makes runs with hooks disabled. Worktrees share the
+ * main checkout's `$GIT_COMMON_DIR/hooks`, hooks are untracked so the scope
+ * audit never sees one appear, and the gate's own `git rebase` runs before any
+ * stage — so a planted `pre-rebase` would execute with pup's environment ahead
+ * of the sandbox that is supposed to confine it. A command-line `-c` outranks a
+ * session-written `.git/config` (decision 28).
+ */
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', cwd, ...args], {
+  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', cwd, ...args], {
     encoding: 'utf8',
     env: scrubbedGitEnv(),
   }).trim();
@@ -223,7 +232,9 @@ function gateAndMerge(
         encoding: 'utf8',
         timeout: GATE_COMMAND_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: scrubbedGitEnv(),
+        // The session wrote what this runs (its own scripts, its own config),
+        // so it gets an allowlist, not the operator's shell (decision 28).
+        env: gateChildEnv(),
       });
       stages.push({ stage, status: 'pass' });
     } catch (error) {
@@ -624,10 +635,14 @@ function pushBranch(repoPath: string, branch: string): void {
     }
   })();
   // Unlike the shared git() helper this gets a timeout: a stalled push would
-  // otherwise hang while holding the merge lock.
+  // otherwise hang while holding the merge lock. Hooks are off for the same
+  // reason they are everywhere else in the gate (decision 28) — pre-push runs
+  // locally, from the session-writable shared hooks directory.
   execFileSync(
     'git',
     [
+      '-c',
+      'core.hooksPath=/dev/null',
       '-C',
       repoPath,
       'push',
