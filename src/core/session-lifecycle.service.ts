@@ -8,6 +8,7 @@ import {
   launchSession,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
+import { scrubbedGitEnv } from './git-diff.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   compileProfile,
@@ -42,7 +43,13 @@ function sessionSlug(taskId: string, existing: number): string {
 }
 
 function git(repoPath: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', repoPath, ...args], { encoding: 'utf8' }).trim();
+  // Hooks off and the GIT_DIR family scrubbed: `worktree add` fires
+  // post-checkout, and a hook planted by an earlier session lives in the shared
+  // common dir, untracked (decision 28).
+  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', repoPath, ...args], {
+    encoding: 'utf8',
+    env: scrubbedGitEnv(),
+  }).trim();
 }
 
 /**

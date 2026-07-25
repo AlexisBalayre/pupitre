@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', () => ({
   killSession: vi.fn(),
@@ -139,6 +139,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     ghLog = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-ghlog-'))), 'calls');
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   const merge = (adapter = passingAdapter, acceptDebt?: { reason: string; reviewBy: string }) =>
     runMergeGate(db, {
       repoPath: repo,
@@ -223,6 +227,50 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
     expect(outcome.report.stages.map((s) => s.stage)).not.toContain('scope-audit');
     expect(steerSession).toHaveBeenCalled();
+  });
+
+  it('runs gate commands without the operator secrets in pup’s own environment', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    vi.stubEnv('PUP_TEST_SECRET', 'sk-do-not-leak');
+    // Fails the stage if the child inherited the secret, or lost PATH with it.
+    const envProbeAdapter: Adapter = {
+      id: 'fake',
+      detect: () => true,
+      gateCommands: () => [
+        {
+          stage: 'build',
+          command: 'sh',
+          args: ['-c', 'test -z "$PUP_TEST_SECRET" && test -n "$PATH"'],
+        },
+      ],
+    };
+
+    const outcome = merge(envProbeAdapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'build', status: 'pass' }),
+    );
+  });
+
+  it('does not run repo git hooks, which a session can plant unseen by the scope audit', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    // Shared with every worktree and untracked, so nothing in the diff shows it.
+    const fired = join(repo, 'hook-fired');
+    const hooks = join(repo, '.git', 'hooks');
+    mkdirSync(hooks, { recursive: true });
+    for (const hook of ['pre-rebase', 'post-checkout', 'post-rewrite', 'post-merge']) {
+      writeFileSync(join(hooks, hook), `#!/bin/sh\necho ${hook} >> ${fired}\n`, { mode: 0o755 });
+    }
+
+    const outcome = merge();
+
+    // The stale branch forces the rebase path, so pre-rebase would have fired.
+    expect(outcome.status).toBe('merged');
+    expect(existsSync(fired)).toBe(false);
   });
 
   it('hard-fails changes outside the task scope', () => {
