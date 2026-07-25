@@ -11,6 +11,7 @@ import {
   gitDiffPaths,
   scrubbedGitEnv,
 } from './git-diff.client.js';
+import { assertGhAvailable, createPullRequest, originRepoSlug } from './github.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
   COMPLEXITY_FILE_FLAG_DELTA,
@@ -22,6 +23,7 @@ import {
   LOCKFILE_NAMES,
   MAX_REJECTS_BEFORE_BLOCKED,
   MERGE_LOCK_DIRNAME,
+  PR_TITLE_MAX_CHARS,
 } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { auditScope } from './scope-audit.utils.js';
@@ -126,7 +128,18 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
   }
-  return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target));
+  let prRepo: string | undefined;
+  if (req.openPr) {
+    assertGhAvailable();
+    let originUrl: string;
+    try {
+      originUrl = git(req.repoPath, 'remote', 'get-url', 'origin');
+    } catch {
+      throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
+    }
+    prRepo = originRepoSlug(originUrl);
+  }
+  return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target, prRepo));
 }
 
 function gateAndMerge(
@@ -134,6 +147,7 @@ function gateAndMerge(
   req: MergeRequest,
   session: SessionRow,
   target: string,
+  prRepo?: string,
 ): MergeOutcome {
   const worktree = session.worktree_path;
   const stages: GateStageResult[] = [];
@@ -494,10 +508,36 @@ function gateAndMerge(
   )
     .split('\n')
     .filter(Boolean);
-  git(req.repoPath, 'merge', '--ff-only', session.branch);
+  let prUrl: string | undefined;
+  if (prRepo !== undefined) {
+    // Unlike the shared git() helper this gets a timeout: a stalled push would
+    // otherwise hang while holding the merge lock.
+    execFileSync('git', ['-C', req.repoPath, 'push', '--set-upstream', 'origin', session.branch], {
+      encoding: 'utf8',
+      timeout: GATE_COMMAND_TIMEOUT_MS,
+      env: scrubbedGitEnv(),
+    });
+    prUrl = createPullRequest(req.repoPath, {
+      repo: prRepo,
+      head: session.branch,
+      base: target,
+      title: prTitle(spec.goal) || `pup session ${session.id}`,
+      body: prBody(spec, report, commitSubjects),
+    });
+  } else {
+    git(req.repoPath, 'merge', '--ff-only', session.branch);
+  }
   transitionSession(db, session.id, 'merged', { report });
-  appendEvent(db, session.id, 'merge', { branch: session.branch, target, files: changedPaths });
+  appendEvent(db, session.id, 'merge', {
+    branch: session.branch,
+    target,
+    files: changedPaths,
+    ...(prUrl !== undefined ? { prUrl } : {}),
+  });
   if (
+    // In PR mode the target branch has not moved, so the bar must not either:
+    // the next `pup audit` after the PR lands ratchets it (decision 26).
+    !req.openPr &&
     project &&
     baseline &&
     (measuredDebt.deadExports !== undefined ||
@@ -525,14 +565,48 @@ function gateAndMerge(
 
   killTmux(session.id);
   git(req.repoPath, 'worktree', 'remove', '--force', worktree);
-  git(req.repoPath, 'branch', '-d', session.branch);
+  // PR mode needs -D: the branch is not in the local target's history, only on origin.
+  git(req.repoPath, 'branch', req.openPr ? '-D' : '-d', session.branch);
   return {
     status: 'merged',
     report,
     rejectCount: session.reject_count,
     debtCandidates,
     decisionRecordId,
+    ...(prUrl !== undefined ? { prUrl } : {}),
   };
+}
+
+function prTitle(goal: string): string {
+  const line = (goal.split('\n')[0] as string).trim();
+  return line.length <= PR_TITLE_MAX_CHARS ? line : `${line.slice(0, PR_TITLE_MAX_CHARS - 1)}…`;
+}
+
+function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[]): string {
+  // Commit subjects and gate details quote session-authored text. Fenced so
+  // GitHub renders it inert — no `Closes #n` auto-closing, no @mention pings,
+  // no invisible HTML comments aimed at review bots.
+  return [
+    '## Goal',
+    '',
+    spec.goal,
+    '',
+    '## Acceptance',
+    '',
+    ...spec.acceptance.map((item) => `- ${item}`),
+    '',
+    '## Commits',
+    '',
+    '````',
+    ...commitSubjects,
+    '````',
+    '',
+    '## Gate report',
+    '',
+    '````',
+    formatGateReport(report),
+    '````',
+  ].join('\n');
 }
 
 function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {

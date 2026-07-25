@@ -430,9 +430,15 @@ program
   .description('Run the gate pipeline and merge on pass')
   .option('--accept-debt <reason>', 'merge despite a flagged shortcut, creating a ledger entry')
   .option('--review-by <condition>', 'review-by condition for the ledger entry')
-  .action((session: string, opts: { acceptDebt?: string; reviewBy?: string }) => {
+  .option('--pr', 'on pass, push the branch and open a pull request instead of merging locally')
+  .action((session: string, opts: { acceptDebt?: string; reviewBy?: string; pr?: boolean }) => {
     if (Boolean(opts.acceptDebt) !== Boolean(opts.reviewBy)) {
       console.error('--accept-debt and --review-by must be passed together.');
+      process.exitCode = 1;
+      return;
+    }
+    if (opts.pr && process.env.PUP_SESSION_ID) {
+      console.error('`pup merge --pr` is operator-only; sessions cannot open pull requests.');
       process.exitCode = 1;
       return;
     }
@@ -453,11 +459,18 @@ program
         opts.acceptDebt && opts.reviewBy
           ? { reason: opts.acceptDebt, reviewBy: opts.reviewBy }
           : undefined,
+      openPr: opts.pr,
     });
     printGateReport(outcome.report);
     switch (outcome.status) {
       case 'merged':
-        console.log(`Merged ${session}; worktree and branch cleaned up.`);
+        if (outcome.prUrl) {
+          console.log(
+            `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup audit\`.`,
+          );
+        } else {
+          console.log(`Merged ${session}; worktree and branch cleaned up.`);
+        }
         for (const c of outcome.debtCandidates ?? []) {
           console.log(
             `This merge touched files of open debt #${c.id} (${c.description}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,

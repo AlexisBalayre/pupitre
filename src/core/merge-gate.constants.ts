@@ -38,3 +38,6 @@ export const GATE_OUTPUT_TAIL_CHARS = 2000;
 
 /** Gate failures beyond this park the session as blocked (decision 7). */
 export const MAX_REJECTS_BEFORE_BLOCKED = 2;
+
+/** PR titles built from a task goal are cut here — GitHub truncates around this anyway. */
+export const PR_TITLE_MAX_CHARS = 72;
