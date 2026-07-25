@@ -114,10 +114,26 @@ describe('initProject', () => {
   });
 
   it('does not store an empty dead-export baseline when the tooling is unavailable', () => {
-    initProject(db, repo, [makeAdapter({ deadCode: () => undefined })]);
+    initProject(db, repo, [makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) })]);
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toBeUndefined();
+  });
+
+  it('reports why a capability could not measure, so the gap is visible before any session', () => {
+    const report = initProject(db, repo, [
+      makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) }),
+    ]);
+
+    expect(report.findings).toContainEqual(expect.stringContaining('vulture missing'));
+  });
+
+  it('stores an empty dead-export baseline when the tooling measured and found nothing', () => {
+    // [] is a measurement: it becomes the bar every later session is held to.
+    initProject(db, repo, [makeAdapter({ deadCode: () => [] })]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.deadExports).toEqual([]);
   });
 
   it('throws when no adapter detects the repo', () => {

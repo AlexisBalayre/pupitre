@@ -699,6 +699,12 @@ program
       if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
     }
     console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
+    // Same findings `pup init` prints: a stage that cannot measure says why
+    // here too, or the repeat path is where the gap goes quiet (decision 29).
+    if (report.findings.length > 0) {
+      console.log('findings:');
+      for (const f of report.findings) console.log(`  - ${f}`);
+    }
     console.log('Baseline refreshed.');
     if (report.hasRegression) process.exitCode = 1;
   });

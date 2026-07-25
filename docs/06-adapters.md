@@ -20,6 +20,19 @@ interface Adapter {
 }
 ```
 
+`ctx` is `{ measurePath, configPath }` (decision 29). Measure `measurePath` — the session's
+worktree during a gate — but resolve which tools are declared from `configPath`, the main
+checkout a session cannot edit, or a session silences a stage by editing its own manifest.
+Outside the gate both are the same path. A capability that measured nothing returns
+`{ unavailable: "<reason>" }`; the reason is what the gate report shows the operator.
+
+Two limits to keep in mind when writing a capability. A tool still runs with `measurePath`
+as its working directory, so per-tool config *there* applies — if that config can make the
+tool report nothing, prefer returning `unavailable` over reporting a hollow measurement,
+since an empty result is a PASS that ratchets the baseline. And dead-export entry points
+come from `configPath`, so a change that adds a new `bin`/`exports` entry is flagged in its
+own merge and cleared by the next `pup audit`.
+
 ## Degradation rules
 
 - No depGraph: code map falls back to Claude-generated (flagged as approximate on the map).

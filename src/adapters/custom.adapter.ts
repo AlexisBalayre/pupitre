@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 import { gateChildEnv } from '../core/gate-env.utils.js';
+import { failureSummary } from './capability.utils.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,
   CUSTOM_COMMAND_TIMEOUT_MS,
@@ -59,14 +60,45 @@ function runJson<TOutput>(
       (failure.stderr ?? failure.message ?? 'command failed').trim().slice(0, 200),
     );
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(stdout) as TOutput;
+    parsed = JSON.parse(stdout);
   } catch {
     throw new CustomAdapterCommandError(
       capability,
       command,
       `stdout is not valid JSON: ${stdout.trim().slice(0, 200)}`,
     );
+  }
+  // Shape-checked, not just parsed: the command measures session-authored code,
+  // and `{"unavailable": …}` now MEANS something to the gate, so a script that
+  // emitted it — or `null`, which the `in` operator used to throw on — could
+  // turn a measurement into a skipped stage (decision 29).
+  if (!matchesShape(capability, parsed)) {
+    throw new CustomAdapterCommandError(
+      capability,
+      command,
+      `stdout is not a valid ${capability} result: ${stdout.trim().slice(0, 200)}`,
+    );
+  }
+  return parsed as TOutput;
+}
+
+/** The JSON shape docs/06 promises for each capability's stdout. */
+function matchesShape(capability: string, parsed: unknown): boolean {
+  const isObject = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  switch (capability) {
+    case 'deadCode':
+    case 'complexity':
+      return Array.isArray(parsed);
+    case 'coverage':
+      return isObject && 'files' in parsed;
+    case 'duplication':
+      return isObject && 'duplicatedLines' in parsed;
+    case 'depGraph':
+      return isObject && 'modules' in parsed && 'edges' in parsed;
+    default:
+      return false;
   }
 }
 
@@ -113,32 +145,36 @@ export function loadCustomAdapter(repoPath: string): Adapter | undefined {
         args: ['-c', config[stage] as string],
       })),
   };
+  // Commands come from `.pupitre/adapter.yml` in the trusted checkout (a
+  // protected path), so there is nothing further to resolve from configPath —
+  // they simply run against whichever checkout is being measured.
   if (config.depGraph) {
     const command = config.depGraph;
-    adapter.depGraph = (path: string) => runJson<DepGraph>('depGraph', command, path);
+    adapter.depGraph = (ctx) => runJson<DepGraph>('depGraph', command, ctx.measurePath);
   }
   if (config.deadCode) {
     const command = config.deadCode;
-    adapter.deadCode = (path: string) => runJson<DeadExport[]>('deadCode', command, path);
+    adapter.deadCode = (ctx) => runJson<DeadExport[]>('deadCode', command, ctx.measurePath);
   }
   if (config.duplication) {
     const command = config.duplication;
-    adapter.duplication = (path: string) =>
-      runJson<DuplicationReport>('duplication', command, path);
+    adapter.duplication = (ctx) =>
+      runJson<DuplicationReport>('duplication', command, ctx.measurePath);
   }
   if (config.complexity) {
     const command = config.complexity;
-    adapter.complexity = (path: string, files: string[]) =>
-      runJson<FileComplexity[]>('complexity', command, path, JSON.stringify(files));
+    adapter.complexity = (ctx, files: string[]) =>
+      runJson<FileComplexity[]>('complexity', command, ctx.measurePath, JSON.stringify(files));
   }
   if (config.coverage) {
     const command = config.coverage;
-    adapter.coverage = (path: string) => {
-      // The coverage contract already has an "unavailable" channel — use it.
+    adapter.coverage = (ctx) => {
+      // The coverage contract already has an "unavailable" channel — use it,
+      // and carry the reason rather than dropping it (decision 29).
       try {
-        return runJson<CoverageReport>('coverage', command, path);
-      } catch {
-        return undefined;
+        return runJson<CoverageReport>('coverage', command, ctx.measurePath);
+      } catch (error) {
+        return { unavailable: `coverage command failed: ${failureSummary(error)}` };
       }
     };
   }

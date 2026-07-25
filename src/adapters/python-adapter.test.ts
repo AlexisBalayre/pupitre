@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { localContext } from './capability.utils.js';
 import { pythonAdapter } from './python.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
@@ -86,15 +87,70 @@ describe('pythonAdapter', () => {
     expect(stages).toEqual(['build', 'test', 'lint']);
   });
 
-  it('reports dead code as unmeasured when no config declares vulture', () => {
+  it('reports dead code as unmeasured, naming the tool, when no config declares vulture', () => {
     const repo = makeRepo({ 'requirements.txt': 'requests\n' });
 
-    expect(pythonAdapter.deadCode?.(repo)).toBeUndefined();
+    expect(pythonAdapter.deadCode?.(localContext(repo))).toEqual({
+      unavailable: expect.stringContaining('vulture'),
+    });
   });
 
-  it('reports coverage as unmeasured when no config declares pytest-cov', () => {
+  it('reports coverage as unmeasured, naming the tool, when no config declares pytest-cov', () => {
     const repo = makeRepo({ 'pyproject.toml': '[project]\ndependencies = ["pytest"]\n' });
 
-    expect(pythonAdapter.coverage?.(repo)).toBeUndefined();
+    expect(pythonAdapter.coverage?.(localContext(repo))).toEqual({
+      unavailable: expect.stringContaining('pytest-cov'),
+    });
+  });
+
+  it('refuses to measure when the worktree rewrites the vulture config it would run under', () => {
+    // vulture reads [tool.vulture] from its working directory, so a worktree
+    // section could aim the scan at an empty path — a PASS on a fake empty
+    // measurement, which would then ratchet the baseline to nothing.
+    const configRepo = makeRepo({
+      'pyproject.toml':
+        '[project]\ndependencies = ["vulture"]\n\n[tool.vulture]\npaths = ["src"]\n',
+    });
+    const measureRepo = makeRepo({
+      'pyproject.toml':
+        '[project]\ndependencies = ["vulture"]\n\n[tool.vulture]\npaths = ["docs"]\n',
+    });
+
+    const result = pythonAdapter.deadCode?.({
+      measurePath: measureRepo,
+      configPath: configRepo,
+    });
+
+    expect(result).toEqual({ unavailable: expect.stringContaining('[tool.vulture]') });
+  });
+
+  it('measures when both checkouts carry the same vulture config', () => {
+    const section = '[project]\ndependencies = ["vulture"]\n\n[tool.vulture]\npaths = ["src"]\n';
+    const configRepo = makeRepo({ 'pyproject.toml': section });
+    const measureRepo = makeRepo({ 'pyproject.toml': section });
+
+    const result = pythonAdapter.deadCode?.({
+      measurePath: measureRepo,
+      configPath: configRepo,
+    });
+
+    // vulture is absent from the fixture, so the run fails — but it ran.
+    expect(result).toEqual({ unavailable: expect.stringContaining('vulture failed') });
+  });
+
+  it('reads tool declarations from the config checkout, not the one being measured', () => {
+    // The session's own manifest must not be able to silence a debt stage: it
+    // drops vulture from its copy, the trusted checkout still declares it.
+    const configRepo = makeRepo({ 'requirements.txt': 'vulture\n' });
+    const measureRepo = makeRepo({ 'requirements.txt': 'requests\n' });
+
+    const result = pythonAdapter.deadCode?.({
+      measurePath: measureRepo,
+      configPath: configRepo,
+    });
+
+    // vulture is not installed in the fixture, so the run fails — but it ran,
+    // rather than being skipped as undeclared.
+    expect(result).toEqual({ unavailable: expect.stringContaining('vulture failed') });
   });
 });

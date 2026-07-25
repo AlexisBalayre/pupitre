@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
+import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import type { CapabilityContext } from '../adapters/types/adapter.types.js';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
@@ -179,6 +181,13 @@ function gateAndMerge(
   pullRequest?: PullRequestPlan,
 ): MergeOutcome {
   const worktree = session.worktree_path;
+  // Measure the session's work, but read which tools are declared from the main
+  // checkout the merge lock holds at the target branch: otherwise a session
+  // silences a debt stage by editing its own manifest (decision 29).
+  const capabilityContext: CapabilityContext = {
+    measurePath: worktree,
+    configPath: req.repoPath,
+  };
   const stages: GateStageResult[] = [];
   const failed = (): MergeOutcome =>
     rejectOrBlock(db, { sessionId: session.id, passed: false, stages });
@@ -311,14 +320,14 @@ function gateAndMerge(
       detail: 'not measured — adapter cannot detect dead code',
     });
   } else {
-    const current = req.adapter.deadCode(worktree);
-    if (current) measuredDebt.deadExports = current;
+    const result = req.adapter.deadCode(capabilityContext);
+    if (!isUnavailable(result)) measuredDebt.deadExports = result;
     const known = baseline?.debt?.deadExports;
-    if (!current) {
+    if (isUnavailable(result)) {
       stages.push({
         stage: 'dead-code',
         status: 'skipped',
-        detail: 'not measured — dead-code tooling unavailable or the run failed',
+        detail: `not measured — ${sanitizeReason(result.unavailable)}`,
       });
     } else if (!known) {
       stages.push({
@@ -328,7 +337,7 @@ function gateAndMerge(
       });
     } else {
       const knownKeys = new Set(known.map((d) => `${d.file}\u0000${d.exportName}`));
-      const fresh = current.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
+      const fresh = result.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
       if (fresh.length === 0) {
         stages.push({ stage: 'dead-code', status: 'pass', detail: 'no new unused exports' });
       } else {
@@ -359,7 +368,7 @@ function gateAndMerge(
       detail: 'not measured — adapter cannot detect duplication',
     });
   } else {
-    const duplication = req.adapter.duplication(worktree);
+    const duplication = req.adapter.duplication(capabilityContext);
     measuredDebt.duplicatedLines = duplication.duplicatedLines;
     const knownLines = baseline?.debt?.duplicatedLines;
     if (knownLines === undefined) {
@@ -419,10 +428,12 @@ function gateAndMerge(
     // "Before" reads the main checkout, which the merge lock holds at the target
     // branch — no historical checkout needed.
     const before = new Map(
-      req.adapter.complexity(req.repoPath, changedPaths).map((f) => [f.file, f.complexity]),
+      req.adapter
+        .complexity(localContext(req.repoPath), changedPaths)
+        .map((f) => [f.file, f.complexity]),
     );
     const risen = req.adapter
-      .complexity(worktree, changedPaths)
+      .complexity(capabilityContext, changedPaths)
       .map((f) => ({ ...f, delta: f.complexity - (before.get(f.file) ?? 0) }))
       .filter((f) => f.delta > COMPLEXITY_FILE_FLAG_DELTA);
     if (risen.length === 0) {
@@ -458,7 +469,8 @@ function gateAndMerge(
       detail: 'not measured — adapter cannot measure coverage',
     });
   } else {
-    const coverageReport = req.adapter.coverage(worktree);
+    const result = req.adapter.coverage(capabilityContext);
+    const coverageReport = isUnavailable(result) ? undefined : result;
     const repoRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
     if (repoRatio !== undefined) measuredDebt.coverageRatio = repoRatio;
     const baselineRatio = baseline?.debt?.coverageRatio;
@@ -466,7 +478,9 @@ function gateAndMerge(
       stages.push({
         stage: 'coverage',
         status: 'skipped',
-        detail: 'not measured — coverage tooling unavailable or the instrumented run failed',
+        detail: isUnavailable(result)
+          ? `not measured — ${sanitizeReason(result.unavailable)}`
+          : 'not measured — the instrumented run reported no instrumentable lines',
       });
     } else if (baselineRatio === undefined) {
       stages.push({

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import type { Database } from 'better-sqlite3';
+import { localContext } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { scrubbedGitEnv } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
@@ -48,7 +49,7 @@ export function buildCodeMap(
   if (!adapter.depGraph) {
     throw new Error(`Adapter ${adapter.id} has no depGraph capability; no code map available.`);
   }
-  const graph = adapter.depGraph(repoPath);
+  const graph = adapter.depGraph(localContext(repoPath));
   const churn = churnByModule(repoPath);
   const debtByModule = new Map<string, number>();
   for (const entry of listLedgerEntries(db, projectId)) {
