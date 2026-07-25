@@ -87,13 +87,14 @@ Markdown files with `paths:` frontmatter that auto-load when Claude works with m
 ```yaml
 ---
 paths:
-  - "apps/acme-api/**"
+  - "**/*.test.ts"
 ---
-# API Conventions — Quick Reference
-- STRICT layering: Routes → Services → Repositories → Database
+# Testing Conventions — Quick Reference
+- Prefer the real dependency: `openStore(':memory:')`, a temp git repo
+- `vi.mock` only for modules that would spawn tmux or `claude -p`
 ...
 ## Full conventions
-@docs/conventions/api.md
+@docs/conventions/testing.md
 ```
 
 **Key insight:** Rules follow the "split pattern" — lightweight recognition triggers (quick facts) pointing to detailed knowledge (full convention docs). This keeps always-on context small while ensuring full detail loads when needed.
@@ -151,7 +152,7 @@ Shell scripts that run outside the LLM loop on lifecycle events. Zero context co
 | Hook | Event | What it does |
 |------|-------|-------------|
 | `quality-checks.sh` | Stop | Lint/format dirty files, typecheck the repo (blocks on failure; tests live in pre-commit) |
-| `convention-spot-check.sh` | Stop | Advisory scan for `export default`, inline types, missing JSDoc (`packages/` only) |
+| `convention-spot-check.sh` | Stop | Advisory scan for `export default` and types inlined in service/route files |
 | `comment-pruner.sh` | Stop | Dispatch the `comment-pruner` subagent when the session added net-new comments |
 | `git-safety.sh` | PreToolUse(Bash) | Block `rm -rf`, `git reset --hard`, force push, `checkout -b` on main, push to main |
 | `protect-generated.sh` | PreToolUse(Edit\|Write) | Block edits to `*.gen.ts` and gRPC stubs |

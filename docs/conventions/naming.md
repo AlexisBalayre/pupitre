@@ -37,7 +37,7 @@ Each role locks in a calling convention, not just a label.
 | `routes`     | HTTP route definitions; exports a `create<Domain>V1Routes` factory.          |
 | `manager`    | Stateful runtime resource with a lifecycle (pools, monitors, schedulers).    |
 | `factory`    | `create<Thing>(deps)` builders for stateless logic and dependency wiring.    |
-| `client`     | Wrapper around an outbound connection (gRPC, HTTP, queue).                    |
+| `client`     | Wrapper around an outbound dependency (the SQLite store, `git`, `gh`).       |
 | `adapter`    | Translates between an external system's shape and our domain.                |
 | `registry`   | Lookup table mapping a key (e.g. Channel) to an implementation.              |
 | `config`     | Typed configuration loaded from YAML / env (not `*.config.ts` tool config).  |
@@ -48,10 +48,10 @@ Each role locks in a calling convention, not just a label.
 | :---------- | :-------------------------------------------------- |
 | `types`     | `type` aliases and exported type definitions.       |
 | `interface` | A single primary `interface` definition.            |
-| `schemas`   | Zod (or validation) schemas.                        |
+| `schemas`   | Validation schemas (no validation library in use yet). |
 | `enums`     | `enum` / `as const` enumerations.                   |
 | `constants` | Exported constant values.                           |
-| `errors`    | Error classes (`AppError` subclasses).              |
+| `errors`    | Typed `Error` subclasses callers `instanceof`-narrow. |
 
 ### Frontend (3)
 
@@ -115,12 +115,19 @@ These filenames are allowed as-is:
 
 - `index.ts`, `env.ts`, `main.ts`, `app.ts`, `setup.ts`
 - `*.d.ts` (ambient declarations)
-- `*.config.ts` (tool config — Vite, Vitest, Drizzle, etc.)
-- TanStack Router files under `apps/acme-web/src/routes/**`, including `__root.tsx` and
-  `$param.tsx` dynamic segments.
+- `*.config.ts` (tool config — Vitest, Biome, etc.)
+- anything under a `generated/` directory
+
+## Test files
+
+The kebab-case part may not contain a dot, so a test's name is its subject's filename with
+dots flattened to hyphens — `db.client.ts` → `db-client.test.ts`, `capability.utils.ts` →
+`capability-utils.test.ts`. Mirroring the source name verbatim (`db.client.test.ts`) is
+**blocked**. Drop the role suffix when the test covers a whole subject rather than a single
+file: `overlap.test.ts` covers both `overlap.service.ts` and `overlap.repository.ts`.
 
 ## Enforcement
 
 `.claude/hooks/validate-file-naming.sh` runs on `Write` and **blocks** creation of any
-`*.ts`/`*.tsx` file under `apps/`, `packages/`, or `services/` whose name doesn't match
+`*.ts`/`*.tsx` file whose path contains `/src/` and whose name doesn't match
 `kebab-case.<role>.ts`. The error message lists the valid roles and links back here.

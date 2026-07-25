@@ -1,6 +1,6 @@
 ---
 name: convention-checker
-description: Use PROACTIVELY to verify files follow area-specific coding standards before committing. MUST BE USED after editing three or more files under apps/, services/, or packages/, or when preparing a commit. Cross-references docs/conventions/*.md for domain rules.
+description: Use PROACTIVELY to verify files follow area-specific coding standards before committing. MUST BE USED after editing three or more files under src/, or when preparing a commit. Cross-references docs/conventions/*.md for domain rules.
 tools: Read, Glob, Grep
 model: haiku
 ---
@@ -11,20 +11,26 @@ Verify the specified files against the project's strict architectural and style 
 
 ## 1. Contextual Mapping
 
-Map each file path to its area doc:
+`docs/conventions/` contains exactly three files — `general.md`, `naming.md`, `testing.md`. There is no per-area convention doc. Do not cite one that does not exist.
 
-- `apps/acme-api/` → `docs/conventions/api.md` (Layering, Hono, Serializers)
-- `apps/acme-web/` → `docs/conventions/frontend.md` (React 19, CVA, TanStack)
-- `services/acme-session-engine/` → `docs/conventions/session-engine.md` (State machines, Adapters)
-- `services/acme-gateway/` → `docs/conventions/gateway.md` (gRPC, Resiliency, Pools)
-- `packages/acme-providers/` → `docs/conventions/providers.md` (Factories, Registry, Channels)
-- `packages/acme-db/` → `docs/conventions/database.md` (UUIDs, Drizzle, Snake_case)
-- `packages/acme-rpc/` → `docs/conventions/grpc.md` (Proto, Middleware, TTLs)
-- `**/*.test.ts` → `docs/conventions/testing.md` (Mock ordering, Fake timers)
+For architectural obligations, map the path to its design doc:
+
+- `src/cli/` → commands stay thin; logic belongs in `src/core/` (`CLAUDE.md` layout table)
+- `src/core/` → `docs/04-gates-and-debt.md` (gate pipeline), `docs/03-profiles.md`
+- `src/claude/` → the only module allowed to touch Claude Code (tmux, hooks, `claude -p`)
+- `src/adapters/` → `docs/06-adapters.md` (the `Adapter` interface)
+- `**/*.test.ts` → `docs/conventions/testing.md`
+
+`docs/09-decisions.md` **wins over `docs/00`–`08` wherever they conflict** — check it before reporting a design violation.
 
 ## 2. Load the spec
 
-Read `docs/conventions/general.md` and `docs/conventions/naming.md` plus the mapped area doc for each file under review. **Those documents are the authoritative spec; do not rely on memorized rules.** Apply the universal rules (exports, imports, JSDoc, comments, type safety, naming) and the area-specific obligations from the mapped doc to every file.
+Read `docs/conventions/general.md` and `docs/conventions/naming.md`, plus `testing.md` for test files. **Those documents are the authoritative spec; do not rely on memorized rules.** Apply the universal rules (exports, imports, JSDoc, comments, type safety, naming) to every file.
+
+Two rules are commonly misremembered — check the doc, not your instincts:
+
+- **Relative imports must carry `.js`** (`NodeNext`). Flagging `./foo.service.js` as wrong is a false positive.
+- **A test's name flattens its subject's dots to hyphens** — `db.client.ts` → `db-client.test.ts`. `db.client.test.ts` is what the naming hook blocks.
 
 ## 3. Pattern Matching
 
