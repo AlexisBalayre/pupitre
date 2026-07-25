@@ -1,5 +1,5 @@
 /** The slice of coverage.py's JSON report (`--cov-report=json`) the coverage capability reads. */
-export interface CoveragePyFileEntry {
+interface CoveragePyFileEntry {
   executed_lines: number[];
   missing_lines: number[];
 }
