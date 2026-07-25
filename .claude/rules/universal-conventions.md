@@ -15,7 +15,10 @@ paths:
 | `my-service.service.ts` | `MyService.service.ts` (PascalCase) |
 | `message-frame.types.ts` | `messageFrame.types.ts` (camelCase) |
 | `session.adapter.ts` | `session-adapter.ts` (missing role) |
+| `db-client.test.ts` (for `db.client.ts`) | `db.client.test.ts` (dot in the kebab-case part) |
 | `index.ts`, `env.ts`, `main.ts` | Exception files — no role needed |
+
+**Tests flatten the subject's dots to hyphens** — `capability.utils.ts` → `capability-utils.test.ts`. Drop the role when the test covers a whole subject rather than one file (`overlap.test.ts` covers `overlap.service.ts` + `overlap.repository.ts`).
 
 **Valid roles (25).** The role suffix locks in a calling convention, not just a label. Pick the role that matches what the file *does*. Full taxonomy + per-role conventions in `@docs/conventions/naming.md`.
 
@@ -35,23 +38,24 @@ paths:
 ## Exports & Imports
 
 - **Named exports ONLY** — NEVER `export default`.
-- **Extensionless imports** in source (`.js` added at build time by a post-build step).
-- Prefer namespace imports for services: `import * as SessionService from './session.service'`.
+- **Relative imports keep the `.js` extension**: `from './session.service.js'`. `NodeNext` + a bare `tsc` build; nothing rewrites specifiers, so extensionless paths break at runtime.
+- **`import type` for type-only imports** — `verbatimModuleSyntax` is on.
+- Named imports are the norm; `import * as Ns` only to stub a whole module in a test.
 
 ## Type Separation
 
-Types/interfaces live in dedicated `types/` or `interfaces/` folders. NEVER inline in service or route files. Re-export from the consumer to keep call sites stable.
+Exported types live in `*.types.ts` under the area's `types/` folder (`src/core/types/`, `src/adapters/types/`). NEVER inline in service or route files. Re-export from the consumer to keep call sites stable.
 
 ## Type Safety
 
 - No `any` outside system boundaries (with a justification comment).
-- Branded IDs for domain identifiers (`SessionId`, `TaskId`, …); cast raw strings only at boundaries.
+- Branded IDs for domain identifiers (`SessionId`, `TaskId` in `src/core/types/profile.types.ts`); cast raw strings only at boundaries.
 - Boolean prefixes: `is/has/should/can`. Generics: descriptive (`TConfig`, `TResponse`), never bare `T`/`U`.
-- `override` keyword required on every subclass method. Factories for stateless logic; classes only for stateful resources with a lifecycle.
+- `override` keyword required on every subclass method. Factories for stateless logic; classes only for stateful resources with a lifecycle — typed `Error` subclasses in `*.errors.ts` are the standing exception.
 
 ## No Hardcoded Values
 
-Pull from YAML config or `env.ts`. Never inline ports, URLs, sample rates, model names, timeouts.
+Never inline thresholds, timeouts, tool names, or path fragments. Give them a named export in the area's `*.constants.ts`, with a JSDoc line saying what the value means and why it is that value. Operator-facing settings go in the profile YAML instead.
 
 ## JSDoc & Comments
 
