@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gateChildEnv } from '../core/gate-env.utils.js';
+import { failureSummary } from './capability.utils.js';
 import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import {
   DEBT_COMMAND_MAX_BUFFER_BYTES,
@@ -12,6 +13,8 @@ import {
 import { parseVultureOutput } from './python-debt.utils.js';
 import type {
   Adapter,
+  CapabilityContext,
+  CapabilityUnavailable,
   CoverageReport,
   DeadExport,
   GateCommand,
@@ -27,6 +30,9 @@ const COMPILEALL_EXCLUDE = String.raw`\.venv|venv|node_modules|\.git|\.worktrees
 
 /** fnmatch patterns for `vulture --exclude`, mirroring the compileall skips. */
 const VULTURE_EXCLUDE = '.venv,venv,node_modules,.worktrees';
+
+/** Vulture reads this section from its working directory's pyproject.toml. */
+const VULTURE_SECTION = '[tool.vulture]';
 
 function readIfPresent(repoPath: string, name: string): string {
   const path = join(repoPath, name);
@@ -48,6 +54,22 @@ function toCommand(stage: GateStage, words: string[]): GateCommand {
 /** Raw-text probe across the config files a Python tool can be declared in. */
 function declaresTool(repoPath: string, tool: string): boolean {
   return PYTHON_CONFIGS.some((name) => readIfPresent(repoPath, name).includes(tool));
+}
+
+/**
+ * The `[tool.vulture]` block's body, for comparing two checkouts' config. Text,
+ * not parsed: the stack has no TOML parser (docs/08 gates new dependencies) and
+ * this only ever has to answer "did the worktree change it?", where any
+ * difference — including one that reformats without changing meaning — is
+ * answered conservatively by declining to measure.
+ */
+function vultureSection(repoPath: string): string {
+  const toml = readIfPresent(repoPath, 'pyproject.toml');
+  const start = toml.indexOf(VULTURE_SECTION);
+  if (start === -1) return '';
+  const body = toml.slice(start + VULTURE_SECTION.length);
+  const nextSection = body.search(/^\s*\[/m);
+  return (nextSection === -1 ? body : body.slice(0, nextSection)).trim();
 }
 
 /**
@@ -129,45 +151,62 @@ export const pythonAdapter: Adapter = {
     return commands;
   },
 
-  deadCode(repoPath: string): DeadExport[] | undefined {
-    if (!declaresTool(repoPath, 'vulture')) return undefined;
+  deadCode({ measurePath, configPath }: CapabilityContext): DeadExport[] | CapabilityUnavailable {
+    if (!declaresTool(configPath, 'vulture')) {
+      return { unavailable: `no vulture declared in ${PYTHON_CONFIGS.join(', ')}` };
+    }
+    // vulture reads [tool.vulture] from its working directory, and the scan has
+    // to run in the worktree for relative paths and excludes to mean what they
+    // do today — so the trusted checkout cannot simply supply the config. What
+    // it can do is refuse: a worktree that rewrites the section controls
+    // `paths`, `ignore_names` and `min_confidence`, which turns the scan into a
+    // guaranteed-empty measurement — a PASS plus a ratcheted-to-nothing
+    // baseline, strictly worse than the skip decision 25 accepted. Fully
+    // trusting the config needs a TOML parser (docs/08 gates the dependency).
+    const trustedSection = vultureSection(configPath);
+    if (vultureSection(measurePath) !== trustedSection) {
+      return {
+        unavailable:
+          'the worktree changes [tool.vulture]; refusing to trust a scan it configures itself',
+      };
+    }
     // A [tool.vulture] section owns paths and excludes; otherwise scan the repo
     // with the same skips as compileall.
-    const args = readIfPresent(repoPath, 'pyproject.toml').includes('[tool.vulture]')
-      ? []
-      : ['.', `--exclude=${VULTURE_EXCLUDE}`];
+    const args = trustedSection ? [] : ['.', `--exclude=${VULTURE_EXCLUDE}`];
     try {
       return parseVultureOutput(
-        runCapability(repoPath, [...capabilityRunnerPrefix(repoPath), 'vulture', ...args]),
-        repoPath,
+        runCapability(measurePath, [...capabilityRunnerPrefix(configPath), 'vulture', ...args]),
+        measurePath,
       );
     } catch (error) {
       const failure = error as { status?: number; stdout?: string };
       if (failure.status === VULTURE_DEAD_CODE_EXIT) {
-        return parseVultureOutput(failure.stdout ?? '', repoPath);
+        return parseVultureOutput(failure.stdout ?? '', measurePath);
       }
-      // Tool missing or crashed — not measured, never silently passed.
-      return undefined;
+      // Declared but unusable — not measured, never silently passed.
+      return { unavailable: `vulture failed: ${failureSummary(error)}` };
     }
   },
 
-  coverage(repoPath: string): CoverageReport | undefined {
-    if (!declaresTool(repoPath, 'pytest-cov')) return undefined;
+  coverage({ measurePath, configPath }: CapabilityContext): CoverageReport | CapabilityUnavailable {
+    if (!declaresTool(configPath, 'pytest-cov')) {
+      return { unavailable: `no pytest-cov declared in ${PYTHON_CONFIGS.join(', ')}` };
+    }
     const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
     const reportPath = join(outDir, 'coverage.json');
     try {
-      runCapability(repoPath, [
-        ...capabilityRunnerPrefix(repoPath),
+      runCapability(measurePath, [
+        ...capabilityRunnerPrefix(configPath),
         'pytest',
         '--cov',
         `--cov-report=json:${reportPath}`,
       ]);
       const raw = JSON.parse(readFileSync(reportPath, 'utf8')) as CoveragePyReport;
-      return coveragePyToCoverageReport(raw, repoPath);
-    } catch {
+      return coveragePyToCoverageReport(raw, measurePath);
+    } catch (error) {
       // A failed instrumented run (crash, timeout, failing tests) degrades to
       // "not measured" — the plain test stage has already gated correctness.
-      return undefined;
+      return { unavailable: `instrumented pytest run failed: ${failureSummary(error)}` };
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

@@ -22,7 +22,7 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
-import type { Adapter } from '../adapters/types/adapter.types.js';
+import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { killSession, steerSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
@@ -530,20 +530,41 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
+  it('measures the worktree but reads tool config from the main checkout', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    let seen: CapabilityContext | undefined;
+    const adapter = debtAdapter({
+      deadCode: (ctx) => {
+        seen = ctx;
+        return [];
+      },
+    });
+
+    merge(adapter);
+
+    // Split on purpose: a session that edits its own manifest must not be able
+    // to un-declare the tool that measures it (decision 29).
+    expect(seen).toEqual({ measurePath: worktree, configPath: repo });
+  });
+
   it('skips the dead-code stage when the tooling is unavailable', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
-    const adapter = debtAdapter({ deadCode: () => undefined });
+    const adapter = debtAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) });
 
     const outcome = merge(adapter);
 
     expect(outcome.status).toBe('merged');
     expect(outcome.report.stages).toContainEqual(
+      // The adapter's own reason, not a generic "unavailable" — a stage that
+      // skips without saying why reads like a stage that passed.
       expect.objectContaining({
         stage: 'dead-code',
         status: 'skipped',
-        detail: expect.stringContaining('unavailable'),
+        detail: 'not measured — vulture missing',
       }),
     );
   });
@@ -601,8 +622,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const adapter = debtAdapter({
-      complexity: (repoPath: string) => [
-        { file: 'src/feature.ts', complexity: repoPath === repo ? 2 : 40 },
+      complexity: ({ measurePath }) => [
+        { file: 'src/feature.ts', complexity: measurePath === repo ? 2 : 40 },
       ],
     });
 
@@ -669,7 +690,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   it('skips the coverage stage when the instrumented run is unavailable', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    const adapter = debtAdapter({ coverage: () => undefined });
+    const adapter = debtAdapter({ coverage: () => ({ unavailable: 'instrumented run crashed' }) });
 
     const outcome = merge(adapter);
 
@@ -678,7 +699,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect.objectContaining({
         stage: 'coverage',
         status: 'skipped',
-        detail: expect.stringContaining('unavailable'),
+        detail: 'not measured — instrumented run crashed',
       }),
     );
   });

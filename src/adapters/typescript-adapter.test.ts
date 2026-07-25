@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { localContext } from './capability.utils.js';
 import { typescriptAdapter } from './typescript.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
@@ -75,7 +76,7 @@ describe('typescriptAdapter.depGraph', () => {
       'src/core/types/run.types.ts': 'export interface Cfg { a: number }\n',
     });
 
-    const graph = typescriptAdapter.depGraph?.(repo);
+    const graph = typescriptAdapter.depGraph?.(localContext(repo));
 
     expect(Object.keys(graph?.modules ?? {}).sort()).toEqual([
       'src/cli',
@@ -96,7 +97,7 @@ describe('typescriptAdapter.depGraph', () => {
       'node_modules/pkg/index.ts': 'export const hidden = 1;\n',
     });
 
-    const graph = typescriptAdapter.depGraph?.(repo);
+    const graph = typescriptAdapter.depGraph?.(localContext(repo));
 
     expect(Object.keys(graph?.modules ?? {}).sort()).toEqual(['src', 'src/lib']);
     expect(graph?.edges).toEqual([{ from: 'src', to: 'src/lib' }]);
@@ -109,7 +110,7 @@ describe('typescriptAdapter.depGraph', () => {
       'globals.d.ts': 'declare const g: number;\n',
     });
 
-    const graph = typescriptAdapter.depGraph?.(repo);
+    const graph = typescriptAdapter.depGraph?.(localContext(repo));
 
     expect(graph?.modules).toEqual({ '(root)': ['helper.ts', 'main.ts'] });
     expect(graph?.edges).toEqual([]);

@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { gateChildEnv } from '../core/gate-env.utils.js';
+import { failureSummary } from './capability.utils.js';
 import type {
   Adapter,
+  CapabilityContext,
+  CapabilityUnavailable,
   CoverageReport,
   DeadExport,
   DepGraph,
@@ -158,7 +161,7 @@ export const typescriptAdapter: Adapter = {
    * tsconfig or full parse is needed. Only relative, in-repo imports become
    * edges; package imports are ignored. Windows separators normalize to `/`.
    */
-  depGraph(repoPath: string): DepGraph {
+  depGraph({ measurePath: repoPath }: CapabilityContext): DepGraph {
     const files = walkSourceFiles(repoPath).map((f) => f.split(sep).join('/'));
     const fileSet = new Set(files);
     const modules: Record<string, string[]> = {};
@@ -186,16 +189,18 @@ export const typescriptAdapter: Adapter = {
     };
   },
 
-  deadCode(repoPath: string): DeadExport[] {
-    const sources = readSources(repoPath);
-    return findDeadExports(sources, manifestEntryFiles(repoPath, new Set(Object.keys(sources))));
+  deadCode({ measurePath, configPath }: CapabilityContext): DeadExport[] {
+    const sources = readSources(measurePath);
+    // Entry points come from the trusted manifest: a session that declares its
+    // own dead export an entry point would otherwise hide it from the ratchet.
+    return findDeadExports(sources, manifestEntryFiles(configPath, new Set(Object.keys(sources))));
   },
 
-  duplication(repoPath: string): DuplicationReport {
-    return findDuplication(readSources(repoPath));
+  duplication({ measurePath }: CapabilityContext): DuplicationReport {
+    return findDuplication(readSources(measurePath));
   },
 
-  complexity(repoPath: string, files: string[]): FileComplexity[] {
+  complexity({ measurePath: repoPath }: CapabilityContext, files: string[]): FileComplexity[] {
     return files
       .filter((file) => isSourceFile(file) && existsSync(join(repoPath, file)))
       .map((file) => ({
@@ -204,11 +209,15 @@ export const typescriptAdapter: Adapter = {
       }));
   },
 
-  coverage(repoPath: string): CoverageReport | undefined {
-    const manifest = readManifest(repoPath);
+  coverage({ measurePath, configPath }: CapabilityContext): CoverageReport | CapabilityUnavailable {
+    // Declared in the trusted manifest, run against the measured checkout: a
+    // session cannot switch the stage off by dropping its own devDependency.
+    const manifest = readManifest(configPath);
     const deps = { ...manifest?.dependencies, ...manifest?.devDependencies };
     const hasProvider = deps['@vitest/coverage-v8'] ?? deps['@vitest/coverage-istanbul'];
-    if (!deps.vitest || !hasProvider) return undefined;
+    if (!deps.vitest || !hasProvider) {
+      return { unavailable: 'no vitest + @vitest/coverage-* in package.json' };
+    }
     const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
     try {
       execFileSync(
@@ -222,7 +231,7 @@ export const typescriptAdapter: Adapter = {
           `--coverage.reportsDirectory=${outDir}`,
         ],
         {
-          cwd: repoPath,
+          cwd: measurePath,
           encoding: 'utf8',
           timeout: COVERAGE_RUN_TIMEOUT_MS,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -234,11 +243,11 @@ export const typescriptAdapter: Adapter = {
       const raw = JSON.parse(
         readFileSync(join(outDir, 'coverage-final.json'), 'utf8'),
       ) as IstanbulCoverageMap;
-      return istanbulToCoverageReport(raw, repoPath);
-    } catch {
+      return istanbulToCoverageReport(raw, measurePath);
+    } catch (error) {
       // A failed instrumented run (crash, timeout, threshold config) degrades to
       // "not measured" — the plain test stage has already gated correctness.
-      return undefined;
+      return { unavailable: `instrumented vitest run failed: ${failureSummary(error)}` };
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

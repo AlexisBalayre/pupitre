@@ -49,6 +49,30 @@ export interface CoverageReport {
 }
 
 /**
+ * The two checkouts a capability works with. They are separate because they are
+ * not equally trusted: measurement must happen in the session's worktree, but
+ * *which* tools are declared has to come from a checkout the session cannot
+ * edit, or a session could silence a debt stage by editing its own manifest
+ * (decision 29). Outside the gate — `pup init`, the code map — both are the
+ * same path.
+ */
+export interface CapabilityContext {
+  /** Checkout to measure. Session-authored during a merge gate. */
+  measurePath: string;
+  /** Checkout to read tool declarations from. Never session-writable. */
+  configPath: string;
+}
+
+/**
+ * Why a capability produced no measurement. The reason reaches the operator in
+ * the gate report, so it names the tool and what went wrong — a stage that
+ * skips silently reads like a stage that passed (decision 29).
+ */
+export interface CapabilityUnavailable {
+  unavailable: string;
+}
+
+/**
  * A toolchain plugin (docs/06-adapters.md): the v1 gate surface plus the v1.1
  * debt-delta capabilities. Commands resolve from the repo's own config first
  * (package.json scripts); adapter defaults are the fallback. A missing stage
@@ -59,11 +83,10 @@ export interface Adapter {
   id: string;
   detect(repoPath: string): boolean;
   gateCommands(repoPath: string): GateCommand[];
-  depGraph?(repoPath: string): DepGraph;
-  /** Undefined when the repo lacks dead-code tooling or the run failed. */
-  deadCode?(repoPath: string): DeadExport[] | undefined;
-  duplication?(repoPath: string): DuplicationReport;
-  complexity?(repoPath: string, files: string[]): FileComplexity[];
-  /** Runs the suite with line coverage; undefined when the repo lacks the tooling. */
-  coverage?(repoPath: string): CoverageReport | undefined;
+  depGraph?(ctx: CapabilityContext): DepGraph;
+  deadCode?(ctx: CapabilityContext): DeadExport[] | CapabilityUnavailable;
+  duplication?(ctx: CapabilityContext): DuplicationReport;
+  complexity?(ctx: CapabilityContext, files: string[]): FileComplexity[];
+  /** Runs the suite with line coverage. */
+  coverage?(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable;
 }

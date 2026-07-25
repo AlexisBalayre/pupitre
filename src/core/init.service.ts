@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
-import type { Adapter } from '../adapters/types/adapter.types.js';
+import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
 import { repoCoverageRatio } from './coverage.utils.js';
 import { gateChildEnv } from './gate-env.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
@@ -87,19 +88,43 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
   }
 
   const debt: DebtBaseline = {};
-  // An adapter returning undefined never contributes an empty measurement: a
-  // baseline of [] would read as "0 dead exports" and flag every later finding.
-  const deadExports = detected.map((a) => a.deadCode?.(repoPath)).filter((r) => r !== undefined);
-  if (deadExports.length > 0) {
-    debt.deadExports = deadExports.flat();
+  const ctx = localContext(repoPath);
+  // A capability that could not measure says why (decision 29); that reason is
+  // the whole point of running init before any session does.
+  // Sanitized here, not at the producer: a custom adapter's reason is parsed
+  // JSON that never passed through failureSummary (decision 29).
+  const reportUnavailable = (adapterId: string, stage: string, reason: string): void => {
+    findings.push(
+      `${adapterId}: ${stage} not measured — ${sanitizeReason(reason)}. The gate will skip that stage until it is fixed.`,
+    );
+  };
+
+  const deadCodeResults = detected.map((a) => ({ id: a.id, result: a.deadCode?.(ctx) }));
+  for (const { id, result } of deadCodeResults) {
+    if (result && isUnavailable(result)) reportUnavailable(id, 'dead code', result.unavailable);
+  }
+  const measured = deadCodeResults
+    .map(({ result }) => result)
+    .filter((r): r is DeadExport[] => r !== undefined && !isUnavailable(r));
+  // Counting adapters that measured, not findings: an unavailable capability
+  // must leave the bar unset (a baseline of [] would read as "0 dead exports"
+  // and flag every later finding), while one that found nothing still stores [].
+  if (measured.length > 0) {
+    debt.deadExports = measured.flat();
   }
   if (detected.some((a) => a.duplication)) {
     debt.duplicatedLines = detected.reduce(
-      (sum, a) => sum + (a.duplication?.(repoPath).duplicatedLines ?? 0),
+      (sum, a) => sum + (a.duplication?.(ctx).duplicatedLines ?? 0),
       0,
     );
   }
-  const coverageReport = detected.find((a) => a.coverage)?.coverage?.(repoPath);
+  const coverageAdapter = detected.find((a) => a.coverage);
+  const coverageResult = coverageAdapter?.coverage?.(ctx);
+  if (coverageAdapter && coverageResult && isUnavailable(coverageResult)) {
+    reportUnavailable(coverageAdapter.id, 'coverage', coverageResult.unavailable);
+  }
+  const coverageReport =
+    coverageResult && !isUnavailable(coverageResult) ? coverageResult : undefined;
   const coverageRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
   if (coverageRatio !== undefined) debt.coverageRatio = coverageRatio;
 
