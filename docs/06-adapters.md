@@ -40,6 +40,12 @@ Mirror your coverage tool's own default excludes — specs, build config, test d
 or every change to a `vite.config.ts` gets flagged, and drop paths that no longer exist so
 deletions stay free.
 
+Keep the exempt set narrow, and resolve it from `ctx` rather than hardcoding it if the
+toolchain lets a config file redefine what a test file is. Exempt a file only when *both*
+checkouts agree it is one: the worktree alone is the session's to write, and the trusted
+checkout is only trusted one merge deep, so a pattern that would exempt an arbitrary module
+name should be ignored wherever it comes from (decision 31).
+
 ## Degradation rules
 
 - No depGraph: code map falls back to Claude-generated (flagged as approximate on the map).
