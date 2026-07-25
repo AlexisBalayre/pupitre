@@ -22,6 +22,26 @@ export interface NewLedgerEntryInput {
   reviewBy: string;
 }
 
+/**
+ * True when this exact entry is already open. A retried `pup merge
+ * --accept-debt` after a partial failure must not double-count the same
+ * accepted debt (decision 27). Every field is in the key, files included: two
+ * flags that differ only in which files they name are different debt, and
+ * dropping the narrower one would leave a stale file list in the ledger.
+ * Descriptions embed the session id, so this cannot span sessions.
+ */
+export function hasOpenLedgerEntry(db: Database, input: NewLedgerEntryInput): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM ledger_entries WHERE project_id = @projectId AND description = @description
+         AND files = @files AND reason = @reason AND accepted_by = @acceptedBy
+         AND review_by = @reviewBy AND status = 'open' LIMIT 1`,
+      )
+      .get({ ...input, files: JSON.stringify(input.files) }) !== undefined
+  );
+}
+
 export function insertLedgerEntry(db: Database, input: NewLedgerEntryInput): number {
   const row = db
     .prepare(

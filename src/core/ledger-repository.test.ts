@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
 import {
   closeLedgerEntry,
+  hasOpenLedgerEntry,
   insertLedgerEntry,
   listLedgerEntries,
   listOverdueLedgerEntries,
@@ -72,6 +73,20 @@ describe('ledger repository', () => {
     expect(closeLedgerEntry(db, id)).toBe(false);
     expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
     expect(listLedgerEntries(db, 'proj-1', 'closed')).toHaveLength(1);
+  });
+
+  it('reports an identical open entry as already present', () => {
+    insertLedgerEntry(db, entryInput());
+
+    expect(hasOpenLedgerEntry(db, entryInput())).toBe(true);
+    expect(hasOpenLedgerEntry(db, entryInput({ reason: 'other reason' }))).toBe(false);
+  });
+
+  it('no longer reports an entry as present once it is closed', () => {
+    const id = insertLedgerEntry(db, entryInput());
+    closeLedgerEntry(db, id);
+
+    expect(hasOpenLedgerEntry(db, entryInput())).toBe(false);
   });
 
   it('reports only date-parseable review-by conditions in the past as overdue', () => {

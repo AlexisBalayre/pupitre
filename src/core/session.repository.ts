@@ -98,6 +98,17 @@ export function getSession(db: Database, id: string): SessionRow | undefined {
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
 }
 
+/**
+ * The session whose worktree contains `path`, if any. Unlike `PUP_SESSION_ID`
+ * this cannot be unset by the process being identified, so it is the primary
+ * answer to "is a session running this command?" (decision 27).
+ */
+export function findSessionByWorktree(db: Database, path: string): SessionRow | undefined {
+  return listSessions(db).find(
+    (session) => path === session.worktree_path || path.startsWith(`${session.worktree_path}/`),
+  );
+}
+
 export function listSessions(db: Database, states?: SessionState[]): SessionRow[] {
   if (states?.length) {
     const placeholders = states.map(() => '?').join(', ');

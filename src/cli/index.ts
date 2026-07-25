@@ -35,6 +35,7 @@ import { getProfileLayer, listProfileLayers } from '../core/profile-store.servic
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   appendEvent,
+  findSessionByWorktree,
   getSession,
   listSessions,
   type SessionRow,
@@ -52,7 +53,7 @@ import {
 } from '../core/session-handoff.service.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
-import type { GateReport } from '../core/types/merge-gate.types.js';
+import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { repoRoot, resolveProject } from './project.utils.js';
 
@@ -437,12 +438,21 @@ program
       process.exitCode = 1;
       return;
     }
-    if (opts.pr && process.env.PUP_SESSION_ID) {
+    const { repoPath, db } = resolveProject();
+    // Worktree first: it survives `env -u PUP_SESSION_ID`. Neither is proof
+    // against a determined session (it can also `cd` out of its worktree) —
+    // this makes the audit trail honest, not tamper-proof (decision 27). The
+    // env var only counts when it names a session that exists, so it cannot
+    // write arbitrary text into the ledger's acceptor column.
+    const declaredSession = process.env.PUP_SESSION_ID;
+    const caller =
+      findSessionByWorktree(db, process.cwd())?.id ??
+      (declaredSession && getSession(db, declaredSession) ? declaredSession : undefined);
+    if (opts.pr && caller) {
       console.error('`pup merge --pr` is operator-only; sessions cannot open pull requests.');
       process.exitCode = 1;
       return;
     }
-    const { repoPath, db } = resolveProject();
     const [adapter] = detectAdapters(repoPath);
     if (!adapter) {
       console.error(
@@ -451,22 +461,38 @@ program
       process.exitCode = 1;
       return;
     }
-    const outcome = runMergeGate(db, {
-      repoPath,
-      sessionId: session,
-      adapter,
-      acceptDebt:
-        opts.acceptDebt && opts.reviewBy
-          ? { reason: opts.acceptDebt, reviewBy: opts.reviewBy }
-          : undefined,
-      openPr: opts.pr,
-    });
+    let outcome: MergeOutcome;
+    try {
+      outcome = runMergeGate(db, {
+        repoPath,
+        sessionId: session,
+        adapter,
+        acceptDebt:
+          opts.acceptDebt && opts.reviewBy
+            ? {
+                reason: opts.acceptDebt,
+                reviewBy: opts.reviewBy,
+                // The ledger must name the real acceptor, not assume a human.
+                acceptedBy: caller ?? 'human',
+              }
+            : undefined,
+        openPr: opts.pr,
+      });
+    } catch (error) {
+      // Refusals here are expected outcomes with operator instructions in the
+      // message (held lock, adoptable-PR checks) — a stack trace buries them.
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+      return;
+    }
     printGateReport(outcome.report);
     switch (outcome.status) {
       case 'merged':
         if (outcome.prUrl) {
           console.log(
-            `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup audit\`.`,
+            outcome.prWasAdopted
+              ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup audit\`.`
+              : `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup audit\`.`,
           );
         } else {
           console.log(`Merged ${session}; worktree and branch cleaned up.`);
@@ -540,7 +566,9 @@ debt.action(() => {
   }
   for (const entry of entries) {
     console.log(`#${entry.id}  ${entry.created_at}  ${entry.description}`);
-    console.log(`  reason: ${entry.reason}  review by: ${entry.review_by}`);
+    console.log(
+      `  reason: ${entry.reason}  review by: ${entry.review_by}  accepted by: ${entry.accepted_by}`,
+    );
   }
 });
 debt

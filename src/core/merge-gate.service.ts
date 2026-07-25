@@ -11,8 +11,14 @@ import {
   gitDiffPaths,
   scrubbedGitEnv,
 } from './git-diff.client.js';
-import { assertGhAvailable, createPullRequest, originRepoSlug } from './github.client.js';
-import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
+import {
+  assertGhAvailable,
+  createPullRequest,
+  findOpenPullRequest,
+  originRepoSlug,
+  rewritePullRequest,
+} from './github.client.js';
+import { hasOpenLedgerEntry, insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
   COMPLEXITY_FILE_FLAG_DELTA,
   COVERAGE_RATIO_EPSILON,
@@ -36,6 +42,7 @@ import {
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
+import type { PullRequestRef } from './types/github.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type {
   GateReport,
@@ -128,7 +135,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
   }
-  let prRepo: string | undefined;
+  let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
     assertGhAvailable();
     let originUrl: string;
@@ -137,9 +144,22 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     } catch {
       throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
     }
-    prRepo = originRepoSlug(originUrl);
+    const ref = {
+      repo: originRepoSlug(originUrl),
+      head: session.branch,
+      base: target,
+    };
+    // Everything GitHub can refuse is settled here, before ten minutes of gate
+    // stages and before --accept-debt writes ledger entries for a merge that
+    // would then abort (decision 27).
+    pullRequest = { ...ref, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target, prRepo));
+  return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target, pullRequest));
+}
+
+interface PullRequestPlan extends PullRequestRef {
+  /** Set when an open PR for this branch already exists and passed adoption checks. */
+  adoptedUrl?: string;
 }
 
 function gateAndMerge(
@@ -147,7 +167,7 @@ function gateAndMerge(
   req: MergeRequest,
   session: SessionRow,
   target: string,
-  prRepo?: string,
+  pullRequest?: PullRequestPlan,
 ): MergeOutcome {
   const worktree = session.worktree_path;
   const stages: GateStageResult[] = [];
@@ -308,7 +328,9 @@ function gateAndMerge(
         const ellipsis = fresh.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
         flaggedDebt.push({
           description: `New unused exports (${fresh.length}) merged from session ${session.id}`,
-          files: [...new Set(fresh.map((d) => d.file))],
+          // Sorted so a retry produces the same list, and with it the same
+          // ledger dedupe key, whatever order the tool reported findings in.
+          files: [...new Set(fresh.map((d) => d.file))].sort(),
         });
         stages.push({
           stage: 'dead-code',
@@ -361,7 +383,7 @@ function gateAndMerge(
             .flatMap((b) => b.locations.map((l) => l.file))
             .filter((f) => changedSet.has(f)),
         ),
-      ];
+      ].sort();
       flaggedDebt.push({
         description: `Duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} in session ${session.id}`,
         files: files.length > 0 ? files : changedPaths,
@@ -467,7 +489,7 @@ function gateAndMerge(
         const ellipsis = patch.uncovered.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
         flaggedDebt.push({
           description: `Patch coverage ${pct(patch.covered / patch.instrumented)} below baseline ${pct(baselineRatio)} merged from session ${session.id}`,
-          files: [...new Set(patch.uncovered.map((u) => u.file))],
+          files: [...new Set(patch.uncovered.map((u) => u.file))].sort(),
         });
         stages.push({
           stage: 'coverage',
@@ -487,14 +509,19 @@ function gateAndMerge(
       return { status: 'refused', report, rejectCount: session.reject_count };
     }
     for (const flag of flaggedDebt) {
-      insertLedgerEntry(db, {
+      const entry = {
         projectId: specRow.project_id,
         description: flag.description,
         files: flag.files,
         reason: req.acceptDebt.reason,
-        acceptedBy: 'human',
+        acceptedBy: req.acceptDebt.acceptedBy,
         reviewBy: req.acceptDebt.reviewBy,
-      });
+      };
+      // A retry after a partial failure (gh died after the push) re-runs the
+      // gate with the same flags — the same debt must not be counted twice.
+      // Safe because every description above embeds the session id, so this can
+      // only ever match this session's own earlier attempt.
+      if (!hasOpenLedgerEntry(db, entry)) insertLedgerEntry(db, entry);
     }
   }
 
@@ -509,21 +536,21 @@ function gateAndMerge(
     .split('\n')
     .filter(Boolean);
   let prUrl: string | undefined;
-  if (prRepo !== undefined) {
-    // Unlike the shared git() helper this gets a timeout: a stalled push would
-    // otherwise hang while holding the merge lock.
-    execFileSync('git', ['-C', req.repoPath, 'push', '--set-upstream', 'origin', session.branch], {
-      encoding: 'utf8',
-      timeout: GATE_COMMAND_TIMEOUT_MS,
-      env: scrubbedGitEnv(),
-    });
-    prUrl = createPullRequest(req.repoPath, {
-      repo: prRepo,
-      head: session.branch,
-      base: target,
+  let prWasAdopted = false;
+  if (pullRequest) {
+    const newPr = {
+      ...pullRequest,
       title: prTitle(spec.goal) || `pup session ${session.id}`,
       body: prBody(spec, report, commitSubjects),
-    });
+    };
+    pushBranch(req.repoPath, session.branch);
+    if (pullRequest.adoptedUrl) {
+      rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
+      prWasAdopted = true;
+      prUrl = pullRequest.adoptedUrl;
+    } else {
+      prUrl = createPullRequest(req.repoPath, newPr);
+    }
   } else {
     git(req.repoPath, 'merge', '--ff-only', session.branch);
   }
@@ -573,8 +600,48 @@ function gateAndMerge(
     rejectCount: session.reject_count,
     debtCandidates,
     decisionRecordId,
-    ...(prUrl !== undefined ? { prUrl } : {}),
+    ...(prUrl !== undefined ? { prUrl, prWasAdopted } : {}),
   };
+}
+
+/**
+ * Push the session branch to origin. A retry after a failed `--pr` run has
+ * usually been rebased onto a moved target, so a plain push would be rejected
+ * non-fast-forward — and so would every retry after it, dead-ending the branch.
+ * The branch is pup's own (`pup/<slug>`, created and deleted by pup) and the
+ * gate just validated these commits, so the rewrite is intended. The lease
+ * still refuses if origin moved past what pup itself last pushed, and it only
+ * applies once a remote-tracking ref exists — on the first push there is
+ * nothing to lease against.
+ */
+function pushBranch(repoPath: string, branch: string): void {
+  const pushed = (() => {
+    try {
+      git(repoPath, 'rev-parse', '--verify', `refs/remotes/origin/${branch}`);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  // Unlike the shared git() helper this gets a timeout: a stalled push would
+  // otherwise hang while holding the merge lock.
+  execFileSync(
+    'git',
+    [
+      '-C',
+      repoPath,
+      'push',
+      ...(pushed ? ['--force-with-lease'] : []),
+      '--set-upstream',
+      'origin',
+      branch,
+    ],
+    {
+      encoding: 'utf8',
+      timeout: GATE_COMMAND_TIMEOUT_MS,
+      env: scrubbedGitEnv(),
+    },
+  );
 }
 
 function prTitle(goal: string): string {

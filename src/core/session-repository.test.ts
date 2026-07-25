@@ -4,6 +4,7 @@ import { openStore } from './db.client.js';
 import {
   appendEvent,
   ensureProject,
+  findSessionByWorktree,
   getSession,
   InvalidTransitionError,
   incrementRejectCount,
@@ -69,6 +70,21 @@ describe('session repository', () => {
     seedSession(db, 's1');
     expect(incrementRejectCount(db, 's1')).toBe(1);
     expect(incrementRejectCount(db, 's1')).toBe(2);
+  });
+
+  it('finds the session owning a path, including a subdirectory of its worktree', () => {
+    seedSession(db, 's1');
+    seedSession(db, 's2');
+
+    expect(findSessionByWorktree(db, '/repo/.worktrees/s2')?.id).toBe('s2');
+    expect(findSessionByWorktree(db, '/repo/.worktrees/s2/src/core')?.id).toBe('s2');
+  });
+
+  it('does not mistake a sibling path that merely shares a prefix for a worktree', () => {
+    seedSession(db, 's1');
+
+    expect(findSessionByWorktree(db, '/repo')).toBeUndefined();
+    expect(findSessionByWorktree(db, '/repo/.worktrees/s1-backup')).toBeUndefined();
   });
 
   it('appends a null-session event without a foreign-key error', () => {
