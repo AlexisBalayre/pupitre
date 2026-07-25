@@ -51,6 +51,15 @@ function toCommand(stage: GateStage, words: string[]): GateCommand {
   return { stage, command: command as string, args };
 }
 
+/**
+ * pytest's own discovery conventions, which coverage.py omits from its report
+ * by default — the gate must not expect a test file to be covered.
+ */
+function isPythonTestFile(file: string): boolean {
+  const name = file.split('/').at(-1) ?? '';
+  return name.startsWith('test_') || name.endsWith('_test.py') || name === 'conftest.py';
+}
+
 /** Raw-text probe across the config files a Python tool can be declared in. */
 function declaresTool(repoPath: string, tool: string): boolean {
   return PYTHON_CONFIGS.some((name) => readIfPresent(repoPath, name).includes(tool));
@@ -100,8 +109,9 @@ function runCapability(repoPath: string, words: string[]): string {
  * Python toolchain (docs/06): detect + build/test/lint, plus the shelled-out
  * debt capabilities the repo's own config declares — vulture for dead code,
  * pytest-cov for coverage (decision 25). An undeclared or failing tool returns
- * undefined, so those stages degrade to "not measured"; depGraph, duplication,
- * and complexity are still absent and degrade the same way. Config is probed
+ * a reason, so those stages degrade to "not measured" and say why; depGraph,
+ * duplication, and complexity are still absent and degrade the same way as an
+ * adapter that never had them. Config is probed
  * as raw text — the stack has no TOML parser (docs/08 gates new dependencies),
  * and a stray mention only ever adds a stage the repo's own toolchain must
  * then pass.
@@ -186,6 +196,13 @@ export const pythonAdapter: Adapter = {
       // Declared but unusable — not measured, never silently passed.
       return { unavailable: `vulture failed: ${failureSummary(error)}` };
     }
+  },
+
+  coverableFiles({ measurePath }: CapabilityContext, files: string[]): string[] {
+    return files.filter(
+      (file) =>
+        file.endsWith('.py') && !isPythonTestFile(file) && existsSync(join(measurePath, file)),
+    );
   },
 
   coverage({ measurePath, configPath }: CapabilityContext): CoverageReport | CapabilityUnavailable {

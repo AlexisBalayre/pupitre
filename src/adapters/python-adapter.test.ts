@@ -103,6 +103,26 @@ describe('pythonAdapter', () => {
     });
   });
 
+  it('expects coverage only for modules, following pytest naming for what is a test', () => {
+    const repo = makeRepo({
+      'app.py': 'x = 1\n',
+      'test_app.py': 'def test_x(): pass\n',
+      'app_test.py': 'def test_x(): pass\n',
+      'conftest.py': '',
+      'README.md': '# docs\n',
+    });
+
+    const coverable = pythonAdapter.coverableFiles?.(localContext(repo), [
+      'app.py',
+      'test_app.py',
+      'app_test.py',
+      'conftest.py',
+      'README.md',
+    ]);
+
+    expect(coverable).toEqual(['app.py']);
+  });
+
   it('refuses to measure when the worktree rewrites the vulture config it would run under', () => {
     // vulture reads [tool.vulture] from its working directory, so a worktree
     // section could aim the scan at an empty path — a PASS on a fake empty
