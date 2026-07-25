@@ -1,8 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
   "files": {
-    "includes": ["src/**", "*.json", "*.js"],
-    "experimentalScannerIgnores": [".worktrees"]
+    "includes": ["src/**", "*.json", "*.js", "!!.worktrees"]
   },
   "formatter": {
     "indentStyle": "space",

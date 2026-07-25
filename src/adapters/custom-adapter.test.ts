@@ -77,6 +77,7 @@ describe('loadCustomAdapter', () => {
   it('scrubs the GIT_DIR family from capability command environments', () => {
     // When pup runs inside a git hook, an inherited GIT_DIR would misdirect any
     // git usage in the command at the hook's repo (same rationale as the gate).
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion inside a yaml fixture, not a JS template
     const repo = makeRepo('deadCode: echo "[\\"${GIT_DIR:-scrubbed}\\"]"\n');
     process.env.GIT_DIR = '/somewhere/.git';
     try {
