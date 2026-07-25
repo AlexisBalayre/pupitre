@@ -667,4 +667,90 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     );
   });
+
+  // Fetch URL is GitHub-shaped so the --repo pin can be derived; the push URL
+  // points at a local bare repo so the gate's real `git push` stays offline.
+  const addOrigin = (): string => {
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), 'pup-origin-')));
+    sh(bare, 'git', 'init', '--bare', '-b', 'main');
+    sh(repo, 'git', 'remote', 'add', 'origin', 'git@github.com:owner/repo.git');
+    sh(repo, 'git', 'remote', 'set-url', '--push', 'origin', bare);
+    return bare;
+  };
+
+  const withFakeGh = <TResult>(script: string, fn: () => TResult): TResult => {
+    const ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-gh-')));
+    writeFileSync(join(ghDir, 'gh'), script, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    try {
+      return fn();
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  };
+
+  it('with openPr pushes the branch and opens a PR instead of merging locally', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }] });
+    const bare = addOrigin();
+    const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+    // The fake gh echoes its argv, so prUrl doubles as a probe of the wiring.
+    const outcome = withFakeGh('#!/bin/sh\ncat >/dev/null\necho "$@"\n', () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapter: debtAdapter({ deadCode: () => [] }),
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.prUrl).toContain('--repo github.com/owner/repo');
+    expect(outcome.prUrl).toContain(`--head ${BRANCH}`);
+    expect(outcome.prUrl).toContain('--base main');
+    expect(outcome.prUrl).toContain('--title test goal');
+    expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+    expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
+    expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    expect(existsSync(worktree)).toBe(false);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+    // The target has not moved, so the bar must not either — the post-PR audit ratchets.
+    const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
+  });
+
+  it('with openPr fails fast when gh is unavailable, before any gate stage', () => {
+    seedSession(db, repo);
+
+    expect(() =>
+      withFakeGh('#!/bin/sh\nexit 1\n', () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow('gh');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  it('with openPr requires an origin remote', () => {
+    seedSession(db, repo);
+
+    expect(() =>
+      withFakeGh('#!/bin/sh\nexit 0\n', () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow('origin');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
 });
