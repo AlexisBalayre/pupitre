@@ -21,7 +21,12 @@ import type { IstanbulCoverageMap } from './types/istanbul.types.js';
 import { istanbulToCoverageReport } from './typescript-coverage.utils.js';
 import { COVERAGE_RUN_TIMEOUT_MS } from './typescript-debt.constants.js';
 import { findDeadExports, findDuplication, measureComplexity } from './typescript-debt.utils.js';
-import { isSourceFile, resolveImport } from './typescript-source.utils.js';
+import {
+  isCoverageExcluded,
+  isSourceFile,
+  resolveImport,
+  SOURCE_EXTENSIONS,
+} from './typescript-source.utils.js';
 
 interface PackageManifest {
   scripts?: Record<string, string>;
@@ -209,15 +214,26 @@ export const typescriptAdapter: Adapter = {
       }));
   },
 
+  coverableFiles({ measurePath }: CapabilityContext, files: string[]): string[] {
+    return files.filter(
+      (file) =>
+        isSourceFile(file) && !isCoverageExcluded(file) && existsSync(join(measurePath, file)),
+    );
+  },
+
   coverage({ measurePath, configPath }: CapabilityContext): CoverageReport | CapabilityUnavailable {
     // Declared in the trusted manifest, run against the measured checkout: a
     // session cannot switch the stage off by dropping its own devDependency.
     const manifest = readManifest(configPath);
     const deps = { ...manifest?.dependencies, ...manifest?.devDependencies };
-    const hasProvider = deps['@vitest/coverage-v8'] ?? deps['@vitest/coverage-istanbul'];
-    if (!deps.vitest || !hasProvider) {
+    if (!deps.vitest || !(deps['@vitest/coverage-v8'] ?? deps['@vitest/coverage-istanbul'])) {
       return { unavailable: 'no vitest + @vitest/coverage-* in package.json' };
     }
+    // Pinned from the trusted manifest. Left to the worktree's config, a
+    // session can select `provider: 'custom'` with its own provider module and
+    // hand the gate a forged report — 100% covered, every file present — which
+    // then ratchets the stored baseline to the forged number (decision 30).
+    const provider = deps['@vitest/coverage-v8'] ? 'v8' : 'istanbul';
     const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
     try {
       execFileSync(
@@ -227,6 +243,12 @@ export const typescriptAdapter: Adapter = {
           'vitest',
           'run',
           '--coverage.enabled',
+          `--coverage.provider=${provider}`,
+          // Vitest 3+ reports only files a test loaded. Without this, a module
+          // no test imports is absent rather than 0%-covered, which turns an
+          // untested file into "not in the report" instead of a precise patch
+          // coverage flag — and makes every type-only module look hidden.
+          `--coverage.include=**/*.{${SOURCE_EXTENSIONS.map((ext) => ext.slice(1)).join(',')}}`,
           '--coverage.reporter=json',
           `--coverage.reportsDirectory=${outDir}`,
         ],

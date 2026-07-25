@@ -1,9 +1,28 @@
 import { dirname, join, normalize } from 'node:path';
 
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
+export const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
 
 export function isSourceFile(name: string): boolean {
   return SOURCE_EXTENSIONS.some((ext) => name.endsWith(ext)) && !name.endsWith('.d.ts');
+}
+
+/**
+ * Files a coverage report is not expected to mention. Kept deliberately narrow
+ * and matched against what vitest and istanbul actually exclude: named tool
+ * configs rather than every `*.config.*`, and the artifact and test directories
+ * anchored where the tools anchor them. A looser rule would be a hiding place —
+ * `config` is a valid role suffix in this repo, so `src/core/gate.config.ts` is
+ * ordinary production code that must still be covered (decision 30).
+ */
+export function isCoverageExcluded(path: string): boolean {
+  return (
+    /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) ||
+    /(?:^|\/)(?:vite|vitest|webpack|rollup|jest|karma|babel|nyc|tsup|eslint|prettier|cypress|playwright|ava|tailwind|postcss)\.config\.[cm]?[jt]s$/.test(
+      path,
+    ) ||
+    /^(?:dist|build|coverage|tests?)\//.test(path) ||
+    /(?:^|\/)(?:node_modules|__tests__|__mocks__)\//.test(path)
+  );
 }
 
 /**

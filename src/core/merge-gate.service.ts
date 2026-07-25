@@ -79,6 +79,17 @@ function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boole
   }
 }
 
+/**
+ * A repo path on its way into a stage detail. Paths come from `git diff -z`
+ * precisely so they stay raw bytes, and a detail is printed to the operator's
+ * terminal, fenced into the PR body, and fed back to the session as a re-steer
+ * prompt — so a filename carrying ANSI escapes could repaint the report the
+ * operator decides from (the decision-29 rationale, applied to paths).
+ */
+function quotePath(path: string): string {
+  return sanitizeReason(path);
+}
+
 function commandFailureDetail(error: unknown): string {
   const failure = error as { stdout?: string; stderr?: string; message?: string };
   const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
@@ -263,7 +274,7 @@ function gateAndMerge(
       stage: 'scope-audit',
       status: 'fail',
       detail: `Out-of-scope changes:\n${violations
-        .map((v) => `  ${v.path} (${v.reason})`)
+        .map((v) => `  ${quotePath(v.path)} (${v.reason})`)
         .join('\n')}`,
     });
     return failed();
@@ -343,7 +354,7 @@ function gateAndMerge(
       } else {
         const quoted = fresh
           .slice(0, DEBT_DETAIL_SAMPLES)
-          .map((d) => `${d.file}#${d.exportName}`)
+          .map((d) => `${quotePath(d.file)}#${d.exportName}`)
           .join(', ');
         const ellipsis = fresh.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
         flaggedDebt.push({
@@ -393,7 +404,7 @@ function gateAndMerge(
         .map((b) =>
           b.locations
             .slice(0, 2)
-            .map((l) => `${l.file}:${l.line}`)
+            .map((l) => `${quotePath(l.file)}:${l.line}`)
             .join(' ≈ '),
         )
         .join('; ');
@@ -445,7 +456,7 @@ function gateAndMerge(
     } else {
       const quoted = risen
         .slice(0, DEBT_DETAIL_SAMPLES)
-        .map((f) => `${f.file} (+${f.delta})`)
+        .map((f) => `${quotePath(f.file)} (+${f.delta})`)
         .join(', ');
       const ellipsis = risen.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
       flaggedDebt.push({
@@ -474,14 +485,30 @@ function gateAndMerge(
     const repoRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
     if (repoRatio !== undefined) measuredDebt.coverageRatio = repoRatio;
     const baselineRatio = baseline?.debt?.coverageRatio;
+    const coverable = req.adapter.coverableFiles?.(capabilityContext, changedPaths) ?? [];
     if (!coverageReport || repoRatio === undefined) {
-      stages.push({
-        stage: 'coverage',
-        status: 'skipped',
-        detail: isUnavailable(result)
-          ? `not measured — ${sanitizeReason(result.unavailable)}`
-          : 'not measured — the instrumented run reported no instrumentable lines',
-      });
+      const reason = isUnavailable(result)
+        ? sanitizeReason(result.unavailable)
+        : 'the instrumented run reported no instrumentable lines';
+      // Skipping here is a session-reachable outcome, not just an environment
+      // gap: the coverage config lives in the worktree, so failing the run or
+      // emptying the report turns the stage off. Changed source plus no
+      // measurement is a flag, not a free skip (decision 30).
+      if (coverable.length > 0) {
+        flaggedDebt.push({
+          description: `Coverage unmeasured over ${coverable.length} changed source file(s) in session ${session.id}`,
+          files: [...coverable].sort(),
+        });
+        stages.push({
+          stage: 'coverage',
+          status: 'flagged',
+          detail: flagDetail(
+            `${coverable.length} changed source file(s) went unmeasured — ${reason}`,
+          ),
+        });
+      } else {
+        stages.push({ stage: 'coverage', status: 'skipped', detail: `not measured — ${reason}` });
+      }
     } else if (baselineRatio === undefined) {
       stages.push({
         stage: 'coverage',
@@ -494,34 +521,58 @@ function gateAndMerge(
         gitDiffAddedLines(req.repoPath, target, session.branch),
       );
       const pct = (ratio: number): string => `${Math.round(ratio * 1000) / 10}%`;
-      if (patch.instrumented === 0) {
+      // Changed code the report never mentions is the loophole patch coverage
+      // alone cannot see: excluding a file otherwise reads as "no instrumentable
+      // changed lines" and passes for free (decision 30). hasOwn, not `in`: the
+      // Python report is parsed JSON, so its keys can reach the prototype.
+      const unreported = coverable.filter((file) => !Object.hasOwn(coverageReport.files, file));
+      const ratio = patch.instrumented === 0 ? undefined : patch.covered / patch.instrumented;
+      const ratioBelowBar = ratio !== undefined && ratio + COVERAGE_RATIO_EPSILON < baselineRatio;
+      if (unreported.length > 0 || ratioBelowBar) {
+        // Both are evaluated, never short-circuited: a merge that hides files
+        // AND drops patch coverage must record both, or the ledger understates
+        // what was accepted while the baseline ratchets anyway.
+        const problems: string[] = [];
+        const files = new Set<string>();
+        if (unreported.length > 0) {
+          const quoted = unreported.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
+          const ellipsis = unreported.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+          problems.push(
+            `${unreported.length} changed source file(s) never reached the coverage report — no test loads them, or coverage config excludes them: ${quoted}${ellipsis}`,
+          );
+          for (const file of unreported) files.add(file);
+        }
+        if (ratio !== undefined && ratioBelowBar) {
+          const quoted = patch.uncovered
+            .slice(0, DEBT_DETAIL_SAMPLES)
+            .map((u) => `${quotePath(u.file)}:${u.line}`)
+            .join(', ');
+          const ellipsis = patch.uncovered.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+          problems.push(
+            `patch coverage ${pct(ratio)} below repo baseline ${pct(baselineRatio)} (uncovered: ${quoted}${ellipsis})`,
+          );
+          for (const u of patch.uncovered) files.add(u.file);
+        }
+        flaggedDebt.push({
+          description: `Coverage gap (${problems.length === 2 ? 'unreported files and patch coverage' : unreported.length > 0 ? 'unreported files' : `patch coverage ${pct(ratio as number)} below baseline ${pct(baselineRatio)}`}) merged from session ${session.id}`,
+          files: [...files].sort(),
+        });
+        stages.push({
+          stage: 'coverage',
+          status: 'flagged',
+          detail: flagDetail(problems.join('; ')),
+        });
+      } else if (ratio === undefined) {
         stages.push({
           stage: 'coverage',
           status: 'pass',
           detail: 'no instrumentable changed lines',
         });
-      } else if (patch.covered / patch.instrumented + COVERAGE_RATIO_EPSILON >= baselineRatio) {
+      } else {
         stages.push({
           stage: 'coverage',
           status: 'pass',
-          detail: `patch coverage ${pct(patch.covered / patch.instrumented)} (baseline ${pct(baselineRatio)})`,
-        });
-      } else {
-        const quoted = patch.uncovered
-          .slice(0, DEBT_DETAIL_SAMPLES)
-          .map((u) => `${u.file}:${u.line}`)
-          .join(', ');
-        const ellipsis = patch.uncovered.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
-        flaggedDebt.push({
-          description: `Patch coverage ${pct(patch.covered / patch.instrumented)} below baseline ${pct(baselineRatio)} merged from session ${session.id}`,
-          files: [...new Set(patch.uncovered.map((u) => u.file))].sort(),
-        });
-        stages.push({
-          stage: 'coverage',
-          status: 'flagged',
-          detail: flagDetail(
-            `patch coverage ${pct(patch.covered / patch.instrumented)} below repo baseline ${pct(baselineRatio)} (uncovered: ${quoted}${ellipsis})`,
-          ),
+          detail: `patch coverage ${pct(ratio)} (baseline ${pct(baselineRatio)})`,
         });
       }
     }

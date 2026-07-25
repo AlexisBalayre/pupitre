@@ -33,6 +33,13 @@ since an empty result is a PASS that ratchets the baseline. And dead-export entr
 come from `configPath`, so a change that adds a new `bin`/`exports` entry is flagged in its
 own merge and cleared by the next `pup audit`.
 
+An adapter with `coverage` should also implement `coverableFiles(ctx, files)`: the subset of
+a changed-file list the toolchain expects coverage for. The gate flags changed files that
+never reach the report, which is otherwise a free pass for code no test loads (decision 30).
+Mirror your coverage tool's own default excludes — specs, build config, test directories —
+or every change to a `vite.config.ts` gets flagged, and drop paths that no longer exist so
+deletions stay free.
+
 ## Degradation rules
 
 - No depGraph: code map falls back to Claude-generated (flagged as approximate on the map).

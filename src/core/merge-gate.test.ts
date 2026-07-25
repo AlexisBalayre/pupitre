@@ -767,6 +767,131 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  // A realistic coverableFiles: source, not tests, not assets.
+  const coverableFiles = (_ctx: CapabilityContext, files: string[]): string[] =>
+    files.filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+
+  it('refuses a changed source file that never reached the coverage report', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    // The loophole: excluded from coverage config, or shipped with no test that
+    // loads it, so patch coverage sees zero instrumentable changed lines.
+    const adapter = debtAdapter({
+      coverableFiles,
+      coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'coverage',
+        status: 'flagged',
+        detail: expect.stringContaining('src/feature.ts'),
+      }),
+    );
+  });
+
+  it('flags changed source when coverage reports nothing at all, rather than skipping', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    // The broad version of the same bypass: rather than excluding the changed
+    // files, make the whole instrumented run fail. Config lives in the worktree,
+    // so this is session-reachable and must not buy a free skip.
+    const adapter = debtAdapter({
+      coverableFiles,
+      coverage: () => ({ unavailable: 'instrumented vitest run failed: threshold not met' }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('refused');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'coverage',
+        status: 'flagged',
+        detail: expect.stringContaining('went unmeasured'),
+      }),
+    );
+  });
+
+  it('still skips quietly when coverage is unavailable and no source changed', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/notes.txt', 'prose only\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverableFiles,
+      coverage: () => ({ unavailable: 'no coverage provider installed' }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'coverage', status: 'skipped' }),
+    );
+  });
+
+  it('records both coverage problems when a merge hides files and drops the ratio', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/hidden.ts', 'export const hidden = 1;\n');
+    commitIn(worktree, 'src/thin.ts', 'export const thin = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverableFiles,
+      // src/hidden.ts is absent; src/thin.ts is present but uncovered.
+      coverage: () => ({ files: { 'src/thin.ts': { covered: [], instrumented: [1] } } }),
+    });
+
+    const outcome = merge(adapter, { reason: 'deadline', reviewBy: 'before v2' });
+
+    expect(outcome.status).toBe('merged');
+    const detail = outcome.report.stages.find((s) => s.stage === 'coverage')?.detail ?? '';
+    expect(detail).toContain('src/hidden.ts');
+    expect(detail).toContain('patch coverage 0%');
+    // One ledger entry, but naming every file both problems touched.
+    const [entry] = listLedgerEntries(db, 'proj-1');
+    expect(JSON.parse(entry?.files ?? '[]')).toEqual(['src/hidden.ts', 'src/thin.ts']);
+  });
+
+  it('leaves changed assets and tests free, which coverage never reports anyway', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/notes.txt', 'prose only\n');
+    commitIn(worktree, 'src/feature.test.ts', 'export const spec = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverableFiles,
+      coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'coverage', status: 'pass' }),
+    );
+  });
+
+  it('passes when every changed source file is in the coverage report', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      coverableFiles,
+      coverage: () => ({ files: { 'src/feature.ts': { covered: [1], instrumented: [1] } } }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({ stage: 'coverage', status: 'pass' }),
+    );
+  });
+
   // Fetch URL is GitHub-shaped so the --repo pin can be derived; the push URL
   // points at a local bare repo so the gate's real `git push` stays offline.
   const addOrigin = (): string => {

@@ -89,4 +89,11 @@ export interface Adapter {
   complexity?(ctx: CapabilityContext, files: string[]): FileComplexity[];
   /** Runs the suite with line coverage. */
   coverage?(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable;
+  /**
+   * Which of `files` this adapter expects to appear in a coverage report —
+   * source the toolchain instruments, excluding tests, which coverage tools
+   * omit by default. Without it the gate cannot tell a changed asset (free by
+   * construction) from changed code the coverage tool never saw (decision 30).
+   */
+  coverableFiles?(ctx: CapabilityContext, files: string[]): string[];
 }

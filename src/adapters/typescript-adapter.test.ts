@@ -103,6 +103,71 @@ describe('typescriptAdapter.depGraph', () => {
     expect(graph?.edges).toEqual([{ from: 'src', to: 'src/lib' }]);
   });
 
+  it('expects coverage only for source files that still exist, never tests or assets', () => {
+    const repo = makeSourceRepo({
+      'src/app.ts': 'export const a = 1;\n',
+      'src/app.test.ts': 'export const spec = 1;\n',
+      'src/types.d.ts': 'declare const g: number;\n',
+      'README.md': '# docs\n',
+    });
+
+    const coverable = typescriptAdapter.coverableFiles?.(localContext(repo), [
+      'src/app.ts',
+      'src/app.test.ts',
+      'src/types.d.ts',
+      'README.md',
+      // Deleted on this branch: nothing left to cover.
+      'src/removed.ts',
+    ]);
+
+    expect(coverable).toEqual(['src/app.ts']);
+  });
+
+  it('does not expect coverage for what the tooling excludes by default', () => {
+    // Otherwise every change to a build config or a test helper is flagged.
+    const repo = makeSourceRepo({
+      'vitest.config.ts': 'export default {};\n',
+      'tests/helper.ts': 'export const h = 1;\n',
+      'src/__mocks__/db.ts': 'export const db = 1;\n',
+      'src/app.ts': 'export const a = 1;\n',
+    });
+
+    const coverable = typescriptAdapter.coverableFiles?.(localContext(repo), [
+      'vitest.config.ts',
+      'tests/helper.ts',
+      'src/__mocks__/db.ts',
+      'src/app.ts',
+    ]);
+
+    expect(coverable).toEqual(['src/app.ts']);
+  });
+
+  it('gives naming no hiding place: only the tools own exclusions are honoured', () => {
+    // `config` is a valid role suffix in this repo, and the tools exclude named
+    // build configs, not every *.config.*. A blanket rule would let a session
+    // park a module at src/payments.config.ts and never be measured.
+    const repo = makeSourceRepo({
+      'src/payments.config.ts': 'export const rate = 1;\n',
+      'src/build/pipeline.ts': 'export const p = 1;\n',
+      'src/test/prod.ts': 'export const t = 1;\n',
+      'packages/tests/api/server.ts': 'export const s = 1;\n',
+    });
+
+    const coverable = typescriptAdapter.coverableFiles?.(localContext(repo), [
+      'src/payments.config.ts',
+      'src/build/pipeline.ts',
+      'src/test/prod.ts',
+      'packages/tests/api/server.ts',
+    ]);
+
+    expect(coverable).toEqual([
+      'src/payments.config.ts',
+      'src/build/pipeline.ts',
+      'src/test/prod.ts',
+      'packages/tests/api/server.ts',
+    ]);
+  });
+
   it('groups top-level files under (root) and skips declaration files', () => {
     const repo = makeSourceRepo({
       'main.ts': "import './helper.js';\n",
