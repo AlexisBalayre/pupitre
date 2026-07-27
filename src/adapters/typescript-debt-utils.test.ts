@@ -124,6 +124,53 @@ describe('findDuplication', () => {
 
     expect(report.duplicatedLines).toBe(12);
   });
+
+  // A shared type import is the intended way to reuse a contract, and its member
+  // list cannot be collapsed. Counting it as duplication flags a PR for doing the
+  // right thing, and `--accept-debt` is the only response available to the author.
+  const sharedImport = [
+    'import type {',
+    '  Adapter,',
+    '  CapabilityContext,',
+    '  CoverageReport,',
+    '  DeadExport,',
+    '  GateCommand,',
+    '  GateStage,',
+    "} from './types/adapter.types.js';",
+  ].join('\n');
+
+  it('does not count a multi-line import shared by two files as duplication', () => {
+    const report = findDuplication({
+      'src/a.ts': `${sharedImport}\nconst a = 1;\n`,
+      'src/b.ts': `${sharedImport}\nconst b = 2;\n`,
+    });
+
+    expect(report).toEqual({ duplicatedLines: 0, blocks: [] });
+  });
+
+  it('still reports a real clone that sits directly below a shared import', () => {
+    const report = findDuplication({
+      'src/a.ts': `${sharedImport}\n${block}\n`,
+      'src/b.ts': `${sharedImport}\n${block}\n`,
+    });
+
+    expect(report.duplicatedLines).toBe(12);
+  });
+
+  it('does not let a skipped import bridge two non-adjacent code regions', () => {
+    // The six lines either side of the import are unique per file; only joining
+    // across the removed import could manufacture a matching window.
+    const top = ['const p1 = 1;', 'const p2 = 2;', 'const p3 = 3;'].join('\n');
+    const bottom = ['const q1 = 1;', 'const q2 = 2;', 'const q3 = 3;'].join('\n');
+    const report = findDuplication({
+      'src/a.ts': `${top}\n${sharedImport}\n${bottom}\n`,
+      'src/b.ts': `${top}\n${sharedImport}\n${bottom}\n`,
+    });
+
+    // top+bottom concatenate to exactly one 6-line window, which is a genuine
+    // clone of real code — but it must be found once, not inflated by the import.
+    expect(report.duplicatedLines).toBe(12);
+  });
 });
 
 describe('measureComplexity', () => {

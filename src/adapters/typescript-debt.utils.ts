@@ -134,14 +134,41 @@ interface NormalizedLine {
   line: number;
 }
 
-/** Trimmed lines minus blanks, lone punctuation, and comment lines. */
+/** Last line of an import statement: `… from '<spec>';` or a bare `import '<spec>';`. */
+const IMPORT_TERMINATOR = /(\bfrom\s+|^import\s+)['"][^'"]*['"]\s*;?$/;
+
+/**
+ * Trimmed lines minus blanks, lone punctuation, comment lines, and import
+ * statements.
+ *
+ * Imports are dropped because a member list is not collapsible: two files that
+ * import the same seven types from `adapter.types.js` are reusing a contract,
+ * which is the intended design, yet a line-window scan reads the shared list as a
+ * clone. Counting it made the ratchet flag a PR for doing the right thing, and
+ * `--accept-debt` was the author's only available response.
+ *
+ * Line-based, like the rest of this scan: a dynamic `import(...)` call is
+ * excluded by hand, and an `import` inside a template literal is skipped as if it
+ * were real. Both are acceptable — the fixture case is still an import line.
+ */
 function normalizeLines(content: string): NormalizedLine[] {
   const lines: NormalizedLine[] = [];
+  let inImport = false;
   content.split('\n').forEach((raw, index) => {
     const text = raw.trim();
     if (!text) return;
-    if (/^[{}()[\]:;,]+$/.test(text)) return;
     if (text.startsWith('//') || text.startsWith('/*') || text.startsWith('*')) return;
+
+    if (inImport) {
+      if (IMPORT_TERMINATOR.test(text)) inImport = false;
+      return;
+    }
+    if (/^import\b/.test(text) && !/^import\s*\(/.test(text)) {
+      inImport = !IMPORT_TERMINATOR.test(text);
+      return;
+    }
+
+    if (/^[{}()[\]:;,]+$/.test(text)) return;
     lines.push({ text, line: index + 1 });
   });
   return lines;
