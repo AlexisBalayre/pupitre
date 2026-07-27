@@ -1,7 +1,7 @@
 #!/bin/bash
 # Quality checks: lint/format on the session's dirty files + repo typecheck.
 # Runs on Claude Code Stop event — after every response that modifies files.
-# Tests are NOT run here: the pre-commit hook runs the full turbo suite, and
+# Tests are NOT run here: the pre-commit hook runs the full vitest suite, and
 # whole-repo lint is deliberately avoided so unrelated red on main can't block
 # an unrelated session.
 
@@ -36,7 +36,7 @@ if ! echo "$DIRTY_TS" | xargs pnpm exec biome check 1>&2; then
   exit 2
 fi
 
-# 3. Typecheck (whole repo — type errors cross file boundaries; turbo caches)
+# 3. Typecheck (whole repo — type errors cross file boundaries)
 echo "-> Typecheck..." >&2
 if ! pnpm typecheck 1>&2; then
   echo "Typecheck failed. Fix the type errors above." >&2

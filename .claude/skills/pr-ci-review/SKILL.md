@@ -1,7 +1,7 @@
 ---
 name: pr-ci-review
 disable-model-invocation: true
-allowed-tools: Bash(git *), Bash(gh *), Bash(pnpm *), Bash(turbo *), Read, Edit, Write, Grep, Glob, Agent, mcp__github_inline_comment__create_inline_comment
+allowed-tools: Bash(git *), Bash(gh *), Bash(pnpm *), Read, Edit, Write, Grep, Glob, Agent, mcp__github_inline_comment__create_inline_comment
 description: Cost-optimal multi-agent code review of local changes or a PR, across six relevance-gated, model-tiered areas, with a deterministic pre-flight, record-all reporting, and high-signal posting.
 argument-hint: "[pr [<number>]] [--fix | --comment]"
 ---
@@ -38,7 +38,7 @@ Define **the change** once and reuse it everywhere below:
 ## 2. Gate the run before spending anything
 
 - **PR freshness** (pr source): before spawning, assert the working tree *is* the PR's current head: `git rev-parse HEAD` must equal `gh pr view <n> --json headRefOid -q .headRefOid`. If they differ, the tree is stale (CI checks out the head, but GitHub can serve a lagging `refs/pull/N/merge`): re-checkout the head with `gh pr checkout <n>`, or stop and say so. A stale tree produces findings that are false on the real head and silently skips the surface the head added. Also assert the tree is **clean** (`git status --porcelain` empty): the SHA match alone passes even when uncommitted edits sit on top of the right HEAD, and those edits make `Read` serve content that disagrees with `gh pr diff`, so reviewers cite code that is not in the PR. If it is dirty, restore it (`git checkout -- .` / `git reset --hard HEAD`) or stop.
-- **Pre-flight** (local source): run `turbo run lint typecheck test` **scoped to the affected packages** (a `--filter` per touched workspace; the full suite is slow and cascade-cancels). If it fails, **stop**: report the failures and ask the user to return once the tree is green. Reviewers assume the deterministic layer is clean; spawning them on a red tree pays opus to rediscover what tooling already flagged. Integration tests are infra-gated and stay CI's job. For a pr source running under CI, skip the pre-flight: the build workflow already gates the tree.
+- **Pre-flight** (local source): run `pnpm lint && pnpm typecheck && pnpm test`. This is a single package, so there is nothing to scope — the whole suite is the affected suite. If it fails, **stop**: report the failures and ask the user to return once the tree is green. Reviewers assume the deterministic layer is clean; spawning them on a red tree pays opus to rediscover what tooling already flagged. Integration tests are infra-gated and stay CI's job. For a pr source running under CI, skip the pre-flight: the build workflow already gates the tree.
 
 ## 3. Steer (yourself, no agent)
 
@@ -59,7 +59,7 @@ Spawn a reviewer (via the **Agent** tool, by its `subagent_type`) **only when it
 | `review-correctness` | opus | code with real logic changed; owns behavioral regressions on the surface tests do not cover |
 | `review-security` | opus | a trust boundary is touched (auth, routes, WS handlers, input handling, secrets, config) |
 | `review-context` | sonnet | spec/protocol/infra surfaces touched (CORS, HTTP, docker, CI, settings) |
-| `review-conventions` | sonnet | almost always: `docs/conventions/*`, `docs/adr/*`, and `CLAUDE.md` govern the rules |
+| `review-conventions` | sonnet | almost always: `docs/conventions/*`, `docs/09-decisions.md`, and `CLAUDE.md` govern the rules |
 | `review-maintainability` | sonnet | code with real logic changed |
 | `review-docs` | sonnet | the change adds or edits prose (docstrings, comments, markdown, copy) |
 
@@ -106,7 +106,7 @@ Validation buys precision, never recall, so it is a cost tax justified only wher
 **fix** (local, `--fix`): apply each confirmed finding.
 
 - **Scope discipline**: each fix targets only the flagged issue. Do not refactor adjacent code, touch unrelated docstrings, or remove ticket TODOs.
-- **Post-verify**: after editing, re-run `turbo run typecheck test` on the affected packages to prove no regression was introduced. Report the result.
+- **Post-verify**: after editing, re-run `pnpm typecheck && pnpm test` to prove no regression was introduced. Report the result.
 - Summarize what changed (file, line, fix). List anything you noticed but did not touch under "Tangential (not applied)" and ask before editing those.
 
 **comment** (pr, `--comment`): post the confirmed `important` findings as inline comments.
@@ -140,7 +140,7 @@ If the harness runs this skill with a `--json-schema`, your **final message** mu
 ## Todo List
 
 - [ ] Parse arguments into source + action; reject invalid combinations.
-- [ ] Gate the run: PR freshness (pr) or pre-flight `turbo` suite (local).
+- [ ] Gate the run: PR freshness (pr) or pre-flight `pnpm lint`/`typecheck`/`test` (local).
 - [ ] Steer: read the change shape and intent yourself.
 - [ ] Gate and spawn only the touched areas, tiered and instance-capped.
 - [ ] Consolidate inline: dedup and assign one area citation-first.

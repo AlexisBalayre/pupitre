@@ -22,7 +22,7 @@ git ls-files --others --exclude-standard -- <files>
 
 Never touch a comment that already existed on `HEAD` in a file you are only editing. Pre-existing comments are out of scope even when they look wrong; the dispatcher polices new comments, not legacy ones.
 
-Skip entirely: generated files (`*.pb.ts`, `*.proto.ts`, Drizzle migration SQL under `packages/acme-db/drizzle/`) and anything under `node_modules`, `dist`, `.turbo`, `archive`.
+Skip entirely: anything under `node_modules` or `dist`. This mirrors the `EXCLUDE` pattern in `.claude/hooks/comment-pruner.sh`; keep the two in step.
 
 ## The hard floor (never delete, regardless of policy)
 
@@ -31,12 +31,13 @@ The floor is deliberately minimal: it holds **only** comments whose deletion wou
 **Tier 1, functional directives.** Deleting these reddens the build or the linter:
 `@ts-expect-error <reason>`, `@ts-ignore`, `@ts-nocheck`, `biome-ignore <rule>: <reason>`, `eslint-disable*`.
 
-**Tier 2, tooling-coupled keeps.** Only two survivors, each kept because deleting it creates a *different* failure, not because the prose earns its place:
+**Tier 2, tooling-coupled keeps.** One survivor, kept because deleting it creates a *different* failure, not because the prose earns its place:
 
-1. Comments quoting a ticket ID plus context (`// ACME-1936: the SMS vendor SDK delivers receipts out of order; buffer defensively`). The ticket is an external fact not in the code.
-2. The **existence** of a required `packages/*` export JSDoc summary line. The convention mandates it, so deleting it trips the missing-JSDoc warning and prune-only means nothing refills it. Keep the line. It is still subject to `jsdoc-rambling` trimming, but do not apply `jsdoc-name-restate` to it: a name-restating summary on a required export stays, because the existence requirement outranks the restatement.
+1. Comments citing an external fact the code cannot carry: a decision entry plus its consequence (`// decision 32: the report is scoped before patchCoverage counts it, or added test lines read as uncovered`), a PR number, or an upstream issue URL. The citation is a fact about *why*, held outside the repo's code.
 
-Everything previously carved out (terse WHYs, bare `TODO`/`FIXME`, Drizzle column notes) is **no longer protected**; it now has to clear the strict bar in Policy below or it goes. The one carry-over: an em-dash is never on its own a reason to delete or alter a comment (do not reformat punctuation, and never flag a pre-existing em-dash).
+This repo has **no required-JSDoc rule** — it is a leaf CLI app with no external consumers, and JSDoc is expected only where the WHY is non-obvious (`docs/conventions/general.md`). So no JSDoc summary line is protected by existence alone; every one of them is judged on its content like any other comment.
+
+Everything previously carved out (terse WHYs, bare `TODO`/`FIXME`, schema column notes) is **no longer protected**; it now has to clear the strict bar in Policy below or it goes. The one carry-over: an em-dash is never on its own a reason to delete or alter a comment (do not reformat punctuation, and never flag a pre-existing em-dash).
 
 ## Categories you act on
 
@@ -47,7 +48,7 @@ Everything below is judged only on the residual after the floor is subtracted.
 | `restate-what` | Inline `//` narrates the code instead of explaining a WHY. Removing it would not confuse a competent reader. | delete |
 | `weak-why` | A `//` or `/* */` comment that gestures at a reason but names no concrete invariant, unit, ordering, concurrency, gotcha, perf cost, or external fact: `// for safety`, `// just in case`, `// handle edge case`, `// important`, `// note:`. Plausible but content-free. | delete |
 | `stale-todo` | `// TODO`/`// FIXME`/`// XXX`/`// HACK` carrying neither a ticket ID nor a specific actionable follow-up (`// TODO: fix later`, `// FIXME`). | delete |
-| `drizzle-restate` | A schema column comment that restates the column name, type, or nullability instead of documenting a non-obvious unit, encoding, range, or invariant. | delete |
+| `schema-restate` | A comment on a column in the `SCHEMA` string in `src/core/db.client.ts` that restates the column name, type, or nullability instead of documenting a non-obvious unit, encoding, range, or invariant. | delete |
 | `seam-duplicate` | Call-site WHY comment restating the callee's JSDoc or class doc. **Read the callee** (`grep`/Read its definition) before ruling; the duplicate is undetectable otherwise. This is your highest-value check. | delete the call-site copy |
 | `divider` | `// === Section ===`, `// ---`, ASCII banners. | delete |
 | `journal` | Changelog/timeline narration: dates, author names, "fixed bug X", "was using Y". | delete |
@@ -65,7 +66,7 @@ Do not invent categories. Anything that does not fit one is not a violation.
 - **Survival bar (strict).** After subtracting the floor, an inline comment (`//` or `/* */`) survives only if it names at least one concrete, code-invisible fact: an invariant, a unit/encoding, an ordering/sequencing constraint, a concurrency/thread-safety note, a known gotcha/footgun, a measured perf reason, or an external fact (ticket, spec section, provider quirk). Ask "could a competent reader who has the code in front of them reconstruct this?"; if yes, it fails the bar. Anything that only gestures at a reason without naming one is `weak-why`.
 - **Delete-when-uncertain.** If you cannot cleanly map a comment to a surviving WHY under the bar above, delete it. Borderline is not a tie that keeps the comment; borderline resolves to delete. The operator chose a clean codebase; the working-tree diff and your summary are the safety net.
 - **Rewrite is restricted.** You may trim a rambling JSDoc to its summary line or strip a noise tag (mechanical edits). Never rewrite the *content* of a WHY comment: that needs knowledge you do not have. If a WHY is poorly worded but real, leave it.
-- **Tests get mechanical categories only.** In `*.test.ts(x)`, `*.spec.ts(x)`, `__mocks__/`, and `test/` paths, act only on `divider`, `journal`, `commented-code`, and `file-banner`. Do not apply the content-judgment rules there (`restate-what`, `weak-why`, `stale-todo`, `drizzle-restate`, `seam-duplicate`, or any `jsdoc-*`).
+- **Tests get mechanical categories only.** In `*.test.ts(x)`, `*.spec.ts(x)`, `__mocks__/`, and `test/` paths, act only on `divider`, `journal`, `commented-code`, and `file-banner`. Do not apply the content-judgment rules there (`restate-what`, `weak-why`, `stale-todo`, `schema-restate`, `seam-duplicate`, or any `jsdoc-*`).
 - **Prune-only.** Never add a comment or generate JSDoc for an undocumented export. Missing JSDoc is not your job.
 - **Working tree only.** Edit files; never `git add` or `git commit`.
 
