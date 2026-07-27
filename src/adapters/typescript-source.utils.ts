@@ -13,6 +13,12 @@ export function isSourceFile(name: string): boolean {
  * anchored where the tools anchor them. A looser rule would be a hiding place —
  * `config` is a valid role suffix in this repo, so `src/core/gate.config.ts` is
  * ordinary production code that must still be covered (decision 30).
+ *
+ * `.worktrees/` is here because it is *another checkout of this same repo*, not
+ * because it is generated. Measuring the main checkout while sessions are open
+ * would otherwise count every session's copy of every source file, so the
+ * repo's ratio would move with how many sessions happen to exist. The python
+ * adapter already skips it for the same reason.
  */
 export function isCoverageExcluded(path: string): boolean {
   return (
@@ -21,7 +27,7 @@ export function isCoverageExcluded(path: string): boolean {
       path,
     ) ||
     /^(?:dist|build|coverage|tests?)\//.test(path) ||
-    /(?:^|\/)(?:node_modules|__tests__|__mocks__)\//.test(path)
+    /(?:^|\/)(?:node_modules|__tests__|__mocks__|\.worktrees)\//.test(path)
   );
 }
 
