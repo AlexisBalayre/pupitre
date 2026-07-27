@@ -34,9 +34,15 @@ const ALLOWED_VARS = [
 
 /**
  * Operator escape hatch: `PUP_GATE_ENV=DATABASE_URL,FOO` adds those names to
- * the allowlist for a repo whose suite genuinely needs them. Set in the
- * operator's own shell, never in a session — a session cannot widen its own
- * sandbox, since pup reads this from the process it launched.
+ * the allowlist for a repo whose suite genuinely needs them.
+ *
+ * Read from pup's own process, so a session cannot widen the sandbox of the run
+ * it is inside. It can widen the *next* one: decision 28 keeps `HOME`, so a gate
+ * child can write `~/.zshenv` and set this for the operator's next invocation,
+ * and any ambient source — direnv's `.envrc`, a CI job, a wrapper script — feeds
+ * it just as well as a login shell does. Whoever controls the environment pup
+ * starts in controls this list; that is the ceiling decision 28 states, not a
+ * guarantee this constant makes.
  */
 const PASSTHROUGH_VAR = 'PUP_GATE_ENV';
 

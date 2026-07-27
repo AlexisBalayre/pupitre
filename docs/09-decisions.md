@@ -282,7 +282,19 @@ changes back into those docs is pending.
     write `~/.zshenv` — including setting `PUP_GATE_ENV` there for the operator's next
     run. Real containment needs `sandbox-exec`/bwrap/a container, and making the
     passthrough an operator-supplied flag rather than an inherited variable; both
-    deferred. Pupitre's own git and gh calls keep the full `scrubbedGitEnv()`: they run
+    deferred.
+    **On that flag, refined (2026-07-27):** it is worth doing, but not for the reason
+    stated above, and it does not close the hole it is listed against. The primitive is the
+    `HOME` write, and a `~/.zshenv` that can export `PUP_GATE_ENV` can equally define a
+    shell function or alias wrapping `pup` with the flag already set. What a flag does close
+    is *ambient* injection, which is a wider door than the login shell: direnv's `.envrc`
+    lives in the repo, and a CI job, a Makefile or any wrapper process supplies an
+    environment variable without anyone editing a dotfile. A flag is reachable only by
+    rewriting the operator's command. So the ordering is the reverse of the sentence above —
+    containment is the fix, the flag is defence in depth against a different vector.
+    Note also that the profile YAML is *not* an option for this, idiomatic though operator
+    settings there otherwise are: it lives in the repo, so a session could write it, which is
+    the same channel decision 31 had to close for `python_files`. Pupitre's own git and gh calls keep the full `scrubbedGitEnv()`: they run
     pup's code, and pushing needs the operator's credential helpers.
     **Process-group kill stays deferred, now with a reason.** Reaping a timed-out
     stage's grandchildren (vitest workers, pytest-xdist) needs the child in its own
