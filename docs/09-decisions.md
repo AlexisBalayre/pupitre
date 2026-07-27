@@ -474,11 +474,24 @@ changes back into those docs is pending.
     that reflexive `--accept-debt` destroys the ledger: `python_files = ["*.py"]` scoped by
     `testpaths = ["tests"]` is a real if uncommon layout, and it is now rejected wholesale,
     so every changed file under `tests/` becomes coverable and — if the coverage config also
-    scopes to `src` — flags on every merge that touches a test. Falling back to the defaults
-    when the *entire* declared list is rejected would restore the old behaviour for such a
-    repo without helping an attacker, since the AND still anchors on the trusted side. It is
-    deferred rather than adopted: it is a judgement about false-flag load, and this repo has
-    no Python to dogfood it against.
+    scopes to `src` — flags on every merge that touches a test. It is deferred rather than
+    adopted: it is a judgement about false-flag load, and this repo has no Python to dogfood
+    it against.
+    **Correction (2026-07-27):** this entry originally proposed falling back to the defaults
+    when the *entire* declared list is rejected, and claimed that would restore the old
+    behaviour for such a repo. It would not, and the remedy should not be implemented as
+    written. The defaults are `test_*.py`/`*_test.py`, and a repo declares
+    `python_files = ["*.py"]` precisely because its tests are *not* named that way — if they
+    were, the blanket would buy it nothing. So the fallback returns exactly the patterns that
+    already fail there, and every non-default-named file under `tests/` keeps flagging. The
+    fallback would only help a repo whose blanket was redundant to begin with. It remains
+    safe (the AND still anchors on the trusted side), just ineffective for the layout that
+    motivated it.
+    Actually fixing that layout means honouring `testpaths`, which nothing in `src/` parses
+    today: scope a blanket to the declared test directories rather than reject it. That is a
+    larger change carrying its own attack surface — `testpaths` is attacker-controlled too, so
+    it needs a convention filter of its own, a declaration of `testpaths = ["src"]` being the
+    obvious payload — and it is what the deferral should be understood to cover.
     Adding `pytest.ini` and `tox.ini` to the files read widens the uncaught-throw surface
     (`mkdir pytest.ini` gives `EISDIR`), which fails closed: the merge refuses and the lock
     releases. Character classes (`test_[ab].py`) are escaped by `globToRegExp` rather than
