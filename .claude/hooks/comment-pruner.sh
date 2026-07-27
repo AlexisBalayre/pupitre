@@ -22,10 +22,11 @@ MEMO="$GIT_DIR/comment-pruner-memo"
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo none)
 MODE="${1:-check}"
 
-# Generated files and vendored/build dirs carry comments the agent must never
-# touch; the agent re-applies this filter, but excluding here avoids dispatching
-# for them at all.
-EXCLUDE='(/(node_modules|dist|\.turbo|archive)/|\.pb\.ts$|\.proto\.ts$|packages/acme-db/drizzle/)'
+# Dependency and build dirs carry comments the agent must never touch; the agent
+# re-applies this filter, but excluding here avoids dispatching for them at all.
+# `.worktrees/` needs no entry: it is gitignored, so neither `git diff` nor
+# `git ls-files --others --exclude-standard` below can reach into it.
+EXCLUDE='(/(node_modules|dist)/)'
 
 TRACKED=$(git diff HEAD --name-only -- '*.ts' '*.tsx' 2>/dev/null | grep -vE "$EXCLUDE" || true)
 UNTRACKED=$(git ls-files --others --exclude-standard -- '*.ts' '*.tsx' 2>/dev/null | grep -vE "$EXCLUDE" || true)

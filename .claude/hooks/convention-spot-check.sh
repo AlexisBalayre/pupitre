@@ -3,10 +3,16 @@
 # Advisory only (exit 0). Comment-quality findings are owned by comment-pruner.sh.
 set -uo pipefail
 
-# Get changed .ts/.tsx files (staged + unstaged)
-CHANGED_FILES=$(git diff --name-only HEAD 2>/dev/null || true)
-STAGED_FILES=$(git diff --cached --name-only 2>/dev/null || true)
-ALL_FILES=$(echo -e "${CHANGED_FILES}\n${STAGED_FILES}" | sort -u | grep -E '\.(ts|tsx)$' || true)
+# Changed .ts/.tsx files: staged + unstaged + untracked. Untracked matters most —
+# a Write-created file is not staged yet, and a brand-new file is exactly where
+# `export default` or an inlined exported type gets introduced.
+ALL_FILES=$(
+  {
+    git diff --name-only HEAD 2>/dev/null
+    git diff --cached --name-only 2>/dev/null
+    git ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u | grep -E '\.(ts|tsx)$' || true
+)
 
 if [ -z "$ALL_FILES" ]; then
   exit 0
@@ -30,11 +36,6 @@ while IFS= read -r file; do
     if grep -qE '^\s*export\s+(interface|type)\s' "$file" 2>/dev/null; then
       WARNINGS+="  ⚠ $file: exports type/interface inline — move to types/ folder\n"
     fi
-  fi
-
-  # Skip JSDoc check in tests/fixtures/mocks — these exports don't need docs.
-  if [[ "$file" =~ \.(test|spec|mock|fixture)\.(ts|tsx)$ ]] || [[ "$file" =~ /__mocks__/ ]] || [[ "$file" =~ /test/ ]]; then
-    continue
   fi
 
 done <<< "$ALL_FILES"

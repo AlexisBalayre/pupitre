@@ -13,15 +13,9 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-# Block: any *.gen.ts file
-if echo "$FILE_PATH" | grep -qE '\.gen\.ts$'; then
-  echo "BLOCKED: *.gen.ts files are auto-generated. Do not edit manually." >&2
-  exit 2
-fi
-
-# Block: gRPC generated stubs
-if echo "$FILE_PATH" | grep -qE 'packages/acme-rpc/src/generated/'; then
-  echo "BLOCKED: gRPC stubs are auto-generated. Edit the .proto files in packages/acme-rpc/proto/ and run 'pnpm --filter @acme/acme-rpc proto:gen' instead." >&2
+# Block: the pnpm lockfile — the only generated file this repo commits.
+if echo "$FILE_PATH" | grep -qE '(^|/)pnpm-lock\.yaml$'; then
+  echo "BLOCKED: pnpm-lock.yaml is generated. Change 'dependencies' in package.json and run 'pnpm install' instead." >&2
   exit 2
 fi
 

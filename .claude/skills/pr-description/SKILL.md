@@ -5,10 +5,14 @@ description: Write a PR title and description in this repo's house style, then c
 
 # Write a PR title and description
 
-> **Setup:** the tracker steps use an issue-tracker MCP server (the examples use a
-> Linear-style API; `mcp__linear-server__*` tool names are placeholders — swap them for your
-> tracker's tools). The ticket prefix (`PROJ`) comes from `TRACKER_ISSUE_PREFIX` in `.env`.
-> No tracker? Skip step 2 and drop the ticket id everywhere.
+> **This repo has no issue tracker.** Skip step 2, and drop the `(PROJ-XXXX)` id from the title
+> and every `Closes` / `Part of the … epic` line from the body. Anchor the PR instead to the
+> numbered entry in `docs/09-decisions.md` it lands, and to the PRs it follows from (`#33`).
+> Follow-ups read `(follow-up to #NNNN)`.
+>
+> The tracker steps below are kept for reuse in a repo that has one; there they use an
+> issue-tracker MCP server (`mcp__linear-server__*` names are placeholders — swap them for your
+> tracker's tools) with the ticket prefix from `TRACKER_ISSUE_PREFIX` in `.env`.
 
 ## Workflow
 
@@ -63,7 +67,7 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
 
   Mixed diff: pick the user-visible win, mention the rest in `## Notes`.
 - **`<scope>`**: optional but usually present. Lowercase kebab. Common scopes in this repo: `web` (FE SPA), `api`, `db`, `gateway`, `session-engine`, `providers`, `rpc`, `auth`, `admin`, `tooling`, `deps`, `adr`, `skills`. Multi-scope `(api,db)` only when both are non-trivial. Drop the scope when the change is repo-wide.
-- **`<summary>`**: imperative present tense, lowercase first word, no trailing period. Proper nouns keep their case (`Drizzle`, `TanStack`, `ADR-0014`); double quotes around identifiers are fine.
+- **`<summary>`**: imperative present tense, lowercase first word, no trailing period. Proper nouns keep their case (`Biome`, `SQLite`, `Vitest`); double quotes around identifiers are fine.
 - **`(PROJ-XXXX)`**: most specific tracker id (slice over epic); drop entirely if none. Follow-ups with no ticket: `(follow-up to #NNNN)`.
 
 **Lint:**
@@ -87,10 +91,10 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
 
 | Section        | Include when                                                                 |
 | :------------- | :--------------------------------------------------------------------------- |
-| `## What`      | Always. Concrete bullets of what changed + slice/epic context.               |
+| `## What`      | Always. Concrete bullets of what changed + the decision it lands or sharpens. |
 | `## How`       | Any code change with a non-obvious approach or notable design decision.      |
 | `## Why` / `## Why now` | Docs/ADR PRs, or when motivation is not self-evident from What.     |
-| `## Migration` | `packages/acme-db/src/schema/**` or `drizzle/**` changed. Name the file, state additive/nullable + backwards-compat verdict. |
+| `## Migration` | `SCHEMA` or `MIGRATIONS` in `src/core/db.client.ts` changed. Name the table/column, state additive/nullable + backwards-compat verdict for stores created before it. |
 | `## Behaviour` | New business rules, gates, or edge cases worth flagging.                     |
 | `## Notes`     | Asides: "docs-only", "no code change", pre-commit green, follow-ups deferred. |
 

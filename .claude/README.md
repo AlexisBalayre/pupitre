@@ -1,6 +1,6 @@
 # Claude Code Configuration
 
-This directory contains all Claude Code customizations for the Acme project. Everything here extends Claude's agentic loop: the cycle of reasoning, tool use, and iteration that powers every session.
+This directory contains all Claude Code customizations for Pupitre. Everything here extends Claude's agentic loop: the cycle of reasoning, tool use, and iteration that powers every session.
 
 ## How It All Fits Together
 
