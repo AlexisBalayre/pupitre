@@ -136,6 +136,20 @@ function printInitReport(report: InitReport, repoPath: string): void {
   }
 }
 
+/** Shared by init/audit: both baseline a repo and refuse the same way when no adapter fits. */
+function runOrReportNoAdapter<T>(fn: () => T): T | undefined {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof NoAdapterError) {
+      console.error(error.message);
+      process.exitCode = 1;
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 /** The gate flags only increases over these numbers, so the human should see the bar. */
 function describeDebtBaseline(debt: DebtBaseline | undefined): string {
   if (!debt) return 'not measured — the debt-delta gate stages will be skipped';
@@ -156,17 +170,8 @@ program
   .description('Onboard a repo: detect stack, baseline, conventions')
   .action(() => {
     const { repoPath, db } = resolveProject();
-    let report: InitReport;
-    try {
-      report = initProject(db, repoPath, detectAdapters(repoPath));
-    } catch (error) {
-      if (error instanceof NoAdapterError) {
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
-      }
-      throw error;
-    }
+    const report = runOrReportNoAdapter(() => initProject(db, repoPath, detectAdapters(repoPath)));
+    if (!report) return;
     printInitReport(report, repoPath);
     console.log(
       'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
@@ -651,17 +656,8 @@ program
   .option('--model <model>', 'claude model for the sweep session (with --sweep)')
   .action((opts: { sweep?: boolean; model?: string }) => {
     const { repoPath, db } = resolveProject();
-    let report: ReturnType<typeof auditProject>;
-    try {
-      report = auditProject(db, repoPath, detectAdapters(repoPath));
-    } catch (error) {
-      if (error instanceof NoAdapterError) {
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
-      }
-      throw error;
-    }
+    const report = runOrReportNoAdapter(() => auditProject(db, repoPath, detectAdapters(repoPath)));
+    if (!report) return;
     if (opts.sweep) {
       if (report.hasRegression) {
         console.error('Baseline regressed — fix the regression before sweeping.');
