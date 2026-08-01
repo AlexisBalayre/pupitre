@@ -693,7 +693,22 @@ function gateAndMerge(
 function pushBranch(repoPath: string, branch: string): void {
   const pushed = (() => {
     try {
-      git(repoPath, 'rev-parse', '--verify', `refs/remotes/origin/${branch}`);
+      // A missing remote-tracking ref is the expected first-push case, not an
+      // error: git's stderr is captured here (not inherited) so its "fatal:
+      // Needed a single revision" doesn't reach the operator console.
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'core.hooksPath=/dev/null',
+          '-C',
+          repoPath,
+          'rev-parse',
+          '--verify',
+          `refs/remotes/origin/${branch}`,
+        ],
+        { encoding: 'utf8', env: scrubbedGitEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
+      );
       return true;
     } catch {
       return false;
