@@ -18,7 +18,7 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
-import { initProject, NoAdapterError } from '../core/init.service.js';
+import { initProject } from '../core/init.service.js';
 import {
   closeLedgerEntry,
   listLedgerEntries,
@@ -55,6 +55,7 @@ import { createSession, killSession, markSessionDone } from '../core/session-lif
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
+import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import { repoRoot, resolveProject } from './project.utils.js';
 
 const program = new Command();
@@ -156,17 +157,8 @@ program
   .description('Onboard a repo: detect stack, baseline, conventions')
   .action(() => {
     const { repoPath, db } = resolveProject();
-    let report: InitReport;
-    try {
-      report = initProject(db, repoPath, detectAdapters(repoPath));
-    } catch (error) {
-      if (error instanceof NoAdapterError) {
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
-      }
-      throw error;
-    }
+    const report = runOrReportNoAdapter(() => initProject(db, repoPath, detectAdapters(repoPath)));
+    if (!report) return;
     printInitReport(report, repoPath);
     console.log(
       'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
@@ -651,17 +643,8 @@ program
   .option('--model <model>', 'claude model for the sweep session (with --sweep)')
   .action((opts: { sweep?: boolean; model?: string }) => {
     const { repoPath, db } = resolveProject();
-    let report: ReturnType<typeof auditProject>;
-    try {
-      report = auditProject(db, repoPath, detectAdapters(repoPath));
-    } catch (error) {
-      if (error instanceof NoAdapterError) {
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
-      }
-      throw error;
-    }
+    const report = runOrReportNoAdapter(() => auditProject(db, repoPath, detectAdapters(repoPath)));
+    if (!report) return;
     if (opts.sweep) {
       if (report.hasRegression) {
         console.error('Baseline regressed — fix the regression before sweeping.');
