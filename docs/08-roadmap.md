@@ -28,6 +28,14 @@ Definition of done: run three parallel sessions on a real repo for a week withou
 - Interactive mind-map (`pup map --open`).
 - Watcher daemon: live conflict radar in `pup status`.
 - `pup audit --sweep` deletion sessions. Custom adapter escape hatch.
+- `pup report --open`: one self-contained per-project HTML page in the mind-map's
+  house style (inline CSS/JS, offline, no CDN) stitching what the store already
+  holds — code map, decision records, open debt ledger with review-by conditions,
+  baseline drift, and live/queued session goals. The last of these is the only
+  view of "what will be built" pupitre has; today session intent dies unrendered
+  with the session. Rendering only — no new collection. Design questions before
+  building (one page vs a richer mind-map; on-demand vs at-merge rendering;
+  whether intent deserves a first-class artefact) go through a grilling session.
 
 ## v2 — team (explicitly out of scope until v1.2 is daily-driven)
 
