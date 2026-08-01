@@ -51,6 +51,8 @@ function tmuxTarget(sessionId: string): string {
  * session running `command`. Shared by `launchSession` and `launchWatcher` —
  * tmux is pup's process supervisor everywhere (decision 1), and both spawn
  * paths need the kill-then-spawn sequence to survive a re-launch.
+ * `command` must have at least 2 elements: tmux shell-evaluates a lone
+ * trailing argument instead of treating it as an argv vector.
  */
 function spawnDetachedSession(
   target: string,
