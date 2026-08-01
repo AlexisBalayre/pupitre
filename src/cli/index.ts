@@ -18,7 +18,7 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
-import { initProject, NoAdapterError } from '../core/init.service.js';
+import { initProject } from '../core/init.service.js';
 import {
   closeLedgerEntry,
   listLedgerEntries,
@@ -55,6 +55,7 @@ import { createSession, killSession, markSessionDone } from '../core/session-lif
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
+import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import { repoRoot, resolveProject } from './project.utils.js';
 
 const program = new Command();
@@ -133,20 +134,6 @@ function printInitReport(report: InitReport, repoPath: string): void {
   if (report.findings.length > 0) {
     console.log('findings:');
     for (const f of report.findings) console.log(`  - ${f}`);
-  }
-}
-
-/** Shared by init/audit: both baseline a repo and refuse the same way when no adapter fits. */
-function runOrReportNoAdapter<T>(fn: () => T): T | undefined {
-  try {
-    return fn();
-  } catch (error) {
-    if (error instanceof NoAdapterError) {
-      console.error(error.message);
-      process.exitCode = 1;
-      return undefined;
-    }
-    throw error;
   }
 }
 
