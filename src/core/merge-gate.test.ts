@@ -22,6 +22,13 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
+// Wraps the real execFileSync (every git call in this suite still runs for
+// real) so a test can inspect the stdio options a specific call was made with.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { killSession, steerSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
@@ -968,6 +975,42 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The target has not moved, so the bar must not either — the post-PR audit ratchets.
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
+  });
+
+  it("pipes the remote-tracking probe's stderr instead of leaking it, while the push stays inherited", () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({});
+    addOrigin();
+    const execFileSyncMock = vi.mocked(execFileSync);
+
+    const outcome = withFakeGh(fakeGh([]), () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapter: debtAdapter({ deadCode: () => [] }),
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    const probeCall = execFileSyncMock.mock.calls.find(([, callArgs]) =>
+      (callArgs as string[] | undefined)?.includes('--verify'),
+    );
+    const pushCall = execFileSyncMock.mock.calls.find(([, callArgs]) =>
+      (callArgs as string[] | undefined)?.includes('push'),
+    );
+    // A missing remote-tracking ref is the expected first-push case: its
+    // "fatal: Needed a single revision" must not leak to the operator
+    // console, so the probe's stderr is piped (captured) rather than
+    // inherited from the parent process.
+    expect((probeCall?.[2] as { stdio?: unknown } | undefined)?.stdio).toEqual([
+      'ignore',
+      'pipe',
+      'pipe',
+    ]);
+    // The push itself must keep its stderr visible to the operator.
+    expect((pushCall?.[2] as { stdio?: unknown } | undefined)?.stdio).toBeUndefined();
   });
 
   it('with openPr retries cleanly after gh dies post-push, without duplicate ledger entries', () => {
