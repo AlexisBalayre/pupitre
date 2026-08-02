@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifySessionActivity } from './session-activity.utils.js';
+import { STALLED_AFTER_MS } from './session-activity.constants.js';
+import {
+  classifySessionActivity,
+  formatStaleAge,
+  isSessionStalled,
+} from './session-activity.utils.js';
 
 function line(event: Record<string, unknown>): string {
   return JSON.stringify(event);
@@ -65,5 +70,28 @@ describe('classifySessionActivity', () => {
   it('reports unknown for an empty or event-free log', () => {
     expect(classifySessionActivity('')).toEqual({ kind: 'unknown' });
     expect(classifySessionActivity('\n\n')).toEqual({ kind: 'unknown' });
+  });
+});
+
+describe('isSessionStalled', () => {
+  it('is not stalled just under the threshold', () => {
+    expect(isSessionStalled(STALLED_AFTER_MS - 1)).toBe(false);
+  });
+
+  it('is stalled at and past the threshold', () => {
+    expect(isSessionStalled(STALLED_AFTER_MS)).toBe(true);
+    expect(isSessionStalled(STALLED_AFTER_MS + 60_000)).toBe(true);
+  });
+
+  it('is not stalled for a fresh events file', () => {
+    expect(isSessionStalled(0)).toBe(false);
+  });
+});
+
+describe('formatStaleAge', () => {
+  it('renders whole minutes, rounded', () => {
+    expect(formatStaleAge(60_000)).toBe('1m');
+    expect(formatStaleAge(90_000)).toBe('2m');
+    expect(formatStaleAge(61 * 60_000)).toBe('61m');
   });
 });

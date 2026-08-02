@@ -1,3 +1,4 @@
+import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import type { SessionActivity } from './types/session-activity.types.js';
 
 /**
@@ -30,4 +31,20 @@ export function classifySessionActivity(eventsJsonl: string): SessionActivity {
     }
   }
   return { kind: 'unknown' };
+}
+
+/**
+ * A running session is stalled once its events file has gone quiet for
+ * STALLED_AFTER_MS, regardless of what its last classified activity was — a
+ * five-second permission ask and a silent hour-long wedge both read as
+ * `awaiting-input`/`working` from the event log's content alone, so only the
+ * file's age can tell them apart (decision 35).
+ */
+export function isSessionStalled(ageMs: number): boolean {
+  return ageMs >= STALLED_AFTER_MS;
+}
+
+/** Whole minutes since the events file last changed, for a STALLED marker. */
+export function formatStaleAge(ageMs: number): string {
+  return `${Math.round(ageMs / 60_000)}m`;
 }

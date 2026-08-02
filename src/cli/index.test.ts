@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,8 +35,14 @@ import { steerSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
-import { projectId } from '../core/paths.utils.js';
-import { ensureProject, insertSession, insertTask } from '../core/session.repository.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
+import {
+  ensureProject,
+  insertSession,
+  insertTask,
+  transitionSession,
+} from '../core/session.repository.js';
+import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
   awaitHandoffReady,
   hardRespawnSession,
@@ -101,6 +107,16 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
     profileHash: 'hash',
   });
   db.close();
+}
+
+/** Writes a running session's events file with its mtime `ageMs` in the past. */
+function seedEventsFile(repoPath: string, sessionId: string, ageMs: number): void {
+  const paths = projectPaths(repoPath);
+  mkdirSync(paths.sessionDir(sessionId), { recursive: true });
+  const eventsFile = paths.eventsFile(sessionId);
+  writeFileSync(eventsFile, `${JSON.stringify({ hook_event_name: 'PostToolUse' })}\n`);
+  const time = new Date(Date.now() - ageMs);
+  utimesSync(eventsFile, time, time);
 }
 
 /** Inserts one open ledger entry (real, unmocked repository) and returns its id. */
@@ -189,6 +205,59 @@ describe('CLI commands', () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
       expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow();
+    });
+
+    it('marks a running session STALLED with its age and sorts it before a fresh one', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-fresh');
+      seedSession(repo, 's-stalled');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-fresh', 'running');
+      transitionSession(db, 's-stalled', 'running');
+      db.close();
+      seedEventsFile(repo, 's-fresh', 0);
+      seedEventsFile(repo, 's-stalled', STALLED_AFTER_MS + 60_000);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const stalledLine = logs.find((line) => line.includes('s-stalled'));
+      const freshLine = logs.find((line) => line.includes('s-fresh'));
+      expect(stalledLine).toMatch(/STALLED \(\d+m\)/);
+      expect(freshLine).not.toContain('STALLED');
+      expect(logs.indexOf(stalledLine as string)).toBeLessThan(logs.indexOf(freshLine as string));
+    });
+
+    it('does not flag a running session with a fresh events file', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-fresh');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-fresh', 'running');
+      db.close();
+      seedEventsFile(repo, 's-fresh', 0);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.some((line) => line.includes('STALLED'))).toBe(false);
+    });
+  });
+
+  describe('watch', () => {
+    it('emits a STALLED line for a running session with an old events file', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-stalled');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-stalled', 'running');
+      db.close();
+      seedEventsFile(repo, 's-stalled', STALLED_AFTER_MS + 60_000);
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(logs.some((line) => line.includes('STALLED') && line.includes('s-stalled'))).toBe(
+        true,
+      );
     });
   });
 
