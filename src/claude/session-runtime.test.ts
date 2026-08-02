@@ -2,9 +2,51 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { launchArgs, preseedTrust } from './session-runtime.service.js';
+// Fakes `tmux`/`which` so this suite never spawns a real tmux pane or shells
+// out to resolve `claude` on PATH — spawning a tmux pane is explicitly out of
+// scope for a test process (docs/conventions/testing.md). Every other
+// execFileSync call — git, in particular — still runs for real.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const fakeExecFileSync = vi.fn((file: string, args?: readonly string[], options?: unknown) => {
+    if (file === 'tmux') return '';
+    if (file === 'which') return '/fake/bin/claude\n';
+    return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
+  });
+  return { ...actual, execFileSync: fakeExecFileSync };
+});
+
+// Fakes existsSync/writeFileSync for the operator's real ~/.claude.json only —
+// launchSession calls preseedTrust internally with no path override, and this
+// suite must never read or mutate the developer's live trust config. Every
+// other fs call, including the temp-repo fixtures below, still runs for real.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const realClaudeJson = path.join(os.homedir(), '.claude.json');
+  const fakeExistsSync = vi.fn((target: unknown) =>
+    target === realClaudeJson ? false : (actual.existsSync as (t: unknown) => boolean)(target),
+  );
+  const fakeWriteFileSync = vi.fn((target: unknown, ...rest: unknown[]) => {
+    if (target === realClaudeJson) return;
+    (actual.writeFileSync as (...callArgs: unknown[]) => void)(target, ...rest);
+  });
+  return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
+});
+
+import {
+  launchArgs,
+  launchSession,
+  launchWatcher,
+  preseedTrust,
+} from './session-runtime.service.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -118,5 +160,68 @@ describe('launchArgs', () => {
   it('passes the model flag only when a model is set', () => {
     expect(launchArgs(OPTS)).not.toContain('--model');
     expect(launchArgs({ ...OPTS, model: 'opus' })).toContain('--model');
+  });
+});
+
+// FAKE_CLAUDE_BIN must match the 'which' branch faked in the node:child_process
+// mock above.
+const FAKE_CLAUDE_BIN = '/fake/bin/claude';
+
+describe('launchSession', () => {
+  it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary', () => {
+    const { target } = launchSession(OPTS);
+
+    expect(target).toBe('pup-s-1');
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toHaveLength(2);
+    expect(tmuxCalls[0]).toEqual([
+      'tmux',
+      ['kill-session', '-t', 'pup-s-1'],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    ]);
+    expect(tmuxCalls[1]?.[1]).toEqual([
+      'new-session',
+      '-d',
+      '-s',
+      'pup-s-1',
+      '-x',
+      '220',
+      '-y',
+      '50',
+      '-c',
+      OPTS.worktreePath,
+      '-e',
+      `PUP_SESSION_ID=${OPTS.sessionId}`,
+      '-e',
+      `PUP_BIN=${process.argv[1] ?? 'pup'}`,
+      FAKE_CLAUDE_BIN,
+      ...launchArgs(OPTS),
+    ]);
+  });
+});
+
+describe('launchWatcher', () => {
+  it('kills any stale watcher, then spawns tmux running the pup CLI watch command', () => {
+    const { target } = launchWatcher('proj-1', '/tmp/repo');
+
+    expect(target).toBe('pup-watch-proj-1');
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toHaveLength(2);
+    expect(tmuxCalls[0]).toEqual([
+      'tmux',
+      ['kill-session', '-t', 'pup-watch-proj-1'],
+      { stdio: ['ignore', 'ignore', 'pipe'] },
+    ]);
+    expect(tmuxCalls[1]?.[1]).toEqual([
+      'new-session',
+      '-d',
+      '-s',
+      'pup-watch-proj-1',
+      '-c',
+      '/tmp/repo',
+      process.execPath,
+      process.argv[1] ?? 'pup',
+      'watch',
+    ]);
   });
 });

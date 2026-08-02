@@ -47,6 +47,37 @@ function tmuxTarget(sessionId: string): string {
 }
 
 /**
+ * Kill any stale session at `target`, then launch a fresh detached tmux
+ * session running `command`. Shared by `launchSession` and `launchWatcher` —
+ * tmux is pup's process supervisor everywhere (decision 1), and both spawn
+ * paths need the kill-then-spawn sequence to survive a re-launch.
+ * `command` must have at least 2 elements: tmux shell-evaluates a lone
+ * trailing argument instead of treating it as an argv vector.
+ */
+function spawnDetachedSession(
+  target: string,
+  opts: {
+    cwd: string;
+    window?: { x: number; y: number };
+    env?: Record<string, string>;
+    command: string[];
+  },
+): void {
+  killIfExists(target);
+  tmux(
+    'new-session',
+    '-d',
+    '-s',
+    target,
+    ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
+    '-c',
+    opts.cwd,
+    ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
+    ...opts.command,
+  );
+}
+
+/**
  * Pre-seed trust so the launched session skips the trust dialog. Claude Code
  * keys the dialog on the git common-dir ROOT, not the launch cwd (verified on
  * 2.1.218: a trusted worktree under an untrusted repo still shows the dialog,
@@ -101,27 +132,17 @@ export function launchSession(opts: LaunchOptions): { target: string } {
   const target = tmuxTarget(opts.sessionId);
   preseedTrust(opts.worktreePath);
   const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
-  killIfExists(target);
-  tmux(
-    'new-session',
-    '-d',
-    '-s',
-    target,
-    '-x',
-    '220',
-    '-y',
-    '50',
-    '-c',
-    opts.worktreePath,
-    '-e',
-    `PUP_SESSION_ID=${opts.sessionId}`,
-    // Absolute path to this CLI, so `pup session done` works even when `pup` is
-    // not on the session's PATH (dev). Production installs the `pup` bin.
-    '-e',
-    `PUP_BIN=${process.argv[1] ?? 'pup'}`,
-    claudeBin,
-    ...launchArgs(opts),
-  );
+  spawnDetachedSession(target, {
+    cwd: opts.worktreePath,
+    window: { x: 220, y: 50 },
+    env: {
+      PUP_SESSION_ID: opts.sessionId,
+      // Absolute path to this CLI, so `pup session done` works even when `pup`
+      // is not on the session's PATH (dev). Production installs the `pup` bin.
+      PUP_BIN: process.argv[1] ?? 'pup',
+    },
+    command: [claudeBin, ...launchArgs(opts)],
+  });
   return { target };
 }
 
@@ -199,18 +220,10 @@ function watcherTarget(repoProjectId: string): string {
  */
 export function launchWatcher(repoProjectId: string, repoPath: string): { target: string } {
   const target = watcherTarget(repoProjectId);
-  killIfExists(target);
-  tmux(
-    'new-session',
-    '-d',
-    '-s',
-    target,
-    '-c',
-    repoPath,
-    process.execPath,
-    process.argv[1] ?? 'pup',
-    'watch',
-  );
+  spawnDetachedSession(target, {
+    cwd: repoPath,
+    command: [process.execPath, process.argv[1] ?? 'pup', 'watch'],
+  });
   return { target };
 }
 
