@@ -103,6 +103,23 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
   db.close();
 }
 
+/** Inserts one open ledger entry (real, unmocked repository) and returns its id. */
+function seedLedgerEntry(repoPath: string): number {
+  const { db } = resolveProject(repoPath);
+  const pid = projectId(repoPath);
+  ensureProject(db, pid, repoPath);
+  const id = insertLedgerEntry(db, {
+    projectId: pid,
+    description: 'shortcut taken',
+    files: ['src/a.ts'],
+    reason: 'ship the demo',
+    acceptedBy: 'human',
+    reviewBy: 'before the next release',
+  });
+  db.close();
+  return id;
+}
+
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;
   let logs: string[];
@@ -416,18 +433,7 @@ describe('CLI commands', () => {
     it('prints open ledger entries', () => {
       const repo = initRepo();
       useCwd(repo);
-      const { db } = resolveProject(repo);
-      const pid = projectId(repo);
-      ensureProject(db, pid, repo);
-      const id = insertLedgerEntry(db, {
-        projectId: pid,
-        description: 'shortcut taken',
-        files: ['src/a.ts'],
-        reason: 'ship the demo',
-        acceptedBy: 'human',
-        reviewBy: 'before the next release',
-      });
-      db.close();
+      const id = seedLedgerEntry(repo);
 
       buildProgram().parse(['debt'], { from: 'user' });
 
@@ -446,18 +452,7 @@ describe('CLI commands', () => {
       it('closes an open ledger entry', () => {
         const repo = initRepo();
         useCwd(repo);
-        const { db } = resolveProject(repo);
-        const pid = projectId(repo);
-        ensureProject(db, pid, repo);
-        const id = insertLedgerEntry(db, {
-          projectId: pid,
-          description: 'shortcut taken',
-          files: ['src/a.ts'],
-          reason: 'ship the demo',
-          acceptedBy: 'human',
-          reviewBy: 'before the next release',
-        });
-        db.close();
+        const id = seedLedgerEntry(repo);
 
         buildProgram().parse(['debt', 'close', String(id)], { from: 'user' });
 
