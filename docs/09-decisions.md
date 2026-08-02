@@ -73,6 +73,71 @@ changes back into those docs is pending.
     lets `pup status` mark overlaps `(stale)` and point at `pup watch --start` when the
     radar is off while 2+ sessions are live.
 
+36. **Gate children run inside a pup-generated `sandbox-exec` profile, and `PUP_GATE_ENV` is
+    replaced by `--gate-env` (2026-08-02).** Closes the containment decision 28 deferred, and the
+    ambient-injection door its 2026-07-27 refinement described. Decision 28 removed the
+    operator's secrets from the child's *environment* and said plainly that this was not
+    containment: `HOME` stayed, so a gate child could still read `~/.aws/credentials`,
+    `~/.config/gh/hosts.yml` or `~/.ssh`, and write `~/.zshenv` for the operator's next login.
+    Every call site that built a `gateChildEnv()` — gate stages, the TypeScript and Python
+    capabilities, the custom adapter's `sh -c` (decision 24), and `pup init`/`pup audit`'s
+    baseline stages — now goes through one seam, `runGateChild` (`sandbox.utils.ts`), which pairs
+    the env allowlist with a filesystem policy. One seam is the point: "what can a gate child
+    touch" has a single answer, and a new call site cannot forget the sandbox without also
+    forgetting the environment it has to ask for anyway.
+    **The policy.** Default-allow; then `file-write*` denied for everything under `HOME` with no
+    carve-outs; then the paths a gate needs — the checkout being measured, the trusted checkout,
+    the run's scratch dir, the toolchain cache — allowed back; then `~/.pupitre` and the generated
+    profile denied *last*, so pup's own store (the baselines a gate ratchets, the ledger it
+    writes) and the profile a later stage would be run under stay unwritable whatever a caller
+    passes as writable. Order is load-bearing — SBPL's last matching rule wins, and the worktree
+    being measured normally lives under `HOME`, so the blanket deny has to land before the allow.
+    `file-read*` is denied for a fixed constant (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`,
+    `~/.npmrc`, `~/.gnupg`, `~/.kube`, `~/.docker/config.json`, `~/Library/Keychains`,
+    `~/.pupitre`) with **no extension mechanism**: a per-repo or per-operator list is a channel a
+    session can write, which is the hole decision 31 had to close for `python_files`. Read cannot
+    be default-deny — the node binary a gate child executes lives under `HOME` on any nvm/asdf
+    install, so denying reads there executes nothing at all.
+    **Cache redirect, and why it is not per-run.** Denied `HOME` writes break toolchains that
+    default their cache to `~/.npm` or `~/Library/Caches`, so `XDG_CACHE_HOME`,
+    `npm_config_cache`, `COREPACK_HOME`, `PIP_CACHE_DIR` and `UV_CACHE_DIR` are pointed at a
+    pup-owned cache directory and `TMPDIR` at the run's own scratch. The cache directory is
+    deliberately *stable across runs* where the scratch is not: pointed at a directory that starts
+    empty every time, corepack re-downloads the repo's package manager on every `pup merge`, which
+    turns a local gate into a network-dependent one — worse than not redirecting at all.
+    **Both fail modes.** On darwin a sandbox that cannot be set up throws instead of running the
+    child, so the stage fails and the merge refuses, exactly as decision 31's parse errors do; the
+    invariant is that no session-authored code ever runs unconfined on a platform pup claims to
+    confine. Everywhere else children run unsandboxed and the gate report, `pup init` and `pup
+    audit` each print `sandbox: none (unsupported platform)` — decision 29's honesty rule applied
+    to the platform gap, since a silent absence reads exactly like the guarantee.
+    **A third mode, found by dogfooding.** macOS refuses a nested `sandbox_apply` unless the inner
+    profile is identical to the outer one, and pupitre's own gate is precisely that case: `pnpm
+    test` runs as a sandboxed stage and the suite spawns gate children of its own, which failed 52
+    tests with `sandbox_apply: Operation not permitted`. Pup probes once per process and reports
+    `sandbox: inherited (pup is itself sandboxed)` when it cannot layer its own profile on top.
+    That is not a hole — a child cannot escape the sandbox its parent runs under, so it stays
+    confined by whatever confines pup — but it is a different guarantee, so it gets a different
+    word in the report. Only the nesting refusal degrades this way; any other `sandbox-exec`
+    failure still refuses the merge.
+    **`PUP_GATE_ENV` is gone**, replaced by `--gate-env <NAME,...>` on `merge`, `init` and
+    `audit`. The variable is no longer honoured at all, which is the whole point: direnv's
+    `.envrc`, a CI job, a Makefile or any wrapper process supplies an environment variable without
+    anyone editing the command the operator typed, while a flag is reachable only by rewriting
+    that command.
+    Verified against this repo's own gate, which is the acceptance decision 28 used: build, lint,
+    test and the instrumented coverage run all pass under the sandbox (82.7% over 71 files).
+    **Ceilings, stated rather than implied.** Network stays open, so a gate child can still
+    exfiltrate anything it can read — and it can read everything the deny list misses, which means
+    a secret in `~/Documents/keys.txt` is not protected; the list closes the credential stores an
+    attacker reaches for first, not the general case. The sandbox matches resolved paths, so a
+    `~/.npmrc` symlinked out to a dotfiles repo is read through its target. Writes *outside*
+    `HOME` remain default-allow, so the shared toolchain cache is poisonable by a gate child — as
+    `~/.npm` always was, and as any path outside it is. Whoever launches pup still chooses the
+    child's policy in the `inherited` case. And Linux gets nothing here: the same seam wants a
+    `bwrap` implementation, deferred rather than faked, because a report that says `none` is
+    honest where a half-policy would not be.
+
 ## Merge semantics
 
 8. **Fresh-base gating**: the gate refuses branches that are stale vs main. **Pupitre auto-rebases

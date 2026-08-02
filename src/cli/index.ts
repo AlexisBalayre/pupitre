@@ -19,6 +19,7 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
 import {
   closeLedgerEntry,
@@ -133,6 +134,7 @@ function printInitReport(report: InitReport, repoPath: string): void {
     if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
   }
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
+  console.log(`sandbox: ${report.sandbox}`);
   if (report.findings.length > 0) {
     console.log('findings:');
     for (const f of report.findings) console.log(`  - ${f}`);
@@ -153,6 +155,16 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
   ];
   return parts.join(', ');
 }
+
+/**
+ * Shared by `merge`, `init` and `audit`: the three commands that run children a
+ * session wrote. A flag rather than the `PUP_GATE_ENV` variable it replaces —
+ * direnv, a CI job or a shell wrapper supplies a variable without anyone
+ * editing the command, and widening a gate child's environment should take
+ * rewriting what the operator typed (decision 36).
+ */
+const GATE_ENV_DESCRIPTION =
+  'extra env var names to pass through to gate children, comma-separated';
 
 /**
  * Builds the commander program without parsing argv — the executable entry
@@ -176,10 +188,11 @@ export function buildProgram(): Command {
   program
     .command('init')
     .description('Onboard a repo: detect stack, baseline, conventions')
-    .action(() => {
+    .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
+    .action((opts: { gateEnv?: string }) => {
       const { repoPath, db } = resolveProject();
       const report = runOrReportNoAdapter(() =>
-        initProject(db, repoPath, detectAdapters(repoPath)),
+        initProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
       );
       if (!report) return;
       printInitReport(report, repoPath);
@@ -482,6 +495,9 @@ export function buildProgram(): Command {
         `  ${stage.stage.padEnd(16)} ${stage.status.toUpperCase()}${stage.detail ? `  ${stage.detail}` : ''}`,
       );
     }
+    // Printed on every run, pass or fail: an operator who never sees this line
+    // cannot tell a confined gate from an unconfined one (decision 36).
+    console.log(`  ${'sandbox'.padEnd(16)} ${report.sandbox}`);
   }
 
   program
@@ -490,101 +506,108 @@ export function buildProgram(): Command {
     .option('--accept-debt <reason>', 'merge despite a flagged shortcut, creating a ledger entry')
     .option('--review-by <condition>', 'review-by condition for the ledger entry')
     .option('--pr', 'on pass, push the branch and open a pull request instead of merging locally')
-    .action((session: string, opts: { acceptDebt?: string; reviewBy?: string; pr?: boolean }) => {
-      if (Boolean(opts.acceptDebt) !== Boolean(opts.reviewBy)) {
-        console.error('--accept-debt and --review-by must be passed together.');
-        process.exitCode = 1;
-        return;
-      }
-      const { repoPath, db } = resolveProject();
-      // Worktree first: it survives `env -u PUP_SESSION_ID`. Neither is proof
-      // against a determined session (it can also `cd` out of its worktree) —
-      // this makes the audit trail honest, not tamper-proof (decision 27). The
-      // env var only counts when it names a session that exists, so it cannot
-      // write arbitrary text into the ledger's acceptor column.
-      const declaredSession = process.env.PUP_SESSION_ID;
-      const caller =
-        findSessionByWorktree(db, process.cwd())?.id ??
-        (declaredSession && getSession(db, declaredSession) ? declaredSession : undefined);
-      if (opts.pr && caller) {
-        console.error('`pup merge --pr` is operator-only; sessions cannot open pull requests.');
-        process.exitCode = 1;
-        return;
-      }
-      const [adapter] = detectAdapters(repoPath);
-      if (!adapter) {
-        console.error(
-          'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
-        );
-        process.exitCode = 1;
-        return;
-      }
-      let outcome: MergeOutcome;
-      try {
-        outcome = runMergeGate(db, {
-          repoPath,
-          sessionId: session,
-          adapter,
-          acceptDebt:
-            opts.acceptDebt && opts.reviewBy
-              ? {
-                  reason: opts.acceptDebt,
-                  reviewBy: opts.reviewBy,
-                  // The ledger must name the real acceptor, not assume a human.
-                  acceptedBy: caller ?? 'human',
-                }
-              : undefined,
-          openPr: opts.pr,
-        });
-      } catch (error) {
-        // Refusals here are expected outcomes with operator instructions in the
-        // message (held lock, adoptable-PR checks) — a stack trace buries them.
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = 1;
-        return;
-      }
-      printGateReport(outcome.report);
-      switch (outcome.status) {
-        case 'merged':
-          if (outcome.prUrl) {
-            console.log(
-              outcome.prWasAdopted
-                ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup audit\`.`
-                : `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup audit\`.`,
-            );
-          } else {
-            console.log(`Merged ${session}; worktree and branch cleaned up.`);
-          }
-          for (const c of outcome.debtCandidates ?? []) {
-            console.log(
-              `This merge touched files of open debt #${c.id} (${c.description}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,
-            );
-          }
-          if (outcome.decisionRecordId !== undefined) {
-            reviewDecisionRecord(db, outcome.decisionRecordId);
-          }
-          break;
-        case 'refused': {
-          const flagged = outcome.report.stages
-            .filter((s) => s.status === 'flagged')
-            .map((s) => s.stage)
-            .join(', ');
-          console.log(
-            `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address the flags.`,
-          );
-          break;
+    .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
+    .action(
+      (
+        session: string,
+        opts: { acceptDebt?: string; reviewBy?: string; pr?: boolean; gateEnv?: string },
+      ) => {
+        if (Boolean(opts.acceptDebt) !== Boolean(opts.reviewBy)) {
+          console.error('--accept-debt and --review-by must be passed together.');
+          process.exitCode = 1;
+          return;
         }
-        case 'rejected':
-          console.log(
-            `Gate failed; report re-injected into the session (rejection ${outcome.rejectCount}/2).`,
+        const { repoPath, db } = resolveProject();
+        // Worktree first: it survives `env -u PUP_SESSION_ID`. Neither is proof
+        // against a determined session (it can also `cd` out of its worktree) —
+        // this makes the audit trail honest, not tamper-proof (decision 27). The
+        // env var only counts when it names a session that exists, so it cannot
+        // write arbitrary text into the ledger's acceptor column.
+        const declaredSession = process.env.PUP_SESSION_ID;
+        const caller =
+          findSessionByWorktree(db, process.cwd())?.id ??
+          (declaredSession && getSession(db, declaredSession) ? declaredSession : undefined);
+        if (opts.pr && caller) {
+          console.error('`pup merge --pr` is operator-only; sessions cannot open pull requests.');
+          process.exitCode = 1;
+          return;
+        }
+        const [adapter] = detectAdapters(repoPath);
+        if (!adapter) {
+          console.error(
+            'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
           );
-          break;
-        case 'blocked':
-          console.log('Gate failed; session parked as blocked — needs a human.');
-          break;
-      }
-      if (outcome.status !== 'merged') process.exitCode = 1;
-    });
+          process.exitCode = 1;
+          return;
+        }
+        let outcome: MergeOutcome;
+        try {
+          outcome = runMergeGate(db, {
+            repoPath,
+            sessionId: session,
+            adapter,
+            acceptDebt:
+              opts.acceptDebt && opts.reviewBy
+                ? {
+                    reason: opts.acceptDebt,
+                    reviewBy: opts.reviewBy,
+                    // The ledger must name the real acceptor, not assume a human.
+                    acceptedBy: caller ?? 'human',
+                  }
+                : undefined,
+            openPr: opts.pr,
+            gateEnv: parseGateEnv(opts.gateEnv),
+          });
+        } catch (error) {
+          // Refusals here are expected outcomes with operator instructions in the
+          // message (held lock, adoptable-PR checks) — a stack trace buries them.
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exitCode = 1;
+          return;
+        }
+        printGateReport(outcome.report);
+        switch (outcome.status) {
+          case 'merged':
+            if (outcome.prUrl) {
+              console.log(
+                outcome.prWasAdopted
+                  ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup audit\`.`
+                  : `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup audit\`.`,
+              );
+            } else {
+              console.log(`Merged ${session}; worktree and branch cleaned up.`);
+            }
+            for (const c of outcome.debtCandidates ?? []) {
+              console.log(
+                `This merge touched files of open debt #${c.id} (${c.description}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,
+              );
+            }
+            if (outcome.decisionRecordId !== undefined) {
+              reviewDecisionRecord(db, outcome.decisionRecordId);
+            }
+            break;
+          case 'refused': {
+            const flagged = outcome.report.stages
+              .filter((s) => s.status === 'flagged')
+              .map((s) => s.stage)
+              .join(', ');
+            console.log(
+              `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address the flags.`,
+            );
+            break;
+          }
+          case 'rejected':
+            console.log(
+              `Gate failed; report re-injected into the session (rejection ${outcome.rejectCount}/2).`,
+            );
+            break;
+          case 'blocked':
+            console.log('Gate failed; session parked as blocked — needs a human.');
+            break;
+        }
+        if (outcome.status !== 'merged') process.exitCode = 1;
+      },
+    );
   program
     .command('map [module]')
     .description('Code map: text tree, or one module in detail; --open for the mind-map')
@@ -707,10 +730,11 @@ export function buildProgram(): Command {
     .description('Re-run the baseline stages and report drift against the stored baseline')
     .option('--sweep', 'spawn a deletion-only session from the audit findings')
     .option('--model <model>', 'claude model for the sweep session (with --sweep)')
-    .action((opts: { sweep?: boolean; model?: string }) => {
+    .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
+    .action((opts: { sweep?: boolean; model?: string; gateEnv?: string }) => {
       const { repoPath, db } = resolveProject();
       const report = runOrReportNoAdapter(() =>
-        auditProject(db, repoPath, detectAdapters(repoPath)),
+        auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
       );
       if (!report) return;
       if (opts.sweep) {
@@ -751,6 +775,7 @@ export function buildProgram(): Command {
       }
       console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
       for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
+      console.log(`sandbox: ${report.sandbox}`);
       // Same findings `pup init` prints: a stage that cannot measure says why
       // here too, or the repeat path is where the gap goes quiet (decision 29).
       if (report.findings.length > 0) {

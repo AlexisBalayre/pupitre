@@ -657,7 +657,7 @@ describe('CLI commands', () => {
     function mergedOutcome(overrides: Partial<MergeOutcome> = {}): MergeOutcome {
       return {
         status: 'merged',
-        report: { sessionId: 's1', passed: true, stages: [] },
+        report: { sessionId: 's1', passed: true, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 0,
         ...overrides,
       };
@@ -739,7 +739,12 @@ describe('CLI commands', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue(
         mergedOutcome({
-          report: { sessionId: 's1', passed: true, stages: [{ stage: 'lint', status: 'pass' }] },
+          report: {
+            sessionId: 's1',
+            passed: true,
+            sandbox: 'sandbox-exec (macOS)',
+            stages: [{ stage: 'lint', status: 'pass' }],
+          },
         }),
       );
 
@@ -809,6 +814,7 @@ describe('CLI commands', () => {
         report: {
           sessionId: 's1',
           passed: false,
+          sandbox: 'sandbox-exec (macOS)',
           stages: [{ stage: 'diff-size', status: 'flagged', detail: 'big diff' }],
         },
         rejectCount: 0,
@@ -827,7 +833,7 @@ describe('CLI commands', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue({
         status: 'rejected',
-        report: { sessionId: 's1', passed: false, stages: [] },
+        report: { sessionId: 's1', passed: false, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 1,
       });
 
@@ -841,7 +847,7 @@ describe('CLI commands', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue({
         status: 'blocked',
-        report: { sessionId: 's1', passed: false, stages: [] },
+        report: { sessionId: 's1', passed: false, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 2,
       });
 

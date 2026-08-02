@@ -7,7 +7,6 @@ import type { CapabilityContext } from '../adapters/types/adapter.types.js';
 import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
-import { gateChildEnv } from './gate-env.utils.js';
 import {
   gitDiffAddedLines,
   gitDiffNumstat,
@@ -35,6 +34,7 @@ import {
   PR_TITLE_MAX_CHARS,
 } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
@@ -127,6 +127,9 @@ function formatGateReport(report: GateReport): string {
     (s) => `- ${s.stage}: ${s.status.toUpperCase()}${s.detail ? ` — ${s.detail}` : ''}`,
   );
   const header = `Merge gate ${report.passed ? 'passed' : 'FAILED'} for session ${report.sessionId}.`;
+  // The containment line sits with the stages, not in a footnote: this text is
+  // the PR body and the re-steer prompt as well as the terminal report.
+  lines.push(`- sandbox: ${report.sandbox}`);
   if (report.passed) return [header, ...lines].join('\n');
   return [
     header,
@@ -198,10 +201,12 @@ function gateAndMerge(
   const capabilityContext: CapabilityContext = {
     measurePath: worktree,
     configPath: req.repoPath,
+    ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
+  const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
   const failed = (): MergeOutcome =>
-    rejectOrBlock(db, { sessionId: session.id, passed: false, stages });
+    rejectOrBlock(db, { sessionId: session.id, passed: false, sandbox, stages });
 
   const dirty = git(worktree, 'status', '--porcelain');
   if (dirty) {
@@ -247,14 +252,16 @@ function gateAndMerge(
       continue;
     }
     try {
-      execFileSync(command.command, command.args, {
+      // The session wrote what this runs (its own scripts, its own config), so
+      // it runs confined: an env allowlist (decision 28) inside a sandbox that
+      // denies every write under HOME and reads of the credential stores
+      // (decision 36). The trusted checkout is writable because a worktree
+      // shares its `.git` — a stage that runs git needs the index lock.
+      runGateChild(command.command, command.args, {
         cwd: worktree,
-        encoding: 'utf8',
+        writablePaths: [req.repoPath],
+        gateEnv: req.gateEnv,
         timeout: GATE_COMMAND_TIMEOUT_MS,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // The session wrote what this runs (its own scripts, its own config),
-        // so it gets an allowlist, not the operator's shell (decision 28).
-        env: gateChildEnv(),
       });
       stages.push({ stage, status: 'pass' });
     } catch (error) {
@@ -440,7 +447,7 @@ function gateAndMerge(
     // branch — no historical checkout needed.
     const before = new Map(
       req.adapter
-        .complexity(localContext(req.repoPath), changedPaths)
+        .complexity(localContext(req.repoPath, req.gateEnv), changedPaths)
         .map((f) => [f.file, f.complexity]),
     );
     const risen = req.adapter
@@ -580,7 +587,7 @@ function gateAndMerge(
 
   if (flaggedDebt.length > 0) {
     if (!req.acceptDebt) {
-      const report: GateReport = { sessionId: session.id, passed: false, stages };
+      const report: GateReport = { sessionId: session.id, passed: false, sandbox, stages };
       appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
       return { status: 'refused', report, rejectCount: session.reject_count };
     }
@@ -601,7 +608,7 @@ function gateAndMerge(
     }
   }
 
-  const report: GateReport = { sessionId: session.id, passed: true, stages };
+  const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
   const commitSubjects = git(
     req.repoPath,
     'log',

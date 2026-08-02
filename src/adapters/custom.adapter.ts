@@ -1,8 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-import { gateChildEnv } from '../core/gate-env.utils.js';
+import { runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,
@@ -11,6 +10,7 @@ import {
 import { CustomAdapterCommandError, CustomAdapterConfigError } from './custom-adapter.errors.js';
 import type {
   Adapter,
+  CapabilityContext,
   CoverageReport,
   DeadExport,
   DepGraph,
@@ -37,20 +37,20 @@ const CONFIG_KEYS = [
 function runJson<TOutput>(
   capability: string,
   command: string,
-  cwd: string,
+  ctx: CapabilityContext,
   stdin?: string,
 ): TOutput {
   let stdout: string;
   try {
-    stdout = execFileSync('sh', ['-c', command], {
-      cwd,
-      encoding: 'utf8',
+    // The command string comes from the trusted checkout, but it runs in the
+    // session's worktree against the session's scripts — same seam, same
+    // confinement as a gate stage (decisions 28, 36).
+    stdout = runGateChild('sh', ['-c', command], {
+      cwd: ctx.measurePath,
+      writablePaths: [ctx.configPath],
+      gateEnv: ctx.gateEnv,
       timeout: CUSTOM_COMMAND_TIMEOUT_MS,
-      input: stdin,
-      stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-      // The command string comes from the trusted checkout, but it runs in the
-      // session's worktree against the session's scripts (decision 28).
-      env: gateChildEnv(),
+      ...(stdin !== undefined ? { input: stdin } : {}),
     });
   } catch (error) {
     const failure = error as { stderr?: string; message?: string };
@@ -150,21 +150,20 @@ export function loadCustomAdapter(repoPath: string): Adapter | undefined {
   // they simply run against whichever checkout is being measured.
   if (config.depGraph) {
     const command = config.depGraph;
-    adapter.depGraph = (ctx) => runJson<DepGraph>('depGraph', command, ctx.measurePath);
+    adapter.depGraph = (ctx) => runJson<DepGraph>('depGraph', command, ctx);
   }
   if (config.deadCode) {
     const command = config.deadCode;
-    adapter.deadCode = (ctx) => runJson<DeadExport[]>('deadCode', command, ctx.measurePath);
+    adapter.deadCode = (ctx) => runJson<DeadExport[]>('deadCode', command, ctx);
   }
   if (config.duplication) {
     const command = config.duplication;
-    adapter.duplication = (ctx) =>
-      runJson<DuplicationReport>('duplication', command, ctx.measurePath);
+    adapter.duplication = (ctx) => runJson<DuplicationReport>('duplication', command, ctx);
   }
   if (config.complexity) {
     const command = config.complexity;
     adapter.complexity = (ctx, files: string[]) =>
-      runJson<FileComplexity[]>('complexity', command, ctx.measurePath, JSON.stringify(files));
+      runJson<FileComplexity[]>('complexity', command, ctx, JSON.stringify(files));
   }
   if (config.coverage) {
     const command = config.coverage;
@@ -172,7 +171,7 @@ export function loadCustomAdapter(repoPath: string): Adapter | undefined {
       // The coverage contract already has an "unavailable" channel — use it,
       // and carry the reason rather than dropping it (decision 29).
       try {
-        return runJson<CoverageReport>('coverage', command, ctx.measurePath);
+        return runJson<CoverageReport>('coverage', command, ctx);
       } catch (error) {
         return { unavailable: `coverage command failed: ${failureSummary(error)}` };
       }

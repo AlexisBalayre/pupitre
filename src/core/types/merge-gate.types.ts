@@ -11,6 +11,13 @@ export interface GateStageResult {
 export interface GateReport {
   sessionId: string;
   passed: boolean;
+  /**
+   * How the stage children were confined, as `sandboxLabel()` phrases it. It
+   * rides in the report — the operator's terminal, the PR body, the stored
+   * event — because a run on a platform pup cannot sandbox has to say so where
+   * the result is read, not only in the docs (decisions 29, 36).
+   */
+  sandbox: string;
   stages: GateStageResult[];
 }
 
@@ -32,6 +39,8 @@ export interface MergeRequest {
   acceptDebt?: AcceptDebtRequest;
   /** Push the branch and open a pull request instead of merging locally (decision 26). */
   openPr?: boolean;
+  /** Env names `--gate-env` lets through to gate children (decision 36). */
+  gateEnv?: string[];
 }
 
 /**

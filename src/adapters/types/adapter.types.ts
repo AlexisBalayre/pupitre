@@ -61,6 +61,14 @@ export interface CapabilityContext {
   measurePath: string;
   /** Checkout to read tool declarations from. Never session-writable. */
   configPath: string;
+  /**
+   * Env names the operator allowed into capability children with `--gate-env`
+   * (decision 36). Optional because absence narrows the child's environment
+   * rather than widening it — the safe direction for a caller that forgets,
+   * unlike the sandbox itself, which no caller can forget because it lives
+   * inside the one seam that spawns children.
+   */
+  gateEnv?: string[];
 }
 
 /**

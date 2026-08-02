@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
-import { gateChildEnv } from '../core/gate-env.utils.js';
+import { runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import type {
   Adapter,
@@ -221,7 +220,11 @@ export const typescriptAdapter: Adapter = {
     );
   },
 
-  coverage({ measurePath, configPath }: CapabilityContext): CoverageReport | CapabilityUnavailable {
+  coverage({
+    measurePath,
+    configPath,
+    gateEnv,
+  }: CapabilityContext): CoverageReport | CapabilityUnavailable {
     // Declared in the trusted manifest, run against the measured checkout: a
     // session cannot switch the stage off by dropping its own devDependency.
     const manifest = readManifest(configPath);
@@ -236,7 +239,11 @@ export const typescriptAdapter: Adapter = {
     const provider = deps['@vitest/coverage-v8'] ? 'v8' : 'istanbul';
     const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
     try {
-      execFileSync(
+      // The instrumented run executes the repo's own test suite, so it runs
+      // confined like a gate stage — and needs its report directory writable,
+      // since the sandbox's default-allow does not survive a TMPDIR under HOME
+      // (decisions 28, 36).
+      runGateChild(
         'npx',
         [
           '--no-install',
@@ -254,12 +261,9 @@ export const typescriptAdapter: Adapter = {
         ],
         {
           cwd: measurePath,
-          encoding: 'utf8',
+          writablePaths: [configPath, outDir],
+          gateEnv,
           timeout: COVERAGE_RUN_TIMEOUT_MS,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // The instrumented run executes the repo's own test suite, so it
-          // gets an allowlist rather than the operator's shell (decision 28).
-          env: gateChildEnv(),
         },
       );
       const raw = JSON.parse(

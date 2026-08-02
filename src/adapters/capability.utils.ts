@@ -16,8 +16,8 @@ export function isUnavailable(result: unknown): result is CapabilityUnavailable 
 }
 
 /** The single-checkout context `pup init` and the code map work with. */
-export function localContext(repoPath: string): CapabilityContext {
-  return { measurePath: repoPath, configPath: repoPath };
+export function localContext(repoPath: string, gateEnv?: string[]): CapabilityContext {
+  return { measurePath: repoPath, configPath: repoPath, ...(gateEnv?.length ? { gateEnv } : {}) };
 }
 
 /** Long enough to carry a stack trace's first line, short enough for one report row. */

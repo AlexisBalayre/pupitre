@@ -34,4 +34,6 @@ export interface InitReport {
   baseline: ProjectBaseline;
   /** Gaps a human should look at: missing commands, stages failing at baseline. */
   findings: string[];
+  /** How the baseline stage children were confined, as `sandboxLabel()` phrases it. */
+  sandbox: string;
 }

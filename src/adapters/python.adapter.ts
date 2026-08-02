@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gateChildEnv } from '../core/gate-env.utils.js';
 import { globToRegExp, globToRegExpSource } from '../core/glob.utils.js';
+import { runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import {
@@ -211,17 +210,18 @@ function capabilityRunnerPrefix(repoPath: string): string[] {
   return prefix[0] === 'uv' ? [...prefix, '--no-sync'] : prefix;
 }
 
-function runCapability(repoPath: string, words: string[]): string {
+function runCapability(ctx: CapabilityContext, words: string[], outDir?: string): string {
   const [command, ...args] = words;
-  return execFileSync(command as string, args, {
-    cwd: repoPath,
-    encoding: 'utf8',
+  // Tool and config both come from the repo being measured, so the child runs
+  // under the same seam as a gate stage: env allowlist plus sandbox (decisions
+  // 28, 36). A report directory is passed explicitly — the sandbox's
+  // default-allow does not survive a TMPDIR that sits under HOME.
+  return runGateChild(command as string, args, {
+    cwd: ctx.measurePath,
+    writablePaths: [ctx.configPath, ...(outDir ? [outDir] : [])],
+    gateEnv: ctx.gateEnv,
     timeout: DEBT_COMMAND_TIMEOUT_MS,
     maxBuffer: DEBT_COMMAND_MAX_BUFFER_BYTES,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // Tool and config both come from the repo being measured, so the child
-    // gets an allowlist rather than the operator's shell (decision 28).
-    env: gateChildEnv(),
   });
 }
 
@@ -281,7 +281,8 @@ export const pythonAdapter: Adapter = {
     return commands;
   },
 
-  deadCode({ measurePath, configPath }: CapabilityContext): DeadExport[] | CapabilityUnavailable {
+  deadCode(ctx: CapabilityContext): DeadExport[] | CapabilityUnavailable {
+    const { measurePath, configPath } = ctx;
     if (!declaresTool(configPath, 'vulture')) {
       return { unavailable: `no vulture declared in ${PYTHON_CONFIGS.join(', ')}` };
     }
@@ -305,7 +306,7 @@ export const pythonAdapter: Adapter = {
     const args = trustedSection ? [] : ['.', `--exclude=${VULTURE_EXCLUDE}`];
     try {
       return parseVultureOutput(
-        runCapability(measurePath, [...capabilityRunnerPrefix(configPath), 'vulture', ...args]),
+        runCapability(ctx, [...capabilityRunnerPrefix(configPath), 'vulture', ...args]),
         measurePath,
       );
     } catch (error) {
@@ -333,19 +334,24 @@ export const pythonAdapter: Adapter = {
     );
   },
 
-  coverage({ measurePath, configPath }: CapabilityContext): CoverageReport | CapabilityUnavailable {
+  coverage(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable {
+    const { measurePath, configPath } = ctx;
     if (!declaresTool(configPath, 'pytest-cov')) {
       return { unavailable: `no pytest-cov declared in ${PYTHON_CONFIGS.join(', ')}` };
     }
     const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
     const reportPath = join(outDir, 'coverage.json');
     try {
-      runCapability(measurePath, [
-        ...capabilityRunnerPrefix(configPath),
-        'pytest',
-        '--cov',
-        `--cov-report=json:${reportPath}`,
-      ]);
+      runCapability(
+        ctx,
+        [
+          ...capabilityRunnerPrefix(configPath),
+          'pytest',
+          '--cov',
+          `--cov-report=json:${reportPath}`,
+        ],
+        outDir,
+      );
       const raw = JSON.parse(readFileSync(reportPath, 'utf8')) as CoveragePyReport;
       return coveragePyToCoverageReport(raw, measurePath);
     } catch (error) {

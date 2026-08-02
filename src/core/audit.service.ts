@@ -106,10 +106,15 @@ export function formatDebtTransition(t: DebtTransition): string {
  * diff against the previously stored baseline, and refresh it. First run (no
  * stored baseline) degenerates to plain init: no transitions to report.
  */
-export function auditProject(db: Database, repoPath: string, adapters: Adapter[]): AuditReport {
+export function auditProject(
+  db: Database,
+  repoPath: string,
+  adapters: Adapter[],
+  gateEnv?: string[],
+): AuditReport {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
-  const report = initProject(db, repoPath, adapters);
+  const report = initProject(db, repoPath, adapters, gateEnv);
   const transitions = previous ? compareBaselines(previous, report.baseline) : [];
   const debtTransitions = previous ? compareDebt(previous.debt, report.baseline.debt) : [];
   return {
@@ -122,6 +127,7 @@ export function auditProject(db: Database, repoPath: string, adapters: Adapter[]
       transitions.some((t) => t.delta === 'regressed') ||
       debtTransitions.some((t) => t.delta === 'regressed'),
     findings: report.findings,
+    sandbox: report.sandbox,
   };
 }
 
