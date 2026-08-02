@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Adapter } from '../adapters/types/adapter.types.js';
-import { auditProject, buildSweepTask } from './audit.service.js';
+import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js';
+import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
@@ -22,6 +22,17 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
       { stage: 'lint', command: 'true', args: [] },
     ],
     ...overrides,
+  };
+}
+
+function coverageReport(covered: number, instrumented: number): CoverageReport {
+  return {
+    files: {
+      'a.ts': {
+        covered: Array.from({ length: covered }, (_, i) => i + 1),
+        instrumented: Array.from({ length: instrumented }, (_, i) => i + 1),
+      },
+    },
   };
 }
 
@@ -112,6 +123,131 @@ describe('auditProject', () => {
       delta: 'regressed',
     });
     expect(report.hasRegression).toBe(true);
+  });
+
+  it('flags duplicated lines rising as a debt regression and refuses via hasRegression', () => {
+    initProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 182, blocks: [] }) }),
+    ]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 196, blocks: [] }) }),
+    ]);
+
+    expect(report.debtTransitions).toEqual([
+      { metric: 'duplicatedLines', before: 182, after: 196, delta: 'regressed' },
+    ]);
+    expect(report.hasRegression).toBe(true);
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.duplicatedLines).toBe(196);
+  });
+
+  it('reports falling duplicated lines as improved, not a regression', () => {
+    initProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 196, blocks: [] }) }),
+    ]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 182, blocks: [] }) }),
+    ]);
+
+    expect(report.debtTransitions).toEqual([
+      { metric: 'duplicatedLines', before: 196, after: 182, delta: 'improved' },
+    ]);
+    expect(report.hasRegression).toBe(false);
+  });
+
+  it('flags a growing unused-export count as a debt regression', () => {
+    initProject(db, repo, [makeAdapter({ deadCode: () => [{ file: 'a.ts', exportName: 'foo' }] })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({
+        deadCode: () => [
+          { file: 'a.ts', exportName: 'foo' },
+          { file: 'b.ts', exportName: 'bar' },
+        ],
+      }),
+    ]);
+
+    expect(report.debtTransitions).toEqual([
+      { metric: 'deadExports', before: 1, after: 2, delta: 'regressed' },
+    ]);
+    expect(report.hasRegression).toBe(true);
+  });
+
+  it('flags a coverage ratio drop beyond the epsilon as a debt regression', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => coverageReport(80, 100) }),
+    ]);
+
+    expect(report.debtTransitions).toEqual([
+      { metric: 'coverageRatio', before: 0.9, after: 0.8, delta: 'regressed' },
+    ]);
+    expect(report.hasRegression).toBe(true);
+  });
+
+  it('treats a coverage ratio move within the epsilon as unchanged', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(900, 1000) })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => coverageReport(899, 1000) }),
+    ]);
+
+    expect(report.debtTransitions).toEqual([
+      { metric: 'coverageRatio', before: 0.9, after: 0.899, delta: 'unchanged' },
+    ]);
+    expect(report.hasRegression).toBe(false);
+  });
+
+  it('emits no transition for a metric measured on only one side', () => {
+    initProject(db, repo, [makeAdapter()]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 10, blocks: [] }) }),
+    ]);
+
+    expect(report.debtTransitions).toEqual([]);
+    expect(report.hasRegression).toBe(false);
+  });
+});
+
+describe('formatDebtTransition', () => {
+  it('marks a regressed metric with an old -> new line and a REGRESSED marker', () => {
+    const line = formatDebtTransition({
+      metric: 'duplicatedLines',
+      before: 182,
+      after: 196,
+      delta: 'regressed',
+    });
+
+    expect(line).toContain('182 -> 196');
+    expect(line).toContain('REGRESSED');
+  });
+
+  it('marks an improved metric with an IMPROVED marker', () => {
+    const line = formatDebtTransition({
+      metric: 'deadExports',
+      before: 5,
+      after: 2,
+      delta: 'improved',
+    });
+
+    expect(line).toContain('5 -> 2');
+    expect(line).toContain('IMPROVED');
+  });
+
+  it('carries no marker for an unchanged metric', () => {
+    const line = formatDebtTransition({
+      metric: 'coverageRatio',
+      before: 0.9,
+      after: 0.9,
+      delta: 'unchanged',
+    });
+
+    expect(line).toContain('90% -> 90%');
+    expect(line).not.toMatch(/REGRESSED|IMPROVED/);
   });
 });
 

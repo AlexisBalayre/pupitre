@@ -9,7 +9,7 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { killWatcher, launchWatcher, steerSession } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
-import { auditProject, buildSweepTask } from '../core/audit.service.js';
+import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
 import {
   deleteDecisionRecord,
@@ -682,6 +682,7 @@ program
       if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
     }
     console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
+    for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
     // Same findings `pup init` prints: a stage that cannot measure says why
     // here too, or the repeat path is where the gap goes quiet (decision 29).
     if (report.findings.length > 0) {
