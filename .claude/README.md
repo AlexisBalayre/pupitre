@@ -42,14 +42,13 @@ This directory contains all Claude Code customizations for Pupitre. Everything h
 │
 ├── skills/                # Auto-discoverable knowledge + workflows (each is <name>/SKILL.md)
 │   ├── tdd/   diagnose/   resolve-merge-conflicts/               # engineering
-│   ├── find-dead-code/   improve-codebase-architecture/          # engineering (manual)
+│   ├── improve-codebase-architecture/                            # engineering (manual)
 │   ├── grilling/   grill-me/   grill-with-docs/                  # thinking / design
 │   ├── codebase-design/   domain-modeling/   zoom-out/   prototype/
 │   ├── pr-description/   pr-ci-review/                           # PR & review
 │   ├── address-review-comments/   review-retro/
 │   ├── write-a-skill/   handoff/   caveman/                      # meta / workflow
-│   ├── obsidian-vault/   daily-note/   to-issues/   to-epic/     # personal integrations (.env)
-│   └── backfill-issues/
+│   └── obsidian-vault/   daily-note/                             # personal integrations (.env)
 │
 ├── agents/                # Custom subagents for specialized tasks
 │   ├── convention-checker.md                                     # proactive
