@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -41,7 +41,11 @@ import {
   listSessions,
   type SessionRow,
 } from '../core/session.repository.js';
-import { classifySessionActivity } from '../core/session-activity.utils.js';
+import {
+  classifySessionActivity,
+  formatStaleAge,
+  isSessionStalled,
+} from '../core/session-activity.utils.js';
 import {
   awaitHandoffReady,
   HANDOFF_WAIT_DEFAULT_MS,
@@ -223,7 +227,7 @@ export function buildProgram(): Command {
 
   program
     .command('status')
-    .description('Sessions by state, blocked first; overdue debt on top')
+    .description('Sessions by state, blocked and stalled first; overdue debt on top')
     .action(() => {
       const { repoPath, db } = resolveProject();
       const overdue = listOverdueLedgerEntries(db, projectId(repoPath), new Date());
@@ -237,11 +241,16 @@ export function buildProgram(): Command {
         console.log('No sessions.');
         return;
       }
-      const blockedFirst = [...rows].sort(
-        (a, b) => Number(b.state === 'blocked') - Number(a.state === 'blocked'),
-      );
       const paths = projectPaths(repoPath);
-      for (const r of blockedFirst) {
+      const stalledAges = new Map(
+        findStalledSessions(db, repoPath, Date.now()).map((s) => [s.id, s.ageMs]),
+      );
+      const priorityFirst = [...rows].sort(
+        (a, b) =>
+          Number(b.state === 'blocked' || stalledAges.has(b.id)) -
+          Number(a.state === 'blocked' || stalledAges.has(a.id)),
+      );
+      for (const r of priorityFirst) {
         const marker =
           r.state === 'blocked' ? `  needs a human (${r.reject_count} rejections)` : '';
         const tokens = r.transcript_path ? latestContextTokens(r.transcript_path) : undefined;
@@ -250,7 +259,7 @@ export function buildProgram(): Command {
             ? `  ctx ~${Math.round(tokens / 1000)}k${tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${r.id}\`` : ''}`
             : '';
         console.log(
-          `${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${activityMarker(r.state, paths.eventsFile(r.id))}${ctx}`,
+          `${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${activityMarker(r.state, paths.eventsFile(r.id), stalledAges.get(r.id))}${ctx}`,
         );
       }
       printConflictRadar(db, repoPath, rows);
@@ -272,15 +281,38 @@ export function buildProgram(): Command {
     }
   }
 
-  /** Decision 2: hook events, not pane contents, tell what a running session is doing. */
-  function activityMarker(state: string, eventsFile: string): string {
+  /**
+   * Decision 2: hook events, not pane contents, tell what a running session is
+   * doing. Decision 35: staleness wins over activity kind — a session whose
+   * events file has gone quiet too long is STALLED no matter what its last
+   * classified event was.
+   */
+  function activityMarker(state: string, eventsFile: string, stalledAgeMs?: number): string {
     if (state !== 'running' || !existsSync(eventsFile)) return '';
+    if (stalledAgeMs !== undefined) return `  STALLED (${formatStaleAge(stalledAgeMs)})`;
     const activity = classifySessionActivity(readFileSync(eventsFile, 'utf8'));
     if (activity.kind === 'awaiting-input') {
       return `  WAITING ON INPUT${activity.detail ? ` (${activity.detail})` : ''}`;
     }
     if (activity.kind === 'idle') return '  idle (turn ended, no done signal)';
     return '';
+  }
+
+  /** Running sessions whose events file has gone quiet past STALLED_AFTER_MS (decision 35). */
+  function findStalledSessions(
+    db: Database,
+    repoPath: string,
+    now: number,
+  ): Array<{ id: string; ageMs: number }> {
+    const paths = projectPaths(repoPath);
+    const stalled: Array<{ id: string; ageMs: number }> = [];
+    for (const r of listSessions(db, ['running'])) {
+      const eventsFile = paths.eventsFile(r.id);
+      if (!existsSync(eventsFile)) continue;
+      const ageMs = now - statSync(eventsFile).mtimeMs;
+      if (isSessionStalled(ageMs)) stalled.push({ id: r.id, ageMs });
+    }
+    return stalled;
   }
 
   program
@@ -307,14 +339,25 @@ export function buildProgram(): Command {
       let previous = '';
       for (;;) {
         const pairs = scanOverlaps(db, repoPath);
-        const snapshot = JSON.stringify(pairs);
+        const stalled = findStalledSessions(db, repoPath, Date.now());
+        // ageMs ticks up every sweep, so it's excluded from the dedup key —
+        // only a session newly going stalled (or un-stalling) is a change.
+        const snapshot = JSON.stringify({
+          pairs,
+          stalledIds: stalled.map((s) => s.id).sort(),
+        });
         if (snapshot !== previous) {
           const stamp = new Date().toISOString();
-          if (pairs.length === 0) console.log(`${stamp}  clear — no overlaps`);
+          if (pairs.length === 0 && stalled.length === 0) {
+            console.log(`${stamp}  clear — no overlaps`);
+          }
           for (const pair of pairs) {
             console.log(
               `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files.join(', ')}`,
             );
+          }
+          for (const s of stalled) {
+            console.log(`${stamp}  STALLED  ${s.id}  ${formatStaleAge(s.ageMs)}`);
           }
           previous = snapshot;
         }

@@ -26,6 +26,22 @@ changes back into those docs is pending.
     transcript JSONL usage fields (decision 2 — never pane scraping); `pup status` shows
     `ctx ~Nk` per running session and suggests a respawn above 120k tokens.
 
+35. **A running session is STALLED by events-file mtime, not a logged timestamp
+    (2026-08-02).** Observed live: a transient API network error left a session dead at its
+    prompt for an hour while `pup status` still read RUNNING — `classifySessionActivity`
+    (decision 2) correctly classified the last hook event, but nothing carried an age, so a
+    five-second permission ask and a silent hour-long wedge rendered identically. The
+    operator only noticed by reading the tmux pane by hand. Hook events themselves carry no
+    timestamp field (verified against a live `~/.pupitre/*/sessions/*/events.jsonl`), so
+    staleness is read from the events file's mtime instead of adding one: every hook append
+    already touches the file, so its mtime is the last-activity clock for free, with no
+    change to the event schema or the hooks that write it. `STALLED_AFTER_MS` (10 minutes,
+    `session-activity.constants.ts`) gates a running session whose events file is older than
+    that, independent of its classified activity kind — staleness wins over
+    awaiting-input/idle/working, since the whole point is that a wedge can present as any of
+    them. `pup status` prints `STALLED (Nm)` and sorts stalled sessions to the top alongside
+    `blocked` ones; `pup watch` emits one `STALLED` line per sweep for each.
+
 ## Safety & enforcement
 
 5. **Sessions run with permissions bypassed; compiled hooks are the enforcement layer.**
