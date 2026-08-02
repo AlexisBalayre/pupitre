@@ -16,7 +16,6 @@ to invoke it.
 | `tdd` | Building a feature or fixing a bug test-first; "red-green-refactor"; want integration tests. Drives the red → green loop (refactoring belongs to the review stage, not the loop). | Auto or `/tdd` |
 | `diagnose` | A hard bug or performance regression; "diagnose/debug this"; something broken, throwing, failing, or slow. Runs reproduce → minimise → hypothesise → instrument → fix → regression-test. | Auto or `/diagnose` |
 | `resolve-merge-conflicts` | A merge, rebase, or cherry-pick stopped on conflicts. Resolves by intent (both sides' goals), and regenerates — never hand-merges — generated files. | Auto or `/resolve-merge-conflicts` |
-| `find-dead-code` | "find dead code" / "unused exports" / "prune the codebase". Returns a ranked candidate list with a per-item verification checklist — it never deletes. | Manual only (`/find-dead-code`) |
 | `improve-codebase-architecture` | "improve architecture" / "find refactors" / "make it more testable". Scans for deepening opportunities, presents a visual HTML report, then grills through whichever one you pick. | Manual only (`/improve-codebase-architecture`) |
 
 ## Thinking & design — get to clarity before coding
@@ -50,14 +49,9 @@ to invoke it.
 
 ## Personal integrations — configure via `.env`
 
-These touch your own tools, so set their values in `.env` (see `.env.example`). The tracker
-skills (`to-epic`, `to-issues`, `backfill-issues`, `daily-note`) also need an issue-tracker MCP
-server enabled in `.claude/settings.local.json`.
+These touch your own tools, so set their values in `.env` (see `.env.example`).
 
 | Skill | When to use | Invoke |
 | :---- | :---------- | :----- |
 | `obsidian-vault` | Find, create, or organize notes in your Obsidian vault. Needs `OBSIDIAN_VAULT`. | Auto or `/obsidian-vault` |
-| `daily-note` | Daily Obsidian logbook notes (`--plan` / `--summary` / `--status` / `--checkin`), synced with the tracker and Git. Needs `OBSIDIAN_VAULT` + `OBSIDIAN_DAILY_DIR` + `TRACKER_*` IDs. | Manual only (`/daily-note`) |
-| `to-epic` | Turn the current discussion into an Epic and file it. Needs `TRACKER_*` IDs + a tracker MCP. | Manual only (`/to-epic`) |
-| `to-issues` | Slice a plan or Epic into independent, end-to-end vertical-slice issues. Needs `TRACKER_*` IDs + a tracker MCP. | Manual only (`/to-issues`) |
-| `backfill-issues` | Backfill tracker issues from merged PRs that lack one, grouped and user-approved before filing. Needs `TRACKER_*` IDs + a tracker MCP. | Manual only (`/backfill-issues`) |
+| `daily-note` | Daily Obsidian logbook notes (`--plan` / `--summary` / `--status` / `--checkin`), synced with Git. Needs `OBSIDIAN_VAULT` + `OBSIDIAN_DAILY_DIR`; its tracker sync is inert here (no tracker MCP in this repo). | Manual only (`/daily-note`) |
