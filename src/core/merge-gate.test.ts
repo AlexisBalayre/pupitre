@@ -1009,7 +1009,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       'pipe',
       'pipe',
     ]);
-    // The push itself must keep its stderr visible to the operator.
+    // The push itself must keep its stderr visible to the operator. Without
+    // the existence guard, a vanished push call would make the optional chain
+    // yield undefined and the stdio assertion pass vacuously.
+    expect(pushCall).toBeDefined();
     expect((pushCall?.[2] as { stdio?: unknown } | undefined)?.stdio).toBeUndefined();
   });
 
