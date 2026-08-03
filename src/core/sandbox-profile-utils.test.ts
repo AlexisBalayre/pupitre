@@ -20,11 +20,6 @@ function profile(writablePaths: string[] = ['/repo'], protectedPaths: string[] =
   });
 }
 
-/** Top-level SBPL rules: each starts with `(` at column 0, subpaths are indented. */
-function rules(generated: string): string[] {
-  return generated.split(/\n(?=\()/);
-}
-
 describe('sandboxProfile', () => {
   it('denies every write before granting the paths a gate needs', () => {
     // Order is the policy: the blanket deny lands first and the enumerated
@@ -34,25 +29,38 @@ describe('sandboxProfile', () => {
     const generated = profile([`${HOME}/code/repo/.worktrees/s1`]);
 
     expect(generated).toContain('(allow default)');
+    // Presence first: indexOf returns -1 for a missing rule, and -1 is less
+    // than any index, so the comparison alone would PASS when the blanket
+    // deny — the whole inversion — is deleted.
+    expect(generated).toContain('(deny file-write*)');
     expect(generated.indexOf('(deny file-write*)')).toBeLessThan(
       generated.indexOf(`(allow file-write*\n  (subpath "${HOME}/code/repo/.worktrees/s1")`),
     );
   });
 
-  it('grants exactly the enumerated allow list and nothing else', () => {
+  it('generates exactly this policy and nothing more', () => {
     // Decision 36's review deleted the profile-text test, leaving only runtime
-    // proofs that specific paths are denied — an EXTRA grant quietly added to
-    // the allow list would have passed every one of them. Exact equality over
-    // the complete set of allow rules closes that: a new grant, a widened
-    // subpath, or a second allow rule fails by construction.
-    const allowRules = rules(profile(['/repo', '/reports'])).filter((rule) =>
-      rule.startsWith('(allow'),
+    // proofs that specific paths are denied — an extra grant would have passed
+    // every one of them. Structural assertions (splitting into rules, matching
+    // the allow set) were tried and evaded: SBPL ignores leading whitespace, so
+    // an allow rule indented one space, or appended to the last subpath's line,
+    // is live policy that a line-oriented parse absorbs into the preceding
+    // deny. Whole-text equality is the only formatting-proof pin: any grant
+    // added, deny dropped, or subpath widened — anywhere, however spelled —
+    // fails by construction.
+    expect(profile(['/repo', '/reports'])).toBe(
+      [
+        '(version 1)',
+        '(allow default)',
+        '(deny file-write*)',
+        `(deny file-read*${CURATED_SECRET_PATHS.split(' ')
+          .map((path) => `\n  (subpath "${HOME}/${path}")`)
+          .join('')})`,
+        '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
+        `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x"))`,
+        '',
+      ].join('\n'),
     );
-
-    expect(allowRules).toEqual([
-      '(allow default)',
-      '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
-    ]);
   });
 
   it('read-denies the curated secret paths', () => {
