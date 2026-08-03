@@ -110,6 +110,14 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
   db.close();
 }
 
+/** A session whose tmux pane is gone for good — steer/interrupt must refuse it. */
+function seedKilledSession(repoPath: string, sessionId: string): void {
+  seedSession(repoPath, sessionId);
+  const { db } = resolveProject(repoPath);
+  transitionSession(db, sessionId, 'killed');
+  db.close();
+}
+
 /** Writes a running session's events file with its mtime `ageMs` in the past. */
 function seedEventsFile(repoPath: string, sessionId: string, ageMs: number): void {
   const paths = projectPaths(repoPath);
@@ -395,10 +403,7 @@ describe('CLI commands', () => {
     it('refuses a terminal session', () => {
       const repo = initRepo();
       useCwd(repo);
-      seedSession(repo, 's1');
-      const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'killed');
-      db.close();
+      seedKilledSession(repo, 's1');
 
       buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
 
@@ -460,10 +465,7 @@ describe('CLI commands', () => {
     it('refuses a terminal session without touching tmux', () => {
       const repo = initRepo();
       useCwd(repo);
-      seedSession(repo, 's1');
-      const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'killed');
-      db.close();
+      seedKilledSession(repo, 's1');
 
       buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
 
