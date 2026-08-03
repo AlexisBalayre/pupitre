@@ -14,7 +14,7 @@ changes back into those docs is pending.
    `pup session done "<summary>"` when acceptance criteria are met. The command refuses on a dirty
    worktree. A Stop without the done event means idle-awaiting-input, not done.
 4. Steering cannot force-interrupt a mid-turn agent; steer messages queue until the turn ends.
-   Accepted limitation.
+   Accepted limitation for `pup steer` itself; decision 37 adds the explicit escape hatch.
 18. **Context is optimized by handoff-respawn, not in-place compaction (2026-07-23).**
     `pup respawn <session>` steers the session to write a handoff document
     (`~/.pupitre/<project>/sessions/<id>/handoff.md`), waits for the explicit
@@ -41,6 +41,27 @@ changes back into those docs is pending.
     awaiting-input/idle/working, since the whole point is that a wedge can present as any of
     them. `pup status` prints `STALLED (Nm)` and sorts stalled sessions to the top alongside
     `blocked` ones; `pup watch` emits one `STALLED` line per sweep for each.
+
+37. **Force-interrupt is its own command, and every tmux lookup is pinned to exact match
+    (2026-08-03).** `pup interrupt <session> ["<message>"]` sends Escape to the session's
+    pane, aborting the in-flight tool call, then optionally steers — the recovery decision 35
+    left manual (a wedged tool call is unreachable by `pup steer`, whose messages queue until
+    the turn ends; the alternatives were killing a paid-for context or hand-typed
+    `tmux send-keys`). Decision 4 stands for `pup steer`: steers still queue; interrupting is
+    a deliberate, separate act because Escape mid-turn discards the tool call's result.
+    Landing it surfaced a transport bug the security review verified live on tmux 3.7b: tmux
+    resolves a bare `-t` name exact → fnmatch → *prefix*, and session slugs mint prefix pairs
+    (`t-abc`, `t-abc-1`), so once `pup-t-abc` died its steers, captures and kills would land
+    in the living `pup-t-abc-1`. Every lookup now goes through one `pinned()` helper
+    (`=pup-<id>:`; the `=` forces exact match, the trailing `:` is required for pane
+    resolution), while `new-session -s` keeps the bare name — `=` and `:` are legal *in*
+    session names, so a pinned name at spawn would create an orphan pane no pinned lookup
+    could ever find again. `steer` and `interrupt` also refuse terminal sessions outright;
+    their panes are gone, and a dead name is exactly what prefix matching would have
+    mis-delivered. Deferred, found the same way: task scope is fixed at `pup new`, so a
+    mid-session discovery that the correct fix lives one file outside scope (here:
+    `EventType` gaining `'interrupt'`) forces either a cast past the type or a follow-up PR —
+    a `pup scope add <session> <glob>` needs designing before the next scoped session hits it.
 
 ## Safety & enforcement
 

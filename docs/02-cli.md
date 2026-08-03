@@ -8,6 +8,7 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
 - `pup new <task> [--role <role>] [--scope <glob>...]` — create task spec (opens editor with template), compile profile, create worktree and branch, launch session.
 - `pup status` — all sessions by state, pending reviews, live scope overlaps between running sessions.
 - `pup steer <session> "<message>"` — inject a correction into a running session.
+- `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
 - `pup kill <session> [--respawn]` — stop; optionally restart with the same or edited spec.
 
 ## Review and merge
