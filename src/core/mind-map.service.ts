@@ -38,7 +38,10 @@ export function renderMindMapHtml(
   // `<` escaped so an id or summary containing `</script>` cannot break out of
   // the data block.
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return HTML_TEMPLATE.replace('__PUP_MAP_DATA__', json);
+  // Function replacer: a string replacement would have its $-patterns ($&, $',
+  // $\`) expanded, splicing raw template text — including a real </script> —
+  // into the escaped data block.
+  return HTML_TEMPLATE.replace('__PUP_MAP_DATA__', () => json);
 }
 
 function moduleOf(file: string): string {

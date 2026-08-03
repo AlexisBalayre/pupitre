@@ -21,16 +21,19 @@ export function renderReportHtml(db: Database, repoPath: string): string {
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const data = {
     repoPath,
-    // Newest first: the latest session is what the reader came for.
+    // Newest first: the latest session is what the reader came for. A session
+    // whose task row is missing still renders (the client shows its no-goal
+    // copy) — vanishing without trace would be the wrong failure mode.
     sessions: listSessions(db)
       .reverse()
-      .flatMap((session) => {
+      .map((session) => {
         const task = tasks.get(session.task_id);
-        return task ? [sessionDatum(db, session, JSON.parse(task.spec) as Partial<TaskSpec>)] : [];
+        return sessionDatum(db, session, task ? parseJsonOr<Partial<TaskSpec>>(task.spec, {}) : {});
       }),
     // Oldest first (trend order); captured_at is already ISO UTC, see toIsoUtc.
     baselines: listBaselineHistory(db, pid).map((row: BaselineHistoryRow) => {
-      const debt = row.debt === null ? undefined : (JSON.parse(row.debt) as DebtBaseline);
+      const debt =
+        row.debt === null ? undefined : parseJsonOr<DebtBaseline | undefined>(row.debt, undefined);
       return {
         capturedAt: row.captured_at,
         duplicatedLines: debt?.duplicatedLines ?? null,
@@ -51,14 +54,37 @@ export function renderReportHtml(db: Database, repoPath: string): string {
       summary: record.summary,
       alternatives: record.alternatives,
       conventions: record.conventions,
-      files: JSON.parse(record.files) as string[],
+      files: asStringArray(parseJsonOr<unknown>(record.files, [])),
       createdAt: toIsoUtc(record.created_at),
     })),
   };
   // `<` escaped so a goal or summary containing `</script>` cannot break out of
   // the data block.
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return HTML_TEMPLATE.replace('__PUP_REPORT_DATA__', json);
+  // Function replacer: a string replacement would have its $-patterns ($&, $',
+  // $\`) expanded, splicing raw template text — including a real </script> —
+  // into the escaped data block.
+  return HTML_TEMPLATE.replace('__PUP_REPORT_DATA__', () => json);
+}
+
+/**
+ * JSON.parse that returns `fallback` for a malformed or type-confused store
+ * column — the store is session-writable, and one bad row must degrade to the
+ * page's empty copy, not kill `pup report` with a stack trace.
+ */
+function parseJsonOr<T>(text: string, fallback: T): T {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value !== null && typeof value === 'object' ? (value as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }
 
 /**
@@ -77,28 +103,29 @@ function sessionDatum(db: Database, session: SessionRow, spec: Partial<TaskSpec>
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, session.id).reverse();
   const done = events.find((event) => event.type === 'session_done');
+  const doneSummary = done ? parseJsonOr<{ summary?: unknown }>(done.payload, {}).summary : null;
   // Every state transition logs a gate_result event; only real gate runs carry
   // a report payload (same filter as review.service's lastGateReport).
   const lastGate = events
     .filter((event) => event.type === 'gate_result')
-    .map((event) => (JSON.parse(event.payload) as { report?: GateReport }).report)
+    .map((event) => parseJsonOr<{ report?: GateReport }>(event.payload, {}).report)
     .find((report) => report !== undefined);
+  const stages = lastGate && Array.isArray(lastGate.stages) ? lastGate.stages : [];
   return {
     id: session.id,
     state: session.state,
     branch: session.branch,
     createdAt: toIsoUtc(session.created_at),
     rejectCount: session.reject_count,
-    goal: spec.goal ?? '',
-    scopeIn: spec.scopeIn ?? [],
-    scopeOut: spec.scopeOut ?? [],
-    doneSummary: done ? ((JSON.parse(done.payload) as { summary?: string }).summary ?? null) : null,
-    gateStages:
-      lastGate?.stages.map((stage) => ({
-        stage: stage.stage,
-        status: stage.status,
-        detail: stage.detail ?? null,
-      })) ?? [],
+    goal: typeof spec.goal === 'string' ? spec.goal : '',
+    scopeIn: asStringArray(spec.scopeIn),
+    scopeOut: asStringArray(spec.scopeOut),
+    doneSummary: typeof doneSummary === 'string' ? doneSummary : null,
+    gateStages: stages.map((stage) => ({
+      stage: stage.stage,
+      status: stage.status,
+      detail: stage.detail ?? null,
+    })),
   };
 }
 
@@ -242,7 +269,10 @@ const HTML_TEMPLATE = `<!doctype html>
       '<span class="branch"></span><span class="when"></span><span class="rejects"></span></div>';
     const state = art.querySelector('.state');
     state.textContent = s.state;
-    state.classList.add('state-' + s.state);
+    // The column is unchecked TEXT: an unknown state keeps the neutral chip —
+    // classList.add would throw on whitespace and blank the whole page.
+    const KNOWN_STATES = ['queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked'];
+    if (KNOWN_STATES.includes(s.state)) state.classList.add('state-' + s.state);
     art.querySelector('.sid').textContent = s.id;
     art.querySelector('.branch').textContent = s.branch;
     art.querySelector('.when').textContent = when(s.createdAt);

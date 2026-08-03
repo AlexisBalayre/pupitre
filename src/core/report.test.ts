@@ -203,7 +203,46 @@ describe('renderReportHtml', () => {
 
     expect(html).not.toContain('</script><script>');
     expect(html).not.toContain('<img');
+    // Only the template's own two closers exist — the payload added none.
+    expect(html.match(/<\/script>/g)).toHaveLength(2);
     // The goal still round-trips intact for the page to render via textContent.
     expect(embeddedData(html).sessions[0].goal).toContain('<img onerror=alert(2) src=x>');
+  });
+
+  it('keeps $-patterns in prose from splicing template text into the data block', () => {
+    // String.replace expands $&/$'/$` in a string REPLACEMENT — $' would splice
+    // the rest of the template (raw </script> included) into the data block.
+    const goal = "use $' for a newline in bash, $& in sed, and $` for the prefix";
+    seedSession(db, 's-dollar', goal);
+
+    const html = renderReportHtml(db, REPO);
+
+    expect(embeddedData(html).sessions[0].goal).toBe(goal);
+    expect(html.match(/<\/script>/g)).toHaveLength(2);
+  });
+
+  it('renders a session whose task row is missing instead of dropping it', () => {
+    seedSession(db, 's1', 'goal');
+    db.pragma('foreign_keys = OFF');
+    db.prepare("UPDATE sessions SET task_id = 'task-ghost' WHERE id = 's1'").run();
+
+    const [session] = embeddedData(renderReportHtml(db, REPO)).sessions;
+
+    expect(session).toMatchObject({ id: 's1', goal: '', scopeIn: [] });
+  });
+
+  it('degrades a malformed spec column to empty fields instead of throwing', () => {
+    insertTask(db, { id: 'task-bad', projectId: PID, spec: 'not json {' });
+    insertSession(db, {
+      id: 's-bad',
+      taskId: 'task-bad',
+      worktreePath: `${REPO}/.worktrees/s-bad`,
+      branch: 'pup/s-bad',
+      profileHash: 'hash',
+    });
+
+    const [session] = embeddedData(renderReportHtml(db, REPO)).sessions;
+
+    expect(session).toMatchObject({ id: 's-bad', goal: '', scopeIn: [], scopeOut: [] });
   });
 });
