@@ -9,7 +9,7 @@ import { openStore } from './db.client.js';
 import { initProject, NoAdapterError } from './init.service.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
-import type { ProjectBaseline } from './types/init.types.js';
+import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   return {
@@ -22,6 +22,24 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
     ],
     ...overrides,
   };
+}
+
+/** A pre-upgrade store: projects.baseline holds a capture no history row records. */
+function seedPreHistoryBaseline(
+  db: Database,
+  pid: string,
+  repoPath: string,
+  debt?: DebtBaseline,
+): ProjectBaseline {
+  ensureProject(db, pid, repoPath);
+  const legacy: ProjectBaseline = {
+    capturedAt: '2026-07-23T08:00:00.000Z',
+    adapters: ['fake'],
+    stages: [{ stage: 'build', status: 'pass', durationMs: 3 }],
+    ...(debt ? { debt } : {}),
+  };
+  saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
+  return legacy;
 }
 
 describe('initProject', () => {
@@ -158,22 +176,14 @@ describe('initProject', () => {
   });
 
   it('backfills a baseline stored before the history table existed, before overwriting it', () => {
-    // A pre-upgrade store: projects.baseline holds a capture no history row records.
     const pid = projectId(repo);
-    ensureProject(db, pid, repo);
-    const legacy: ProjectBaseline = {
-      capturedAt: '2026-07-23T08:00:00.000Z',
-      adapters: ['fake'],
-      stages: [{ stage: 'build', status: 'pass', durationMs: 3 }],
-      debt: { duplicatedLines: 184 },
-    };
-    saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
+    const legacy = seedPreHistoryBaseline(db, pid, repo, { duplicatedLines: 184 });
 
     const report = initProject(db, repo, [makeAdapter()]);
 
     const history = listBaselineHistory(db, pid);
     expect(history.map((r) => r.captured_at)).toEqual([
-      '2026-07-23T08:00:00.000Z',
+      legacy.capturedAt,
       report.baseline.capturedAt,
     ]);
     expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({ duplicatedLines: 184 });
@@ -181,13 +191,7 @@ describe('initProject', () => {
 
   it('does not seed the same pre-history baseline twice across re-runs', () => {
     const pid = projectId(repo);
-    ensureProject(db, pid, repo);
-    const legacy: ProjectBaseline = {
-      capturedAt: '2026-07-23T08:00:00.000Z',
-      adapters: ['fake'],
-      stages: [{ stage: 'build', status: 'pass', durationMs: 3 }],
-    };
-    saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
+    const legacy = seedPreHistoryBaseline(db, pid, repo);
 
     const first = initProject(db, repo, [makeAdapter()]);
     const second = initProject(db, repo, [makeAdapter()]);
@@ -195,7 +199,7 @@ describe('initProject', () => {
     // Exactly one row per capture: an unguarded backfill would re-append the
     // first run's baseline on the second run, not the legacy one.
     expect(listBaselineHistory(db, pid).map((r) => r.captured_at)).toEqual([
-      '2026-07-23T08:00:00.000Z',
+      legacy.capturedAt,
       first.baseline.capturedAt,
       second.baseline.capturedAt,
     ]);
