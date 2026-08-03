@@ -170,7 +170,7 @@ const HTML_TEMPLATE = `<!doctype html>
     background: var(--page); border: 1px solid var(--grid); border-radius: 4px;
     padding: 0 5px; font-size: 11px; color: var(--ink-2);
   }
-  .outcome { margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+  .outcome { margin-top: 8px; font-size: 12px; color: var(--ink-2); max-width: 65ch; }
   .outcome .done { color: var(--ink); white-space: pre-wrap; }
   #drift { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
   #drift-caption { font-size: 12px; margin-bottom: 8px; }
@@ -190,7 +190,7 @@ const HTML_TEMPLATE = `<!doctype html>
   .entry { border-top: 1px solid var(--grid); padding: 10px 0; }
   .entry .when { color: var(--muted); font-size: 11px; }
   .entry .desc { margin-top: 2px; white-space: pre-wrap; max-width: 65ch; }
-  .entry .terms, .entry .field { margin-top: 2px; color: var(--ink-2); font-size: 12px; white-space: pre-wrap; }
+  .entry .terms, .entry .field { margin-top: 2px; color: var(--ink-2); font-size: 12px; white-space: pre-wrap; max-width: 65ch; }
 </style>
 </head>
 <body>
