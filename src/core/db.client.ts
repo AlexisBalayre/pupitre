@@ -100,9 +100,18 @@ CREATE TABLE IF NOT EXISTS watcher_beats (
   beat_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS baseline_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  captured_at TEXT NOT NULL,
+  stages TEXT NOT NULL,
+  debt TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
 CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger_entries(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_baseline_history_captured ON baseline_history(project_id, captured_at);
 `;
 
 /** Additive columns missing from stores created before the column existed. */

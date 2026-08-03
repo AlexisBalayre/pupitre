@@ -41,12 +41,13 @@ Definition of done: run three parallel sessions on a real repo for a week withou
   the five sections works as written, so these are constraints on the design
   conversation, not outcomes of it:
 
-  - **Baseline drift cannot be rendered.** Only one baseline is ever stored
-    (`projects.baseline`, overwritten in place) and there is no history table.
-    `AuditReport.previous` exists only in memory during an audit, which re-runs
-    build/test/lint and overwrites the baseline as a side effect. Showing drift
-    means either a new history table or a mutating ~36s run — a schema decision
-    that outranks every layout question here.
+  - **Baseline drift is renderable since decision 38 (2026-08-03).** The blocking
+    schema decision is settled: `baseline_history` appends one row per capture
+    (`pup init` and every `pup audit`) before `projects.baseline` is overwritten,
+    and the first capture on an upgraded store seeds the pre-table baseline, so
+    the report reads the whole trend with a pure SELECT (`listBaselineHistory`).
+    Remaining gap, per the decision's stated ceiling: the merge-gate debt ratchet
+    moves the bar without a history row, so the trend is audit-to-audit.
   - **"Session intent dies unrendered with the session" is false**, and the
     original entry said so. Every goal, scope and acceptance list is in
     `tasks.spec` permanently; it has simply never been read back. This is the
