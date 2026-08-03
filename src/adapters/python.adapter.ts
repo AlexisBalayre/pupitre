@@ -210,7 +210,12 @@ function capabilityRunnerPrefix(repoPath: string): string[] {
   return prefix[0] === 'uv' ? [...prefix, '--no-sync'] : prefix;
 }
 
-function runCapability(ctx: CapabilityContext, words: string[], outDir?: string): string {
+function runCapability(
+  ctx: CapabilityContext,
+  words: string[],
+  outDir?: string,
+  env?: Record<string, string>,
+): string {
   const [command, ...args] = words;
   // Tool and config both come from the repo being measured, so the child runs
   // under the same seam as a gate stage: env allowlist plus sandbox (decisions
@@ -220,6 +225,7 @@ function runCapability(ctx: CapabilityContext, words: string[], outDir?: string)
     cwd: ctx.measurePath,
     repoPath: ctx.configPath,
     ...(outDir ? { writablePaths: [outDir] } : {}),
+    ...(env ? { env } : {}),
     gateEnv: ctx.gateEnv,
     timeout: DEBT_COMMAND_TIMEOUT_MS,
     maxBuffer: DEBT_COMMAND_MAX_BUFFER_BYTES,
@@ -343,6 +349,14 @@ export const pythonAdapter: Adapter = {
     const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
     const reportPath = join(outDir, 'coverage.json');
     try {
+      // coverage.py's data file defaults to `.coverage` in the CWD — the
+      // checkout being measured — and pytest-cov has no flag for it; only the
+      // COVERAGE_FILE var moves it ([coverage:run] data_file would too, but it
+      // lives in the repo's own config, which the session writes). Aimed at the
+      // report dir so the measure run leaves the checkout as it found it: an
+      // artifact left behind fails merge-gate's worktree-clean check against a
+      // file the session never wrote. Deleting `.coverage` afterwards instead
+      // would destroy a developer's pre-existing data file.
       runCapability(
         ctx,
         [
@@ -352,6 +366,7 @@ export const pythonAdapter: Adapter = {
           `--cov-report=json:${reportPath}`,
         ],
         outDir,
+        { COVERAGE_FILE: join(outDir, '.coverage') },
       );
       const raw = JSON.parse(readFileSync(reportPath, 'utf8')) as CoveragePyReport;
       return coveragePyToCoverageReport(raw, measurePath);

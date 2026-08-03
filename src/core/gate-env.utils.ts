@@ -70,6 +70,19 @@ interface GateChildEnvOptions {
    * command the operator typed (decision 28, refined; decision 36).
    */
   passthrough?: string[];
+  /**
+   * Values pup itself computes for one child — `COVERAGE_FILE` aimed at a
+   * capability's report directory. Not a second ambient channel: callers hand
+   * in values pup built, never something read from pup's environment or from a
+   * file a session can write; anything of that kind stays behind the
+   * operator's `--gate-env` flag. A name that collides with the cache
+   * redirects, `TMPDIR`, or a never-passed-through loader var throws rather
+   * than being dropped: the passthrough names come from outside pup, where
+   * ignoring is the safe default, but these are written in pup's own source,
+   * so a collision is a pup bug — and silently resolving it either way would
+   * quietly break the redirect invariant or re-arm the loader.
+   */
+  set?: Record<string, string>;
   /** Defaults to pup's own environment. */
   env?: NodeJS.ProcessEnv;
 }
@@ -99,6 +112,18 @@ export function gateChildEnv(options: GateChildEnvOptions): NodeJS.ProcessEnv {
     env[name] = join(options.cacheDir, subdir);
   }
   env.TMPDIR = options.scratchDir;
+  for (const [name, value] of Object.entries(options.set ?? {})) {
+    if (
+      Object.hasOwn(CACHE_VAR_SUBDIRS, name) ||
+      name === 'TMPDIR' ||
+      NEVER_PASSED_THROUGH.some((pattern) => pattern.test(name))
+    ) {
+      throw new Error(
+        `pup tried to set ${name} for a gate child; the cache redirects, TMPDIR and the loader vars are not overridable.`,
+      );
+    }
+    env[name] = value;
+  }
   return env;
 }
 

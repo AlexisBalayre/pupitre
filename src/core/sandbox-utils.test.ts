@@ -130,6 +130,18 @@ describe('runGateChild', () => {
     vi.unstubAllEnvs();
   });
 
+  it('hands the child a var pup computed, which the operator never exported', () => {
+    const cwd = fakeCheckout();
+
+    const output = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_COMPUTED"'], {
+      cwd,
+      repoPath: cwd,
+      env: { PUP_TEST_COMPUTED: 'built-by-pup' },
+    });
+
+    expect(output).toBe('built-by-pup');
+  });
+
   describe.runIf(isSandboxSupported())('on darwin', () => {
     it('cannot read the curated secret paths that exist on this machine', () => {
       const cwd = fakeCheckout();
