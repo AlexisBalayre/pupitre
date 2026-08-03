@@ -429,10 +429,33 @@ describe('CLI commands', () => {
       expect(escapeOrder).toBeLessThan(steerOrder as number);
       expect(logs).toContain('Interrupted and steered session s1.');
       expect(process.exitCode).toBeUndefined();
-      expect(sessionEvents(repo, 's1')).toContainEqual({
+      const events = sessionEvents(repo, 's1');
+      expect(events).toContainEqual({
         type: 'interrupt',
         payload: JSON.stringify({ steered: true }),
       });
+      // The delivered message is a real steer — logged as one too, so a
+      // last-steer query cannot miss steers that arrived via interrupt.
+      expect(events).toContainEqual({
+        type: 'steer',
+        payload: JSON.stringify({ kind: 'interrupt' }),
+      });
+    });
+
+    it('refuses a terminal session without touching tmux', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'killed');
+      db.close();
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      expect(errors).toEqual(['Session s1 is killed; nothing to interrupt.']);
+      expect(process.exitCode).toBe(1);
+      expect(interruptSession).not.toHaveBeenCalled();
+      expect(steerSession).not.toHaveBeenCalled();
     });
 
     it('does not steer when no message is given', () => {

@@ -64,6 +64,7 @@ import {
   respawnSession,
 } from '../core/session-handoff.service.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
+import { isTerminal } from '../core/session-state.utils.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -412,11 +413,21 @@ export function buildProgram(): Command {
         process.exitCode = 1;
         return;
       }
+      // A terminal session's tmux window is long gone, and a dead name is
+      // exactly what tmux would prefix-match onto a live sibling session.
+      if (isTerminal(row.state)) {
+        console.error(`Session ${session} is ${row.state}; nothing to interrupt.`);
+        process.exitCode = 1;
+        return;
+      }
       interruptSession(session);
       if (message) steerSession(session, message);
       // events.type is free-form TEXT in the schema; the cast bridges
       // 'interrupt' not yet being in core's EventType union (out of scope here).
       appendEvent(db, session, 'interrupt' as EventType, { steered: Boolean(message) });
+      // The message is a real steer — log it as one too, so last-steer queries
+      // see it no matter which path delivered it.
+      if (message) appendEvent(db, session, 'steer', { kind: 'interrupt' });
       console.log(
         message ? `Interrupted and steered session ${session}.` : `Interrupted session ${session}.`,
       );
