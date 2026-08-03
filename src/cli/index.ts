@@ -17,7 +17,6 @@ import {
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
-import type { EventType } from '../core/db.client.js';
 import {
   deleteDecisionRecord,
   getDecisionRecord,
@@ -427,9 +426,7 @@ export function buildProgram(): Command {
       if (!resolveLiveSession(db, session, 'interrupt')) return;
       interruptSession(session);
       if (message) steerSession(session, message);
-      // events.type is free-form TEXT in the schema; the cast bridges
-      // 'interrupt' not yet being in core's EventType union (out of scope here).
-      appendEvent(db, session, 'interrupt' as EventType, { steered: Boolean(message) });
+      appendEvent(db, session, 'interrupt', { steered: Boolean(message) });
       // The message is a real steer — log it as one too, so last-steer queries
       // see it no matter which path delivered it.
       if (message) appendEvent(db, session, 'steer', { kind: 'interrupt' });

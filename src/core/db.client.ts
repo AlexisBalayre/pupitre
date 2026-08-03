@@ -17,6 +17,7 @@ export type EventType =
   | 'gate_result'
   | 'merge'
   | 'steer'
+  | 'interrupt'
   | 'config_drift'
   | 'session_done'
   | 'handoff_ready'
