@@ -29,10 +29,17 @@ them.
 
 ## Numbering
 
-Read the highest number on `origin/main` (after a fetch:
-`git show origin/main:docs/09-decisions.md | grep -oE '^[0-9]+\.' | tail -1`) and increment. The
-local file goes stale and concurrent merges claim numbers — two branches that both add a
-"decision 33" conflict at merge time.
+Read the highest number on `origin/main` (after a fetch) and increment:
+
+```sh
+git show origin/main:docs/09-decisions.md | grep -oE '^[0-9]+\.' | tr -d '.' | sort -n | tail -1
+```
+
+Sort numerically — **not `| tail -1` on its own**. Entries sit under the `##` section they belong
+to and the file is not in numerical order, so taking the last match in file order returns whatever
+section ends the document, not the highest number. It read 34 while 35, 36 and 37 already existed,
+which is precisely how two branches both claim the same number and conflict at merge time. The
+local file also goes stale, hence reading `origin/main` rather than the worktree.
 
 ## When to offer a decision entry
 
