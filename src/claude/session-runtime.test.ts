@@ -38,6 +38,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
+  interruptSession,
   launchArgs,
   launchSession,
   launchWatcher,
@@ -197,6 +198,23 @@ describe('launchSession', () => {
       FAKE_CLAUDE_BIN,
       ...launchArgs(OPTS),
     ]);
+  });
+});
+
+describe('interruptSession', () => {
+  it('sends Escape to the session pane and nothing else', () => {
+    // Skip the real post-Escape settle — spying (not restoreAllMocks) so the
+    // module-level execFileSync fake survives for the rest of the suite.
+    const wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      interruptSession('s-1');
+    } finally {
+      wait.mockRestore();
+    }
+
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toHaveLength(1);
+    expect(tmuxCalls[0]?.[1]).toEqual(['send-keys', '-t', 'pup-s-1', 'Escape']);
   });
 });
 

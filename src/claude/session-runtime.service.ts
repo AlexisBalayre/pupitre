@@ -166,6 +166,19 @@ export function steerSession(sessionId: string, message: string): void {
   }
 }
 
+/**
+ * Abort a session's in-flight tool call by sending Escape to its pane — the
+ * escape hatch for a hung tool (e.g. a transient network error wedging a
+ * session), which `steerSession` cannot reach because steers deliver only
+ * after the current tool call ends. The trailing settle gives the UI a beat
+ * to return to its input box, so a steer issued right after lands as a paste
+ * instead of vanishing into the interrupt redraw.
+ */
+export function interruptSession(sessionId: string): void {
+  tmux('send-keys', '-t', tmuxTarget(sessionId), 'Escape');
+  syncSleep(PASTE_SETTLE_MS);
+}
+
 /** Wait until the session UI is interactive. Returns false on timeout. */
 function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolean {
   const deadline = Date.now() + timeoutMs;

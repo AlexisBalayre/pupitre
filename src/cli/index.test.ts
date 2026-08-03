@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', () => ({
+  interruptSession: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
   steerSession: vi.fn(),
@@ -31,7 +32,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
-import { steerSession } from '../claude/session-runtime.service.js';
+import { interruptSession, steerSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -389,6 +390,66 @@ describe('CLI commands', () => {
         .prepare("SELECT type, payload FROM events WHERE session_id = 's1'")
         .all() as { type: string; payload: string }[];
       expect(events).toContainEqual({ type: 'steer', payload: JSON.stringify({ kind: 'manual' }) });
+    });
+  });
+
+  describe('interrupt', () => {
+    function sessionEvents(repo: string, sessionId: string): { type: string; payload: string }[] {
+      const { db } = resolveProject(repo);
+      return db.prepare('SELECT type, payload FROM events WHERE session_id = ?').all(sessionId) as {
+        type: string;
+        payload: string;
+      }[];
+    }
+
+    it('reports no session and touches neither tmux nor the event log', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['interrupt', 'missing-session'], { from: 'user' });
+
+      expect(errors).toEqual(['No session missing-session.']);
+      expect(process.exitCode).toBe(1);
+      expect(interruptSession).not.toHaveBeenCalled();
+      expect(steerSession).not.toHaveBeenCalled();
+    });
+
+    it('sends Escape before steering when a message is given, and records a steered interrupt', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(steerSession).toHaveBeenCalledWith('s1', 'retry the fetch');
+      // The whole point of `interrupt <sid> "msg"` over `steer` is Escape lands
+      // FIRST, so the steer is not queued behind the hung tool call.
+      const escapeOrder = vi.mocked(interruptSession).mock.invocationCallOrder[0];
+      const steerOrder = vi.mocked(steerSession).mock.invocationCallOrder[0];
+      expect(escapeOrder).toBeLessThan(steerOrder as number);
+      expect(logs).toContain('Interrupted and steered session s1.');
+      expect(process.exitCode).toBeUndefined();
+      expect(sessionEvents(repo, 's1')).toContainEqual({
+        type: 'interrupt',
+        payload: JSON.stringify({ steered: true }),
+      });
+    });
+
+    it('does not steer when no message is given', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['interrupt', 's1'], { from: 'user' });
+
+      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(steerSession).not.toHaveBeenCalled();
+      expect(logs).toContain('Interrupted session s1.');
+      expect(process.exitCode).toBeUndefined();
+      expect(sessionEvents(repo, 's1')).toContainEqual({
+        type: 'interrupt',
+        payload: JSON.stringify({ steered: false }),
+      });
     });
   });
 
