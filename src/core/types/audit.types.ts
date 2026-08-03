@@ -32,4 +32,6 @@ export interface AuditReport {
   debtTransitions: DebtTransition[];
   hasRegression: boolean;
   findings: string[];
+  /** How the re-run stage children were confined, as `sandboxLabel()` phrases it. */
+  sandbox: string;
 }

@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 /**
  * Environment for gate stage commands and adapter debt capabilities — the only
  * children whose code a session can edit (`package.json` scripts, `pyproject`
@@ -6,15 +8,18 @@
  * inverts the default, and drops the GIT_DIR family on the way (the
  * scrubbedGitEnv invariant) since neither list carries it.
  *
- * Pupitre's own git and gh calls are NOT sandboxed this way: they run pup's
+ * Pupitre's own git and gh calls are NOT confined this way: they run pup's
  * code, not the session's, and pushing needs the operator's credential helpers.
+ *
+ * Callers reach this through `runGateChild` (sandbox.utils.ts), which pairs the
+ * env with the filesystem policy — one seam, one answer to what a gate child
+ * can touch.
  */
 
 /**
- * Locale and cache-dir vars are here because toolchains fail loudly without
- * them (byte-order marks, permission errors in a read-only default), not for
- * convenience. `NODE_OPTIONS` is deliberately absent: it can `--require` a
- * module into every node the stage runs.
+ * Locale vars are here because toolchains fail loudly without them (byte-order
+ * marks, mojibake), not for convenience. `NODE_OPTIONS` is deliberately absent:
+ * it can `--require` a module into every node the stage runs.
  */
 const ALLOWED_VARS = [
   'HOME',
@@ -27,32 +32,80 @@ const ALLOWED_VARS = [
   'TMPDIR',
   'TZ',
   'USER',
-  'XDG_CACHE_HOME',
   'XDG_CONFIG_HOME',
   'XDG_DATA_HOME',
 ];
 
 /**
- * Operator escape hatch: `PUP_GATE_ENV=DATABASE_URL,FOO` adds those names to
- * the allowlist for a repo whose suite genuinely needs them.
- *
- * Read from pup's own process, so a session cannot widen the sandbox of the run
- * it is inside. It can widen the *next* one: decision 28 keeps `HOME`, so a gate
- * child can write `~/.zshenv` and set this for the operator's next invocation,
- * and any ambient source — direnv's `.envrc`, a CI job, a wrapper script — feeds
- * it just as well as a login shell does. Whoever controls the environment pup
- * starts in controls this list; that is the ceiling decision 28 states, not a
- * guarantee this constant makes.
+ * Cache locations redirected out of `HOME` — the sandbox denies every write
+ * under `HOME`, so a toolchain that defaults its cache to `~/.npm` or
+ * `~/Library/Caches` would otherwise die on a permission error rather than on
+ * anything the operator did wrong (decision 36). Only vars the toolchains pup
+ * actually invokes honour are here. The redirect wins over an operator
+ * passthrough of the same name: a cache pointed back into `HOME` is a broken
+ * child, not a wider one.
  */
-const PASSTHROUGH_VAR = 'PUP_GATE_ENV';
+export const CACHE_VAR_SUBDIRS: Record<string, string> = {
+  XDG_CACHE_HOME: 'xdg-cache',
+  npm_config_cache: 'npm',
+  COREPACK_HOME: 'corepack',
+  PIP_CACHE_DIR: 'pip',
+  UV_CACHE_DIR: 'uv',
+};
 
-export function gateChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const passthrough = (env[PASSTHROUGH_VAR] ?? '')
+interface GateChildEnvOptions {
+  /**
+   * Per-run scratch, handed over as `TMPDIR`. Separate from the cache dir
+   * because the two have different lifetimes: what a run leaves in `TMPDIR`
+   * should go with the run, what a toolchain caches should survive it.
+   */
+  scratchDir: string;
+  /** Stable cache root every redirected cache var is pointed at. */
+  cacheDir: string;
+  /**
+   * Extra names the operator allowed with `--gate-env`, for a suite that
+   * genuinely needs them. A flag and not an environment variable on purpose:
+   * whoever controls pup's own environment — direnv's `.envrc`, a CI job, a
+   * wrapper script — could otherwise widen this list without touching the
+   * command the operator typed (decision 28, refined; decision 36).
+   */
+  passthrough?: string[];
+  /** Defaults to pup's own environment. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Names `--gate-env` cannot pass through, however the operator spells the flag.
+ * Each one loads attacker-chosen code into every process the child starts —
+ * `NODE_OPTIONS` via `--require`, the dynamic-linker families via injected
+ * libraries — so allowing them would hand back exactly what decision 28
+ * excluded `NODE_OPTIONS` for in the first place. Dropped silently, like every
+ * other name outside the allowlist; the flag is an escape hatch for a suite's
+ * own config, not a way to re-arm the loader.
+ */
+const NEVER_PASSED_THROUGH = [/^NODE_OPTIONS$/, /^DYLD_/, /^LD_/];
+
+export function gateChildEnv(options: GateChildEnvOptions): NodeJS.ProcessEnv {
+  const passthrough = (options.passthrough ?? []).filter(
+    (name) => !NEVER_PASSED_THROUGH.some((pattern) => pattern.test(name)),
+  );
+  const allowed = new Set([...ALLOWED_VARS, ...passthrough]);
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(options.env ?? process.env).filter(
+      ([name, value]) => allowed.has(name) && value !== undefined,
+    ),
+  );
+  for (const [name, subdir] of Object.entries(CACHE_VAR_SUBDIRS)) {
+    env[name] = join(options.cacheDir, subdir);
+  }
+  env.TMPDIR = options.scratchDir;
+  return env;
+}
+
+/** `--gate-env DATABASE_URL,CI` -> the names, ignoring spacing and empties. */
+export function parseGateEnv(value: string | undefined): string[] {
+  return (value ?? '')
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean);
-  const allowed = new Set([...ALLOWED_VARS, ...passthrough]);
-  return Object.fromEntries(
-    Object.entries(env).filter(([name, value]) => allowed.has(name) && value !== undefined),
-  );
 }

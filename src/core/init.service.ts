@@ -1,11 +1,10 @@
-import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
 import { repoCoverageRatio } from './coverage.utils.js';
-import { gateChildEnv } from './gate-env.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
+import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { ensureProject, saveProjectBaseline } from './session.repository.js';
 import type {
   BaselineStageResult,
@@ -27,17 +26,18 @@ function runBaselineStage(
   repoPath: string,
   stage: string,
   command: { command: string; args: string[] },
+  gateEnv?: string[],
 ): BaselineStageResult {
   const start = Date.now();
   try {
-    execFileSync(command.command, command.args, {
+    // Main is "trusted" only in the sense that the gate let it in — these are
+    // still the scripts a session wrote, one merge earlier, so they run under
+    // the same seam as a gate stage (decisions 28, 36).
+    runGateChild(command.command, command.args, {
       cwd: repoPath,
-      encoding: 'utf8',
+      repoPath,
+      gateEnv,
       timeout: GATE_COMMAND_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Main is "trusted" only in the sense that the gate let it in — these are
-      // still the scripts a session wrote, one merge earlier (decision 28).
-      env: gateChildEnv(),
     });
     return { stage, status: 'pass', durationMs: Date.now() - start };
   } catch (error) {
@@ -59,7 +59,12 @@ function runBaselineStage(
  * recorded, not enforced — but the findings tell the human what the v1 gate
  * WILL hard-fail on before any session runs. Re-running refreshes the baseline.
  */
-export function initProject(db: Database, repoPath: string, adapters: Adapter[]): InitReport {
+export function initProject(
+  db: Database,
+  repoPath: string,
+  adapters: Adapter[],
+  gateEnv?: string[],
+): InitReport {
   const detected = adapters.filter((a) => a.detect(repoPath));
   if (detected.length === 0) throw new NoAdapterError(repoPath);
 
@@ -78,7 +83,7 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
       );
       continue;
     }
-    const result = runBaselineStage(repoPath, stage, command);
+    const result = runBaselineStage(repoPath, stage, command, gateEnv);
     stages.push(result);
     if (result.status === 'fail') {
       findings.push(
@@ -88,7 +93,7 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
   }
 
   const debt: DebtBaseline = {};
-  const ctx = localContext(repoPath);
+  const ctx = localContext(repoPath, gateEnv);
   // A capability that could not measure says why (decision 29); that reason is
   // the whole point of running init before any session does.
   // Sanitized here, not at the producer: a custom adapter's reason is parsed
@@ -135,5 +140,5 @@ export function initProject(db: Database, repoPath: string, adapters: Adapter[])
     ...(Object.keys(debt).length > 0 ? { debt } : {}),
   };
   saveProjectBaseline(db, pid, baseline.adapters, JSON.stringify(baseline));
-  return { projectId: pid, baseline, findings };
+  return { projectId: pid, baseline, findings, sandbox: sandboxLabel() };
 }
