@@ -137,7 +137,7 @@ function sandboxMode(): SandboxMode {
     // Nothing the child controls reaches this: an absolute SIP-protected
     // binary that writes no output, run with an empty environment, so the only
     // writer of the stderr the check below reads is `sandbox-exec` itself.
-    execFileSync(SANDBOX_EXEC, ['-f', writeProfile(policyDir, [scratchDir]), PROBE_COMMAND], {
+    execFileSync(SANDBOX_EXEC, ['-f', writeProfile(policyDir, [], [scratchDir]), PROBE_COMMAND], {
       encoding: 'utf8',
       env: {},
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -186,12 +186,14 @@ export function runGateChild(command: string, args: string[], options: GateChild
           // basis of decision 29 — session-writable during its own merge, and
           // reached every *sibling* worktree's `.git` pointer file, which is
           // one level deeper than the `.git` deny below.
-          writeProfile(policyDir, [
-            options.cwd,
-            ...(options.writablePaths ?? []),
-            scratchDir,
-            cacheDir,
-          ]),
+          // Caller-supplied grants land in the first, protected set — .git
+          // denied at any depth under each. Only the two directories this
+          // seam itself created for the child are exempt from that deny.
+          writeProfile(
+            policyDir,
+            [options.cwd, ...(options.writablePaths ?? [])],
+            [scratchDir, cacheDir],
+          ),
           command,
           ...args,
         ],

@@ -215,6 +215,52 @@ describe('runGateChild', () => {
         expect(readFileSync(join(cwd, 'ordinary.txt'), 'utf8')).toBe('ok');
       });
 
+      it('cannot write the git directory of a checkout nested inside the grant', () => {
+        // `protectedPaths` is derived one level deep — granting P denies
+        // P/.git and nothing deeper — so this .git sits inside the grant with
+        // no per-path deny of its own. That is the exact shape of #49's
+        // sibling-worktree attack. The regex deny covers .git at any depth,
+        // which is what this asserts.
+        const cwd = fakeCheckout();
+        const nestedGit = join(cwd, '.worktrees', 's1', '.git');
+        mkdirSync(nestedGit, { recursive: true });
+
+        expect(() =>
+          runGateChild('sh', ['-c', 'printf x > .worktrees/s1/.git/config'], {
+            cwd,
+            repoPath: cwd,
+          }),
+        ).toThrow(/Operation not permitted/);
+        expect(existsSync(join(nestedGit, 'config'))).toBe(false);
+        // The control: an ordinary file in the same nested checkout still
+        // writes, so the denial above is the .git rule and not a lost grant.
+        runGateChild('sh', ['-c', 'printf ok > .worktrees/s1/ordinary.txt'], {
+          cwd,
+          repoPath: cwd,
+        });
+        expect(readFileSync(join(cwd, '.worktrees', 's1', 'ordinary.txt'), 'utf8')).toBe('ok');
+      });
+
+      it('creates a git repo in its own scratch space, where nothing is being measured', () => {
+        // The .git deny is scoped to checkout grants on purpose: a brand-new
+        // repo a child creates in its own TMPDIR is not the repository being
+        // measured, which is what decision 36 protects. Unscoped, the deny
+        // broke `git init` in scratch — six of this repo's own test files do
+        // exactly that, so pup's gate would have refused every future merge.
+        const cwd = fakeCheckout();
+
+        const output = runGateChild(
+          'sh',
+          [
+            '-c',
+            'git init -q "$TMPDIR/fresh" && printf x > "$TMPDIR/fresh/.git/canary" && cat "$TMPDIR/fresh/.git/canary"',
+          ],
+          { cwd, repoPath: cwd },
+        );
+
+        expect(output).toBe('x');
+      });
+
       it('cannot write the trusted checkout it is measured against', () => {
         // The trusted checkout is decision 29's whole basis: writable, a build
         // stage drops `@vitest/coverage-v8` from the manifest the *next* stage
