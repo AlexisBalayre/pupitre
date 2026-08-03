@@ -391,6 +391,21 @@ describe('CLI commands', () => {
         .all() as { type: string; payload: string }[];
       expect(events).toContainEqual({ type: 'steer', payload: JSON.stringify({ kind: 'manual' }) });
     });
+
+    it('refuses a terminal session', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'killed');
+      db.close();
+
+      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
+
+      expect(errors).toEqual(['Session s1 is killed; nothing to steer.']);
+      expect(process.exitCode).toBe(1);
+      expect(steerSession).not.toHaveBeenCalled();
+    });
   });
 
   describe('interrupt', () => {

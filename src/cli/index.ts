@@ -164,6 +164,28 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 }
 
 /**
+ * Session lookup for commands that drive a live tmux pane (`steer`,
+ * `interrupt`). Terminal sessions are refused, not just missing ones: their
+ * pane is long gone, and a dead name is exactly what tmux would have
+ * prefix-matched onto a live sibling before targets were pinned. Prints the
+ * refusal and sets the exit code; callers just bail on undefined.
+ */
+function resolveLiveSession(db: Database, session: string, verb: string): SessionRow | undefined {
+  const row = getSession(db, session);
+  if (!row) {
+    console.error(`No session ${session}.`);
+    process.exitCode = 1;
+    return undefined;
+  }
+  if (isTerminal(row.state)) {
+    console.error(`Session ${session} is ${row.state}; nothing to ${verb}.`);
+    process.exitCode = 1;
+    return undefined;
+  }
+  return row;
+}
+
+/**
  * Shared by `merge`, `init` and `audit`: the three commands that run children a
  * session wrote. A flag rather than the `PUP_GATE_ENV` variable it replaces —
  * direnv, a CI job or a shell wrapper supplies a variable without anyone
@@ -391,12 +413,7 @@ export function buildProgram(): Command {
     .description('Inject a correction into a running session')
     .action((session: string, message: string) => {
       const { db } = resolveProject();
-      const row = getSession(db, session);
-      if (!row) {
-        console.error(`No session ${session}.`);
-        process.exitCode = 1;
-        return;
-      }
+      if (!resolveLiveSession(db, session, 'steer')) return;
       steerSession(session, message);
       appendEvent(db, session, 'steer', { kind: 'manual' });
       console.log(`Steered session ${session}.`);
@@ -407,19 +424,7 @@ export function buildProgram(): Command {
     .description("Abort the session's in-flight tool call (Escape), optionally steering a message")
     .action((session: string, message?: string) => {
       const { db } = resolveProject();
-      const row = getSession(db, session);
-      if (!row) {
-        console.error(`No session ${session}.`);
-        process.exitCode = 1;
-        return;
-      }
-      // A terminal session's tmux window is long gone, and a dead name is
-      // exactly what tmux would prefix-match onto a live sibling session.
-      if (isTerminal(row.state)) {
-        console.error(`Session ${session} is ${row.state}; nothing to interrupt.`);
-        process.exitCode = 1;
-        return;
-      }
+      if (!resolveLiveSession(db, session, 'interrupt')) return;
       interruptSession(session);
       if (message) steerSession(session, message);
       // events.type is free-form TEXT in the schema; the cast bridges
