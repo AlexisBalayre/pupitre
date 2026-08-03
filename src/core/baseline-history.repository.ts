@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { BaselineStageResult, DebtBaseline } from './types/init.types.js';
 
-interface BaselineHistoryRow {
+export interface BaselineHistoryRow {
   id: number;
   project_id: string;
   /** ISO timestamp copied from ProjectBaseline.capturedAt, not a DB default. */

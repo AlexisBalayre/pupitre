@@ -34,6 +34,26 @@ export interface NewSessionInput {
   transcriptPath?: string;
 }
 
+export interface TaskRow {
+  id: string;
+  project_id: string;
+  /** JSON TaskSpec. */
+  spec: string;
+  role: string | null;
+  status: string;
+  origin: string;
+  created_at: string;
+}
+
+export interface EventRow {
+  id: number;
+  session_id: string | null;
+  type: EventType;
+  /** JSON object; shape depends on `type`. */
+  payload: string;
+  created_at: string;
+}
+
 export interface ProjectRow {
   id: string;
   repo_path: string;
@@ -76,6 +96,17 @@ export function insertTask(
     input.role ?? null,
     input.origin ?? 'human',
   );
+}
+
+/**
+ * All tasks in a project, oldest first — `pup report` joins them to sessions
+ * by task_id to render each session's intent. `id` breaks ties within one
+ * `datetime('now')` second.
+ */
+export function listTasks(db: Database, projectId: string): TaskRow[] {
+  return db
+    .prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at, id')
+    .all(projectId) as TaskRow[];
 }
 
 export function insertSession(db: Database, input: NewSessionInput): void {
@@ -152,6 +183,13 @@ export function appendEvent(
     type,
     JSON.stringify(payload),
   );
+}
+
+/** All events for one session, oldest first (autoincrement id = insertion order). */
+export function listEvents(db: Database, sessionId: string): EventRow[] {
+  return db
+    .prepare('SELECT * FROM events WHERE session_id = ? ORDER BY id')
+    .all(sessionId) as EventRow[];
 }
 
 export function incrementRejectCount(db: Database, id: string): number {
