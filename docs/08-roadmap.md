@@ -31,11 +31,40 @@ Definition of done: run three parallel sessions on a real repo for a week withou
 - `pup report --open`: one self-contained per-project HTML page in the mind-map's
   house style (inline CSS/JS, offline, no CDN) stitching what the store already
   holds — code map, decision records, open debt ledger with review-by conditions,
-  baseline drift, and live/queued session goals. The last of these is the only
-  view of "what will be built" pupitre has; today session intent dies unrendered
-  with the session. Rendering only — no new collection. Design questions before
-  building (one page vs a richer mind-map; on-demand vs at-merge rendering;
-  whether intent deserves a first-class artefact) go through a grilling session.
+  baseline drift, and live/queued session goals. Rendering only — no new
+  collection. Design questions before building (one page vs a richer mind-map;
+  on-demand vs at-merge rendering; whether intent deserves a first-class
+  artefact) go through a grilling session.
+
+  **Measured against the real store before that conversation (2026-08-03, pupitre's
+  own 11 days: 14 sessions, 24 gate reports, 13 decision records).** Only one of
+  the five sections works as written, so these are constraints on the design
+  conversation, not outcomes of it:
+
+  - **Baseline drift cannot be rendered.** Only one baseline is ever stored
+    (`projects.baseline`, overwritten in place) and there is no history table.
+    `AuditReport.previous` exists only in memory during an audit, which re-runs
+    build/test/lint and overwrites the baseline as a side effect. Showing drift
+    means either a new history table or a mutating ~36s run — a schema decision
+    that outranks every layout question here.
+  - **"Session intent dies unrendered with the session" is false**, and the
+    original entry said so. Every goal, scope and acceptance list is in
+    `tasks.spec` permanently; it has simply never been read back. This is the
+    cheapest section to build, not the most speculative. It needs a `listTasks`
+    SELECT, which does not exist yet (nor does `listEvents`) — both still pure reads.
+  - **The code map is not a store read.** `buildCodeMap` shells out to `git log`
+    for churn and calls `adapter.depGraph`, and throws without one. Including it
+    contradicts "rendering only".
+  - **Open debt renders empty** on a healthy project — all ledger entries are
+    closed, and every `review_by` is prose, so nothing computes as overdue.
+  - **Live/queued sessions render empty** for the same reason: sessions are
+    terminal once merged. A report opening on live state is blank most of the time
+    it is opened, while 13 merged sessions of history go unshown.
+
+  Two hazards for whoever builds it: reuse the mind-map's escaping idiom verbatim
+  (JSON in a script tag with `<` escaped, everything injected via `textContent`) —
+  goals and reasons are agent-written free prose; and SQLite's `created_at` has no
+  timezone, so JavaScript parses `2026-08-03 12:36:05` as local time.
 
 ## v2 — team (explicitly out of scope until v1.2 is daily-driven)
 
