@@ -64,11 +64,13 @@ interface GateChildOptions {
   gateEnv?: string[];
   /**
    * Vars pup itself computes and sets for this child — `COVERAGE_FILE` aimed
-   * at a capability's report directory. Only for values pup built: anything
-   * ambient or session-writable stays behind `gateEnv`'s operator flag, so
-   * decision 36's one seam keeps its one answer. A name colliding with the
-   * cache redirects, `TMPDIR`, or a never-passed-through loader var throws —
-   * see `gateChildEnv` for why a collision is a bug rather than a preference.
+   * at a capability's report directory. Values are built from pup's own run
+   * state, such as a temp directory it just created — never copied from a
+   * name in pup's environment or read from anything a session writes; ambient
+   * values stay behind `gateEnv`'s operator flag, so decision 36's one seam
+   * keeps its one answer. Names come from gate-env.utils' closed
+   * `SETTABLE_VARS` list; any other name throws — see there for why the
+   * namespace cannot be denylisted.
    */
   env?: Record<string, string>;
   timeout?: number;

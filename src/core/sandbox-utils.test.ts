@@ -131,15 +131,17 @@ describe('runGateChild', () => {
   });
 
   it('hands the child a var pup computed, which the operator never exported', () => {
+    // COVERAGE_FILE because it is the settable list: any other name throws
+    // before a child is spawned, which gate-env's own tests pin.
     const cwd = fakeCheckout();
 
-    const output = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_COMPUTED"'], {
+    const output = runGateChild('sh', ['-c', 'printf %s "$COVERAGE_FILE"'], {
       cwd,
       repoPath: cwd,
-      env: { PUP_TEST_COMPUTED: 'built-by-pup' },
+      env: { COVERAGE_FILE: '/reports/.coverage' },
     });
 
-    expect(output).toBe('built-by-pup');
+    expect(output).toBe('/reports/.coverage');
   });
 
   describe.runIf(isSandboxSupported())('on darwin', () => {

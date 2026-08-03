@@ -362,6 +362,13 @@ export const pythonAdapter: Adapter = {
         [
           ...capabilityRunnerPrefix(configPath),
           'pytest',
+          // The cache plugin writes .pytest_cache/ into the CWD. Unlike
+          // `.coverage` it self-ignores (pytest drops a `.gitignore` of `*`
+          // inside), so it never trips the worktree-clean check — it is off
+          // because the invariant is that a measure run leaves the checkout
+          // as it found it, not merely invisible to `git status`.
+          '-p',
+          'no:cacheprovider',
           '--cov',
           `--cov-report=json:${reportPath}`,
         ],

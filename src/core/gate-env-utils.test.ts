@@ -141,18 +141,23 @@ describe('gateChildEnv', () => {
     expect(env.COVERAGE_FILE).toBe('/reports/.coverage');
   });
 
-  it('throws when a pup-set name collides with a redirect or a loader var', () => {
+  it('throws for any pup-set name outside the closed settable list', () => {
+    // A closed list, not a denylist: the namespace is full of loader-shaped
+    // names no denylist can enumerate (PYTHONPATH is Python's NODE_OPTIONS,
+    // BASH_ENV runs before every `sh -c`, COVERAGE_FORCE_CONFIG would defeat
+    // the COVERAGE_FILE redirect itself), and it keeps the cache redirects,
+    // TMPDIR, the allowlisted values and the GIT_DIR scrub un-overridable.
     // Unlike the operator passthrough, which is outside input safely dropped,
-    // these names are written in pup's own source: a collision is a pup bug,
-    // and resolving it silently either breaks the cache-redirect invariant or
-    // re-arms the loader.
+    // a pup-set name is pup's own source, so the bug surfaces at the call site.
     for (const name of [
       'TMPDIR',
       'npm_config_cache',
-      'XDG_CACHE_HOME',
       'NODE_OPTIONS',
-      'DYLD_INSERT_LIBRARIES',
-      'LD_PRELOAD',
+      'PYTHONPATH',
+      'BASH_ENV',
+      'COVERAGE_FORCE_CONFIG',
+      'GIT_DIR',
+      'PATH',
     ]) {
       expect(() => childEnv({ PATH: '/usr/bin' }, undefined, { [name]: '/tmp/evil' })).toThrow(
         name,

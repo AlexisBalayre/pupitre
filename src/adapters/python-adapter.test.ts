@@ -352,13 +352,14 @@ describe('pythonAdapter', () => {
     expect(result).toEqual({ unavailable: expect.stringContaining('vulture failed') });
   });
 
-  it('leaves the measured checkout as it found it: no .coverage data file', () => {
+  it('leaves the measured checkout as it found it: no .coverage, no .pytest_cache', () => {
+    // The fake pytest reproduces the two artifact rules of the real one:
     // coverage.py writes its data file to COVERAGE_FILE, defaulting to
-    // `.coverage` in the CWD — the checkout being measured. The fake pytest
-    // reproduces exactly that rule, so this fails if the capability stops
-    // aiming COVERAGE_FILE into its own report dir: the artifact lands in the
-    // repo, and merge-gate's worktree-clean check then rejects the session
-    // over a file it never wrote.
+    // `.coverage` in the CWD — the checkout being measured — and the cache
+    // plugin writes .pytest_cache/ there unless disabled. So this fails if
+    // the capability stops aiming COVERAGE_FILE into its own report dir (the
+    // bare file then fails merge-gate's worktree-clean check against a file
+    // the session never wrote) or stops disabling the cache plugin.
     const repo = makeRepo({
       'pyproject.toml': '[project]\ndependencies = ["pytest-cov"]\n',
       'app.py': 'x = 1\n',
@@ -368,11 +369,14 @@ describe('pythonAdapter', () => {
     writeFileSync(
       join(binDir, 'pytest'),
       `#!/bin/sh
+cache=yes
 for arg in "$@"; do
   case "$arg" in
     --cov-report=json:*) report="\${arg#--cov-report=json:}" ;;
+    no:cacheprovider) cache=no ;;
   esac
 done
+[ "$cache" = no ] || mkdir -p .pytest_cache
 printf %s '{"files":{"app.py":{"executed_lines":[1],"missing_lines":[]}}}' > "$report"
 printf %s data > "\${COVERAGE_FILE:-.coverage}"
 `,
