@@ -253,10 +253,11 @@ function gateAndMerge(
     }
     try {
       // The session wrote what this runs (its own scripts, its own config), so
-      // it runs confined: an env allowlist (decision 28) inside a sandbox that
-      // denies every write under HOME and reads of the credential stores
-      // (decision 36). The trusted checkout is writable because a worktree
-      // shares its `.git` — a stage that runs git needs the index lock.
+      // it runs confined: an env allowlist (decision 28) inside a sandbox whose
+      // writes are default-deny (decision 36). The stage writes in its own
+      // worktree; `repoPath` is passed to scope the toolchain cache, and stays
+      // read-only, which is what keeps decision 29's trusted checkout trusted
+      // while the session's own code is running.
       runGateChild(command.command, command.args, {
         cwd: worktree,
         repoPath: req.repoPath,

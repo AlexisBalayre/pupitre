@@ -6,6 +6,9 @@ import { isSandboxSupported, runGateChild, sandboxLabel, sandboxProfile } from '
 
 const HOME = '/Users/dev';
 
+/** The label pup reports when it applied its own profile rather than inheriting one. */
+const APPLIED_LABEL = 'sandbox-exec (macOS)';
+
 /**
  * Restated rather than imported from the module under test: a test that reads
  * the very list it is checking passes whatever that list happens to say, and
@@ -35,29 +38,6 @@ describe('sandboxProfile', () => {
     expect(generated.indexOf('(deny file-write*)')).toBeLessThan(
       generated.indexOf(`(allow file-write*\n  (subpath "${HOME}/code/repo/.worktrees/s1")`),
     );
-  });
-
-  it('grants nothing beyond the enumerated paths and the device nodes', () => {
-    const generated = profile(['/repo']);
-    const allow = generated.slice(
-      generated.indexOf('(allow file-write*'),
-      generated.lastIndexOf('(deny file-write*'),
-    );
-
-    expect([...allow.matchAll(/\(subpath "([^"]*)"\)/g)].map((match) => match[1])).toEqual([
-      '/repo',
-      '/dev',
-    ]);
-  });
-
-  it('keeps a granted checkout git directory unwritable, since git config is execution', () => {
-    // `core.fsmonitor` in .git/config runs under pup's own later git calls,
-    // which are unsandboxed and carry the operator's environment on purpose.
-    const generated = profile(['/repo'], ['/repo/.git']);
-    const lastDeny = generated.lastIndexOf('(deny file-write*');
-
-    expect(lastDeny).toBeGreaterThan(generated.indexOf('(allow file-write*'));
-    expect(generated.slice(lastDeny)).toContain('(subpath "/repo/.git")');
   });
 
   it('read-denies the curated secret paths', () => {
@@ -132,24 +112,27 @@ describe('sandboxMode, through the label it reports', () => {
     },
   );
 
-  it('refuses the run when the probe fails for any reason but nesting', async () => {
-    vi.resetModules();
-    vi.doMock('node:child_process', () => ({
-      execFileSync: () => {
-        throw Object.assign(new Error('sandbox-exec: dyld image not found'), {
-          stderr: 'dyld: image not found\n',
-        });
-      },
-    }));
+  it.runIf(isSandboxSupported())(
+    'refuses the run when the probe fails for any reason but nesting',
+    async () => {
+      vi.resetModules();
+      vi.doMock('node:child_process', () => ({
+        execFileSync: () => {
+          throw Object.assign(new Error('sandbox-exec: dyld image not found'), {
+            stderr: 'dyld: image not found\n',
+          });
+        },
+      }));
 
-    const module = await import('./sandbox.utils.js');
+      const module = await import('./sandbox.utils.js');
 
-    // Fail closed: a sandbox broken in a way pup does not recognise refuses the
-    // stage rather than quietly running the child unconfined.
-    expect(() => module.sandboxLabel()).toThrow(/dyld image not found/);
-    vi.doUnmock('node:child_process');
-    vi.resetModules();
-  });
+      // Fail closed: a sandbox broken in a way pup does not recognise refuses
+      // the stage rather than quietly running the child unconfined.
+      expect(() => module.sandboxLabel()).toThrow(/dyld image not found/);
+      vi.doUnmock('node:child_process');
+      vi.resetModules();
+    },
+  );
 });
 
 describe('runGateChild', () => {
@@ -240,6 +223,58 @@ describe('runGateChild', () => {
         runGateChild('sh', ['-c', `printf x > ${target}`], { cwd, repoPath: cwd }),
       ).toThrow();
       expect(existsSync(target)).toBe(false);
+    });
+
+    /**
+     * These assert pup's *own* policy, so they only run where pup applied it:
+     * under `inherited` the outer profile governs and grants a different set,
+     * which is a real guarantee but not this one.
+     */
+    describe.runIf(sandboxLabel() === APPLIED_LABEL)('with pup own profile applied', () => {
+      it('cannot write outside every granted path', () => {
+        const cwd = fakeCheckout();
+        // The real TMPDIR root, which is nobody's grant — the child's own
+        // TMPDIR is a subdirectory of it that pup does grant.
+        const target = join(tmpdir(), 'pup-ungranted-canary');
+        // A canary left by an earlier failing run must not decide this one.
+        rmSync(target, { force: true });
+
+        expect(() =>
+          runGateChild('sh', ['-c', `printf x > ${target}`], { cwd, repoPath: cwd }),
+        ).toThrow();
+        expect(existsSync(target)).toBe(false);
+      });
+
+      it('cannot write the git directory of the checkout it measures', () => {
+        // `core.fsmonitor` in .git/config is executed by pup's own later git
+        // calls, which are unsandboxed and carry the operator's environment.
+        const cwd = fakeCheckout();
+        mkdirSync(join(cwd, '.git'));
+
+        expect(() =>
+          runGateChild('sh', ['-c', 'printf x > .git/config'], { cwd, repoPath: cwd }),
+        ).toThrow();
+        expect(existsSync(join(cwd, '.git', 'config'))).toBe(false);
+        // The control: an ordinary file in the same checkout still writes.
+        runGateChild('sh', ['-c', 'printf ok > ordinary.txt'], { cwd, repoPath: cwd });
+        expect(readFileSync(join(cwd, 'ordinary.txt'), 'utf8')).toBe('ok');
+      });
+
+      it('cannot write the trusted checkout it is measured against', () => {
+        // The trusted checkout is decision 29's whole basis: writable, a build
+        // stage drops `@vitest/coverage-v8` from the manifest the *next* stage
+        // reads and the coverage stage stops measuring with nobody the wiser.
+        // It also carried every sibling worktree's `.git` pointer file, one
+        // level below the `.git` deny.
+        const repoPath = fakeCheckout();
+        const cwd = fakeCheckout();
+        writeFileSync(join(repoPath, 'package.json'), '{"devDependencies":{}}');
+
+        expect(() =>
+          runGateChild('sh', ['-c', `printf {} > ${repoPath}/package.json`], { cwd, repoPath }),
+        ).toThrow();
+        expect(readFileSync(join(repoPath, 'package.json'), 'utf8')).toBe('{"devDependencies":{}}');
+      });
     });
 
     it('writes in the checkout it measures and in the scratch dir the caches point at', () => {

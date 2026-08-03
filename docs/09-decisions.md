@@ -98,11 +98,26 @@ changes back into those docs is pending.
     and closes every path nobody thought to name. A checkout's `.git` is denied for the same class
     of reason: `core.fsmonitor`, `core.sshCommand`, `core.pager` and aliases in `.git/config` are
     executed by pup's own later git calls, and `core.hooksPath=/dev/null` does not close that
-    (verified against Apple Git-154). Denying the directory whole also covers `config.worktree`,
-    the `.git` pointer file a worktree uses, `hooks/`, `info/` and refs — measurement must not
-    mutate the repository it measures, which is the rule the Python adapter's `uv --no-sync`
-    already follows. The `.git` denies are derived inside the seam rather than passed per call
-    site: a call site that forgets to protect the checkout it just made writable reopens the hole.
+    (verified against Apple Git-154). Denying the directory whole covers `config.worktree`, that
+    checkout's own `.git` pointer file, `hooks/`, `info/` and refs — measurement must not mutate
+    the repository it measures, which is the rule the Python adapter's `uv --no-sync` already
+    follows. The `.git` denies are derived inside the seam rather than passed per call site: a
+    call site that forgets to protect the checkout it just made writable reopens the hole.
+    **The trusted checkout is not writable during a merge**, and getting that wrong cost two
+    rounds. It was granted for one stated reason — a worktree shares its git object store, so a
+    stage running git needs the index lock — and denying `.git` outright nullified that reason
+    while the grant survived it. What the grant still bought an attacker was everything: the deny
+    reaches `<repo>/.git`, but a *sibling* worktree's pointer file at
+    `<repo>/.worktrees/<other>/.git` is a level below it, and rewriting that to a `gitdir:` whose
+    `commondir` supplies a `core.fsmonitor` executes under the next `pup merge`'s unsandboxed git
+    (reproduced; the simpler gitdir-only redirect does not work, since git resolves config through
+    `commondir`). Worse and quieter, `<repo>/package.json` was rewritable, so a build stage could
+    drop `@vitest/coverage-v8` from the manifest the coverage capability reads and turn the
+    coverage stage into a skip — measurement forgery aimed straight at decision 29, invisible to
+    both the worktree cleanliness check and the branch-diff scope audit, and persistent, since the
+    same file chooses the *next* run's `gateCommands`. So `repoPath` now only keys the toolchain
+    cache. `pup init`/`pup audit` are unaffected: they pass the same path as `cwd`, where the
+    write grant is legitimate.
     `file-read*` is denied for a fixed constant (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`,
     `~/.npmrc`, `~/.gnupg`, `~/.kube`, `~/.docker/config.json`, `~/Library/Keychains`,
     `~/.pupitre`) with **no extension mechanism**: a per-repo or per-operator list is a channel a
@@ -158,7 +173,9 @@ changes back into those docs is pending.
     exfiltrate anything it can read — and it can read everything the deny list misses, which means
     a secret in `~/Documents/keys.txt` is not protected; the list closes the credential stores an
     attacker reaches for first, not the general case. The sandbox matches resolved paths, so a
-    `~/.npmrc` symlinked out to a dotfiles repo is read through its target. A repo's own toolchain
+    `~/.npmrc` symlinked out to a dotfiles repo is read through its target. `/dev` is write-granted,
+    so a child can reach `/dev/tty` and the terminal behind it — unchanged from the default-allow
+    policy this replaced, but worth naming now that everything else is enumerated. A repo's own
     cache stays poisonable by that repo's gate children — the cross-repo path is closed, the
     same-repo one is not, and it buys an attacker nothing there, since a gate child already runs
     that repo's code. The session process itself is unconfined by design (decision 5), so this

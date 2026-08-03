@@ -102,11 +102,12 @@ interface GateChildOptions {
   /** Working directory, and always writable: the checkout being measured. */
   cwd: string;
   /**
-   * The trusted checkout (decision 29's `configPath`). Writable, because a
-   * worktree shares its git object store, and the key the toolchain cache is
-   * scoped by — one repo's gate must not hand the next repo its package
-   * manager. Required rather than optional: every call site knows it, and a
-   * cache shared by default is a cross-repo execution channel.
+   * The trusted checkout (decision 29's `configPath`). Read-only to the child —
+   * it is the key the toolchain cache is scoped by, nothing more. One repo's
+   * gate must not hand the next repo its package manager, so this is required
+   * rather than optional: every call site knows it, and a cache shared by
+   * default is a cross-repo execution channel. `pup init`/`pup audit` pass the
+   * same path as `cwd`, where the write grant is legitimate.
    */
   repoPath: string;
   /** Further writable paths — a capability's report directory. */
@@ -220,9 +221,13 @@ export function runGateChild(command: string, args: string[], options: GateChild
         command: SANDBOX_EXEC,
         args: [
           '-f',
+          // `repoPath` is deliberately absent: it keys the toolchain cache, it
+          // is not writable. Granting it made the trusted checkout — the whole
+          // basis of decision 29 — session-writable during its own merge, and
+          // reached every *sibling* worktree's `.git` pointer file, which is
+          // one level deeper than the `.git` deny below.
           writeProfile(policyDir, [
             options.cwd,
-            options.repoPath,
             ...(options.writablePaths ?? []),
             scratchDir,
             cacheDir,
