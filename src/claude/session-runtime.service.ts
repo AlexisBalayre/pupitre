@@ -55,27 +55,37 @@ function tmuxName(sessionId: string): string {
 }
 
 /**
- * Exact-match target for every lookup (send-keys, paste-buffer, capture-pane,
+ * Exact-match pin for every lookup (send-keys, paste-buffer, capture-pane,
  * kill-session). The '=' pins tmux to exact matching — a bare name resolves
  * exact -> fnmatch -> PREFIX, so once `pup-t-abc` is gone its keys land in a
  * live `pup-t-abc-1`, and session slugs mint exactly such prefix pairs. The
  * trailing ':' is required: bare '=name' fails pane resolution for send-keys
- * with can't-find-pane, '=name:' works (verified on tmux 3.7b).
+ * with can't-find-pane, '=name:' works (verified on tmux 3.7b). ':' and '='
+ * are both legal in session NAMES, so a double-pinned or unpinned target
+ * resolves to something else — or to nothing, silently; this is the single
+ * place the pin format lives.
  */
+function pinned(name: string): string {
+  return `=${name}:`;
+}
+
 function tmuxTarget(sessionId: string): string {
-  return `=${tmuxName(sessionId)}:`;
+  return pinned(tmuxName(sessionId));
 }
 
 /**
- * Kill any stale session named `target`, then launch a fresh detached tmux
+ * Kill any stale session named `name`, then launch a fresh detached tmux
  * session running `command`. Shared by `launchSession` and `launchWatcher` —
  * tmux is pup's process supervisor everywhere (decision 1), and both spawn
  * paths need the kill-then-spawn sequence to survive a re-launch.
+ * `name` must be BARE (never `pinned()`): '=' and ':' are legal in session
+ * names, so `-s` would happily create a pin-shaped name no pinned lookup can
+ * ever find again — an orphan pane invisible to every later command.
  * `command` must have at least 2 elements: tmux shell-evaluates a lone
  * trailing argument instead of treating it as an argv vector.
  */
 function spawnDetachedSession(
-  target: string,
+  name: string,
   opts: {
     cwd: string;
     window?: { x: number; y: number };
@@ -83,12 +93,12 @@ function spawnDetachedSession(
     command: string[];
   },
 ): void {
-  killIfExists(target);
+  killIfExists(name);
   tmux(
     'new-session',
     '-d',
     '-s',
-    target,
+    name,
     ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
     '-c',
     opts.cwd,
@@ -230,7 +240,7 @@ function killIfExists(name: string): void {
     // exist; pipe stderr so the probe stays silent instead of leaking
     // "error connecting to /tmp/tmux-*" to the operator's terminal. Pinned to
     // exact match, or a stale name would prefix-match and kill a live sibling.
-    execFileSync('tmux', ['kill-session', '-t', `=${name}:`], {
+    execFileSync('tmux', ['kill-session', '-t', pinned(name)], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
   } catch {
