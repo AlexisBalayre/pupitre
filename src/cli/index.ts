@@ -39,6 +39,7 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
+import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   appendEvent,
@@ -671,6 +672,23 @@ export function buildProgram(): Command {
       const outFile = join(projectPaths(repoPath).root, 'map.html');
       writeFileSync(outFile, html);
       console.log(`Mind-map written to ${outFile}`);
+      try {
+        execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [outFile]);
+      } catch {
+        console.log('Could not open a browser; open the file manually.');
+      }
+    });
+  program
+    .command('report')
+    .description('Render the project report (sessions with intent, drift, debt, decisions) as HTML')
+    .option('--open', 'open the rendered report in the browser')
+    .action((opts: { open?: boolean }) => {
+      const { repoPath, db } = resolveProject();
+      const html = renderReportHtml(db, repoPath);
+      const outFile = join(projectPaths(repoPath).root, 'report.html');
+      writeFileSync(outFile, html);
+      console.log(`Report written to ${outFile}`);
+      if (!opts.open) return;
       try {
         execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [outFile]);
       } catch {

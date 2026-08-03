@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -588,6 +595,29 @@ describe('CLI commands', () => {
       expect(errors).toEqual([
         expect.stringContaining('Session s1 has not signalled handoff-done yet'),
       ]);
+    });
+  });
+
+  describe('report', () => {
+    it('writes a self-contained report.html into the project dir and echoes the path', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['report'], { from: 'user' });
+
+      const outFile = join(projectPaths(repo).root, 'report.html');
+      expect(logs).toContain(`Report written to ${outFile}`);
+      const html = readFileSync(outFile, 'utf8');
+      expect(html).toContain('<!doctype html>');
+      expect(html).not.toMatch(/<script[^>]+src=/);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('throws when run outside any git repo (no project to resolve)', () => {
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() => buildProgram().parse(['report'], { from: 'user' })).toThrow();
     });
   });
 

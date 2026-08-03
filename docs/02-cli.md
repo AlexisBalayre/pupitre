@@ -21,6 +21,7 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
 ## Knowledge
 
 - `pup map [module]` — code map: text tree by default, `--open` renders the interactive mind-map view.
+- `pup report [--open]` — render the project report to `report.html` in the project dir: sessions (newest first) with the goal that launched them, baseline drift from capture history, open debt, decision records. `--open` also launches it in the browser (best-effort).
 - `pup debt` — open ledger entries, oldest first, with review-by conditions.
 - `pup log [module]` — decision records, filterable by module or file.
 

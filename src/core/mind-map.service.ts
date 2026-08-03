@@ -1,6 +1,7 @@
 import { dirname } from 'node:path';
 
 import type { DecisionRecordRow } from './decision-record.repository.js';
+import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import type { CodeMapNode, MindMapNodeDatum } from './types/code-map.types.js';
 
 /**
@@ -38,7 +39,10 @@ export function renderMindMapHtml(
   // `<` escaped so an id or summary containing `</script>` cannot break out of
   // the data block.
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return HTML_TEMPLATE.replace('__PUP_MAP_DATA__', json);
+  // Function replacer: a string replacement would have its $-patterns ($&, $',
+  // $\`) expanded, splicing raw template text — including a real </script> —
+  // into the escaped data block.
+  return HTML_TEMPLATE.replace('__PUP_MAP_DATA__', () => json);
 }
 
 function moduleOf(file: string): string {
@@ -53,20 +57,7 @@ const HTML_TEMPLATE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pup map</title>
 <style>
-  :root {
-    --surface: #fcfcfb; --page: #f9f9f7;
-    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
-    --debt-0: #86b6ef; --debt-1: #3987e5; --debt-2: #1c5cab; --debt-3: #0d366b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --surface: #1a1a19; --page: #0d0d0d;
-      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-      --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
-      --debt-0: #184f95; --debt-1: #256abf; --debt-2: #3987e5; --debt-3: #6da7ec;
-    }
-  }
+${PAGE_THEME_CSS}
   * { margin: 0; box-sizing: border-box; }
   body {
     font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;

@@ -82,4 +82,19 @@ describe('renderMindMapHtml', () => {
 
     expect(html).not.toContain('</script><script>alert');
   });
+
+  it('keeps $-patterns in ids from splicing template text into the data block', () => {
+    // String.replace expands $&/$'/$` in a string REPLACEMENT — $' would splice
+    // the rest of the template (raw </script> included) into the data block.
+    const id = "src/$' and $& and $`";
+    const nodes: CodeMapNode[] = [
+      { id, files: [], churn: 1, openDebt: 0, dependsOn: [], usedBy: [] },
+    ];
+
+    const html = renderMindMapHtml('/repo', nodes, []);
+
+    const data = JSON.parse(/id="pup-map-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)?.[1] ?? '');
+    expect(data.nodes[0].id).toBe(id);
+    expect(html.match(/<\/script>/g)).toHaveLength(2);
+  });
 });
