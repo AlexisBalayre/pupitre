@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', () => ({
+  interruptSession: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
   steerSession: vi.fn(),
@@ -31,7 +32,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
-import { steerSession } from '../claude/session-runtime.service.js';
+import { interruptSession, steerSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -106,6 +107,14 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
     branch: `pup/${sessionId}`,
     profileHash: 'hash',
   });
+  db.close();
+}
+
+/** A session whose tmux pane is gone for good — steer/interrupt must refuse it. */
+function seedKilledSession(repoPath: string, sessionId: string): void {
+  seedSession(repoPath, sessionId);
+  const { db } = resolveProject(repoPath);
+  transitionSession(db, sessionId, 'killed');
   db.close();
 }
 
@@ -389,6 +398,98 @@ describe('CLI commands', () => {
         .prepare("SELECT type, payload FROM events WHERE session_id = 's1'")
         .all() as { type: string; payload: string }[];
       expect(events).toContainEqual({ type: 'steer', payload: JSON.stringify({ kind: 'manual' }) });
+    });
+
+    it('refuses a terminal session', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedKilledSession(repo, 's1');
+
+      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
+
+      expect(errors).toEqual(['Session s1 is killed; nothing to steer.']);
+      expect(process.exitCode).toBe(1);
+      expect(steerSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('interrupt', () => {
+    function sessionEvents(repo: string, sessionId: string): { type: string; payload: string }[] {
+      const { db } = resolveProject(repo);
+      return db.prepare('SELECT type, payload FROM events WHERE session_id = ?').all(sessionId) as {
+        type: string;
+        payload: string;
+      }[];
+    }
+
+    it('reports no session and touches neither tmux nor the event log', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['interrupt', 'missing-session'], { from: 'user' });
+
+      expect(errors).toEqual(['No session missing-session.']);
+      expect(process.exitCode).toBe(1);
+      expect(interruptSession).not.toHaveBeenCalled();
+      expect(steerSession).not.toHaveBeenCalled();
+    });
+
+    it('sends Escape before steering when a message is given, and records a steered interrupt', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(steerSession).toHaveBeenCalledWith('s1', 'retry the fetch');
+      // The whole point of `interrupt <sid> "msg"` over `steer` is Escape lands
+      // FIRST, so the steer is not queued behind the hung tool call.
+      const escapeOrder = vi.mocked(interruptSession).mock.invocationCallOrder[0];
+      const steerOrder = vi.mocked(steerSession).mock.invocationCallOrder[0];
+      expect(escapeOrder).toBeLessThan(steerOrder as number);
+      expect(logs).toContain('Interrupted and steered session s1.');
+      expect(process.exitCode).toBeUndefined();
+      const events = sessionEvents(repo, 's1');
+      expect(events).toContainEqual({
+        type: 'interrupt',
+        payload: JSON.stringify({ steered: true }),
+      });
+      // The delivered message is a real steer — logged as one too, so a
+      // last-steer query cannot miss steers that arrived via interrupt.
+      expect(events).toContainEqual({
+        type: 'steer',
+        payload: JSON.stringify({ kind: 'interrupt' }),
+      });
+    });
+
+    it('refuses a terminal session without touching tmux', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedKilledSession(repo, 's1');
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      expect(errors).toEqual(['Session s1 is killed; nothing to interrupt.']);
+      expect(process.exitCode).toBe(1);
+      expect(interruptSession).not.toHaveBeenCalled();
+      expect(steerSession).not.toHaveBeenCalled();
+    });
+
+    it('does not steer when no message is given', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['interrupt', 's1'], { from: 'user' });
+
+      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(steerSession).not.toHaveBeenCalled();
+      expect(logs).toContain('Interrupted session s1.');
+      expect(process.exitCode).toBeUndefined();
+      expect(sessionEvents(repo, 's1')).toContainEqual({
+        type: 'interrupt',
+        payload: JSON.stringify({ steered: false }),
+      });
     });
   });
 

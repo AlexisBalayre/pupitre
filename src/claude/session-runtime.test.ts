@@ -38,6 +38,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
+  interruptSession,
   launchArgs,
   launchSession,
   launchWatcher,
@@ -176,7 +177,7 @@ describe('launchSession', () => {
     expect(tmuxCalls).toHaveLength(2);
     expect(tmuxCalls[0]).toEqual([
       'tmux',
-      ['kill-session', '-t', 'pup-s-1'],
+      ['kill-session', '-t', '=pup-s-1:'],
       { stdio: ['ignore', 'ignore', 'pipe'] },
     ]);
     expect(tmuxCalls[1]?.[1]).toEqual([
@@ -200,6 +201,27 @@ describe('launchSession', () => {
   });
 });
 
+describe('interruptSession', () => {
+  it('sends Escape to the exact-match pinned pane target and spawns nothing else', () => {
+    // Skip the real post-Escape settle — spying (not restoreAllMocks) so the
+    // module-level execFileSync fake survives for the rest of the suite.
+    const wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      interruptSession('s-1');
+    } finally {
+      wait.mockRestore();
+    }
+
+    // Full call list, not a tmux-filtered one — a future non-tmux spawn here
+    // must fail this test too. The '=...:' pin is load-bearing: a bare name
+    // prefix-matches a live sibling once this session's window is gone.
+    const calls = vi.mocked(execFileSync).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe('tmux');
+    expect(calls[0]?.[1]).toEqual(['send-keys', '-t', '=pup-s-1:', 'Escape']);
+  });
+});
+
 describe('launchWatcher', () => {
   it('kills any stale watcher, then spawns tmux running the pup CLI watch command', () => {
     const { target } = launchWatcher('proj-1', '/tmp/repo');
@@ -209,7 +231,7 @@ describe('launchWatcher', () => {
     expect(tmuxCalls).toHaveLength(2);
     expect(tmuxCalls[0]).toEqual([
       'tmux',
-      ['kill-session', '-t', 'pup-watch-proj-1'],
+      ['kill-session', '-t', '=pup-watch-proj-1:'],
       { stdio: ['ignore', 'ignore', 'pipe'] },
     ]);
     expect(tmuxCalls[1]?.[1]).toEqual([

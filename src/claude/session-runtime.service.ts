@@ -31,6 +31,13 @@ const READY_POLL_MS = 1000;
 const PASTE_SETTLE_MS = 700;
 /** After Enter, how long to wait before checking that the input box cleared. */
 const SUBMIT_VERIFY_MS = 1000;
+/**
+ * After Escape, how long the interrupt redraw needs before the pane is back at
+ * its input box and a paste can land. Same beat as PASTE_SETTLE_MS — both wait
+ * out one UI repaint — but it guards a different transition (interrupt redraw,
+ * not paste folding), so it gets its own name.
+ */
+const INTERRUPT_SETTLE_MS = 700;
 const SUBMIT_RETRY_LIMIT = 2;
 
 function tmux(...args: string[]): string {
@@ -42,20 +49,43 @@ function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function tmuxTarget(sessionId: string): string {
+/** Session name, for `new-session -s` only — ':' is illegal in session names. */
+function tmuxName(sessionId: string): string {
   return `pup-${sessionId}`;
 }
 
 /**
- * Kill any stale session at `target`, then launch a fresh detached tmux
+ * Exact-match pin for every lookup (send-keys, paste-buffer, capture-pane,
+ * kill-session). The '=' pins tmux to exact matching — a bare name resolves
+ * exact -> fnmatch -> PREFIX, so once `pup-t-abc` is gone its keys land in a
+ * live `pup-t-abc-1`, and session slugs mint exactly such prefix pairs. The
+ * trailing ':' is required: bare '=name' fails pane resolution for send-keys
+ * with can't-find-pane, '=name:' works (verified on tmux 3.7b). ':' and '='
+ * are both legal in session NAMES, so a double-pinned or unpinned target
+ * resolves to something else — or to nothing, silently; this is the single
+ * place the pin format lives.
+ */
+function pinned(name: string): string {
+  return `=${name}:`;
+}
+
+function tmuxTarget(sessionId: string): string {
+  return pinned(tmuxName(sessionId));
+}
+
+/**
+ * Kill any stale session named `name`, then launch a fresh detached tmux
  * session running `command`. Shared by `launchSession` and `launchWatcher` —
  * tmux is pup's process supervisor everywhere (decision 1), and both spawn
  * paths need the kill-then-spawn sequence to survive a re-launch.
+ * `name` must be BARE (never `pinned()`): '=' and ':' are legal in session
+ * names, so `-s` would happily create a pin-shaped name no pinned lookup can
+ * ever find again — an orphan pane invisible to every later command.
  * `command` must have at least 2 elements: tmux shell-evaluates a lone
  * trailing argument instead of treating it as an argv vector.
  */
 function spawnDetachedSession(
-  target: string,
+  name: string,
   opts: {
     cwd: string;
     window?: { x: number; y: number };
@@ -63,12 +93,12 @@ function spawnDetachedSession(
     command: string[];
   },
 ): void {
-  killIfExists(target);
+  killIfExists(name);
   tmux(
     'new-session',
     '-d',
     '-s',
-    target,
+    name,
     ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
     '-c',
     opts.cwd,
@@ -129,7 +159,7 @@ export function launchArgs(opts: LaunchOptions): string[] {
 }
 
 export function launchSession(opts: LaunchOptions): { target: string } {
-  const target = tmuxTarget(opts.sessionId);
+  const target = tmuxName(opts.sessionId);
   preseedTrust(opts.worktreePath);
   const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
   spawnDetachedSession(target, {
@@ -166,6 +196,19 @@ export function steerSession(sessionId: string, message: string): void {
   }
 }
 
+/**
+ * Abort a session's in-flight tool call by sending Escape to its pane — the
+ * escape hatch for a hung tool (e.g. a transient network error wedging a
+ * session), which `steerSession` cannot reach because steers deliver only
+ * after the current tool call ends. The trailing settle gives the UI a beat
+ * to return to its input box, so a steer issued right after lands as a paste
+ * instead of vanishing into the interrupt redraw.
+ */
+export function interruptSession(sessionId: string): void {
+  tmux('send-keys', '-t', tmuxTarget(sessionId), 'Escape');
+  syncSleep(INTERRUPT_SETTLE_MS);
+}
+
 /** Wait until the session UI is interactive. Returns false on timeout. */
 function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolean {
   const deadline = Date.now() + timeoutMs;
@@ -188,15 +231,18 @@ function capturePane(sessionId: string): string {
 }
 
 export function killSession(sessionId: string): void {
-  killIfExists(tmuxTarget(sessionId));
+  killIfExists(tmuxName(sessionId));
 }
 
-function killIfExists(target: string): void {
+function killIfExists(name: string): void {
   try {
-    // Expected to fail when the target (or the tmux server itself) does not
+    // Expected to fail when the session (or the tmux server itself) does not
     // exist; pipe stderr so the probe stays silent instead of leaking
-    // "error connecting to /tmp/tmux-*" to the operator's terminal.
-    execFileSync('tmux', ['kill-session', '-t', target], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // "error connecting to /tmp/tmux-*" to the operator's terminal. Pinned to
+    // exact match, or a stale name would prefix-match and kill a live sibling.
+    execFileSync('tmux', ['kill-session', '-t', pinned(name)], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
   } catch {
     // not running — nothing to kill
   }

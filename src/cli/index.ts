@@ -8,10 +8,16 @@ import type { Database } from 'better-sqlite3';
 import { Command, CommanderError } from 'commander';
 import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
-import { killWatcher, launchWatcher, steerSession } from '../claude/session-runtime.service.js';
+import {
+  interruptSession,
+  killWatcher,
+  launchWatcher,
+  steerSession,
+} from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
+import type { EventType } from '../core/db.client.js';
 import {
   deleteDecisionRecord,
   getDecisionRecord,
@@ -58,6 +64,7 @@ import {
   respawnSession,
 } from '../core/session-handoff.service.js';
 import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
+import { isTerminal } from '../core/session-state.utils.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -154,6 +161,28 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
       : 'coverage not measured',
   ];
   return parts.join(', ');
+}
+
+/**
+ * Session lookup for commands that drive a live tmux pane (`steer`,
+ * `interrupt`). Terminal sessions are refused, not just missing ones: their
+ * pane is long gone, and a dead name is exactly what tmux would have
+ * prefix-matched onto a live sibling before targets were pinned. Prints the
+ * refusal and sets the exit code; callers just bail on undefined.
+ */
+function resolveLiveSession(db: Database, session: string, verb: string): SessionRow | undefined {
+  const row = getSession(db, session);
+  if (!row) {
+    console.error(`No session ${session}.`);
+    process.exitCode = 1;
+    return undefined;
+  }
+  if (isTerminal(row.state)) {
+    console.error(`Session ${session} is ${row.state}; nothing to ${verb}.`);
+    process.exitCode = 1;
+    return undefined;
+  }
+  return row;
 }
 
 /**
@@ -384,15 +413,29 @@ export function buildProgram(): Command {
     .description('Inject a correction into a running session')
     .action((session: string, message: string) => {
       const { db } = resolveProject();
-      const row = getSession(db, session);
-      if (!row) {
-        console.error(`No session ${session}.`);
-        process.exitCode = 1;
-        return;
-      }
+      if (!resolveLiveSession(db, session, 'steer')) return;
       steerSession(session, message);
       appendEvent(db, session, 'steer', { kind: 'manual' });
       console.log(`Steered session ${session}.`);
+    });
+
+  program
+    .command('interrupt <session> [message]')
+    .description("Abort the session's in-flight tool call (Escape), optionally steering a message")
+    .action((session: string, message?: string) => {
+      const { db } = resolveProject();
+      if (!resolveLiveSession(db, session, 'interrupt')) return;
+      interruptSession(session);
+      if (message) steerSession(session, message);
+      // events.type is free-form TEXT in the schema; the cast bridges
+      // 'interrupt' not yet being in core's EventType union (out of scope here).
+      appendEvent(db, session, 'interrupt' as EventType, { steered: Boolean(message) });
+      // The message is a real steer — log it as one too, so last-steer queries
+      // see it no matter which path delivered it.
+      if (message) appendEvent(db, session, 'steer', { kind: 'interrupt' });
+      console.log(
+        message ? `Interrupted and steered session ${session}.` : `Interrupted session ${session}.`,
+      );
     });
 
   program
