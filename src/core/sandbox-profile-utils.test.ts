@@ -58,6 +58,7 @@ describe('sandboxProfile', () => {
           .join('')})`,
         '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
         `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x"))`,
+        String.raw`(deny file-write* (regex #"/\.git(/|$)"))`,
         '',
       ].join('\n'),
     );
@@ -80,6 +81,19 @@ describe('sandboxProfile', () => {
 
     expect(lastDeny).toBeGreaterThan(generated.indexOf('(allow file-write*'));
     expect(generated.slice(lastDeny)).toContain('(subpath "/scratch/pup-sandbox-x")');
+  });
+
+  it('denies .git by path match, after every allow, so nesting depth is irrelevant', () => {
+    // `protectedPaths` names each grant's own .git and nothing deeper, which
+    // is how #49's sibling-worktree attack reached `.worktrees/*/.git` pointer
+    // files through a grant of the repo root. The regex matches the path
+    // itself — directory or pointer file, at any depth — and sits last, where
+    // SBPL's later-rule-wins ordering puts it above every allow.
+    const generated = profile([`${HOME}/code/repo`]);
+    const gitDeny = String.raw`(deny file-write* (regex #"/\.git(/|$)"))`;
+
+    expect(generated).toContain(gitDeny);
+    expect(generated.indexOf(gitDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
   });
 
   it('escapes a path that would otherwise break out of the SBPL string', () => {

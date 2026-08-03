@@ -26,6 +26,17 @@ const DEVICE_PATH = '/dev';
 const GIT_DIRNAME = '.git';
 
 /**
+ * The same deny, at every depth. The per-path denies below are derived one
+ * level deep — granting P protects P/.git and nothing under it — which is how
+ * #49's sibling-worktree attack reached every worktree's `.git` pointer file
+ * through a grant of the repo root. Matching the path instead of enumerating
+ * it makes the depth of `protectedPaths` irrelevant: any segment named `.git`,
+ * directory or worktree pointer file, in any granted tree. `.gitignore` and
+ * friends stay writable — the match requires `/` or end-of-path after `.git`.
+ */
+const GIT_DENY_RULE = String.raw`(deny file-write* (regex #"/\.git(/|$)"))`;
+
+/**
  * Read-denied outright, and deliberately a fixed constant with no extension
  * mechanism: a per-repo or per-operator list is a channel a session can write
  * (the lesson decision 31 paid for with `python_files`), and the value of a
@@ -100,6 +111,7 @@ export function sandboxProfile(policy: {
       policy.policyDir,
       ...policy.protectedPaths,
     ])})`,
+    GIT_DENY_RULE,
     '',
   ].join('\n');
 }
@@ -114,7 +126,10 @@ function escapeSbpl(value: string): string {
  * here rather than passed per call site on purpose: a call site that forgets to
  * protect the checkout it just made writable reopens the whole hole, and every
  * writable path pup grants is either a checkout or a directory with no `.git`
- * in it, where the extra deny costs nothing.
+ * in it, where the extra deny costs nothing. The derivation is one level deep
+ * — it names P/.git, not P/anything/.git — so the regex rule, not this list,
+ * is what protects a checkout nested inside a grant; these stay as the denies
+ * that document which paths were granted as checkouts.
  */
 export function writeProfile(policyDir: string, writablePaths: string[]): string {
   const profilePath = join(policyDir, 'gate-child.sb');
