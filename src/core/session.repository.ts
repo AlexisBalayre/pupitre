@@ -34,7 +34,7 @@ export interface NewSessionInput {
   transcriptPath?: string;
 }
 
-export interface TaskRow {
+interface TaskRow {
   id: string;
   project_id: string;
   /** JSON TaskSpec. */
@@ -45,7 +45,7 @@ export interface TaskRow {
   created_at: string;
 }
 
-export interface EventRow {
+interface EventRow {
   id: number;
   session_id: string | null;
   type: EventType;

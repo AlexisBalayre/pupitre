@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import { type BaselineHistoryRow, listBaselineHistory } from './baseline-history.repository.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { listLedgerEntries } from './ledger.repository.js';
+import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { projectId } from './paths.utils.js';
 import { listEvents, listSessions, listTasks, type SessionRow } from './session.repository.js';
 import type { DebtBaseline } from './types/init.types.js';
@@ -136,20 +137,7 @@ const HTML_TEMPLATE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pup report</title>
 <style>
-  :root {
-    --surface: #fcfcfb; --page: #f9f9f7;
-    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
-    --debt-0: #86b6ef; --debt-1: #3987e5; --debt-2: #1c5cab; --debt-3: #0d366b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --surface: #1a1a19; --page: #0d0d0d;
-      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-      --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
-      --debt-0: #184f95; --debt-1: #256abf; --debt-2: #3987e5; --debt-3: #6da7ec;
-    }
-  }
+${PAGE_THEME_CSS}
   * { margin: 0; box-sizing: border-box; }
   body {
     font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
