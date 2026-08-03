@@ -85,13 +85,24 @@ changes back into those docs is pending.
     the env allowlist with a filesystem policy. One seam is the point: "what can a gate child
     touch" has a single answer, and a new call site cannot forget the sandbox without also
     forgetting the environment it has to ask for anyway.
-    **The policy.** Default-allow; then `file-write*` denied for everything under `HOME` with no
-    carve-outs; then the paths a gate needs — the checkout being measured, the trusted checkout,
-    the run's scratch dir, the toolchain cache — allowed back; then `~/.pupitre` and the generated
-    profile denied *last*, so pup's own store (the baselines a gate ratchets, the ledger it
-    writes) and the profile a later stage would be run under stay unwritable whatever a caller
-    passes as writable. Order is load-bearing — SBPL's last matching rule wins, and the worktree
-    being measured normally lives under `HOME`, so the blanket deny has to land before the allow.
+    **The policy.** Reads default-allow; writes default-**deny**, allowed back only for the paths
+    a gate needs — the checkout being measured, the trusted checkout, the run's scratch dir, the
+    toolchain cache, and `/dev` — and then `~/.pupitre`, the generated profile and each granted
+    checkout's `.git` denied *last*, so they stay unwritable whatever a caller passes as writable.
+    Order is load-bearing: SBPL's last matching rule wins, and the worktree being measured normally
+    lives under `HOME`, so a blanket deny has to land before the allow.
+    Denying only `HOME` was the first attempt and it was not enough. `/opt/homebrew/bin` is
+    group-writable on a standard install, so a gate child could overwrite the `gh`, `git` or `tmux`
+    binary pup itself runs *afterwards* — unsandboxed, with the operator's full environment. The
+    writable set is enumerated at every call site anyway, so inverting the default costs nothing
+    and closes every path nobody thought to name. A checkout's `.git` is denied for the same class
+    of reason: `core.fsmonitor`, `core.sshCommand`, `core.pager` and aliases in `.git/config` are
+    executed by pup's own later git calls, and `core.hooksPath=/dev/null` does not close that
+    (verified against Apple Git-154). Denying the directory whole also covers `config.worktree`,
+    the `.git` pointer file a worktree uses, `hooks/`, `info/` and refs — measurement must not
+    mutate the repository it measures, which is the rule the Python adapter's `uv --no-sync`
+    already follows. The `.git` denies are derived inside the seam rather than passed per call
+    site: a call site that forgets to protect the checkout it just made writable reopens the hole.
     `file-read*` is denied for a fixed constant (`~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`,
     `~/.npmrc`, `~/.gnupg`, `~/.kube`, `~/.docker/config.json`, `~/Library/Keychains`,
     `~/.pupitre`) with **no extension mechanism**: a per-repo or per-operator list is a channel a
@@ -104,13 +115,22 @@ changes back into those docs is pending.
     pup-owned cache directory and `TMPDIR` at the run's own scratch. The cache directory is
     deliberately *stable across runs* where the scratch is not: pointed at a directory that starts
     empty every time, corepack re-downloads the repo's package manager on every `pup merge`, which
-    turns a local gate into a network-dependent one — worse than not redirecting at all.
+    turns a local gate into a network-dependent one — worse than not redirecting at all. It is
+    equally deliberately scoped **per repo**, keyed by `projectId`: these caches carry executable
+    code (corepack runs the package-manager tarballs in its home, uv hardlinks cached wheels into
+    the venv), so one shared directory would let a gate child in repo A supply the `pnpm` that
+    measures repo B. The directory is checked before reuse — a real directory, owned by this user,
+    not group- or world-writable — because its name is guessable and `TMPDIR` is a variable, so a
+    `TMPDIR` aimed at a shared `/tmp` must refuse rather than silently share.
     **Both fail modes.** On darwin a sandbox that cannot be set up throws instead of running the
-    child, so the stage fails and the merge refuses, exactly as decision 31's parse errors do; the
-    invariant is that no session-authored code ever runs unconfined on a platform pup claims to
-    confine. Everywhere else children run unsandboxed and the gate report, `pup init` and `pup
-    audit` each print `sandbox: none (unsupported platform)` — decision 29's honesty rule applied
-    to the platform gap, since a silent absence reads exactly like the guarantee.
+    child, so the stage fails and the merge refuses, exactly as decision 31's parse errors do. The
+    invariant is about gate *children* and only them: no child pup spawns to measure a session's
+    code runs unconfined on a platform pup claims to confine. It says nothing about the session
+    process, which runs with permissions bypassed by design (decision 5) and is not sandboxed at
+    all — the hooks and the gate are its enforcement layer, not this. Everywhere else children run
+    unsandboxed and the gate report, `pup init` and `pup audit` each print `sandbox: none
+    (unsupported platform)` — decision 29's honesty rule applied to the platform gap, since a
+    silent absence reads exactly like the guarantee.
     **A third mode, found by dogfooding.** macOS refuses a nested `sandbox_apply` unless the inner
     profile is identical to the outer one, and pupitre's own gate is precisely that case: `pnpm
     test` runs as a sandboxed stage and the suite spawns gate children of its own, which failed 52
@@ -120,6 +140,13 @@ changes back into those docs is pending.
     confined by whatever confines pup — but it is a different guarantee, so it gets a different
     word in the report. Only the nesting refusal degrades this way; any other `sandbox-exec`
     failure still refuses the merge.
+    **That probe is security-critical, and its first version was forgeable.** It ran a
+    PATH-resolved `true` and matched the refusal against the child's own stderr buffer, so a
+    planted `true` printing `sandbox_apply: Operation not permitted` forced `inherited` — every
+    gate child then ran unwrapped while the report claimed containment. It now runs `/usr/bin/true`
+    by absolute path, a SIP-protected binary that writes nothing, with an empty environment, and
+    matches the refusal anchored to `sandbox-exec:` at the start of a line. The rule the fix
+    encodes: the probe must observe nothing the child can write.
     **`PUP_GATE_ENV` is gone**, replaced by `--gate-env <NAME,...>` on `merge`, `init` and
     `audit`. The variable is no longer honoured at all, which is the whole point: direnv's
     `.envrc`, a CI job, a Makefile or any wrapper process supplies an environment variable without
@@ -131,12 +158,14 @@ changes back into those docs is pending.
     exfiltrate anything it can read — and it can read everything the deny list misses, which means
     a secret in `~/Documents/keys.txt` is not protected; the list closes the credential stores an
     attacker reaches for first, not the general case. The sandbox matches resolved paths, so a
-    `~/.npmrc` symlinked out to a dotfiles repo is read through its target. Writes *outside*
-    `HOME` remain default-allow, so the shared toolchain cache is poisonable by a gate child — as
-    `~/.npm` always was, and as any path outside it is. Whoever launches pup still chooses the
-    child's policy in the `inherited` case. And Linux gets nothing here: the same seam wants a
-    `bwrap` implementation, deferred rather than faked, because a report that says `none` is
-    honest where a half-policy would not be.
+    `~/.npmrc` symlinked out to a dotfiles repo is read through its target. A repo's own toolchain
+    cache stays poisonable by that repo's gate children — the cross-repo path is closed, the
+    same-repo one is not, and it buys an attacker nothing there, since a gate child already runs
+    that repo's code. The session process itself is unconfined by design (decision 5), so this
+    bounds what the *gate* executes, not what a session does inside its worktree. Whoever launches
+    pup still chooses the child's policy in the `inherited` case. And Linux gets nothing here: the
+    same seam wants a `bwrap` implementation, deferred rather than faked, because a report that
+    says `none` is honest where a half-policy would not be.
 
 ## Merge semantics
 

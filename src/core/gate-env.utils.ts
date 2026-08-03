@@ -74,8 +74,22 @@ interface GateChildEnvOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/**
+ * Names `--gate-env` cannot pass through, however the operator spells the flag.
+ * Each one loads attacker-chosen code into every process the child starts —
+ * `NODE_OPTIONS` via `--require`, the dynamic-linker families via injected
+ * libraries — so allowing them would hand back exactly what decision 28
+ * excluded `NODE_OPTIONS` for in the first place. Dropped silently, like every
+ * other name outside the allowlist; the flag is an escape hatch for a suite's
+ * own config, not a way to re-arm the loader.
+ */
+const NEVER_PASSED_THROUGH = [/^NODE_OPTIONS$/, /^DYLD_/, /^LD_/];
+
 export function gateChildEnv(options: GateChildEnvOptions): NodeJS.ProcessEnv {
-  const allowed = new Set([...ALLOWED_VARS, ...(options.passthrough ?? [])]);
+  const passthrough = (options.passthrough ?? []).filter(
+    (name) => !NEVER_PASSED_THROUGH.some((pattern) => pattern.test(name)),
+  );
+  const allowed = new Set([...ALLOWED_VARS, ...passthrough]);
   const env: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(options.env ?? process.env).filter(
       ([name, value]) => allowed.has(name) && value !== undefined,

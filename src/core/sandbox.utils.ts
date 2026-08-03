@@ -1,8 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
+import { projectId } from './paths.utils.js';
 
 /**
  * Containment for the children whose code a session wrote — gate stages,
@@ -21,6 +30,39 @@ import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 
 /** macOS ships this. Its absence on darwin fails the run, it is not a fallback. */
 const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
+
+/**
+ * What the mode probe runs, by absolute path to a SIP-protected binary that
+ * writes nothing. Both halves are load-bearing. A PATH-resolved `true` is
+ * chosen by whoever controls `PATH`, and its stderr shares the buffer the
+ * nesting check reads — so a planted `true` printing the refusal line forged
+ * `inherited` and dropped every child out of its sandbox while the report still
+ * claimed containment.
+ */
+const PROBE_COMMAND = '/usr/bin/true';
+
+/**
+ * `sandbox-exec`'s own refusal, anchored to the start of a line and to its
+ * prefix. Defence in depth behind the probe command: the only thing that should
+ * be able to write this is `sandbox-exec` itself.
+ */
+const NESTING_REFUSAL = /^sandbox-exec: sandbox_apply:/m;
+
+/** Writes here are what a tty, `/dev/null` and friends need; nothing else is. */
+const DEVICE_PATH = '/dev';
+
+/**
+ * Never writable, whatever a caller granted. A checkout's git directory carries
+ * *execution*: `core.fsmonitor`, `core.sshCommand`, `core.pager` and aliases in
+ * `.git/config` are run by pup's own later git calls, which are deliberately
+ * NOT sandboxed and carry the operator's full environment (decision 28) —
+ * verified against Apple Git-154, where `core.hooksPath=/dev/null` does not
+ * close it. Denying the directory whole also covers `config.worktree`, the
+ * `.git` *file* a worktree uses to point at its real git dir, `hooks/`,
+ * `info/`, and refs. Measurement must not mutate the repository it measures,
+ * the same rule the Python adapter's `uv --no-sync` already follows.
+ */
+const GIT_DIRNAME = '.git';
 
 /**
  * Read-denied outright, and deliberately a fixed constant with no extension
@@ -59,7 +101,15 @@ const PUPITRE_HOME = '.pupitre';
 interface GateChildOptions {
   /** Working directory, and always writable: the checkout being measured. */
   cwd: string;
-  /** Further writable paths — the trusted checkout, a capability's output dir. */
+  /**
+   * The trusted checkout (decision 29's `configPath`). Writable, because a
+   * worktree shares its git object store, and the key the toolchain cache is
+   * scoped by — one repo's gate must not hand the next repo its package
+   * manager. Required rather than optional: every call site knows it, and a
+   * cache shared by default is a cross-repo execution channel.
+   */
+  repoPath: string;
+  /** Further writable paths — a capability's report directory. */
   writablePaths?: string[];
   /**
    * Extra env names the operator allowed with `--gate-env`. Never read from
@@ -128,8 +178,12 @@ function sandboxMode(): SandboxMode {
   }
   const { scratchDir, policyDir } = sandboxRun();
   try {
-    execFileSync(SANDBOX_EXEC, ['-f', writeProfile(policyDir, [scratchDir]), 'true'], {
+    // Nothing the child controls reaches this: an absolute SIP-protected
+    // binary that writes no output, run with an empty environment, so the only
+    // writer of the stderr the check below reads is `sandbox-exec` itself.
+    execFileSync(SANDBOX_EXEC, ['-f', writeProfile(policyDir, [scratchDir]), PROBE_COMMAND], {
       encoding: 'utf8',
+      env: {},
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     mode = 'applied';
@@ -137,7 +191,7 @@ function sandboxMode(): SandboxMode {
     const failure = error as { stderr?: string };
     // Only the nesting refusal degrades to `inherited`. Anything else means the
     // sandbox is broken in a way pup does not understand, so it refuses.
-    if (!/sandbox_apply/.test(failure.stderr ?? '')) throw error;
+    if (!NESTING_REFUSAL.test(failure.stderr ?? '')) throw error;
     mode = 'inherited';
   }
   return mode;
@@ -146,17 +200,20 @@ function sandboxMode(): SandboxMode {
 /**
  * Run one gate child. On darwin it is wrapped in `sandbox-exec`; a sandbox that
  * cannot be set up throws rather than degrading to an unconfined run, so the
- * stage fails and the merge refuses — the invariant is that no session-authored
- * code ever runs unconfined on a platform pup claims to confine. The one
- * degradation is `inherited`, and it does not break that invariant: the child
- * is still inside the sandbox pup is inside.
+ * stage fails and the merge refuses. The invariant is about gate *children*, and
+ * only them: no child pup spawns to measure a session's code runs unconfined on
+ * a platform pup claims to confine. The session process itself is not covered —
+ * it runs with permissions bypassed by design (decision 5). The one degradation
+ * is `inherited`, which does not break the invariant: the child is still inside
+ * the sandbox pup is inside.
  *
  * Returns the child's stdout. A non-zero exit throws execFileSync's error, with
  * `stdout`/`stderr` attached, exactly as the direct calls this replaced did.
  */
 export function runGateChild(command: string, args: string[], options: GateChildOptions): string {
   const applied = sandboxMode() === 'applied';
-  const { scratchDir, cacheDir, policyDir } = sandboxRun();
+  const { scratchDir, policyDir } = sandboxRun();
+  const cacheDir = toolchainCacheDir(options.repoPath);
   const env = gateChildEnv({ passthrough: options.gateEnv, scratchDir, cacheDir });
   const invocation = applied
     ? {
@@ -165,6 +222,7 @@ export function runGateChild(command: string, args: string[], options: GateChild
           '-f',
           writeProfile(policyDir, [
             options.cwd,
+            options.repoPath,
             ...(options.writablePaths ?? []),
             scratchDir,
             cacheDir,
@@ -187,16 +245,26 @@ export function runGateChild(command: string, args: string[], options: GateChild
 
 /**
  * The profile pup generates, in SBPL. Later rules win, which is what makes the
- * policy expressible at all: the worktree a gate measures normally lives *under*
- * `HOME`, so the blanket write-deny lands first and the writable paths override
- * it. The two trailing denies are last on purpose — pup's own store and the
- * profile file itself stay unwritable even if a caller passes a path that
- * contains them.
+ * policy expressible at all.
+ *
+ * Writes are default-DENY, allowed back only for the paths a gate actually
+ * needs. Denying `HOME` alone was not enough and the difference is not
+ * theoretical: `/opt/homebrew/bin` is group-writable on a standard install, so
+ * a gate child could overwrite the `gh`, `git` or `tmux` binary that pup itself
+ * runs afterwards — unsandboxed, with the operator's full environment. The
+ * writable set is enumerated at every call site anyway, so inverting the
+ * default costs nothing and closes every path nobody thought to name.
+ *
+ * The trailing denies are last on purpose: pup's own store, the profile file
+ * itself, and each granted checkout's git directory stay unwritable even when
+ * they sit inside a path the caller granted.
  */
 export function sandboxProfile(policy: {
   /** Absolute, symlink-resolved paths the child may write under. */
   writablePaths: string[];
-  /** The operator's home. Write-denied whole, with no carve-outs. */
+  /** Carved back out of the writable set, whatever it granted. */
+  protectedPaths: string[];
+  /** The operator's home. Only the read denies key off it now. */
   home: string;
   /** Directory holding the generated profile; a writable one is a widened next run. */
   policyDir: string;
@@ -208,10 +276,14 @@ export function sandboxProfile(policy: {
     // Network is open, and so is read of everything the deny list below misses:
     // the stated ceiling of decision 36, not an oversight.
     '(allow default)',
-    `(deny file-write*${subpaths([policy.home])})`,
+    '(deny file-write*)',
     `(deny file-read*${subpaths(DENIED_READ_HOME_PATHS.map((path) => join(policy.home, path)))})`,
-    `(allow file-write*${subpaths(policy.writablePaths)})`,
-    `(deny file-write*${subpaths([join(policy.home, PUPITRE_HOME), policy.policyDir])})`,
+    `(allow file-write*${subpaths([...policy.writablePaths, DEVICE_PATH])})`,
+    `(deny file-write*${subpaths([
+      join(policy.home, PUPITRE_HOME),
+      policy.policyDir,
+      ...policy.protectedPaths,
+    ])})`,
     '',
   ].join('\n');
 }
@@ -221,12 +293,21 @@ function escapeSbpl(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/**
+ * `checkouts` are the paths whose git directory must survive the grant. Derived
+ * here rather than passed per call site on purpose: a call site that forgets to
+ * protect the checkout it just made writable reopens the whole hole, and every
+ * writable path pup grants is either a checkout or a directory with no `.git`
+ * in it, where the extra deny costs nothing.
+ */
 function writeProfile(policyDir: string, writablePaths: string[]): string {
   const profilePath = join(policyDir, 'gate-child.sb');
+  const writable = [...new Set(writablePaths.map(resolvePath))];
   writeFileSync(
     profilePath,
     sandboxProfile({
-      writablePaths: [...new Set(writablePaths.map(resolvePath))],
+      writablePaths: writable,
+      protectedPaths: writable.map((path) => join(path, GIT_DIRNAME)),
       home: resolvePath(homedir()),
       policyDir,
     }),
@@ -249,8 +330,6 @@ const TOOLCHAIN_CACHE_DIRNAME = 'pup-toolchain-cache';
 interface SandboxRun {
   /** The child's TMPDIR, and everything a run leaves behind. Per run. */
   scratchDir: string;
-  /** Where the redirected toolchain caches live. Outlives the run on purpose. */
-  cacheDir: string;
   /** Holds the generated profile. Write-denied to every child. */
   policyDir: string;
 }
@@ -260,35 +339,74 @@ let run: SandboxRun | undefined;
 /**
  * Created on the first child. One pup process is one gate run, so process scope
  * is run scope for the scratch and the profile — both go when it exits.
- *
- * The toolchain cache does *not*: it is a stable directory reused by every run.
- * `HOME` is write-denied, so caches that used to land in `~/.npm` or
- * `~/Library/Caches` are redirected here, and redirecting them somewhere that
- * starts empty every time is worse than not redirecting at all — corepack
- * re-downloads the repo's package manager on each `pup merge`, which turns a
- * local gate into a network-dependent one. Reusing the directory keeps them
- * warm the way the `HOME` locations were. It is a *cache*, poisonable by a gate
- * child; so was `~/.npm`, and so is any path outside `HOME` under a
- * default-allow write policy, which is the ceiling decision 36 states.
  */
 function sandboxRun(): SandboxRun {
   if (run) return run;
   const base = resolvePath(tmpdir());
-  const cacheDir = join(base, TOOLCHAIN_CACHE_DIRNAME);
   const created: SandboxRun = {
     scratchDir: mkdtempSync(join(base, 'pup-gate-')),
-    cacheDir,
     policyDir: mkdtempSync(join(base, 'pup-sandbox-')),
   };
-  // Created up front: a tool handed a cache dir that does not exist mostly
-  // creates it, and the ones that don't fail for a reason nobody would guess.
-  for (const subdir of Object.values(CACHE_VAR_SUBDIRS)) {
-    mkdirSync(join(cacheDir, subdir), { recursive: true });
-  }
   process.on('exit', () => {
     rmSync(created.scratchDir, { recursive: true, force: true });
     rmSync(created.policyDir, { recursive: true, force: true });
   });
   run = created;
   return created;
+}
+
+const cacheDirs = new Map<string, string>();
+
+/**
+ * Where the redirected toolchain caches live. Two properties, each paid for.
+ *
+ * It **outlives the run**: `HOME` is not writable, so caches that used to land
+ * in `~/.npm` or `~/Library/Caches` come here, and a directory that starts
+ * empty every time is worse than no redirect at all — corepack re-downloads the
+ * repo's package manager on every `pup merge`, turning a local gate into a
+ * network-dependent one.
+ *
+ * It is **scoped per repo**: these caches carry executable code (corepack runs
+ * the package-manager tarballs in its home, uv hardlinks cached wheels into the
+ * venv), so one shared directory means a gate child in repo A supplies the
+ * `pnpm` that measures repo B. Keying by `projectId` keeps each repo's cache
+ * warm and cuts the cross-repo channel; what remains is same-repo, where the
+ * child already runs that repo's own code (a ceiling decision 36 states).
+ */
+function toolchainCacheDir(repoPath: string): string {
+  const key = projectId(resolvePath(repoPath));
+  const cached = cacheDirs.get(key);
+  if (cached) return cached;
+  const root = join(resolvePath(tmpdir()), TOOLCHAIN_CACHE_DIRNAME);
+  const dir = join(root, key);
+  ensurePrivateDir(root);
+  ensurePrivateDir(dir);
+  // Created up front: a tool handed a cache dir that does not exist mostly
+  // creates it, and the ones that don't fail for a reason nobody would guess.
+  for (const subdir of Object.values(CACHE_VAR_SUBDIRS)) {
+    ensurePrivateDir(join(dir, subdir));
+  }
+  cacheDirs.set(key, dir);
+  return dir;
+}
+
+/**
+ * The scratch and profile directories get unpredictable `mkdtemp` names; this
+ * one has a name anybody can guess, and `TMPDIR` is a var a session can set, so
+ * it is checked rather than trusted before a run reuses it. `lstat` and not
+ * `stat`: the ownership test passes for a same-user attacker, so the rule that
+ * does the work is that the path is a real directory nobody else can write —
+ * not a symlink aimed somewhere else.
+ */
+function ensurePrivateDir(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path);
+  // Group/other *write* is the property that matters — a `TMPDIR` pointed at a
+  // shared, sticky `/tmp` is the case this refuses. Read bits are left alone so
+  // a directory an earlier pup created with the default mode still passes.
+  if (!stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0) {
+    throw new Error(
+      `${path} is not a private directory owned by this user; refusing to reuse it for gate children.`,
+    );
+  }
 }

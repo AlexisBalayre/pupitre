@@ -259,7 +259,7 @@ function gateAndMerge(
       // shares its `.git` — a stage that runs git needs the index lock.
       runGateChild(command.command, command.args, {
         cwd: worktree,
-        writablePaths: [req.repoPath],
+        repoPath: req.repoPath,
         gateEnv: req.gateEnv,
         timeout: GATE_COMMAND_TIMEOUT_MS,
       });

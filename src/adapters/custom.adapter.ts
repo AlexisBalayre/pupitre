@@ -47,7 +47,7 @@ function runJson<TOutput>(
     // confinement as a gate stage (decisions 28, 36).
     stdout = runGateChild('sh', ['-c', command], {
       cwd: ctx.measurePath,
-      writablePaths: [ctx.configPath],
+      repoPath: ctx.configPath,
       gateEnv: ctx.gateEnv,
       timeout: CUSTOM_COMMAND_TIMEOUT_MS,
       ...(stdin !== undefined ? { input: stdin } : {}),

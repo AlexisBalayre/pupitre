@@ -14,21 +14,50 @@ const HOME = '/Users/dev';
 const CURATED_SECRET_PATHS =
   '.ssh .aws .config/gh .netrc .npmrc .gnupg .kube .docker/config.json Library/Keychains .pupitre';
 
-function profile(writablePaths: string[] = ['/repo']): string {
-  return sandboxProfile({ writablePaths, home: HOME, policyDir: '/scratch/pup-sandbox-x' });
+function profile(writablePaths: string[] = ['/repo'], protectedPaths: string[] = []): string {
+  return sandboxProfile({
+    writablePaths,
+    protectedPaths,
+    home: HOME,
+    policyDir: '/scratch/pup-sandbox-x',
+  });
 }
 
 describe('sandboxProfile', () => {
-  it('denies every write under HOME before granting the paths a gate needs', () => {
-    // Order is the policy: a worktree normally lives under HOME, so the blanket
-    // deny has to land first and the allow has to override it. Reversed, the
-    // gate could not measure anything in the operator's own home directory.
+  it('denies every write before granting the paths a gate needs', () => {
+    // Order is the policy: the blanket deny lands first and the enumerated
+    // paths override it. Denying only HOME left `/opt/homebrew/bin` — writable
+    // on a standard install — open to a child that could then replace the `gh`
+    // or `git` binary pup itself runs afterwards, unsandboxed.
     const generated = profile([`${HOME}/code/repo/.worktrees/s1`]);
 
     expect(generated).toContain('(allow default)');
-    expect(generated.indexOf(`(deny file-write*\n  (subpath "${HOME}")`)).toBeLessThan(
+    expect(generated.indexOf('(deny file-write*)')).toBeLessThan(
       generated.indexOf(`(allow file-write*\n  (subpath "${HOME}/code/repo/.worktrees/s1")`),
     );
+  });
+
+  it('grants nothing beyond the enumerated paths and the device nodes', () => {
+    const generated = profile(['/repo']);
+    const allow = generated.slice(
+      generated.indexOf('(allow file-write*'),
+      generated.lastIndexOf('(deny file-write*'),
+    );
+
+    expect([...allow.matchAll(/\(subpath "([^"]*)"\)/g)].map((match) => match[1])).toEqual([
+      '/repo',
+      '/dev',
+    ]);
+  });
+
+  it('keeps a granted checkout git directory unwritable, since git config is execution', () => {
+    // `core.fsmonitor` in .git/config runs under pup's own later git calls,
+    // which are unsandboxed and carry the operator's environment on purpose.
+    const generated = profile(['/repo'], ['/repo/.git']);
+    const lastDeny = generated.lastIndexOf('(deny file-write*');
+
+    expect(lastDeny).toBeGreaterThan(generated.indexOf('(allow file-write*'));
+    expect(generated.slice(lastDeny)).toContain('(subpath "/repo/.git")');
   });
 
   it('read-denies the curated secret paths', () => {
@@ -67,6 +96,59 @@ describe('sandboxLabel', () => {
         ? /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/
         : /^none \(unsupported platform\)$/,
     );
+  });
+});
+
+describe('sandboxMode, through the label it reports', () => {
+  /** A fresh module registry, so the once-per-process probe runs again. */
+  async function freshLabel(): Promise<string> {
+    vi.resetModules();
+    const module = await import('./sandbox.utils.js');
+    return module.sandboxLabel();
+  }
+
+  it.runIf(isSandboxSupported())(
+    'ignores a planted `true` claiming the nesting refusal',
+    async () => {
+      // The probe used to run a PATH-resolved `true` and grep the shared stderr
+      // buffer for the refusal, so this stub forged `inherited` and every gate
+      // child then ran unwrapped while the report still claimed containment.
+      // Asserted against the honest answer rather than a fixed string: pup's own
+      // gate runs this suite already sandboxed, where `inherited` is the truth
+      // and there is nothing left to forge.
+      const honest = await freshLabel();
+      const binDir = mkdtempSync(join(tmpdir(), 'pup-forged-probe-'));
+      writeFileSync(
+        join(binDir, 'true'),
+        '#!/bin/sh\necho "sandbox-exec: sandbox_apply: Operation not permitted" >&2\nexit 1\n',
+        { mode: 0o755 },
+      );
+      vi.stubEnv('PATH', `${binDir}:${process.env.PATH}`);
+
+      await expect(freshLabel()).resolves.toBe(honest);
+
+      vi.unstubAllEnvs();
+      rmSync(binDir, { recursive: true, force: true });
+    },
+  );
+
+  it('refuses the run when the probe fails for any reason but nesting', async () => {
+    vi.resetModules();
+    vi.doMock('node:child_process', () => ({
+      execFileSync: () => {
+        throw Object.assign(new Error('sandbox-exec: dyld image not found'), {
+          stderr: 'dyld: image not found\n',
+        });
+      },
+    }));
+
+    const module = await import('./sandbox.utils.js');
+
+    // Fail closed: a sandbox broken in a way pup does not recognise refuses the
+    // stage rather than quietly running the child unconfined.
+    expect(() => module.sandboxLabel()).toThrow(/dyld image not found/);
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
   });
 });
 
@@ -111,9 +193,13 @@ describe('runGateChild', () => {
 
     const withFlag = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], {
       cwd,
+      repoPath: cwd,
       gateEnv: ['PUP_TEST_TOKEN'],
     });
-    const without = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], { cwd });
+    const without = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], {
+      cwd,
+      repoPath: cwd,
+    });
 
     expect(withFlag).toBe('shh');
     expect(without).toBe('');
@@ -137,18 +223,22 @@ describe('runGateChild', () => {
       for (const secret of secrets) {
         // On the denial, not on a bare non-zero exit: without the rule this
         // same read answers "Is a directory", which also fails the command.
-        expect(() => runGateChild('cat', [secret], { cwd })).toThrow(/Operation not permitted/);
+        expect(() => runGateChild('cat', [secret], { cwd, repoPath: cwd })).toThrow(
+          /Operation not permitted/,
+        );
       }
       // The control: the identical command reads a file elsewhere, so the
       // failures above are the policy and not a broken invocation.
-      expect(runGateChild('cat', [join(cwd, 'ordinary')], { cwd })).toBe('aws-key');
+      expect(runGateChild('cat', [join(cwd, 'ordinary')], { cwd, repoPath: cwd })).toBe('aws-key');
     });
 
     it('cannot write under HOME, and leaves nothing behind when it tries', () => {
       const cwd = fakeCheckout();
       const target = join(homedir(), '.pup-sandbox-write-canary');
 
-      expect(() => runGateChild('sh', ['-c', `printf x > ${target}`], { cwd })).toThrow();
+      expect(() =>
+        runGateChild('sh', ['-c', `printf x > ${target}`], { cwd, repoPath: cwd }),
+      ).toThrow();
       expect(existsSync(target)).toBe(false);
     });
 
@@ -158,13 +248,15 @@ describe('runGateChild', () => {
       runGateChild(
         'sh',
         ['-c', 'printf built > out.txt && printf cached > "$TMPDIR/blob" && cat "$TMPDIR/blob"'],
-        { cwd },
+        { cwd, repoPath: cwd },
       );
 
       expect(readFileSync(join(cwd, 'out.txt'), 'utf8')).toBe('built');
       // TMPDIR is the redirect every denied HOME cache lands in, so a child
       // that cannot write there fails on tooling, not on the code it measures.
-      expect(runGateChild('sh', ['-c', 'cat "$TMPDIR/blob"'], { cwd })).toBe('cached');
+      expect(runGateChild('sh', ['-c', 'cat "$TMPDIR/blob"'], { cwd, repoPath: cwd })).toBe(
+        'cached',
+      );
     });
   });
 });

@@ -72,6 +72,26 @@ describe('gateChildEnv', () => {
     expect(env.OTHER).toBeUndefined();
   });
 
+  it('refuses to pass through the loader vars, whatever the operator asked for', () => {
+    // These load attacker-chosen code into every process the child starts, so
+    // the flag cannot hand back what decision 28 excluded NODE_OPTIONS for.
+    const env = childEnv(
+      {
+        NODE_OPTIONS: '--require /tmp/evil.js',
+        DYLD_INSERT_LIBRARIES: '/tmp/evil.dylib',
+        LD_PRELOAD: '/tmp/evil.so',
+        CI: 'true',
+      },
+      ['NODE_OPTIONS', 'DYLD_INSERT_LIBRARIES', 'LD_PRELOAD', 'CI'],
+    );
+
+    expect(env.NODE_OPTIONS).toBeUndefined();
+    expect(env.DYLD_INSERT_LIBRARIES).toBeUndefined();
+    expect(env.LD_PRELOAD).toBeUndefined();
+    // The ordinary name in the same list still comes through.
+    expect(env.CI).toBe('true');
+  });
+
   it('no longer honours PUP_GATE_ENV, whatever the ambient environment says', () => {
     // The variable was the escape hatch until decision 36; an .envrc, a CI job
     // or a shell wrapper could set it without the operator's command changing.

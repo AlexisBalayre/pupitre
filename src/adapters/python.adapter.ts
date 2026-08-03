@@ -218,7 +218,8 @@ function runCapability(ctx: CapabilityContext, words: string[], outDir?: string)
   // default-allow does not survive a TMPDIR that sits under HOME.
   return runGateChild(command as string, args, {
     cwd: ctx.measurePath,
-    writablePaths: [ctx.configPath, ...(outDir ? [outDir] : [])],
+    repoPath: ctx.configPath,
+    ...(outDir ? { writablePaths: [outDir] } : {}),
     gateEnv: ctx.gateEnv,
     timeout: DEBT_COMMAND_TIMEOUT_MS,
     maxBuffer: DEBT_COMMAND_MAX_BUFFER_BYTES,

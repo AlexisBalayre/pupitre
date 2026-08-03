@@ -261,7 +261,8 @@ export const typescriptAdapter: Adapter = {
         ],
         {
           cwd: measurePath,
-          writablePaths: [configPath, outDir],
+          repoPath: configPath,
+          writablePaths: [outDir],
           gateEnv,
           timeout: COVERAGE_RUN_TIMEOUT_MS,
         },

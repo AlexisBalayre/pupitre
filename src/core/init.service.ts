@@ -35,6 +35,7 @@ function runBaselineStage(
     // the same seam as a gate stage (decisions 28, 36).
     runGateChild(command.command, command.args, {
       cwd: repoPath,
+      repoPath,
       gateEnv,
       timeout: GATE_COMMAND_TIMEOUT_MS,
     });
