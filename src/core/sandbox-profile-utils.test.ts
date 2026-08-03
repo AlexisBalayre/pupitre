@@ -1,5 +1,8 @@
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { sandboxProfile } from './sandbox-profile.utils.js';
+import { sandboxProfile, writeProfile } from './sandbox-profile.utils.js';
 
 const HOME = '/Users/dev';
 
@@ -11,10 +14,15 @@ const HOME = '/Users/dev';
 const CURATED_SECRET_PATHS =
   '.ssh .aws .config/gh .netrc .npmrc .gnupg .kube .docker/config.json Library/Keychains .pupitre';
 
-function profile(writablePaths: string[] = ['/repo'], protectedPaths: string[] = []): string {
+function profile(
+  writablePaths: string[] = ['/repo'],
+  protectedPaths: string[] = [],
+  checkoutPaths: string[] = [],
+): string {
   return sandboxProfile({
     writablePaths,
     protectedPaths,
+    checkoutPaths,
     home: HOME,
     policyDir: '/scratch/pup-sandbox-x',
   });
@@ -48,7 +56,7 @@ describe('sandboxProfile', () => {
     // deny. Whole-text equality is the only formatting-proof pin: any grant
     // added, deny dropped, or subpath widened — anywhere, however spelled —
     // fails by construction.
-    expect(profile(['/repo', '/reports'])).toBe(
+    expect(profile(['/repo', '/reports'], ['/repo/.git'], ['/repo'])).toBe(
       [
         '(version 1)',
         '(allow default)',
@@ -57,8 +65,8 @@ describe('sandboxProfile', () => {
           .map((path) => `\n  (subpath "${HOME}/${path}")`)
           .join('')})`,
         '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
-        `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x"))`,
-        String.raw`(deny file-write* (regex #"/\.git(/|$)"))`,
+        `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x")\n  (subpath "/repo/.git"))`,
+        String.raw`(deny file-write* (require-all (subpath "/repo") (regex #"/\.git(/|$)")))`,
         '',
       ].join('\n'),
     );
@@ -83,16 +91,20 @@ describe('sandboxProfile', () => {
     expect(generated.slice(lastDeny)).toContain('(subpath "/scratch/pup-sandbox-x")');
   });
 
-  it('denies .git by path match, after every allow, so nesting depth is irrelevant', () => {
+  it('denies .git at any depth under each checkout, and only under checkouts', () => {
     // `protectedPaths` names each grant's own .git and nothing deeper, which
-    // is how #49's sibling-worktree attack reached `.worktrees/*/.git` pointer
-    // files through a grant of the repo root. The regex matches the path
-    // itself — directory or pointer file, at any depth — and sits last, where
-    // SBPL's later-rule-wins ordering puts it above every allow.
-    const generated = profile([`${HOME}/code/repo`]);
-    const gitDeny = String.raw`(deny file-write* (regex #"/\.git(/|$)"))`;
+    // is how #49's sibling-worktree attack reached the worktrees' `.git`
+    // pointer files through a grant of the repo root. The regex matches the
+    // path itself — directory or pointer file, at any depth — and sits last,
+    // where SBPL's later-rule-wins ordering puts it above every allow. It is
+    // scoped per checkout: pup's own scratch and cache grants carry no such
+    // rule, because `git init` there is a legitimate toolchain move.
+    const checkout = `${HOME}/code/repo`;
+    const generated = profile([checkout, '/scratch-grant'], [], [checkout]);
+    const gitDeny = String.raw`(deny file-write* (require-all (subpath "${checkout}") (regex #"/\.git(/|$)")))`;
 
     expect(generated).toContain(gitDeny);
+    expect(generated).not.toContain('(require-all (subpath "/scratch-grant")');
     expect(generated.indexOf(gitDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
   });
 
@@ -100,5 +112,36 @@ describe('sandboxProfile', () => {
     const generated = profile([String.raw`/repo/a"b\c`]);
 
     expect(generated).toContain(String.raw`(subpath "/repo/a\"b\\c")`);
+  });
+});
+
+describe('writeProfile', () => {
+  it('derives the whole policy from the two grant sets: checkouts protected, scratch exempt', () => {
+    // The golden above pins sandboxProfile given explicit arguments; this one
+    // pins what writeProfile COMPUTES and passes in — which grants become
+    // checkouts, which stay exempt, and the derived .git denies — since a
+    // wrong derivation ships a wrong policy with every sandboxProfile test
+    // still green.
+    const policyDir = mkdtempSync(join(tmpdir(), 'pup-profile-golden-'));
+    const home = realpathSync(homedir());
+
+    const profilePath = writeProfile(policyDir, ['/x/checkout'], ['/x/scratch']);
+
+    expect(profilePath).toBe(join(policyDir, 'gate-child.sb'));
+    expect(readFileSync(profilePath, 'utf8')).toBe(
+      [
+        '(version 1)',
+        '(allow default)',
+        '(deny file-write*)',
+        `(deny file-read*${CURATED_SECRET_PATHS.split(' ')
+          .map((path) => `\n  (subpath "${home}/${path}")`)
+          .join('')})`,
+        '(allow file-write*\n  (subpath "/x/checkout")\n  (subpath "/x/scratch")\n  (subpath "/dev"))',
+        `(deny file-write*\n  (subpath "${home}/.pupitre")\n  (subpath "${policyDir}")\n  (subpath "/x/checkout/.git"))`,
+        String.raw`(deny file-write* (require-all (subpath "/x/checkout") (regex #"/\.git(/|$)")))`,
+        '',
+      ].join('\n'),
+    );
+    rmSync(policyDir, { recursive: true, force: true });
   });
 });

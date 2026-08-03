@@ -26,15 +26,31 @@ const DEVICE_PATH = '/dev';
 const GIT_DIRNAME = '.git';
 
 /**
- * The same deny, at every depth. The per-path denies below are derived one
- * level deep — granting P protects P/.git and nothing under it — which is how
- * #49's sibling-worktree attack reached every worktree's `.git` pointer file
- * through a grant of the repo root. Matching the path instead of enumerating
- * it makes the depth of `protectedPaths` irrelevant: any segment named `.git`,
- * directory or worktree pointer file, in any granted tree. `.gitignore` and
- * friends stay writable — the match requires `/` or end-of-path after `.git`.
+ * The same deny, at every depth, scoped to one checkout grant. The per-path
+ * denies in `protectedPaths` are derived one level deep — granting P protects
+ * P/.git and nothing under it — which is how #49's sibling-worktree attack
+ * reached every worktree's `.git` pointer file through a grant of the repo
+ * root. Matching the path instead of enumerating it makes depth irrelevant:
+ * any segment named `.git`, directory or worktree pointer file, anywhere
+ * under the checkout. `.gitignore` and friends stay writable — the match
+ * requires `/` or end-of-path after `.git`.
+ *
+ * Scoped by `require-all` rather than applied globally because pup's own
+ * scratch and cache grants must stay exempt: a brand-new repo a child creates
+ * in its own TMPDIR is not the repository being measured, which is what
+ * decision 36 protects. An unscoped deny broke `git init` there — this repo's
+ * own test suite does exactly that, and `pip install git+...`, npm/pnpm and
+ * uv git dependencies all clone into TMPDIR or the cache — so the gate's own
+ * test stage would have refused every future merge.
+ *
+ * Measured on APFS, the match is case-INSENSITIVE — a directory whose real
+ * on-disk name is `.GIT` is also denied — so the rule is slightly broader
+ * than "any segment named .git", which is safe. On a case-sensitive volume it
+ * is exactly as written, also safe: git would not read `.GIT` there either.
  */
-const GIT_DENY_RULE = String.raw`(deny file-write* (regex #"/\.git(/|$)"))`;
+function gitDenyRule(checkoutPath: string): string {
+  return String.raw`(deny file-write* (require-all (subpath "${escapeSbpl(checkoutPath)}") (regex #"/\.git(/|$)")))`;
+}
 
 /**
  * Read-denied outright, and deliberately a fixed constant with no extension
@@ -91,6 +107,8 @@ export function sandboxProfile(policy: {
   writablePaths: string[];
   /** Carved back out of the writable set, whatever it granted. */
   protectedPaths: string[];
+  /** Checkout grants; `.git` is denied at any depth under each, and only these. */
+  checkoutPaths: string[];
   /** The operator's home. Only the read denies key off it now. */
   home: string;
   /** Directory holding the generated profile; a writable one is a widened next run. */
@@ -111,7 +129,7 @@ export function sandboxProfile(policy: {
       policy.policyDir,
       ...policy.protectedPaths,
     ])})`,
-    GIT_DENY_RULE,
+    ...policy.checkoutPaths.map(gitDenyRule),
     '',
   ].join('\n');
 }
@@ -122,23 +140,34 @@ function escapeSbpl(value: string): string {
 }
 
 /**
- * `checkouts` are the paths whose git directory must survive the grant. Derived
- * here rather than passed per call site on purpose: a call site that forgets to
- * protect the checkout it just made writable reopens the whole hole, and every
- * writable path pup grants is either a checkout or a directory with no `.git`
- * in it, where the extra deny costs nothing. The derivation is one level deep
- * — it names P/.git, not P/anything/.git — so the regex rule, not this list,
- * is what protects a checkout nested inside a grant; these stay as the denies
- * that document which paths were granted as checkouts.
+ * Every path in `writablePaths` is treated as a checkout: it gets the derived
+ * one-level P/.git deny in `protectedPaths`, which documents the grant, and
+ * the scoped any-depth rule, which does the real work. Derived here rather
+ * than passed per call site on purpose: a call site that forgets to protect
+ * the checkout it just made writable reopens the whole hole, so a
+ * caller-supplied path can only default INTO the protected set. The lone
+ * exemption is `scratchPaths` — the directories the sandbox seam itself
+ * creates for the child (its TMPDIR, the toolchain cache), never taken from a
+ * caller's grant. A repo a child makes in its own scratch is not the
+ * repository being measured, and writing one is a legitimate toolchain move:
+ * git dependencies clone into TMPDIR or the cache.
  */
-export function writeProfile(policyDir: string, writablePaths: string[]): string {
+export function writeProfile(
+  policyDir: string,
+  writablePaths: string[],
+  scratchPaths: string[] = [],
+): string {
   const profilePath = join(policyDir, 'gate-child.sb');
-  const writable = [...new Set(writablePaths.map(resolvePath))];
+  const checkouts = [...new Set(writablePaths.map(resolvePath))];
+  const scratch = [...new Set(scratchPaths.map(resolvePath))].filter(
+    (path) => !checkouts.includes(path),
+  );
   writeFileSync(
     profilePath,
     sandboxProfile({
-      writablePaths: writable,
-      protectedPaths: writable.map((path) => join(path, GIT_DIRNAME)),
+      writablePaths: [...checkouts, ...scratch],
+      protectedPaths: checkouts.map((path) => join(path, GIT_DIRNAME)),
+      checkoutPaths: checkouts,
       home: resolvePath(homedir()),
       policyDir,
     }),
