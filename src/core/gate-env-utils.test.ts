@@ -5,13 +5,18 @@ import { CACHE_VAR_SUBDIRS, gateChildEnv, parseGateEnv } from './gate-env.utils.
 const CACHE_DIR = '/scratch/pup-toolchain-cache';
 const SCRATCH_DIR = '/scratch/pup-gate-x';
 
-/** The two arguments every case shares; only the source env and the flag vary. */
-function childEnv(env: NodeJS.ProcessEnv, passthrough?: string[]): NodeJS.ProcessEnv {
+/** The two arguments every case shares; only the source env and the flags vary. */
+function childEnv(
+  env: NodeJS.ProcessEnv,
+  passthrough?: string[],
+  set?: Record<string, string>,
+): NodeJS.ProcessEnv {
   return gateChildEnv({
     cacheDir: CACHE_DIR,
     scratchDir: SCRATCH_DIR,
     env,
     ...(passthrough ? { passthrough } : {}),
+    ...(set ? { set } : {}),
   });
 }
 
@@ -124,6 +129,40 @@ describe('gateChildEnv', () => {
     const env = childEnv({ npm_config_cache: '/home/dev/.npm' }, ['npm_config_cache']);
 
     expect(env.npm_config_cache).toBe(join(CACHE_DIR, 'npm'));
+  });
+
+  it('sets a value pup computed itself, past the allowlist', () => {
+    // The name is not in ALLOWED_VARS and not passed through — `set` is for
+    // values pup builds, not names copied from pup's environment.
+    const env = childEnv({ PATH: '/usr/bin', COVERAGE_FILE: '/home/dev/.coverage' }, undefined, {
+      COVERAGE_FILE: '/reports/.coverage',
+    });
+
+    expect(env.COVERAGE_FILE).toBe('/reports/.coverage');
+  });
+
+  it('throws for any pup-set name outside the closed settable list', () => {
+    // A closed list, not a denylist: the namespace is full of loader-shaped
+    // names no denylist can enumerate (PYTHONPATH is Python's NODE_OPTIONS,
+    // BASH_ENV runs before every `sh -c`, COVERAGE_FORCE_CONFIG would defeat
+    // the COVERAGE_FILE redirect itself), and it keeps the cache redirects,
+    // TMPDIR, the allowlisted values and the GIT_DIR scrub un-overridable.
+    // Unlike the operator passthrough, which is outside input safely dropped,
+    // a pup-set name is pup's own source, so the bug surfaces at the call site.
+    for (const name of [
+      'TMPDIR',
+      'npm_config_cache',
+      'NODE_OPTIONS',
+      'PYTHONPATH',
+      'BASH_ENV',
+      'COVERAGE_FORCE_CONFIG',
+      'GIT_DIR',
+      'PATH',
+    ]) {
+      expect(() => childEnv({ PATH: '/usr/bin' }, undefined, { [name]: '/tmp/evil' })).toThrow(
+        name,
+      );
+    }
   });
 });
 

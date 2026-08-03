@@ -6,7 +6,8 @@ import { join } from 'node:path';
  * tool config). Inheriting the operator's shell hands that code every secret in
  * it: API keys, `GH_TOKEN`, cloud credentials, `SSH_AUTH_SOCK`. An allowlist
  * inverts the default, and drops the GIT_DIR family on the way (the
- * scrubbedGitEnv invariant) since neither list carries it.
+ * scrubbedGitEnv invariant) since no list here — allowed, settable, or the
+ * cache redirects — carries it.
  *
  * Pupitre's own git and gh calls are NOT confined this way: they run pup's
  * code, not the session's, and pushing needs the operator's credential helpers.
@@ -70,6 +71,19 @@ interface GateChildEnvOptions {
    * command the operator typed (decision 28, refined; decision 36).
    */
   passthrough?: string[];
+  /**
+   * Values pup itself computes for one child — `COVERAGE_FILE` aimed at a
+   * capability's report directory. Not a second ambient channel: values are
+   * built from pup's own run state, such as a temp directory it just created —
+   * never copied from a name in pup's environment or read from a file a
+   * session can write; anything of that kind stays behind the operator's
+   * `--gate-env` flag. Names come from the closed `SETTABLE_VARS` list; an
+   * unlisted one throws rather than being dropped, because the passthrough
+   * names come from outside pup, where ignoring is the safe default, but a
+   * pup-set name is written in pup's own source, so surfacing the bug at the
+   * call site beats silently not setting it.
+   */
+  set?: Record<string, string>;
   /** Defaults to pup's own environment. */
   env?: NodeJS.ProcessEnv;
 }
@@ -85,6 +99,19 @@ interface GateChildEnvOptions {
  */
 const NEVER_PASSED_THROUGH = [/^NODE_OPTIONS$/, /^DYLD_/, /^LD_/];
 
+/**
+ * The only names a call site may `set` — a closed list, not a denylist over
+ * the guards above. The env-var namespace is open and full of loader-shaped
+ * names no denylist can enumerate: `PYTHONPATH` is Python's `NODE_OPTIONS`
+ * (a `sitecustomize.py` on it imports into every interpreter a stage starts),
+ * `BASH_ENV` names a file `sh -c` runs first, and `COVERAGE_FORCE_CONFIG`
+ * would defeat the very redirect `COVERAGE_FILE` is on this list for. These
+ * names are written in pup's own source, so a closed list costs one line per
+ * legitimate use — and it keeps the cache redirects, `TMPDIR`, the allowlisted
+ * values and the scrubbedGitEnv invariant un-overridable for free.
+ */
+const SETTABLE_VARS = ['COVERAGE_FILE'];
+
 export function gateChildEnv(options: GateChildEnvOptions): NodeJS.ProcessEnv {
   const passthrough = (options.passthrough ?? []).filter(
     (name) => !NEVER_PASSED_THROUGH.some((pattern) => pattern.test(name)),
@@ -99,6 +126,14 @@ export function gateChildEnv(options: GateChildEnvOptions): NodeJS.ProcessEnv {
     env[name] = join(options.cacheDir, subdir);
   }
   env.TMPDIR = options.scratchDir;
+  for (const [name, value] of Object.entries(options.set ?? {})) {
+    if (!SETTABLE_VARS.includes(name)) {
+      throw new Error(
+        `pup tried to set ${name} for a gate child; only ${SETTABLE_VARS.join(', ')} may be computed.`,
+      );
+    }
+    env[name] = value;
+  }
   return env;
 }
 

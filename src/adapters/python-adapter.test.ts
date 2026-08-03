@@ -1,7 +1,7 @@
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { localContext } from './capability.utils.js';
 import { pythonAdapter } from './python.adapter.js';
 
@@ -350,6 +350,51 @@ describe('pythonAdapter', () => {
 
     // vulture is absent from the fixture, so the run fails — but it ran.
     expect(result).toEqual({ unavailable: expect.stringContaining('vulture failed') });
+  });
+
+  it('leaves the measured checkout as it found it: no .coverage, no .pytest_cache', () => {
+    // The fake pytest reproduces the two artifact rules of the real one:
+    // coverage.py writes its data file to COVERAGE_FILE, defaulting to
+    // `.coverage` in the CWD — the checkout being measured — and the cache
+    // plugin writes .pytest_cache/ there unless disabled. So this fails if
+    // the capability stops aiming COVERAGE_FILE into its own report dir (the
+    // bare file then fails merge-gate's worktree-clean check against a file
+    // the session never wrote) or stops disabling the cache plugin.
+    const repo = makeRepo({
+      'pyproject.toml': '[project]\ndependencies = ["pytest-cov"]\n',
+      'app.py': 'x = 1\n',
+    });
+    const before = readdirSync(repo).sort();
+    const binDir = mkdtempSync(join(tmpdir(), 'pup-fake-pytest-'));
+    writeFileSync(
+      join(binDir, 'pytest'),
+      `#!/bin/sh
+cache=yes
+for arg in "$@"; do
+  case "$arg" in
+    --cov-report=json:*) report="\${arg#--cov-report=json:}" ;;
+    no:cacheprovider) cache=no ;;
+  esac
+done
+[ "$cache" = no ] || mkdir -p .pytest_cache
+printf %s '{"files":{"app.py":{"executed_lines":[1],"missing_lines":[]}}}' > "$report"
+printf %s data > "\${COVERAGE_FILE:-.coverage}"
+`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${binDir}:${process.env.PATH}`);
+
+    try {
+      const report = pythonAdapter.coverage?.(localContext(repo));
+
+      // The fake ran and its report came back parsed — an `unavailable`
+      // result would pass the clean-checkout assertion vacuously.
+      expect(report).toEqual({ files: { 'app.py': { covered: [1], instrumented: [1] } } });
+      expect(readdirSync(repo).sort()).toEqual(before);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 
   it('reads tool declarations from the config checkout, not the one being measured', () => {

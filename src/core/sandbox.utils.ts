@@ -62,6 +62,17 @@ interface GateChildOptions {
    * script) is the door that flag exists to close (decision 28, refined).
    */
   gateEnv?: string[];
+  /**
+   * Vars pup itself computes and sets for this child — `COVERAGE_FILE` aimed
+   * at a capability's report directory. Values are built from pup's own run
+   * state, such as a temp directory it just created — never copied from a
+   * name in pup's environment or read from anything a session writes; ambient
+   * values stay behind `gateEnv`'s operator flag, so decision 36's one seam
+   * keeps its one answer. Names come from gate-env.utils' closed
+   * `SETTABLE_VARS` list; any other name throws — see there for why the
+   * namespace cannot be denylisted.
+   */
+  env?: Record<string, string>;
   timeout?: number;
   maxBuffer?: number;
   /** Fed to the child's stdin; absent means stdin is closed. */
@@ -159,7 +170,12 @@ export function runGateChild(command: string, args: string[], options: GateChild
   const applied = sandboxMode() === 'applied';
   const { scratchDir, policyDir } = sandboxRun();
   const cacheDir = toolchainCacheDir(options.repoPath);
-  const env = gateChildEnv({ passthrough: options.gateEnv, scratchDir, cacheDir });
+  const env = gateChildEnv({
+    passthrough: options.gateEnv,
+    scratchDir,
+    cacheDir,
+    ...(options.env ? { set: options.env } : {}),
+  });
   const invocation = applied
     ? {
         command: SANDBOX_EXEC,
