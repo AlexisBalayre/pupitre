@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { initProject, NoAdapterError } from './init.service.js';
 import { projectId } from './paths.utils.js';
-import { getProject } from './session.repository.js';
+import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
@@ -139,5 +140,64 @@ describe('initProject', () => {
   it('throws when no adapter detects the repo', () => {
     const adapter = makeAdapter({ detect: () => false });
     expect(() => initProject(db, repo, [adapter])).toThrow(NoAdapterError);
+  });
+
+  it('appends a history row for every capture, first init included', () => {
+    const first = initProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 12, blocks: [] }) }),
+    ]);
+    const second = initProject(db, repo, [makeAdapter()]);
+
+    const history = listBaselineHistory(db, projectId(repo));
+    expect(history.map((r) => r.captured_at)).toEqual([
+      first.baseline.capturedAt,
+      second.baseline.capturedAt,
+    ]);
+    expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({ duplicatedLines: 12 });
+    expect(history[1]?.debt).toBeNull();
+  });
+
+  it('backfills a baseline stored before the history table existed, before overwriting it', () => {
+    // A pre-upgrade store: projects.baseline holds a capture no history row records.
+    const pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    const legacy: ProjectBaseline = {
+      capturedAt: '2026-07-23T08:00:00.000Z',
+      adapters: ['fake'],
+      stages: [{ stage: 'build', status: 'pass', durationMs: 3 }],
+      debt: { duplicatedLines: 184 },
+    };
+    saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
+
+    const report = initProject(db, repo, [makeAdapter()]);
+
+    const history = listBaselineHistory(db, pid);
+    expect(history.map((r) => r.captured_at)).toEqual([
+      '2026-07-23T08:00:00.000Z',
+      report.baseline.capturedAt,
+    ]);
+    expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({ duplicatedLines: 184 });
+  });
+
+  it('does not seed the same pre-history baseline twice across re-runs', () => {
+    const pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    const legacy: ProjectBaseline = {
+      capturedAt: '2026-07-23T08:00:00.000Z',
+      adapters: ['fake'],
+      stages: [{ stage: 'build', status: 'pass', durationMs: 3 }],
+    };
+    saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
+
+    const first = initProject(db, repo, [makeAdapter()]);
+    const second = initProject(db, repo, [makeAdapter()]);
+
+    // Exactly one row per capture: an unguarded backfill would re-append the
+    // first run's baseline on the second run, not the legacy one.
+    expect(listBaselineHistory(db, pid).map((r) => r.captured_at)).toEqual([
+      '2026-07-23T08:00:00.000Z',
+      first.baseline.capturedAt,
+      second.baseline.capturedAt,
+    ]);
   });
 });

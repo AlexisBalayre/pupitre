@@ -5,6 +5,7 @@ import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
+import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
@@ -199,6 +200,24 @@ describe('auditProject', () => {
       { metric: 'coverageRatio', before: 0.9, after: 0.899, delta: 'unchanged' },
     ]);
     expect(report.hasRegression).toBe(false);
+  });
+
+  it('leaves a history row for each audit, preserving the numbers it overwrote', () => {
+    initProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 182, blocks: [] }) }),
+    ]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 196, blocks: [] }) }),
+    ]);
+
+    const history = listBaselineHistory(db, projectId(repo));
+    expect(
+      history.map(
+        (r) => (JSON.parse(r.debt ?? '{}') as { duplicatedLines: number }).duplicatedLines,
+      ),
+    ).toEqual([182, 196]);
+    expect(history[1]?.captured_at).toBe(report.baseline.capturedAt);
   });
 
   it('emits no transition for a metric measured on only one side', () => {

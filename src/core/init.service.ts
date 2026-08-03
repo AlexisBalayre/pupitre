@@ -1,11 +1,12 @@
 import type { Database } from 'better-sqlite3';
 import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
+import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import { repoCoverageRatio } from './coverage.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
-import { ensureProject, saveProjectBaseline } from './session.repository.js';
+import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
 import type {
   BaselineStageResult,
   DebtBaseline,
@@ -139,6 +140,27 @@ export function initProject(
     stages,
     ...(Object.keys(debt).length > 0 ? { debt } : {}),
   };
+  // History (decision 38): every capture appends its own row before the
+  // overwrite, so the only stored baseline with no row is one written before
+  // the table existed — seed it here or the overwrite discards it for good.
+  const storedBaseline = getProject(db, pid)?.baseline;
+  if (storedBaseline) {
+    const previous = JSON.parse(storedBaseline) as ProjectBaseline;
+    if (!hasBaselineHistoryEntry(db, pid, previous.capturedAt)) {
+      appendBaselineHistory(db, {
+        projectId: pid,
+        capturedAt: previous.capturedAt,
+        stages: previous.stages,
+        debt: previous.debt,
+      });
+    }
+  }
+  appendBaselineHistory(db, {
+    projectId: pid,
+    capturedAt: baseline.capturedAt,
+    stages: baseline.stages,
+    debt: baseline.debt,
+  });
   saveProjectBaseline(db, pid, baseline.adapters, JSON.stringify(baseline));
   return { projectId: pid, baseline, findings, sandbox: sandboxLabel() };
 }
