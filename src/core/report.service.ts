@@ -5,7 +5,15 @@ import { listDecisionRecords } from './decision-record.repository.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { projectId } from './paths.utils.js';
+import {
+  asStageArray,
+  asStringArray,
+  displayText,
+  parseJsonOr,
+  toIsoUtc,
+} from './report-data.utils.js';
 import { listEvents, listSessions, listTasks, type SessionRow } from './session.repository.js';
+import { dossierFileName } from './session-dossier.service.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { GateReport } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
@@ -43,19 +51,19 @@ export function renderReportHtml(db: Database, repoPath: string): string {
     }),
     debt: listLedgerEntries(db, pid).map((entry) => ({
       id: entry.id,
-      description: entry.description,
-      reason: entry.reason,
-      acceptedBy: entry.accepted_by,
-      reviewBy: entry.review_by,
+      description: displayText(entry.description),
+      reason: displayText(entry.reason),
+      acceptedBy: displayText(entry.accepted_by),
+      reviewBy: displayText(entry.review_by),
       createdAt: toIsoUtc(entry.created_at),
     })),
     decisions: listDecisionRecords(db).map((record) => ({
       id: record.id,
-      sessionId: record.session_id,
-      summary: record.summary,
-      alternatives: record.alternatives,
-      conventions: record.conventions,
-      files: asStringArray(parseJsonOr<unknown>(record.files, [])),
+      sessionId: displayText(record.session_id),
+      summary: displayText(record.summary),
+      alternatives: record.alternatives === null ? null : displayText(record.alternatives),
+      conventions: record.conventions === null ? null : displayText(record.conventions),
+      files: asStringArray(parseJsonOr<unknown>(record.files, [])).map(displayText),
       createdAt: toIsoUtc(record.created_at),
     })),
   };
@@ -66,38 +74,6 @@ export function renderReportHtml(db: Database, repoPath: string): string {
   // $\`) expanded, splicing raw template text — including a real </script> —
   // into the escaped data block.
   return HTML_TEMPLATE.replace('__PUP_REPORT_DATA__', () => json);
-}
-
-/**
- * JSON.parse that returns `fallback` for a malformed or type-confused store
- * column — the store is session-writable, and one bad row must degrade to the
- * page's empty copy, not kill `pup report` with a stack trace.
- */
-function parseJsonOr<T>(text: string, fallback: T): T {
-  try {
-    const value = JSON.parse(text) as unknown;
-    return value !== null && typeof value === 'object' ? (value as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : [];
-}
-
-/**
- * SQLite's `datetime('now')` columns hold UTC as `2026-08-03 12:36:05` — no
- * zone marker, which JavaScript's Date would parse as LOCAL time and shift by
- * the viewer's offset. Rewrite that form to ISO UTC (`2026-08-03T12:36:05Z`)
- * so every timestamp in the data block means the same instant.
- * `baseline_history.captured_at` is already a real ISO string with a Z and
- * passes through unchanged.
- */
-function toIsoUtc(timestamp: string): string {
-  return /^\d{4}-\d{2}-\d{2} /.test(timestamp) ? `${timestamp.replace(' ', 'T')}Z` : timestamp;
 }
 
 function sessionDatum(db: Database, session: SessionRow, spec: Partial<TaskSpec>) {
@@ -111,22 +87,20 @@ function sessionDatum(db: Database, session: SessionRow, spec: Partial<TaskSpec>
     .filter((event) => event.type === 'gate_result')
     .map((event) => parseJsonOr<{ report?: GateReport }>(event.payload, {}).report)
     .find((report) => report !== undefined);
-  const stages = lastGate && Array.isArray(lastGate.stages) ? lastGate.stages : [];
   return {
-    id: session.id,
-    state: session.state,
-    branch: session.branch,
+    id: displayText(session.id),
+    state: displayText(session.state),
+    // null for an id outside the dossier allowlist — the index renders the id
+    // as plain text instead of a dead (or hostile) link.
+    dossierFile: dossierFileName(session.id),
+    branch: displayText(session.branch),
     createdAt: toIsoUtc(session.created_at),
     rejectCount: session.reject_count,
-    goal: typeof spec.goal === 'string' ? spec.goal : '',
-    scopeIn: asStringArray(spec.scopeIn),
-    scopeOut: asStringArray(spec.scopeOut),
-    doneSummary: typeof doneSummary === 'string' ? doneSummary : null,
-    gateStages: stages.map((stage) => ({
-      stage: stage.stage,
-      status: stage.status,
-      detail: stage.detail ?? null,
-    })),
+    goal: typeof spec.goal === 'string' ? displayText(spec.goal) : '',
+    scopeIn: asStringArray(spec.scopeIn).map(displayText),
+    scopeOut: asStringArray(spec.scopeOut).map(displayText),
+    doneSummary: typeof doneSummary === 'string' ? displayText(doneSummary) : null,
+    gateStages: asStageArray(lastGate?.stages),
   };
 }
 
@@ -168,6 +142,8 @@ ${PAGE_THEME_CSS}
   .state-running { background: var(--debt-1); border-color: transparent; color: #fff; }
   .state-blocked { background: var(--ink); border-color: transparent; color: var(--page); }
   .sid { font-weight: 600; }
+  .sid a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--baseline); }
+  .sid a:hover { border-bottom-color: var(--ink-2); }
   .branch, .when { color: var(--muted); font-size: 12px; }
   .rejects { color: var(--ink-2); font-size: 12px; }
   .goal-body { margin-top: 8px; white-space: pre-wrap; max-width: 65ch; }
@@ -261,7 +237,16 @@ ${PAGE_THEME_CSS}
     // classList.add would throw on whitespace and blank the whole page.
     const KNOWN_STATES = ['queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked'];
     if (KNOWN_STATES.includes(s.state)) state.classList.add('state-' + s.state);
-    art.querySelector('.sid').textContent = s.id;
+    // The dossier link is service-built from a closed charset (dossierFileName);
+    // a session whose id failed that allowlist stays plain text.
+    if (s.dossierFile) {
+      const link = document.createElement('a');
+      link.href = s.dossierFile;
+      link.textContent = s.id;
+      art.querySelector('.sid').appendChild(link);
+    } else {
+      art.querySelector('.sid').textContent = s.id;
+    }
     art.querySelector('.branch').textContent = s.branch;
     art.querySelector('.when').textContent = when(s.createdAt);
     if (s.rejectCount > 0) {

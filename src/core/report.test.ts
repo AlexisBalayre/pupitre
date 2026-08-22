@@ -61,8 +61,18 @@ describe('renderReportHtml', () => {
         goal: 'Improve the parser so nested templates survive',
         scopeIn: ['src/**'],
         rejectCount: 0,
+        dossierFile: 'session-s1.html',
       }),
     ]);
+  });
+
+  it('links no dossier for a session id outside the filename allowlist', () => {
+    seedSession(db, 's1', 'goal');
+    db.prepare('UPDATE sessions SET id = ? WHERE id = ?').run('../evil', 's1');
+
+    const [session] = embeddedData(renderReportHtml(db, REPO)).sessions;
+
+    expect(session.dossierFile).toBeNull();
   });
 
   it('orders sessions newest first', () => {
@@ -98,6 +108,17 @@ describe('renderReportHtml', () => {
 
     expect(session.doneSummary).toBe('widget shipped behind a flag');
     expect(session.gateStages).toEqual([{ stage: 'test', status: 'fail', detail: '2 failing' }]);
+  });
+
+  it('drops poisoned gate-stage members instead of killing the whole report', () => {
+    seedSession(db, 's1', 'goal');
+    appendEvent(db, 's1', 'gate_result', {
+      report: { sessionId: 's1', passed: false, sandbox: 'none', stages: [null, { stage: 'x' }] },
+    });
+
+    const [session] = embeddedData(renderReportHtml(db, REPO)).sessions;
+
+    expect(session.gateStages).toEqual([]);
   });
 
   it('normalises SQLite timestamps to ISO UTC and keeps capture timestamps as-is', () => {

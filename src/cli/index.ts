@@ -53,6 +53,7 @@ import {
   formatStaleAge,
   isSessionStalled,
 } from '../core/session-activity.utils.js';
+import { dossierFileName, renderSessionDossierHtml } from '../core/session-dossier.service.js';
 import {
   awaitHandoffReady,
   HANDOFF_WAIT_DEFAULT_MS,
@@ -684,10 +685,21 @@ export function buildProgram(): Command {
     .option('--open', 'open the rendered report in the browser')
     .action((opts: { open?: boolean }) => {
       const { repoPath, db } = resolveProject();
+      const outDir = projectPaths(repoPath).root;
+      let dossiers = 0;
+      for (const session of listSessions(db)) {
+        const fileName = dossierFileName(session.id);
+        if (!fileName) continue;
+        writeFileSync(join(outDir, fileName), renderSessionDossierHtml(db, repoPath, session));
+        dossiers += 1;
+      }
       const html = renderReportHtml(db, repoPath);
-      const outFile = join(projectPaths(repoPath).root, 'report.html');
+      const outFile = join(outDir, 'report.html');
       writeFileSync(outFile, html);
       console.log(`Report written to ${outFile}`);
+      if (dossiers > 0) {
+        console.log(`${dossiers} session ${dossiers === 1 ? 'dossier' : 'dossiers'} alongside.`);
+      }
       if (!opts.open) return;
       try {
         execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [outFile]);
