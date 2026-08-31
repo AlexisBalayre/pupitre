@@ -614,6 +614,18 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    it('writes one dossier page per session alongside the index', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['report'], { from: 'user' });
+
+      const dossier = readFileSync(join(projectPaths(repo).root, 'session-s1.html'), 'utf8');
+      expect(dossier).toContain('<!doctype html>');
+      expect(logs).toContain('1 session dossier alongside.');
+    });
+
     it('throws when run outside any git repo (no project to resolve)', () => {
       useCwd(tempDir('pup-cli-noproj-'));
 

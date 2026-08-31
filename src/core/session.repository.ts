@@ -45,7 +45,7 @@ interface TaskRow {
   created_at: string;
 }
 
-interface EventRow {
+export interface EventRow {
   id: number;
   session_id: string | null;
   type: EventType;
