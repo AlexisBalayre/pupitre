@@ -198,6 +198,25 @@ describe('renderReportHtml', () => {
     ]);
   });
 
+  it('strips bidi and control characters from decision-record prose', () => {
+    // decisionRecordDatum is the ONE sanitization point for decision records on
+    // both pages now — this pins its displayText pass where the duplicated
+    // copies used to sit, so dropping it from a field cannot regress silently.
+    seedSession(db, 's1', 'goal');
+    insertDecisionRecord(db, {
+      sessionId: 's1',
+      summary: 'renamed the\u0007 helper',
+      alternatives: 'keep the \u202eold name',
+      files: ['src/\u202est.esac_tset.ts'],
+    });
+
+    const [decision] = embeddedData(renderReportHtml(db, REPO)).decisions;
+
+    expect(decision.summary).toBe('renamed the\uFFFD helper');
+    expect(decision.alternatives).toBe('keep the \uFFFDold name');
+    expect(decision.files).toEqual(['src/\uFFFDst.esac_tset.ts']);
+  });
+
   it('ships empty data with calm empty-state copy for a fresh store', () => {
     const html = renderReportHtml(db, REPO);
 

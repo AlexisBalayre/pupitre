@@ -3,11 +3,13 @@ import type { Database } from 'better-sqlite3';
 import { type BaselineHistoryRow, listBaselineHistory } from './baseline-history.repository.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { listLedgerEntries } from './ledger.repository.js';
+import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { projectId } from './paths.utils.js';
 import {
   asStageArray,
   asStringArray,
+  decisionRecordDatum,
   displayText,
   parseJsonOr,
   toIsoUtc,
@@ -58,13 +60,8 @@ export function renderReportHtml(db: Database, repoPath: string): string {
       createdAt: toIsoUtc(entry.created_at),
     })),
     decisions: listDecisionRecords(db).map((record) => ({
-      id: record.id,
+      ...decisionRecordDatum(record),
       sessionId: displayText(record.session_id),
-      summary: displayText(record.summary),
-      alternatives: record.alternatives === null ? null : displayText(record.alternatives),
-      conventions: record.conventions === null ? null : displayText(record.conventions),
-      files: asStringArray(parseJsonOr<unknown>(record.files, [])).map(displayText),
-      createdAt: toIsoUtc(record.created_at),
     })),
   };
   // `<` escaped so a goal or summary containing `</script>` cannot break out of
@@ -112,40 +109,14 @@ const HTML_TEMPLATE = `<!doctype html>
 <title>pup report</title>
 <style>
 ${PAGE_THEME_CSS}
-  * { margin: 0; box-sizing: border-box; }
-  body {
-    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: var(--page); color: var(--ink);
-  }
-  header {
-    padding: 14px 20px; border-bottom: 1px solid var(--grid);
-    display: flex; align-items: baseline; gap: 12px;
-  }
-  header h1 { font-size: 14px; font-weight: 600; }
-  header .repo { color: var(--ink-2); font-size: 12px; }
-  main { max-width: 760px; margin: 0 auto; padding: 8px 20px 72px; }
-  section { margin-top: 28px; }
-  section > h2 {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
-    color: var(--muted); margin-bottom: 10px; font-weight: 600;
-  }
-  .hint { color: var(--muted); }
+${PAGE_SHELL_CSS}
   article.session {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 12px 14px; margin-bottom: 10px;
   }
-  .meta { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  .state {
-    border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
-    font-size: 11px; color: var(--ink-2); white-space: nowrap;
-  }
-  .state-running { background: var(--debt-1); border-color: transparent; color: #fff; }
-  .state-blocked { background: var(--ink); border-color: transparent; color: var(--page); }
   .sid { font-weight: 600; }
   .sid a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--baseline); }
   .sid a:hover { border-bottom-color: var(--ink-2); }
-  .branch, .when { color: var(--muted); font-size: 12px; }
-  .rejects { color: var(--ink-2); font-size: 12px; }
   .goal-body { margin-top: 8px; white-space: pre-wrap; max-width: 65ch; }
   details.goal { margin-top: 8px; }
   details.goal summary { cursor: pointer; }
@@ -156,7 +127,6 @@ ${PAGE_THEME_CSS}
   details.goal[open] summary .first { display: none; }
   details.goal .goal-body { margin-top: 6px; }
   .scope { margin-top: 8px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-  .scope .k, .field .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .scope code {
     background: var(--page); border: 1px solid var(--grid); border-radius: 4px;
     padding: 0 5px; font-size: 11px; color: var(--ink-2);
@@ -178,10 +148,8 @@ ${PAGE_THEME_CSS}
   .spark-line { stroke: var(--debt-1); stroke-width: 2; fill: none; }
   .spark-dot { fill: var(--debt-2); stroke: var(--surface); stroke-width: 1.5; }
   .spark-base { stroke: var(--grid); stroke-width: 1; }
-  .entry { border-top: 1px solid var(--grid); padding: 10px 0; }
-  .entry .when { color: var(--muted); font-size: 11px; }
   .entry .desc { margin-top: 2px; white-space: pre-wrap; max-width: 65ch; }
-  .entry .terms, .entry .field { margin-top: 2px; color: var(--ink-2); font-size: 12px; white-space: pre-wrap; max-width: 65ch; }
+  .entry .terms { margin-top: 2px; color: var(--ink-2); font-size: 12px; white-space: pre-wrap; max-width: 65ch; }
 </style>
 </head>
 <body>
@@ -211,18 +179,7 @@ ${PAGE_THEME_CSS}
   const data = JSON.parse(document.getElementById('pup-report-data').textContent);
   document.getElementById('repo').textContent = data.repoPath;
 
-  const el = (tag, cls) => {
-    const node = document.createElement(tag);
-    if (cls) node.className = cls;
-    return node;
-  };
-  const hint = (parent, text) => {
-    const p = el('p', 'hint');
-    p.textContent = text;
-    parent.appendChild(p);
-  };
-  const when = (iso) =>
-    new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+${PAGE_SHELL_JS}
 
   // Sessions — newest first, each with the intent that launched it.
   const sessions = document.getElementById('session-list');
@@ -231,12 +188,7 @@ ${PAGE_THEME_CSS}
     const art = el('article', 'session');
     art.innerHTML = '<div class="meta"><span class="state"></span><span class="sid"></span>' +
       '<span class="branch"></span><span class="when"></span><span class="rejects"></span></div>';
-    const state = art.querySelector('.state');
-    state.textContent = s.state;
-    // The column is unchecked TEXT: an unknown state keeps the neutral chip —
-    // classList.add would throw on whitespace and blank the whole page.
-    const KNOWN_STATES = ['queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked'];
-    if (KNOWN_STATES.includes(s.state)) state.classList.add('state-' + s.state);
+    stateChip(art.querySelector('.state'), s.state);
     // The dossier link is service-built from a closed charset (dossierFileName);
     // a session whose id failed that allowlist stays plain text.
     if (s.dossierFile) {
@@ -279,9 +231,7 @@ ${PAGE_THEME_CSS}
     }
     if (s.gateStages.length) {
       const gate = el('div', 'gate');
-      gate.textContent = 'last gate: ' + s.gateStages
-        .map((st) => st.stage + ' ' + st.status.toUpperCase() + (st.detail ? ' \\u2014 ' + st.detail : ''))
-        .join(' \\u00b7 ');
+      gate.textContent = 'last gate: ' + s.gateStages.map(stageText).join(' \\u00b7 ');
       outcome.appendChild(gate);
     }
     if (outcome.childNodes.length) art.appendChild(outcome);
@@ -413,19 +363,8 @@ ${PAGE_THEME_CSS}
     div.querySelector('.when').textContent =
       '#' + record.id + ' \\u00b7 ' + when(record.createdAt) + ' \\u00b7 session ' + record.sessionId;
     div.querySelector('.desc').textContent = record.summary;
-    if (record.alternatives) field(div, 'alternatives', record.alternatives);
-    if (record.conventions) field(div, 'conventions', record.conventions);
-    if (record.files.length) field(div, 'files', record.files.join(', '));
+    decisionFields(div, record);
     decisions.appendChild(div);
-  }
-
-  function field(parent, key, value) {
-    const div = el('div', 'field');
-    const k = el('span', 'k');
-    k.textContent = key + ': ';
-    div.appendChild(k);
-    div.appendChild(document.createTextNode(value));
-    parent.appendChild(div);
   }
 })();
 </script>

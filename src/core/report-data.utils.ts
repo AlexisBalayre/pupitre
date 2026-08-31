@@ -61,6 +61,37 @@ export function asStageArray(
 }
 
 /**
+ * One decision record as both report pages embed it, so the two JSON blocks
+ * cannot drift apart. Structurally typed rather than importing
+ * `DecisionRecordRow`: utils files do not import repositories. The index
+ * spreads in the `sessionId` it alone shows.
+ */
+export function decisionRecordDatum(record: {
+  id: number;
+  summary: string;
+  alternatives: string | null;
+  conventions: string | null;
+  files: string;
+  created_at: string;
+}): {
+  id: number;
+  summary: string;
+  alternatives: string | null;
+  conventions: string | null;
+  files: string[];
+  createdAt: string;
+} {
+  return {
+    id: record.id,
+    summary: displayText(record.summary),
+    alternatives: record.alternatives === null ? null : displayText(record.alternatives),
+    conventions: record.conventions === null ? null : displayText(record.conventions),
+    files: asStringArray(parseJsonOr<unknown>(record.files, [])).map(displayText),
+    createdAt: toIsoUtc(record.created_at),
+  };
+}
+
+/**
  * SQLite's `datetime('now')` columns hold UTC as `2026-08-03 12:36:05` — no
  * zone marker, which JavaScript's Date would parse as LOCAL time and shift by
  * the viewer's offset. Rewrite that form to ISO UTC (`2026-08-03T12:36:05Z`)

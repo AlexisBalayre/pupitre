@@ -1,11 +1,13 @@
 import type { Database } from 'better-sqlite3';
 
 import { listDecisionRecords } from './decision-record.repository.js';
+import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { projectId } from './paths.utils.js';
 import {
   asStageArray,
   asStringArray,
+  decisionRecordDatum,
   displayText,
   parseJsonOr,
   toIsoUtc,
@@ -52,14 +54,7 @@ export function renderSessionDossierHtml(
     merge: mergeEvent ? mergeDatum(mergeEvent) : null,
     decisions: listDecisionRecords(db)
       .filter((record) => record.session_id === session.id)
-      .map((record) => ({
-        id: record.id,
-        summary: displayText(record.summary),
-        alternatives: record.alternatives === null ? null : displayText(record.alternatives),
-        conventions: record.conventions === null ? null : displayText(record.conventions),
-        files: asStringArray(parseJsonOr<unknown>(record.files, [])).map(displayText),
-        createdAt: toIsoUtc(record.created_at),
-      })),
+      .map(decisionRecordDatum),
   };
   // `<` escaped so agent-written prose containing `</script>` cannot break out
   // of the data block; function replacer so $-patterns in that prose are not
@@ -167,49 +162,19 @@ const HTML_TEMPLATE = `<!doctype html>
 <title>pup session dossier</title>
 <style>
 ${PAGE_THEME_CSS}
-  * { margin: 0; box-sizing: border-box; }
-  body {
-    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: var(--page); color: var(--ink);
-  }
-  header {
-    padding: 14px 20px; border-bottom: 1px solid var(--grid);
-    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
-  }
+${PAGE_SHELL_CSS}
   header a.back { color: var(--muted); text-decoration: none; }
   header a.back:hover { color: var(--ink-2); }
-  header h1 { font-size: 14px; font-weight: 600; }
-  header .repo { color: var(--ink-2); font-size: 12px; }
-  main { max-width: 760px; margin: 0 auto; padding: 8px 20px 72px; }
-  section { margin-top: 28px; }
-  section > h2 {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
-    color: var(--muted); margin-bottom: 10px; font-weight: 600;
-  }
-  .hint { color: var(--muted); }
-  .meta { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  .state {
-    border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
-    font-size: 11px; color: var(--ink-2); white-space: nowrap;
-  }
-  .state-running { background: var(--debt-1); border-color: transparent; color: #fff; }
-  .state-blocked { background: var(--ink); border-color: transparent; color: var(--page); }
-  .branch, .when { color: var(--muted); font-size: 12px; }
-  .rejects { color: var(--ink-2); font-size: 12px; }
   .goal-body { white-space: pre-wrap; max-width: 65ch; }
   .scope, .files { margin-top: 8px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-  .scope .k, .field .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .scope code, .files code {
     background: var(--surface); border: 1px solid var(--grid); border-radius: 4px;
     padding: 0 5px; font-size: 11px; color: var(--ink-2);
   }
   ul.acceptance { margin: 8px 0 0 18px; max-width: 65ch; }
   ul.acceptance li { margin-top: 2px; white-space: pre-wrap; }
-  .entry { border-top: 1px solid var(--grid); padding: 10px 0; }
-  .entry .when { color: var(--muted); font-size: 11px; }
   .entry .title { margin-top: 2px; font-weight: 600; }
   .entry .body { margin-top: 2px; white-space: pre-wrap; max-width: 65ch; }
-  .entry .field { margin-top: 2px; color: var(--ink-2); font-size: 12px; white-space: pre-wrap; max-width: 65ch; }
   ul.stages { margin: 4px 0 0 18px; }
   ul.stages li { color: var(--ink-2); font-size: 12px; max-width: 65ch; }
   .landed a { color: var(--debt-2); }
@@ -244,7 +209,7 @@ ${PAGE_THEME_CSS}
     <div id="landed"></div>
   </section>
   <section>
-    <h2>Decision records</h2>
+    <h2>What was learned</h2>
     <div id="decision-list"></div>
   </section>
 </main>
@@ -255,18 +220,7 @@ ${PAGE_THEME_CSS}
   document.title = 'pup \\u00b7 ' + data.session.id;
   document.getElementById('repo').textContent = data.repoPath;
 
-  const el = (tag, cls) => {
-    const node = document.createElement(tag);
-    if (cls) node.className = cls;
-    return node;
-  };
-  const hint = (parent, text) => {
-    const p = el('p', 'hint');
-    p.textContent = text;
-    parent.appendChild(p);
-  };
-  const when = (iso) =>
-    new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+${PAGE_SHELL_JS}
   const codes = (parent, label, values) => {
     const row = el('div', 'files');
     const k = el('span', 'k');
@@ -281,12 +235,7 @@ ${PAGE_THEME_CSS}
   };
 
   document.getElementById('sid').textContent = data.session.id;
-  const state = document.getElementById('state');
-  state.textContent = data.session.state;
-  // The column is unchecked TEXT: an unknown state keeps the neutral chip —
-  // classList.add would throw on whitespace and blank the whole page.
-  const KNOWN_STATES = ['queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked'];
-  if (KNOWN_STATES.includes(data.session.state)) state.classList.add('state-' + data.session.state);
+  stateChip(document.getElementById('state'), data.session.state);
   document.getElementById('branch').textContent = data.session.branch;
   document.getElementById('created').textContent = when(data.session.createdAt);
   if (data.session.rejectCount > 0) {
@@ -334,8 +283,7 @@ ${PAGE_THEME_CSS}
       const list = el('ul', 'stages');
       for (const stage of t.stages) {
         const li = el('li');
-        li.textContent =
-          stage.stage + ' ' + stage.status.toUpperCase() + (stage.detail ? ' \\u2014 ' + stage.detail : '');
+        li.textContent = stageText(stage);
         list.appendChild(li);
       }
       entry.appendChild(list);
@@ -373,19 +321,8 @@ ${PAGE_THEME_CSS}
     const desc = el('div', 'body');
     desc.textContent = record.summary;
     div.appendChild(desc);
-    if (record.alternatives) field(div, 'alternatives', record.alternatives);
-    if (record.conventions) field(div, 'conventions', record.conventions);
-    if (record.files.length) field(div, 'files', record.files.join(', '));
+    decisionFields(div, record);
     decisions.appendChild(div);
-  }
-
-  function field(parent, key, value) {
-    const div = el('div', 'field');
-    const k = el('span', 'k');
-    k.textContent = key + ': ';
-    div.appendChild(k);
-    div.appendChild(document.createTextNode(value));
-    parent.appendChild(div);
   }
 })();
 </script>
