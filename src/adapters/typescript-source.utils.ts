@@ -7,6 +7,37 @@ export function isSourceFile(name: string): boolean {
 }
 
 /**
+ * Whether a file holds tests rather than the code under test: the `*.test.ts`
+ * suffix, and nothing else (decision 39).
+ *
+ * The narrowness is the design. Exempting a file hides it from the duplication
+ * and dead-export metrics, and that is only safe when something forces the file
+ * to actually hold tests. `*.test.ts` is what a vitest `include` conventionally
+ * collects, so parking production code there makes the runner hard-fail the
+ * test stage with "No test suite found in file" — self-limiting. A `*.spec.ts`
+ * this project's runner does not collect, or a `tests/` directory outside its
+ * include glob, is collected by nothing: either would buy exemption for free on
+ * ordinary importable code, renamed in with a `git mv` that no hook sees. A
+ * real test under a `tests/` layout is `tests/foo.test.ts`, which the suffix
+ * already covers, so a directory arm would only ever add the unsuffixed files —
+ * the attack and nothing else.
+ *
+ * The cost is a repo whose tests are named or placed some other way: its
+ * fixture repetition gets counted rather than hidden, which is the safe
+ * direction to be wrong in. Widening it means corroborating against the trusted
+ * checkout's runner config rather than the path's spelling — decision 31's
+ * pattern, not a longer regex.
+ *
+ * Deliberately *not* `isCoverageExcluded`, which answers "should a coverage
+ * report mention this?" and so also swallows `dist/`, `build/` and named tool
+ * configs. Those are not tests, and duplication across two `tailwind.config.ts`
+ * files is still duplication.
+ */
+export function isTestFile(path: string): boolean {
+  return /\.test\.[cm]?[jt]sx?$/.test(path);
+}
+
+/**
  * Files a coverage report is not expected to mention. Kept deliberately narrow
  * and matched against what vitest and istanbul actually exclude: named tool
  * configs rather than every `*.config.*`, and the artifact and test directories

@@ -39,6 +39,11 @@ const GIT_ENV: NodeJS.ProcessEnv = {
 };
 ```
 
+Repeating that block, or a `makeAdapter` double, across suites is the convention working — not
+duplication to clean up. The merge gate agrees: a duplicate block whose every location is a test
+file is not counted as debt, and is reported as an uncounted fixture instead (decision 39). Reach
+for a shared helper because it makes the tests clearer, never to satisfy the gate.
+
 ## Faking an external CLI
 
 For a CLI that would reach the network (`gh`), don't mock the module that spawns it — write a

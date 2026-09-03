@@ -50,6 +50,15 @@ name should be ignored wherever it comes from (decision 31).
 
 - No depGraph: code map falls back to Claude-generated (flagged as approximate on the map).
 - No deadCode or duplication: those gate stages are skipped and marked "not measured", never silently passed.
+- Duplication counts a block **unless every one of its locations is a test file** (decision 39):
+  fixture repetition is the testing convention working, not debt. A block mixing test and
+  production files still counts, so a clone cannot be hidden by relocating one copy into a
+  test. Recognise a test only by a name the repo's own runner collects — a name nothing runs
+  buys the exemption for free, on ordinary production code. Report the skipped blocks as
+  `excludedTestBlocks` so the gate can say what it left out; omit the field and the gate simply
+  says nothing. Both numbers are type-checked where a custom adapter's stdout is parsed: they
+  reach the operator's terminal and the PR body, so they are sanitized where consumed
+  (decision 29).
 - No test: gate stage 1 runs build only; coverage gating disabled; `pup init` reports the gap as a debt finding.
 
 ## v1 adapters

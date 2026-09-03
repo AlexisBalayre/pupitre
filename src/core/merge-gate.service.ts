@@ -26,6 +26,7 @@ import {
   COVERAGE_RATIO_EPSILON,
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_FLAG_LINES,
+  DUPLICATION_RULE_ID,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_OUTPUT_TAIL_CHARS,
   LOCKFILE_NAMES,
@@ -388,19 +389,43 @@ function gateAndMerge(
     });
   } else {
     const duplication = req.adapter.duplication(capabilityContext);
-    measuredDebt.duplicatedLines = duplication.duplicatedLines;
-    const knownLines = baseline?.debt?.duplicatedLines;
+    // A number counted under an older rule is not a bar, it is a different
+    // measurement — comparing across the two passes on the difference. So a
+    // mismatch skips the stage, and must not move the bar either: this number
+    // was never compared to anything, and re-stamping it here would let one
+    // merge write an arbitrary floor that every later merge gates against and
+    // `pup audit` then confirms. Only `pup audit`, on the trusted checkout,
+    // re-stamps an existing baseline (decisions 30, 39).
+    const comparableRule = baseline?.debt?.duplicationRule === DUPLICATION_RULE_ID;
+    if (comparableRule || baseline?.debt?.duplicatedLines === undefined) {
+      measuredDebt.duplicatedLines = duplication.duplicatedLines;
+      measuredDebt.duplicationRule = DUPLICATION_RULE_ID;
+    }
+    const knownLines = comparableRule ? baseline?.debt?.duplicatedLines : undefined;
+    // Say what was left out, so a number that fell has a visible reason and a
+    // pile of copy-pasted fixtures is not silently invisible (decisions 29, 39).
+    // Re-checked as a finite number here as well as at the custom adapter's
+    // boundary: this string reaches the terminal, the fenced PR body and the
+    // re-steer prompt, and an adapter is not the only possible producer.
+    const excludedBlocks = duplication.excludedTestBlocks;
+    const fixtureNote =
+      typeof excludedBlocks === 'number' && Number.isFinite(excludedBlocks) && excludedBlocks > 0
+        ? `; ${Math.trunc(excludedBlocks)} test-fixture block(s) not counted`
+        : '';
     if (knownLines === undefined) {
       stages.push({
         stage: 'duplication',
         status: 'skipped',
-        detail: 'not measured — no debt baseline; run `pup init`',
+        detail:
+          baseline?.debt?.duplicatedLines === undefined
+            ? 'not measured — no debt baseline; run `pup init`'
+            : 'not measured — the stored baseline counts duplication a different way; run `pup audit`',
       });
     } else if (duplication.duplicatedLines <= knownLines) {
       stages.push({
         stage: 'duplication',
         status: 'pass',
-        detail: `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})`,
+        detail: `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})${fixtureNote}`,
       });
     } else {
       const changedSet = new Set(changedPaths);
@@ -431,7 +456,7 @@ function gateAndMerge(
         stage: 'duplication',
         status: 'flagged',
         detail: flagDetail(
-          `duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} (e.g. ${samples})`,
+          `duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} (e.g. ${samples})${fixtureNote}`,
         ),
       });
     }

@@ -72,7 +72,12 @@ function compareDebt(
     });
   };
   push('deadExports', previous?.deadExports?.length, fresh?.deadExports?.length, 'higher');
-  push('duplicatedLines', previous?.duplicatedLines, fresh?.duplicatedLines, 'higher');
+  // Two counts produced by different rules have nothing to diff — reporting the
+  // rule change as an improvement would mask a real rise underneath it, the same
+  // reason decision 34 leaves out a metric missing from either side.
+  if (previous?.duplicationRule === fresh?.duplicationRule) {
+    push('duplicatedLines', previous?.duplicatedLines, fresh?.duplicatedLines, 'higher');
+  }
   push(
     'coverageRatio',
     previous?.coverageRatio,

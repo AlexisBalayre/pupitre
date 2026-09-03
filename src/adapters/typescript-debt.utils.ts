@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import type { DeadExport, DuplicateBlock, DuplicationReport } from './types/adapter.types.js';
 import { DUPLICATION_WINDOW_LINES } from './typescript-debt.constants.js';
-import { resolveImport } from './typescript-source.utils.js';
+import { isTestFile, resolveImport } from './typescript-source.utils.js';
 
 function parse(file: string, content: string): ts.SourceFile {
   const kind =
@@ -114,7 +114,7 @@ export function findDeadExports(
   for (const file of [...fileSet].sort()) {
     const source = parse(file, files[file] as string);
     collectUsage(file, source, fileSet, marks);
-    if (!entryFiles.has(file) && !file.includes('.test.')) {
+    if (!entryFiles.has(file) && !isTestFile(file)) {
       exportsByFile.set(file, exportedNames(source));
     }
   }
@@ -178,6 +178,10 @@ function normalizeLines(content: string): NormalizedLine[] {
  * Sliding-window clone detection over normalized lines (the jscpd-equivalent
  * docs/06 allows). The metric counts each duplicated normalized line once, so
  * overlapping windows over one long clone don't inflate it.
+ *
+ * A block whose every location is a test file does not count, and is tallied
+ * as `excludedTestBlocks` instead (decision 39) — the same reasoning that
+ * dropped import lines above.
  */
 export function findDuplication(files: Record<string, string>): DuplicationReport {
   const windows = new Map<string, { file: string; line: number; index: number }[]>();
@@ -195,8 +199,18 @@ export function findDuplication(files: Record<string, string>): DuplicationRepor
   }
   const duplicated = new Set<string>();
   const blocks: DuplicateBlock[] = [];
+  let excludedTestBlocks = 0;
   for (const occurrences of windows.values()) {
     if (occurrences.length < 2) continue;
+    // Fixture repetition is not debt: testing.md prescribes a real store and
+    // repo *per test* over shared setup, and the GIT_ENV snippet it publishes
+    // is itself six lines — exactly one window. A block mixing test and
+    // production files still counts, so a copy cannot be hidden by moving it
+    // into a test file.
+    if (occurrences.every(({ file }) => isTestFile(file))) {
+      excludedTestBlocks++;
+      continue;
+    }
     blocks.push({ locations: occurrences.map(({ file, line }) => ({ file, line })) });
     for (const { file, index } of occurrences) {
       for (let offset = 0; offset < DUPLICATION_WINDOW_LINES; offset++) {
@@ -204,7 +218,7 @@ export function findDuplication(files: Record<string, string>): DuplicationRepor
       }
     }
   }
-  return { duplicatedLines: duplicated.size, blocks };
+  return { duplicatedLines: duplicated.size, blocks, excludedTestBlocks };
 }
 
 const COMPLEXITY_NODE_KINDS = new Set<ts.SyntaxKind>([

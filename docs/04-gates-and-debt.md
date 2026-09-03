@@ -8,7 +8,9 @@ Ordered stages; first hard failure stops the pipeline.
 2. Lint and format check. Hard fail.
 3. Scope audit: diff paths vs scope-in/scope-out; violations logged during the session are re-checked here. Hard fail.
 4. Debt delta (soft fail: flags, mergeable only with `--accept-debt`):
-   - Duplication: diff vs existing codebase (jscpd or adapter equivalent).
+   - Duplication: diff vs existing codebase (jscpd or adapter equivalent). Production code
+     only — a block whose every location is a test file is reported as uncounted, not as debt
+     (decision 39).
    - Dead code introduced (knip / ts-prune / vulture via adapter).
    - Complexity delta on touched files.
    - Coverage delta on touched files (no drop allowed).
