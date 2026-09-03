@@ -17,6 +17,12 @@ export interface BaselineStageResult {
 export interface DebtBaseline {
   deadExports?: DeadExport[];
   duplicatedLines?: number;
+  /**
+   * Which counting rule produced `duplicatedLines`. A stored number is only
+   * comparable to a fresh one measured the same way, so the gate skips the
+   * stage rather than comparing across rules (decision 39).
+   */
+  duplicationRule?: string;
   /** Repo-wide covered/instrumented line ratio in [0, 1]; the patch-coverage bar. */
   coverageRatio?: number;
 }

@@ -93,8 +93,20 @@ function matchesShape(capability: string, parsed: unknown): boolean {
       return Array.isArray(parsed);
     case 'coverage':
       return isObject && 'files' in parsed;
-    case 'duplication':
-      return isObject && 'duplicatedLines' in parsed;
+    // Both numbers reach the operator's terminal, the fenced PR body and the
+    // re-steer prompt through the stage detail, and this stdout is written by a
+    // command the session controls — so the types are checked here, at the
+    // boundary, not merely probed for presence (decision 29).
+    case 'duplication': {
+      if (!isObject || !Number.isFinite((parsed as DuplicationReport).duplicatedLines)) {
+        return false;
+      }
+      // `blocks` is indexed unguarded when the stage flags; absent, it crashes
+      // the gate mid-run instead of failing the capability here.
+      if (!Array.isArray((parsed as DuplicationReport).blocks)) return false;
+      const excluded = (parsed as DuplicationReport).excludedTestBlocks;
+      return excluded === undefined || Number.isFinite(excluded);
+    }
     case 'depGraph':
       return isObject && 'modules' in parsed && 'edges' in parsed;
     default:

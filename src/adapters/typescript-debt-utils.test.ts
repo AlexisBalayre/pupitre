@@ -74,6 +74,27 @@ describe('findDeadExports', () => {
 
     expect(dead).toEqual([]);
   });
+
+  // The exemption is a hiding place if a name buys it without the runner forcing
+  // the file to hold tests. `*.test.ts` is collected and hard-fails the test
+  // stage when it holds none; `.spec.` and any test-shaped directory are
+  // collected by nothing, so none of them is exempt (decision 39).
+  it('still reports dead exports from names the test runner does not collect', () => {
+    const dead = findDeadExports(
+      {
+        'src/a.spec.ts': 'export const claimsToBeASpec = 1;\n',
+        'src/core/__tests__/b.ts': 'export const parkedInTestSpace = 1;\n',
+        'tests/c.ts': 'export const parkedAtTheRoot = 1;\n',
+      },
+      new Set(),
+    );
+
+    expect(dead).toEqual([
+      { file: 'src/a.spec.ts', exportName: 'claimsToBeASpec' },
+      { file: 'src/core/__tests__/b.ts', exportName: 'parkedInTestSpace' },
+      { file: 'tests/c.ts', exportName: 'parkedAtTheRoot' },
+    ]);
+  });
 });
 
 describe('findDuplication', () => {
@@ -109,7 +130,7 @@ describe('findDuplication', () => {
       'src/b.ts': 'const other = 1;\n',
     });
 
-    expect(report).toEqual({ duplicatedLines: 0, blocks: [] });
+    expect(report).toEqual({ duplicatedLines: 0, blocks: [], excludedTestBlocks: 0 });
   });
 
   it('ignores blank, punctuation-only, and comment lines when matching', () => {
@@ -145,7 +166,7 @@ describe('findDuplication', () => {
       'src/b.ts': `${sharedImport}\nconst b = 2;\n`,
     });
 
-    expect(report).toEqual({ duplicatedLines: 0, blocks: [] });
+    expect(report).toEqual({ duplicatedLines: 0, blocks: [], excludedTestBlocks: 0 });
   });
 
   it('still reports a real clone that sits directly below a shared import', () => {
@@ -170,6 +191,63 @@ describe('findDuplication', () => {
     // top+bottom concatenate to exactly one 6-line window, which is a genuine
     // clone of real code — but it must be found once, not inflated by the import.
     expect(report.duplicatedLines).toBe(12);
+  });
+
+  // testing.md prescribes a real store and repo *per test* over shared setup,
+  // so repeated fixtures are the convention working rather than debt — and the
+  // GIT_ENV snippet it publishes is itself exactly one window (decision 39).
+  it('does not count a block whose every location is a test file', () => {
+    const report = findDuplication({
+      'src/a.test.ts': `${block}\n`,
+      'src/b.test.ts': `const unrelated = 0;\n${block}\n`,
+    });
+
+    expect(report).toEqual({ duplicatedLines: 0, blocks: [], excludedTestBlocks: 1 });
+  });
+
+  it('recognises a test under a tests directory by its suffix', () => {
+    const report = findDuplication({
+      'tests/a.test.ts': `${block}\n`,
+      'src/core/__tests__/b.test.ts': `${block}\n`,
+    });
+
+    expect(report).toEqual({ duplicatedLines: 0, blocks: [], excludedTestBlocks: 1 });
+  });
+
+  // Only the suffix exempts. A directory name buys nothing, because nothing
+  // makes a file under it hold tests — so a session cannot mint a test-shaped
+  // directory, rooted or nested, and park real duplication out of sight.
+  it.each(['tests', 'test', '__tests__', 'src/core/tests', 'src/core/__tests__'])(
+    'does not exempt unsuffixed files under %s',
+    (dir) => {
+      const report = findDuplication({
+        [`${dir}/a.ts`]: `${block}\n`,
+        [`${dir}/b.ts`]: `${block}\n`,
+      });
+
+      expect(report.duplicatedLines).toBe(12);
+      expect(report.excludedTestBlocks).toBe(0);
+    },
+  );
+
+  // The hiding place the rule must not open: moving one copy of a clone into a
+  // test file leaves a mixed block, which still counts in full.
+  it('still counts a block shared between production code and a test file', () => {
+    const report = findDuplication({
+      'src/a.ts': `${block}\n`,
+      'src/a.test.ts': `${block}\n`,
+    });
+
+    expect(report.duplicatedLines).toBe(12);
+    expect(report.excludedTestBlocks).toBe(0);
+    expect(report.blocks).toEqual([
+      {
+        locations: [
+          { file: 'src/a.test.ts', line: 1 },
+          { file: 'src/a.ts', line: 1 },
+        ],
+      },
+    ]);
   });
 });
 

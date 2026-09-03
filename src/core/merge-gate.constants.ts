@@ -18,6 +18,14 @@ export const COMPLEXITY_FILE_FLAG_DELTA = 15;
 /** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
 export const DEBT_DETAIL_SAMPLES = 3;
 
+/**
+ * Identifies the rule `duplicatedLines` was counted under, so a baseline from
+ * an older rule is skipped rather than compared (decision 39). Bump this
+ * whenever what counts as duplication changes — dropping imports (decision 33)
+ * would have needed it too.
+ */
+export const DUPLICATION_RULE_ID = 'tests-excluded';
+
 /** Slack under the baseline ratio before the coverage stage flags — float noise, not policy. */
 export const COVERAGE_RATIO_EPSILON = 0.005;
 

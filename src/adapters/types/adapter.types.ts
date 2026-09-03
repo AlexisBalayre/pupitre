@@ -29,6 +29,12 @@ export interface DuplicationReport {
   /** Normalized source lines that appear in at least one duplicated block. */
   duplicatedLines: number;
   blocks: DuplicateBlock[];
+  /**
+   * Blocks left uncounted because every location was a test file (decision
+   * 39). Optional: an adapter that self-reports its own numbers may omit it,
+   * and the gate then simply says nothing about test fixtures.
+   */
+  excludedTestBlocks?: number;
 }
 
 export interface FileComplexity {

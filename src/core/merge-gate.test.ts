@@ -34,6 +34,7 @@ import { killSession, steerSession } from '../claude/session-runtime.service.js'
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
+import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate } from './merge-gate.service.js';
 import {
@@ -464,12 +465,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(() => merge()).toThrow(SessionNotReviewableError);
   });
 
+  /** Stamped with the current rule by default, so the stage compares (decision 39). */
   const seedDebtBaseline = (debt: DebtBaseline) =>
     saveProjectBaseline(
       db,
       'proj-1',
       ['fake'],
-      JSON.stringify({ capturedAt: 'now', adapters: ['fake'], stages: [], debt }),
+      JSON.stringify({
+        capturedAt: 'now',
+        adapters: ['fake'],
+        stages: [],
+        debt: { duplicationRule: DUPLICATION_RULE_ID, ...debt },
+      }),
     );
 
   it('skips the debt-delta stages as not measured when the adapter lacks them', () => {
@@ -625,6 +632,74 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  // The trap this closes: 62 measured under the new rule against 220 stored
+  // under the old one passes on the difference, and the ratchet then writes the
+  // difference in as the floor, where no later merge or audit ever sees it.
+  it.each([
+    ['a baseline captured before the rule was stamped', undefined, 62],
+    ['a baseline captured under a superseded rule', 'imports-counted', 62],
+    // The number is what the old rule would have flagged and refused. Skipping
+    // the compare must not turn that refusal into an unbounded silent floor.
+    ['a rise the skipped compare never saw', undefined, 5000],
+  ])('skips duplication rather than comparing across rules: %s', (_label, storedRule, measured) => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 220, duplicationRule: storedRule });
+    const adapter = debtAdapter({ duplication: () => ({ duplicatedLines: measured, blocks: [] }) });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'duplication',
+        status: 'skipped',
+        detail: expect.stringContaining('counts duplication a different way'),
+      }),
+    );
+    // And the number it could not compare must not become the bar either: only
+    // `pup audit`, on the trusted checkout, re-stamps an existing baseline.
+    const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.duplicatedLines).toBe(220);
+    expect(stored.debt?.duplicationRule).toBe(storedRule);
+  });
+
+  it('names the blocks left uncounted as test fixtures', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 12 });
+    const adapter = debtAdapter({
+      duplication: () => ({ duplicatedLines: 8, blocks: [], excludedTestBlocks: 17 }),
+    });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'duplication',
+        detail: '8 duplicated lines (baseline 12); 17 test-fixture block(s) not counted',
+      }),
+    );
+  });
+
+  // A custom adapter self-reports its numbers and may not know the rule, so the
+  // gate must fall silent about fixtures rather than claim it counted none.
+  it('says nothing about test fixtures when the adapter omits the count', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 12 });
+    const adapter = debtAdapter({ duplication: () => ({ duplicatedLines: 8, blocks: [] }) });
+
+    const outcome = merge(adapter);
+
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'duplication',
+        detail: '8 duplicated lines (baseline 12)',
+      }),
+    );
+  });
+
   it('flags a touched file whose complexity rises past the threshold', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -691,6 +766,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(stored.debt).toEqual({
       deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }],
       duplicatedLines: 5,
+      duplicationRule: DUPLICATION_RULE_ID,
     });
   });
 

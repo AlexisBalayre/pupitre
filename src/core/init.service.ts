@@ -3,7 +3,11 @@ import { isUnavailable, localContext, sanitizeReason } from '../adapters/capabil
 import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import { repoCoverageRatio } from './coverage.utils.js';
-import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
+import {
+  DUPLICATION_RULE_ID,
+  GATE_COMMAND_TIMEOUT_MS,
+  GATE_OUTPUT_TAIL_CHARS,
+} from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
@@ -123,6 +127,9 @@ export function initProject(
       (sum, a) => sum + (a.duplication?.(ctx).duplicatedLines ?? 0),
       0,
     );
+    // Stamped with the number so the gate can tell a comparable bar from one
+    // counted under an older rule (decision 39).
+    debt.duplicationRule = DUPLICATION_RULE_ID;
   }
   const coverageAdapter = detected.find((a) => a.coverage);
   const coverageResult = coverageAdapter?.coverage?.(ctx);

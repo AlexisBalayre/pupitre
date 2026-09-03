@@ -7,6 +7,7 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { initProject, NoAdapterError } from './init.service.js';
+import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
@@ -111,6 +112,7 @@ describe('initProject', () => {
     expect(stored.debt).toEqual({
       deadExports: [{ file: 'src/a.ts', exportName: 'orphan' }],
       duplicatedLines: 12,
+      duplicationRule: DUPLICATION_RULE_ID,
     });
   });
 
@@ -171,7 +173,10 @@ describe('initProject', () => {
       first.baseline.capturedAt,
       second.baseline.capturedAt,
     ]);
-    expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({ duplicatedLines: 12 });
+    expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({
+      duplicatedLines: 12,
+      duplicationRule: DUPLICATION_RULE_ID,
+    });
     expect(history[1]?.debt).toBeNull();
   });
 
