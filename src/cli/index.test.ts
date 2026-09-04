@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -307,6 +308,20 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.join('\n')).toContain('the one project there is');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('runs against the one project still on disk when the others are stale', () => {
+      const live = initRepo();
+      seedBacklogTask(live, 't-plan', 'the one repo still here');
+      const stale = initRepo();
+      registerProject(stale);
+      rmSync(stale, { recursive: true });
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('the one repo still here');
       expect(process.exitCode).toBeUndefined();
     });
 

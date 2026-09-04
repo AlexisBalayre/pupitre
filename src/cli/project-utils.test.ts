@@ -119,9 +119,11 @@ describe('resolveProject', () => {
     it('lists the registered projects and asks for --project when there are several', () => {
       const repoA = initRepo();
       const repoB = initRepo();
+      const stale = initRepo();
       const idA = register(base, repoA);
       const idB = register(base, repoB);
-      rmSync(repoB, { recursive: true });
+      const idStale = register(base, stale);
+      rmSync(stale, { recursive: true });
 
       let message = '';
       try {
@@ -132,21 +134,44 @@ describe('resolveProject', () => {
       }
 
       const lines = message.split('\n');
-      expect(lines).toHaveLength(3);
+      expect(lines).toHaveLength(4);
       expect(lines).toContain(`${idA}  ${repoA}`);
-      expect(lines).toContain(`${idB}  ${repoB}  (missing)`);
-      expect(lines[2]).toBe(
+      expect(lines).toContain(`${idB}  ${repoB}`);
+      expect(lines).toContain(`${idStale}  ${stale}  (missing)`);
+      expect(lines[3]).toBe(
         'Not inside a git repository; pass --project <id> to pick one of these.',
       );
     });
 
-    it('reports the only project instead of using it when its repo is gone', () => {
-      const repo = initRepo();
-      const id = register(base, repo);
-      rmSync(repo, { recursive: true });
+    // The store outlives temp repos; the one project still on disk is still
+    // the only place a command could run.
+    it('uses the one project still on disk silently when the others are gone', () => {
+      const live = initRepo();
+      register(base, live);
+      const staleA = initRepo();
+      const staleB = initRepo();
+      register(base, staleA);
+      register(base, staleB);
+      rmSync(staleA, { recursive: true });
+      rmSync(staleB, { recursive: true });
+
+      const resolved = resolveProject(tempDir('pup-proj-nowhere-'));
+      resolved.db.close();
+
+      expect(resolved.repoPath).toBe(live);
+    });
+
+    it('refuses in one line naming the stale ids when every registered repo is gone', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      const ids = [register(base, repoA), register(base, repoB)].sort();
+      rmSync(repoA, { recursive: true });
+      rmSync(repoB, { recursive: true });
 
       expect(() => resolveProject(tempDir('pup-proj-nowhere-'))).toThrow(
-        `Project ${id} is registered at ${repo}, which no longer exists; run pup init from the repo you want to control.`,
+        new ProjectResolutionError(
+          `Not inside a git repository and every registered project is missing its repo (${ids.join(', ')}); run pup init from the repo you want to control.`,
+        ),
       );
     });
   });

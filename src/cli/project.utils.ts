@@ -113,13 +113,22 @@ function selectById(id: string, registered: RegisteredProject[]): ResolvedProjec
   );
 }
 
+/**
+ * Only projects whose repo still exists count toward "exactly one": a store
+ * that has outlived a few temp repos still names one place to run, and a
+ * project with no repo behind it could never have been the answer.
+ */
 function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
-  if (registered.length === 0) {
+  const live = registered.filter((project) => project.repoExists);
+  if (live.length === 1) return openRegistered(live[0] as RegisteredProject);
+  if (live.length === 0) {
+    const stale = registered.map((project) => project.id).join(', ');
     throw new ProjectResolutionError(
-      `Not inside a git repository and no project registered; ${INIT_HINT}`,
+      registered.length === 0
+        ? `Not inside a git repository and no project registered; ${INIT_HINT}`
+        : `Not inside a git repository and every registered project is missing its repo (${stale}); ${INIT_HINT}`,
     );
   }
-  if (registered.length === 1) return openRegistered(registered[0] as RegisteredProject);
   const listing = registered.map(
     (project) => `${project.id}  ${project.repoPath}${project.repoExists ? '' : '  (missing)'}`,
   );
