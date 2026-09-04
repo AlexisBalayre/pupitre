@@ -1157,6 +1157,15 @@ changes back into those docs is pending.
     changes that — the guard refuses the plain path and keeps the audit trail honest; a sandbox
     is a different instrument. An operator who runs `pup kill` from inside a session's worktree
     is refused too, as `pup new` already refuses them there, and runs it from the main checkout.
+    **A session can still end a *running* session's work by a chain of open commands**: `pup
+    session done` takes its identity from `PUP_SESSION_ID` alone, with no cwd cross-check, so a
+    session that sets the variable to a running victim's id moves that victim to
+    `awaiting-review` mid-turn; the open `pup merge` (only `--pr` is guarded) then merges or
+    rejects it, and decision 7's reject cap parks it `blocked`. So "a session can end another
+    session's work" is closed for a `blocked` victim — the transition table forbids
+    `awaiting-review` from `blocked`, and only `kill` reached it — but not for a running one.
+    The close is a cwd cross-check in `session done`, decision 26's detection applied to the
+    session protocol itself, and is its own change.
     **`pup audit --sweep` still launches from inside a session**: it reaches `createSession`
     directly, scoped `**/*` with the overlap allowed by decision 41, so a session can still
     spawn a session — one with the loudest possible `scope_overlap` record, but a session.
