@@ -69,7 +69,11 @@ import {
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import { TaskAlreadyClaimedError, UnknownTaskError } from '../core/session-lifecycle.errors.js';
+import {
+  ScopeConflictError,
+  TaskAlreadyClaimedError,
+  UnknownTaskError,
+} from '../core/session-lifecycle.errors.js';
 import {
   createSession,
   killSession,
@@ -210,6 +214,26 @@ const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
 /**
+ * Width of the goal column in `pup plan` and `pup status`. Goals run to a
+ * paragraph (decision 41's own backlog entries are 400+ chars), so the column
+ * clips rather than pads: an unclipped goal pushed the scope column off the
+ * row on the first real backlog this rendered.
+ */
+const GOAL_COLUMN_CHARS = 44;
+
+/** One terminal-safe line of a task's goal, fitted to the goal column. */
+function goalHeadline(spec: TaskSpec): string {
+  const line = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
+  const chars = [...line];
+  return chars.length > GOAL_COLUMN_CHARS
+    ? `${chars.slice(0, GOAL_COLUMN_CHARS - 1).join('')}\u2026`
+    : line.padEnd(GOAL_COLUMN_CHARS);
+}
+
+const ALLOW_OVERLAP_DESCRIPTION =
+  'launch even though a live session already holds files in this scope';
+
+/**
  * Builds the commander program without parsing argv — the executable entry
  * point below is the only caller that actually parses; tests build a fresh
  * program and drive command actions in-process instead. exitOverride keeps
@@ -272,7 +296,8 @@ export function buildProgram(): Command {
     .option('--scope-out <glob...>', 'globs the session must not edit')
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--model <model>', 'claude model for the session')
-    .action((goal: string, opts: Record<string, string[] | string | undefined>) => {
+    .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
+    .action((goal: string, opts: Record<string, string[] | string | boolean | undefined>) => {
       const { repoPath, db } = resolveProject();
       // `pup new` is `pup plan add` plus a launch, so it carries the same rule:
       // a session authoring a spec writes a later session's kickoff prompt and
@@ -290,13 +315,22 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
-      const sessionId = createSession(db, {
-        repoPath,
-        base: DEFAULT_BASE_PROFILE,
-        task,
-        claudeUserDir: join(homedir(), '.claude'),
-        model: opts.model as string | undefined,
-      });
+      let sessionId: string;
+      try {
+        sessionId = createSession(db, {
+          repoPath,
+          base: DEFAULT_BASE_PROFILE,
+          task,
+          claudeUserDir: join(homedir(), '.claude'),
+          model: opts.model as string | undefined,
+          allowOverlap: opts.allowOverlap === true,
+        });
+      } catch (error) {
+        if (!(error instanceof ScopeConflictError)) throw error;
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
       console.log(`Launched session ${sessionId} (tmux: pup-${sessionId}).`);
       console.log(`Attach with: tmux attach -t pup-${sessionId}`);
     });
@@ -329,9 +363,8 @@ export function buildProgram(): Command {
           }
           for (const row of backlog) {
             const spec = JSON.parse(row.spec) as TaskSpec;
-            const goal = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
-            console.log(`${row.id.padEnd(14)}${goal.padEnd(44)}${scope}`);
+            console.log(`${row.id.padEnd(14)}${goalHeadline(spec)}  ${scope}`);
           }
           return;
         }
@@ -425,8 +458,17 @@ export function buildProgram(): Command {
     .command('launch <task>')
     .description('Start a session for a task already in the backlog')
     .option('--model <model>', 'claude model for the session')
-    .action((taskId: string, opts: { model?: string }) => {
+    .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
+    .action((taskId: string, opts: { model?: string; allowOverlap?: boolean }) => {
       const { repoPath, db } = resolveProject();
+      // Waving a scope conflict through is a considered override, so it belongs
+      // to whoever answers for the collision — the same rule that keeps `--pr`
+      // and spec authoring operator-only (decisions 26, 41).
+      if (opts.allowOverlap && callingSession(db)) {
+        console.error('`--allow-overlap` is operator-only; sessions cannot wave off a conflict.');
+        process.exitCode = 1;
+        return;
+      }
       const planned = getTask(db, taskId);
       if (planned) {
         const spec = JSON.parse(planned.spec) as TaskSpec;
@@ -441,11 +483,13 @@ export function buildProgram(): Command {
           taskId,
           claudeUserDir: join(homedir(), '.claude'),
           model: opts.model,
+          allowOverlap: opts.allowOverlap,
         });
       } catch (error) {
         if (
           !(error instanceof UnknownTaskError) &&
           !(error instanceof TaskAlreadyClaimedError) &&
+          !(error instanceof ScopeConflictError) &&
           !(error instanceof InvalidProfileError)
         ) {
           throw error;
@@ -460,7 +504,7 @@ export function buildProgram(): Command {
 
   program
     .command('status')
-    .description('Sessions by state, blocked and stalled first; overdue debt on top')
+    .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
     .action(() => {
       const { repoPath, db } = resolveProject();
       const overdue = listOverdueLedgerEntries(db, projectId(repoPath), new Date());
@@ -470,8 +514,9 @@ export function buildProgram(): Command {
         );
       }
       const rows = listSessions(db);
-      if (rows.length === 0) {
-        console.log('No sessions.');
+      const backlog = listBacklogTasks(db, projectId(repoPath));
+      if (rows.length === 0 && backlog.length === 0) {
+        console.log('Nothing running and nothing planned.');
         return;
       }
       const paths = projectPaths(repoPath);
@@ -495,6 +540,14 @@ export function buildProgram(): Command {
           `${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${activityMarker(r.state, paths.eventsFile(r.id), stalledAges.get(r.id))}${ctx}`,
         );
       }
+      // Planned tasks share the session table's columns under `planned`, the
+      // state docs/01 gives a task with no session row: what will be built
+      // belongs beside what is being built, not in a separate command
+      // (decision 41).
+      for (const row of backlog) {
+        const spec = JSON.parse(row.spec) as TaskSpec;
+        console.log(`${'planned'.padEnd(16)} ${row.id.padEnd(28)} ${goalHeadline(spec)}`);
+      }
       printConflictRadar(db, repoPath, rows);
     });
 
@@ -506,7 +559,7 @@ export function buildProgram(): Command {
     for (const pair of listOverlaps(db)) {
       const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
       console.log(
-        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files[0]}${extra}${stale ? '  (stale)' : ''}`,
+        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${sanitizeReason(pair.files[0] ?? '')}${extra}${stale ? '  (stale)' : ''}`,
       );
     }
     if (live.length >= 2 && stale) {
@@ -586,7 +639,7 @@ export function buildProgram(): Command {
           }
           for (const pair of pairs) {
             console.log(
-              `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files.join(', ')}`,
+              `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${sanitizeReason(pair.files.join(', '))}`,
             );
           }
           for (const s of stalled) {
@@ -710,7 +763,7 @@ export function buildProgram(): Command {
       for (const f of detail.files) {
         const added = f.added === null ? '-' : `+${f.added}`;
         const deleted = f.deleted === null ? '-' : `-${f.deleted}`;
-        console.log(`  ${added.padStart(6)} ${deleted.padStart(6)}  ${f.path}`);
+        console.log(`  ${added.padStart(6)} ${deleted.padStart(6)}  ${sanitizeReason(f.path)}`);
       }
       if (detail.lastGateReport) {
         console.log('last gate report:');
@@ -936,7 +989,9 @@ export function buildProgram(): Command {
         console.log(`  ${record.summary}`);
         if (record.alternatives) console.log(`  alternatives: ${record.alternatives}`);
         if (record.conventions) console.log(`  conventions: ${record.conventions}`);
-        console.log(`  files: ${(JSON.parse(record.files) as string[]).join(', ')}`);
+        console.log(
+          `  files: ${sanitizeReason((JSON.parse(record.files) as string[]).join(', '))}`,
+        );
       }
     });
   program
@@ -1008,6 +1063,12 @@ export function buildProgram(): Command {
           claudeUserDir: join(homedir(), '.claude'),
           model: opts.model,
           origin: 'audit',
+          // A sweep is scoped to the whole repo by construction, so it overlaps
+          // every live session there is. Refusing it would make `--sweep`
+          // unrunnable whenever anything else is running, with no flag to say
+          // otherwise; the `scope_overlap` event records which sessions it
+          // stepped on, which is what the refusal was protecting (decision 41).
+          allowOverlap: true,
         });
         console.log(`Launched sweep session ${sessionId} (tmux: pup-${sessionId}).`);
         console.log(`Attach with: tmux attach -t pup-${sessionId}`);

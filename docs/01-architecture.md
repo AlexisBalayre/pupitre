@@ -23,7 +23,7 @@ Sessions read the knowledge layer at compile time; the orchestrator writes it at
 - Project: id, repo path, adapters, baseline snapshot, config (`~/.pupitre/<id>/`, optional shared `.pupitre.yml` in repo root).
 - Task: id, spec (goal, scope-in, scope-out, acceptance criteria), role, status, origin (human | audit | rejection).
 - Session: task id, worktree path, branch, PID, state, profile hash, transcript path.
-- Event: append-only log. Types: tool_call, scope_violation, gate_result, merge, steer, config_drift. All derived views come from this table.
+- Event: append-only log. Types: tool_call, scope_violation, gate_result, merge, steer, config_drift, scope_overlap. All derived views come from this table.
 - LedgerEntry: id, description, files, reason, accepted_by, review_by condition, status (open | closed).
 - DecisionRecord: merge id, summary, alternatives rejected, conventions applied.
 
@@ -33,7 +33,8 @@ planned (no session row) -> queued -> running -> awaiting-review -> merged
 running -> killed -> planned (the task returns to the backlog)
 awaiting-review -> rejected -> running (gate report injected as correction prompt)
 
-`pup status` is a filter on state; the daily question is "which sessions need me now".
+`pup status` is a filter on state, with the backlog listed under `planned`; the daily question
+is "which sessions need me now, and what is queued behind them".
 
 ## Claude Code integration
 

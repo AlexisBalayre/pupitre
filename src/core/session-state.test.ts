@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionState } from './db.client.js';
-import { canTransition, claimedStates, isTerminal } from './session-state.utils.js';
+import { canTransition, claimedStates, holdingStates, isTerminal } from './session-state.utils.js';
 
 describe('session state machine', () => {
   it('permits the documented happy path', () => {
@@ -53,5 +53,21 @@ describe('claimedStates', () => {
 
   it('never claims a terminal killed session', () => {
     expect(claimedStates()).not.toContain('killed');
+  });
+});
+
+describe('holdingStates', () => {
+  // Narrower than `claimedStates` by exactly the terminal pair: a merged or
+  // killed session is not editing anything, and holding its scope any longer
+  // would refuse every later launch over files it once touched (decision 41).
+  it('holds a scope in every claimed state except the terminal ones', () => {
+    expect([...holdingStates()].sort()).toEqual(
+      ['awaiting-review', 'blocked', 'queued', 'rejected', 'running'].sort(),
+    );
+  });
+
+  it('releases the scope of a session no longer running', () => {
+    expect(holdingStates()).not.toContain('merged');
+    expect(holdingStates()).not.toContain('killed');
   });
 });

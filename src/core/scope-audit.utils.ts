@@ -34,3 +34,15 @@ export function auditScope(
   }
   return violations;
 }
+
+/**
+ * Which of `paths` a task with this scope is allowed to edit — the complement
+ * of `auditScope`, so the same precedence decides both. Asking the gate's own
+ * rule keeps the launch-time overlap check (decision 41) from drifting into a
+ * second, laxer reading of a scope: a file a session could never commit is not
+ * a file it can conflict over.
+ */
+export function scopedPaths(paths: string[], scopeIn: string[], scopeOut: string[] = []): string[] {
+  const refused = new Set(auditScope(paths, scopeIn, scopeOut).map((violation) => violation.path));
+  return paths.filter((path) => !refused.has(path));
+}

@@ -22,6 +22,7 @@ export type EventType =
   | 'session_done'
   | 'handoff_ready'
   | 'respawn'
+  | 'scope_overlap'
   | 'utility_call';
 
 const SCHEMA = `

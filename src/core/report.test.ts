@@ -66,6 +66,37 @@ describe('renderReportHtml', () => {
     ]);
   });
 
+  // The section decision 40 left permanently blank: intent that has not run is
+  // the report's answer to "what will be built" (decision 41).
+  it('embeds a planned task with its goal and scope', () => {
+    insertTask(db, {
+      id: 't-plan',
+      projectId: PID,
+      spec: JSON.stringify({
+        id: 't-plan',
+        goal: 'extract the gh exec options',
+        scopeIn: ['src/core/github.client.ts'],
+        scopeOut: ['src/core/github.client.test.ts'],
+      }),
+    });
+
+    expect(embeddedData(renderReportHtml(db, REPO)).backlog).toEqual([
+      expect.objectContaining({
+        id: 't-plan',
+        goal: 'extract the gh exec options',
+        scopeIn: ['src/core/github.client.ts'],
+        scopeOut: ['src/core/github.client.test.ts'],
+        origin: 'human',
+      }),
+    ]);
+  });
+
+  it('drops a task from the backlog once a session claims it', () => {
+    seedSession(db, 's1', 'the claimed goal');
+
+    expect(embeddedData(renderReportHtml(db, REPO)).backlog).toEqual([]);
+  });
+
   it('links no dossier for a session id outside the filename allowlist', () => {
     seedSession(db, 's1', 'goal');
     db.prepare('UPDATE sessions SET id = ? WHERE id = ?').run('../evil', 's1');

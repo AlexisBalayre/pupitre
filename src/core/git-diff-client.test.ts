@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { gitDiffAddedLines } from './git-diff.client.js';
+import { gitDiffAddedLines, gitDiffPaths } from './git-diff.client.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
 // surrounding hook's GIT_DIR away from the temp repos.
@@ -55,5 +55,54 @@ describe('gitDiffAddedLines', () => {
     commitAll(repo, 'add file');
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'fresh.ts': [1, 2] });
+  });
+});
+
+// A session can write `diff.external` or a textconv driver into the shared,
+// untracked `$GIT_COMMON_DIR/config` and `info/attributes`. Without the
+// per-call disarm git runs the command and emits no hunks, and an empty
+// `added` map reads as "no instrumentable changed lines" — a pass (decision 41).
+describe('gitDiffAddedLines under a session-armed diff driver', () => {
+  function armedRepo(): string {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), 'one\ntwo\n');
+    commitAll(repo, 'change');
+    return repo;
+  }
+
+  it('still sees the hunks when diff.external is set', () => {
+    const repo = armedRepo();
+    sh(repo, 'git', 'config', 'diff.external', '/usr/bin/true');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['a.ts']);
+  });
+
+  // Forced colour puts an escape sequence before every `@@`, so the hunk
+  // regex matches nothing; the config is honoured even through a pipe.
+  it('still sees the hunks when color.ui=always is set', () => {
+    const repo = armedRepo();
+    sh(repo, 'git', 'config', 'color.ui', 'always');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+  });
+
+  // `* -diff` makes git report every file as "Binary files differ", zero hunks.
+  it('still sees the hunks when info/attributes marks every file binary', () => {
+    const repo = armedRepo();
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+  });
+
+  it('still sees the hunks when a textconv driver is attached through info/attributes', () => {
+    const repo = armedRepo();
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* diff=pwn\n');
+    sh(repo, 'git', 'config', 'diff.pwn.textconv', '/usr/bin/true');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
   });
 });

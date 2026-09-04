@@ -9,9 +9,13 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
   backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
   rewrites one. A task is in the backlog until a session claims it (decision 40).
 - `pup launch <task>` — compile a profile, create the worktree and branch, and start a session for
-  a task already in the backlog.
-- `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path.
-- `pup status` — all sessions by state, pending reviews, live scope overlaps between running sessions.
+  a task already in the backlog. Refuses when the task's scope-in claims tracked files a live
+  session's scope already claims, naming the session and the shared files; `--allow-overlap`
+  launches anyway and records what it waved through (decision 41).
+- `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path. Takes
+  `--allow-overlap` for the same reason `pup launch` does.
+- `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
+  overlaps between running sessions.
 - `pup steer <session> "<message>"` — inject a correction into a running session.
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
 - `pup kill <session> [--respawn]` — stop; `--respawn` relaunches on a fresh context window. A
@@ -27,7 +31,7 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
 ## Knowledge
 
 - `pup map [module]` — code map: text tree by default, `--open` renders the interactive mind-map view.
-- `pup report [--open]` — render the project report into the project dir: `report.html` (sessions newest first with the goal that launched them, baseline drift from capture history, open debt, decision records) plus one `session-<id>.html` dossier per session — the full intent with acceptance criteria, the complete event timeline with every gate run, what merged (files and PR), and the session's decision records. The index links each session to its dossier. `--open` also launches the index in the browser (best-effort).
+- `pup report [--open]` — render the project report into the project dir: `report.html` (the backlog of planned tasks, sessions newest first with the goal that launched them, baseline drift from capture history, open debt, decision records) plus one `session-<id>.html` dossier per session — the full intent with acceptance criteria, the complete event timeline with every gate run, what merged (files and PR), and the session's decision records. The index links each session to its dossier. `--open` also launches the index in the browser (best-effort).
 - `pup debt` — open ledger entries, oldest first, with review-by conditions.
 - `pup log [module]` — decision records, filterable by module or file.
 
