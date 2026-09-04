@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1139,8 +1147,19 @@ export function buildProgram(): Command {
   return program;
 }
 
+/**
+ * `import.meta.url` is the resolved file, but `process.argv[1]` is whatever was
+ * invoked — the `bin/pup` symlink `npm link` installs. Without the realpath the
+ * two never match and the CLI exits 0 having done nothing, which is exactly
+ * how the linked binary shipped: silent, not broken.
+ */
 function isMainModule(): boolean {
-  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+  if (process.argv[1] === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
 }
 
 if (isMainModule()) {
