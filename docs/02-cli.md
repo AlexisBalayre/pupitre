@@ -1,6 +1,17 @@
 # CLI surface
 
-Binary: `pup`. All commands run from the target repo or with `--project <id>`.
+Binary: `pup`. Every command resolves its project through one rule (decision 43): `--project <id>`
+wins from anywhere, even inside another repo; otherwise the repo around the current directory;
+outside any repo, the store under `~/.pupitre` decides only when exactly one project is
+registered — with several it lists them as `id  repo_path` (a deleted repo is marked `(missing)`)
+and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
+project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
+exit 1.
+
+## Global options
+
+- `--project <id>` — control a registered project by id; the ids are the directory names under
+  `~/.pupitre`, and `pup status` from outside any repo lists them when more than one exists.
 
 ## Lifecycle
 

@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CommanderError } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
@@ -73,8 +74,8 @@ import {
   planTask,
 } from '../core/session-lifecycle.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
-import { buildProgram } from './index.js';
-import { resolveProject } from './project.utils.js';
+import { buildProgram, fatalExitCode } from './index.js';
+import { ProjectResolutionError, resolveProject } from './project.utils.js';
 
 const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
@@ -127,6 +128,15 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
     profileHash: 'hash',
   });
   db.close();
+}
+
+/** Registers the repo in the store the way `pup init` does, with nothing planned. */
+function registerProject(repoPath: string): string {
+  const { db } = resolveProject(repoPath);
+  const pid = projectId(repoPath);
+  ensureProject(db, pid, repoPath);
+  db.close();
+  return pid;
 }
 
 /** One planned task: a row in the backlog with no session of its own. */
@@ -287,10 +297,54 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('planned');
     });
 
-    it('throws when run outside any git repo (no project to resolve)', () => {
+    // Outside any repo the store decides, but only when it cannot be wrong
+    // (decision 43).
+    it('runs against the only registered project when outside any repo', () => {
+      const repo = initRepo();
+      seedBacklogTask(repo, 't-plan', 'the one project there is');
       useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow();
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('the one project there is');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('lists the registered projects and refuses when several could apply', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      const idA = registerProject(repoA);
+      const idB = registerProject(repoB);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
+        new ProjectResolutionError(
+          [
+            ...[`${idA}  ${repoA}`, `${idB}  ${repoB}`].sort(),
+            'Not inside a git repository; pass --project <id> to pick one of these.',
+          ].join('\n'),
+        ),
+      );
+    });
+
+    it('refuses in one line when outside any repo and nothing is registered', () => {
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
+        new ProjectResolutionError(
+          'Not inside a git repository and no project registered; run pup init from the repo you want to control.',
+        ),
+      );
+    });
+
+    it('ignores the store while inside a repo', () => {
+      const registered = initRepo();
+      seedBacklogTask(registered, 't-plan', 'planned elsewhere');
+      useCwd(initRepo());
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).toContain('Nothing running and nothing planned.');
     });
 
     it('marks a running session STALLED with its age and sorts it before a fresh one', () => {
@@ -1024,6 +1078,75 @@ describe('CLI commands', () => {
         expect(errors).toEqual(['No open ledger entry #999.']);
         expect(process.exitCode).toBe(1);
       });
+    });
+  });
+
+  describe('--project', () => {
+    it('selects a registered project from outside any repo, before or after the command', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      seedBacklogTask(repoA, 't-a', 'planned in A');
+      const idB = registerProject(repoB);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['--project', idB, 'status'], { from: 'user' });
+      buildProgram().parse(['status', '--project', idB], { from: 'user' });
+
+      expect(logs).toEqual([
+        'Nothing running and nothing planned.',
+        'Nothing running and nothing planned.',
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('wins over the repo around cwd', () => {
+      const repoA = initRepo();
+      seedBacklogTask(repoA, 't-a', 'planned in A');
+      useCwd(initRepo());
+
+      buildProgram().parse(['--project', projectId(repoA), 'status'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('planned in A');
+    });
+
+    it('refuses an unknown id in one line', () => {
+      const id = registerProject(initRepo());
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['--project', 'ghost', 'status'], { from: 'user' }),
+      ).toThrow(new ProjectResolutionError(`No project ghost; registered projects: ${id}.`));
+    });
+
+    it('reaches commands that read the project dir, not only the store', () => {
+      const id = registerProject(initRepo());
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['--project', id, 'profile', 'list'], { from: 'user' });
+
+      expect(logs.some((l) => l.startsWith(DEFAULT_BASE_PROFILE.name))).toBe(true);
+    });
+  });
+
+  // The entry point maps what escaped parse to an exit code; tests drive parse
+  // in-process, so this is the only place the one-line contract is checked.
+  describe('fatalExitCode', () => {
+    it('prints a project resolution failure as one message and exits 1', () => {
+      expect(fatalExitCode(new ProjectResolutionError('No project ghost.'))).toBe(1);
+
+      expect(errors).toEqual(['No project ghost.']);
+    });
+
+    it("keeps commander's own exit code, whose message is already written", () => {
+      expect(fatalExitCode(new CommanderError(2, 'commander.unknownOption', 'unknown'))).toBe(2);
+
+      expect(errors).toEqual([]);
+    });
+
+    it('rethrows anything else, so a bug still crashes with its stack', () => {
+      const bug = new TypeError('undefined is not a function');
+
+      expect(() => fatalExitCode(bug)).toThrow(bug);
     });
   });
 

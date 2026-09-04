@@ -1173,6 +1173,38 @@ changes back into those docs is pending.
     sessions**, and each is a session reaching into another session's window or branch; steer
     in particular is a prompt written into another agent's context. Each is the same close as
     this one and its own change, kept separate so the record of why stays legible.
+43. **`pup` resolves its project through one rule, and the store decides only when it cannot be
+    wrong (2026-09-05).** Every command opened with `resolveProject()`, which shelled out to
+    `git rev-parse --git-common-dir` from cwd and, outside any repo, died with the raw
+    `execFileSync` stack (exit 128) — `pup status` from `$HOME` was a crash, and the
+    `--project <id>` docs/02 had promised since the beginning had no implementation. The rule,
+    the operator's: inside a git repo the repo wins, unchanged. `--project <id>` wins over that,
+    from anywhere, including inside a different repo, and an unknown id refuses in one line that
+    names the registered ids. Outside any repo the store under `~/.pupitre` — one directory per
+    project id, each with its own `state.db` and `projects` row — is consulted: exactly one
+    project is used silently; several are printed as `id  repo_path`, one per line, and refused
+    with one line asking for `--project <id>`, because a guess would run a command against a
+    repo the operator did not name; none refuses with one line pointing at `pup init`.
+    *One seam, not per-command branches.* `resolveProject(cwd, projectId?)` is still the only
+    function that turns a place into a project; `--project` is a global option on the program
+    that a single closure in `buildProgram` hands to it, so the twenty call sites changed one
+    name and gained no branch. `pup profile`, which reached `repoRoot()` directly for its
+    profiles dir, goes through the same closure now, so `--project` reaches it too. The
+    refusals are a `ProjectResolutionError` the entry point maps to its message and exit 1 —
+    the operator's to resolve, not a bug — while anything else that escapes `parse` still
+    crashes with its stack. Git's own "fatal: not a git repository" is captured instead of
+    echoed, since outside a repo it is the expected answer and pup speaks for it.
+    *A project whose repo is gone is reported, never used.* Projects are keyed by the hash of
+    their `repo_path`, so a repo deleted or moved leaves a registered project with no repo
+    behind it — three of the four in the first real store were temp dirs from smoke tests. The
+    listing marks each `(missing)`; the only-one and `--project` paths refuse with the id and
+    the path that is gone, because most commands shell into that path and would fail worse.
+    *What this leaves open.* An explicit `--project` on a gone repo could still serve the
+    read-only commands (`report`, `log`, `debt`) from history alone; it refuses today for the
+    simpler rule, and reading history for a deleted repo is its own change if it is wanted. A
+    store directory holding a `state.db` with no `projects` row — `pup status` in a repo that
+    never ran `pup init` creates one — is not a project and is skipped. Nothing prunes stale
+    projects; a `pup init --forget <id>` would be the place.
 
 ## Implementation notes
 
