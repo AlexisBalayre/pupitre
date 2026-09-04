@@ -1025,7 +1025,9 @@ changes back into those docs is pending.
     refuse after the row is written. The second review found the version that re-decided: a
     holder appearing in the window between the two reads refused after `planTask`, recreating
     exactly the orphan the reordering was for. A holder that appears in that window is now
-    recorded instead, the trade `--allow-overlap` already makes.
+    recorded instead, the trade `--allow-overlap` already makes — and recorded as
+    `via: 'raced'`, not as something the operator accepted, because they accepted nothing;
+    the ledger's `acceptedBy` rule, applied to this record.
     *The audit sweep always overlaps, and says so.* `buildSweepTask` is scoped to `**/*`, so
     it collides with every live session there is; refusing it would have made
     `pup audit --sweep` unrunnable whenever anything else runs, with no flag on `pup audit` to
@@ -1054,7 +1056,16 @@ changes back into those docs is pending.
     instrumentable changed lines" as a **pass** — decision 29's invariant inverted from a
     file the session writes. They are disarmed per call with `--no-ext-diff --no-textconv`
     (diff-subcommand flags, not top-level ones), not through `GIT_SAFE_CONFIG`, because an
-    empty `diff.external` makes every diff die. `GIT_SAFE_CONFIG` (`git-diff.client.ts`)
+    empty `diff.external` makes every diff die. The third pass showed those two flags were
+    not the class either: **`color.ui=always`** forces ANSI through the pipe so no line
+    starts with `@@`, and a **`* -diff` attribute** or `diff.<driver>.binary` turns every
+    file into "Binary files differ" — both blank the patch the same way, both reproduced
+    against the shipped function, both now covered by `--no-color --text` with a
+    discriminating test each. `--text` is safe on a real binary because `patchCoverage`
+    only counts files the coverage report instruments. Clearing the sign flag has a
+    functional cost worth saying: an operator who signs every commit gets the gate's rebase
+    rewriting theirs unsigned, and a branch rule requiring signatures then rejects the push
+    — loud, and the right trade. `GIT_SAFE_CONFIG` (`git-diff.client.ts`)
     carries `hooksPath`, `fsmonitor` and both `gpgsign` keys, and every pup git call now
     spreads it — including `pushBranch`'s two, which the first version of this text claimed
     were converted and were not, and the three read-only calls (`log`, two `rev-parse`)
@@ -1064,7 +1075,20 @@ changes back into those docs is pending.
     `info/attributes` runs on `git worktree add` and on the gate's rebase, and has no `-c`
     disarm because its driver name is chosen by whoever wrote it. The honest fix is a loud
     refusal when that surface is armed, decision 6's shape, and it is its own change; until
-    then it is a stated ceiling, verified reachable, not an accepted one.
+    then it is a stated ceiling, verified reachable, not an accepted one. Two more, same
+    status. **`gitDiffNumstat` is forgeable by the same `* -diff` line**, and `--text` does
+    not restore `--numstat` the way it restores `-U0`: git emits `-\t-`, `countChangedLines`
+    treats a null count as a real binary and skips it, so a 5 000-line diff reports zero
+    changed lines, the `diff-size` stage passes and the review-queue risk score floors. The
+    null skip is correct for a real binary; nothing anticipated the session choosing which
+    files count as one. The fix is a measurement, not a flag — cross-check a null numstat
+    against `gitDiffAddedLines`, which `--text` does restore, and flag the disagreement.
+    **The push target is session-controlled:** `url.<base>.insteadOf` or a rewritten
+    `remote.origin.url` in the shared config sends `pushBranch` and `gh pr create` wherever
+    the session says, verified under the full `GIT_SAFE_CONFIG`; the fix is to resolve
+    `origin` once from the trusted checkout and push to the literal URL. A merge driver
+    named through the same `info/attributes` runs on a conflicting rebase and is unlisted
+    for the same reason as the smudge filter.
     *Unreachable is loud.* Two branches in `scopeConflicts` cannot fire while the store is
     pup's own — a session id containing `:`, and a session whose task row is missing under a
     NOT NULL foreign key. Both throw rather than skip: a scope the check cannot read is a scope

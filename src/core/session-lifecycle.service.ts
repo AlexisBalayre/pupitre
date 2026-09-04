@@ -120,6 +120,7 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   const sessionId = startSession(db, { ...req, task });
   if (conflicts.length > 0) {
     appendEvent(db, sessionId, 'scope_overlap', {
+      via: req.overlapVia ?? 'operator',
       accepted: conflicts.map((conflict) => ({
         session: conflict.sessionId,
         files: conflict.files,
@@ -148,7 +149,12 @@ export function createSession(db: Database, req: NewSessionRequest): string {
   // and for the `scope_overlap` record, but must not re-decide: a holder that
   // appears in the window between the two reads would otherwise refuse after
   // the row exists, which is the orphan this function was reordered to prevent.
-  return launchTask(db, { ...req, taskId: req.task.id, allowOverlap: true });
+  return launchTask(db, {
+    ...req,
+    taskId: req.task.id,
+    allowOverlap: true,
+    overlapVia: req.allowOverlap ? 'operator' : 'raced',
+  });
 }
 
 /**

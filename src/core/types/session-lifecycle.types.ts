@@ -17,6 +17,12 @@ export interface LaunchTaskRequest {
   model?: string;
   /** Launch despite a live session already holding files in this scope. */
   allowOverlap?: boolean;
+  /**
+   * Who answers for an allowed overlap in the `scope_overlap` record: the
+   * operator who passed the flag, or nobody — `createSession` admitted the
+   * task before the holder existed and a refusal now would orphan the row.
+   */
+  overlapVia?: 'operator' | 'raced';
 }
 
 export interface NewSessionRequest extends PlanTaskRequest {

@@ -47,17 +47,31 @@ export const GIT_SAFE_CONFIG = [
 ] as const;
 
 /**
- * Diff-subcommand flags (they are not accepted at top level) that stop git
- * running a session-configured `diff.external` or `diff.<driver>.textconv`.
- * Without them an armed external diff emits no hunks, `gitDiffAddedLines`
- * returns nothing, and the coverage stage reads that absence as a pass.
+ * Diff-subcommand flags (they are not accepted at top level) that keep a
+ * session-written config from blanking the `-U0` patch `gitDiffAddedLines`
+ * parses — an empty patch reads as "no instrumentable changed lines", a pass.
+ * Each was reproduced against the shipped function: `--no-ext-diff` covers
+ * `diff.external` and `diff.<driver>.command`, `--no-textconv` the textconv
+ * drivers, `--no-color` a `color.ui=always` that forces ANSI through the pipe
+ * so no line starts with `@@`, and `--text` a `* -diff` attribute or
+ * `diff.<driver>.binary` that turns every file into "Binary files differ".
+ * `--text` is safe for a real binary because `patchCoverage` only counts
+ * files the coverage report instruments.
  */
-const DIFF_SAFE_FLAGS = ['--no-ext-diff', '--no-textconv'] as const;
+const DIFF_SAFE_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-color', '--text'] as const;
+
+/**
+ * Node's default is 1 MiB, which `--text` on a large committed binary would
+ * exceed and turn into a throw mid-gate; 64 MiB covers any patch worth
+ * parsing and still fails loudly rather than silently truncating.
+ */
+const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
     encoding: 'utf8',
     env: scrubbedGitEnv(),
+    maxBuffer: GIT_MAX_BUFFER,
   }).trim();
 }
 

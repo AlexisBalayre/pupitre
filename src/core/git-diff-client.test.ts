@@ -81,6 +81,23 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
     expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['a.ts']);
   });
 
+  // Forced colour puts an escape sequence before every `@@`, so the hunk
+  // regex matches nothing; the config is honoured even through a pipe.
+  it('still sees the hunks when color.ui=always is set', () => {
+    const repo = armedRepo();
+    sh(repo, 'git', 'config', 'color.ui', 'always');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+  });
+
+  // `* -diff` makes git report every file as "Binary files differ", zero hunks.
+  it('still sees the hunks when info/attributes marks every file binary', () => {
+    const repo = armedRepo();
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+  });
+
   it('still sees the hunks when a textconv driver is attached through info/attributes', () => {
     const repo = armedRepo();
     writeFileSync(join(repo, '.git', 'info', 'attributes'), '* diff=pwn\n');

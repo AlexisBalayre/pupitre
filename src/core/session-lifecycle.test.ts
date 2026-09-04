@@ -297,6 +297,7 @@ describe('launchTask scope-conflict guard', () => {
     const overlap = listEvents(db, launch(true)).find((e) => e.type === 'scope_overlap');
 
     expect(JSON.parse(overlap?.payload ?? '{}')).toEqual({
+      via: 'operator',
       accepted: [{ session: 's-held', files: ['src/core/github.client.ts'] }],
     });
   });
@@ -345,6 +346,41 @@ describe('launchTask scope-conflict guard', () => {
     seedHolder();
 
     expect(launch).toThrow(InvalidProfileError);
+  });
+
+  // `createSession` admits before the row exists and cannot refuse after, so a
+  // holder that appears between its read and `launchTask`'s is recorded — but
+  // as raced, not as something the operator accepted (decision 41).
+  it('records a holder that raced in as raced, not as operator-accepted', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+
+    const sessionId = launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+      allowOverlap: true,
+      overlapVia: 'raced',
+    });
+
+    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
+    expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('raced');
+  });
+
+  it('records the operator as the one who waved an overlap through `pup new`', () => {
+    seedHolder();
+
+    const sessionId = createSession(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      task: spec(),
+      claudeUserDir: join(repo, '.claude'),
+      allowOverlap: true,
+    });
+
+    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
+    expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('operator');
   });
 
   it('records nothing when there was no conflict to allow', () => {

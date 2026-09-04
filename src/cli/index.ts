@@ -624,7 +624,7 @@ export function buildProgram(): Command {
           }
           for (const pair of pairs) {
             console.log(
-              `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files.join(', ')}`,
+              `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${sanitizeReason(pair.files.join(', '))}`,
             );
           }
           for (const s of stalled) {
@@ -748,7 +748,7 @@ export function buildProgram(): Command {
       for (const f of detail.files) {
         const added = f.added === null ? '-' : `+${f.added}`;
         const deleted = f.deleted === null ? '-' : `-${f.deleted}`;
-        console.log(`  ${added.padStart(6)} ${deleted.padStart(6)}  ${f.path}`);
+        console.log(`  ${added.padStart(6)} ${deleted.padStart(6)}  ${sanitizeReason(f.path)}`);
       }
       if (detail.lastGateReport) {
         console.log('last gate report:');
@@ -974,7 +974,9 @@ export function buildProgram(): Command {
         console.log(`  ${record.summary}`);
         if (record.alternatives) console.log(`  alternatives: ${record.alternatives}`);
         if (record.conventions) console.log(`  conventions: ${record.conventions}`);
-        console.log(`  files: ${(JSON.parse(record.files) as string[]).join(', ')}`);
+        console.log(
+          `  files: ${sanitizeReason((JSON.parse(record.files) as string[]).join(', '))}`,
+        );
       }
     });
   program
