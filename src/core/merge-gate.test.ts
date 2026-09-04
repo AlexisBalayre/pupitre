@@ -44,6 +44,7 @@ import {
   incrementRejectCount,
   insertSession,
   insertTask,
+  listBacklogTasks,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
@@ -168,13 +169,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('merged');
     expect(sh(repo, 'git', 'log', '--oneline', 'main')).toContain('edit src/feature.ts');
     expect(getSession(db, SESSION_ID)?.state).toBe('merged');
-    expect(
-      (
-        db.prepare('SELECT status FROM tasks WHERE id = ?').get(`task-${SESSION_ID}`) as {
-          status: string;
-        }
-      ).status,
-    ).toBe('done');
+    // A merged session claims its task, so the task leaves the backlog without
+    // anything writing a second copy of that fact (decision 40).
+    expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
     expect(killSession).toHaveBeenCalledWith(SESSION_ID);
     expect(existsSync(worktree)).toBe(false);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');

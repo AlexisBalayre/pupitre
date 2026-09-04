@@ -26,7 +26,9 @@ vi.mock('../core/merge-gate.service.js', () => ({
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
   killSession: vi.fn(),
+  launchTask: vi.fn(),
   markSessionDone: vi.fn(),
+  planTask: vi.fn(),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
@@ -46,8 +48,10 @@ import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import {
   ensureProject,
+  getTask,
   insertSession,
   insertTask,
+  listBacklogTasks,
   transitionSession,
 } from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
@@ -59,7 +63,14 @@ import {
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
+import { UnknownTaskError } from '../core/session-lifecycle.errors.js';
+import {
+  createSession,
+  killSession,
+  launchTask,
+  markSessionDone,
+  planTask,
+} from '../core/session-lifecycle.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
@@ -313,6 +324,165 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('plan', () => {
+    it('records a task without launching anything', () => {
+      useCwd(initRepo());
+      vi.mocked(planTask).mockReturnValue('t-abc');
+
+      buildProgram().parse(
+        ['plan', 'add', 'extract the gh options', '--scope', 'src/core/github.client.ts'],
+        { from: 'user' },
+      );
+
+      expect(planTask).toHaveBeenCalledTimes(1);
+      const [, request] = firstCall(planTask);
+      expect(request).toMatchObject({
+        task: {
+          goal: 'extract the gh options',
+          scopeIn: ['src/core/github.client.ts'],
+          acceptance: ['goal met and committed'],
+        },
+      });
+      expect(createSession).not.toHaveBeenCalled();
+      expect(logs).toContain('Planned t-abc. Launch it with `pup launch t-abc`.');
+    });
+
+    it('refuses to add without a scope', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['plan', 'add', 'no scope given'], { from: 'user' });
+
+      expect(planTask).not.toHaveBeenCalled();
+      expect(errors).toContain('Usage: pup plan add "<goal>" --scope <glob...>');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('lists the backlog, and says so when it is empty', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      buildProgram().parse(['plan'], { from: 'user' });
+      expect(logs.join('\n')).toContain('Backlog empty.');
+
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-1',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({ goal: 'sharpen the thing', scopeIn: ['src/**'] }),
+      });
+
+      buildProgram().parse(['plan'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('t-1');
+      expect(logs.join('\n')).toContain('sharpen the thing');
+      expect(logs.join('\n')).toContain('src/**');
+    });
+
+    it('drops a planned task, and reports one it cannot drop', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, { id: 't-1', projectId: projectId(repoPath), spec: '{}' });
+
+      buildProgram().parse(['plan', 'drop', 't-1'], { from: 'user' });
+      expect(logs).toContain('Dropped t-1.');
+      expect(listBacklogTasks(db, projectId(repoPath))).toEqual([]);
+
+      buildProgram().parse(['plan', 'drop', 't-1'], { from: 'user' });
+      expect(errors.join('\n')).toContain('No planned task t-1');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('edits only the fields it is given', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-1',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({
+          id: 't-1',
+          goal: 'first thought',
+          scopeIn: ['src/**'],
+          acceptance: ['tests pass'],
+        }),
+      });
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--goal', 'sharper thought'], { from: 'user' });
+
+      expect(logs).toContain('Updated t-1.');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}')).toEqual({
+        id: 't-1',
+        goal: 'sharper thought',
+        scopeIn: ['src/**'],
+        acceptance: ['tests pass'],
+      });
+    });
+
+    // A spec a session writes becomes a later session's kickoff prompt verbatim
+    // and the hook allowlist the gate audits against, so authoring one is prompt
+    // injection carrying the operator's attribution (decisions 26, 40).
+    it.each(['add', 'drop', 'edit'])('refuses `plan %s` when a session is calling', (verb) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['plan', verb, 't-1', '--scope', 'src/**'], { from: 'user' });
+
+      expect(planTask).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain('operator-only');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('still lists the backlog for a session, which reads nothing it wrote', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['plan'], { from: 'user' });
+
+      expect(errors.join('\n')).not.toContain('operator-only');
+    });
+
+    it('rejects an unknown action', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['plan', 'sprint'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('Unknown plan action');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('launch', () => {
+    it('starts a session for a task already in the backlog', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--model', 'opus'], { from: 'user' });
+
+      const [, request] = firstCall(launchTask);
+      expect(request).toMatchObject({ taskId: 't-abc', model: 'opus', base: DEFAULT_BASE_PROFILE });
+      expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
+    });
+
+    it('reports an unknown task and exits 1 rather than throwing', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new UnknownTaskError('t-nope');
+      });
+
+      buildProgram().parse(['launch', 't-nope'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('No task t-nope');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('new', () => {
     it('requires --scope', () => {
       useCwd(initRepo());
@@ -357,6 +527,21 @@ describe('CLI commands', () => {
       expect(request.task.id as string).toMatch(/^t-/);
       expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
       expect(logs).toContain('Attach with: tmux attach -t pup-t-abc-0');
+    });
+
+    // `pup new` is `plan add` plus a launch, so guarding only the newer command
+    // would leave the same capability open under an older name (decision 40).
+    it('is operator-only; a session cannot author a spec through it either', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain('operator-only');
+      expect(process.exitCode).toBe(1);
     });
 
     it('defaults acceptance criteria when --accept is omitted', () => {

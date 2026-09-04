@@ -8,6 +8,7 @@ import type { Database } from 'better-sqlite3';
 import { Command, CommanderError } from 'commander';
 import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
   interruptSession,
   killWatcher,
@@ -16,7 +17,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
-import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from '../core/code-map.service.js';
+import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import {
   deleteDecisionRecord,
   getDecisionRecord,
@@ -43,10 +44,14 @@ import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   appendEvent,
+  deleteTask,
   findSessionByWorktree,
   getSession,
+  getTask,
+  listBacklogTasks,
   listSessions,
   type SessionRow,
+  updateTaskSpec,
 } from '../core/session.repository.js';
 import {
   classifySessionActivity,
@@ -64,8 +69,16 @@ import {
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import { createSession, killSession, markSessionDone } from '../core/session-lifecycle.service.js';
+import { TaskAlreadyClaimedError, UnknownTaskError } from '../core/session-lifecycle.errors.js';
+import {
+  createSession,
+  killSession,
+  launchTask,
+  markSessionDone,
+  planTask,
+} from '../core/session-lifecycle.service.js';
 import { isTerminal } from '../core/session-state.utils.js';
+import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -204,6 +217,27 @@ const GATE_ENV_DESCRIPTION =
  * directly, so both the entry point and tests observe them as thrown
  * CommanderErrors.
  */
+/**
+ * The session running this command, if any — worktree first, then the env var
+ * it declares, which counts only when it names a session that exists. Best
+ * effort against a determined session, which can `cd` out of its worktree; it
+ * makes the audit trail honest, not tamper-proof (decisions 26, 27).
+ */
+function callingSession(db: Database): string | undefined {
+  const declared = process.env.PUP_SESSION_ID;
+  return (
+    findSessionByWorktree(db, process.cwd())?.id ??
+    (declared && getSession(db, declared) ? declared : undefined)
+  );
+}
+
+interface PlanOptions {
+  scope?: string[];
+  scopeOut?: string[];
+  accept?: string[];
+  goal?: string;
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program
@@ -237,10 +271,18 @@ export function buildProgram(): Command {
     .requiredOption('--scope <glob...>', 'scope-in globs the session may edit')
     .option('--scope-out <glob...>', 'globs the session must not edit')
     .option('--accept <criterion...>', 'acceptance criteria')
-    .option('--role <role>', 'role layer name (informational for now)')
     .option('--model <model>', 'claude model for the session')
     .action((goal: string, opts: Record<string, string[] | string | undefined>) => {
       const { repoPath, db } = resolveProject();
+      // `pup new` is `pup plan add` plus a launch, so it carries the same rule:
+      // a session authoring a spec writes a later session's kickoff prompt and
+      // the hook allowlist the gate audits against, and would also mint itself a
+      // fresh session past decision 7's reject cap (decisions 26, 40).
+      if (callingSession(db)) {
+        console.error('`pup new` is operator-only; sessions cannot author task specs.');
+        process.exitCode = 1;
+        return;
+      }
       const task: TaskSpec = {
         id: `t-${Date.now().toString(36)}` as TaskId,
         goal,
@@ -248,15 +290,6 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
-      // Best-effort: a broken or unavailable map must never block a session launch.
-      try {
-        const [adapter] = detectAdapters(repoPath);
-        if (!adapter) throw new Error('no adapter detected');
-        const map = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
-        task.knowledgeSlice = buildKnowledgeSlice(map, task.scopeIn) || undefined;
-      } catch {
-        task.knowledgeSlice = undefined;
-      }
       const sessionId = createSession(db, {
         repoPath,
         base: DEFAULT_BASE_PROFILE,
@@ -264,6 +297,163 @@ export function buildProgram(): Command {
         claudeUserDir: join(homedir(), '.claude'),
         model: opts.model as string | undefined,
       });
+      console.log(`Launched session ${sessionId} (tmux: pup-${sessionId}).`);
+      console.log(`Attach with: tmux attach -t pup-${sessionId}`);
+    });
+
+  program
+    .command('plan [action] [target]')
+    .description('Backlog of tasks with no session yet (list|add|drop|edit)')
+    .option('--scope <glob...>', 'scope-in globs the task may edit')
+    .option('--scope-out <glob...>', 'globs the task must not edit')
+    .option('--accept <criterion...>', 'acceptance criteria')
+    .option('--goal <goal>', 'replacement goal (edit)')
+    .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
+      const { repoPath, db } = resolveProject();
+      const verb = action ?? 'list';
+      // Writing a spec is operator-only: `goal` becomes a later session's
+      // kickoff prompt verbatim and `scopeIn` becomes the hook allowlist the
+      // gate audits against, so a session authoring one is prompt injection
+      // with the operator's attribution on it (decision 26's rule, decision 40).
+      if (verb !== 'list' && callingSession(db)) {
+        console.error(`\`pup plan ${verb}\` is operator-only; sessions cannot author task specs.`);
+        process.exitCode = 1;
+        return;
+      }
+      switch (verb) {
+        case 'list': {
+          const backlog = listBacklogTasks(db, projectId(repoPath));
+          if (backlog.length === 0) {
+            console.log('Backlog empty. Add one with `pup plan add "<goal>" --scope <glob>`.');
+            return;
+          }
+          for (const row of backlog) {
+            const spec = JSON.parse(row.spec) as TaskSpec;
+            const goal = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
+            const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
+            console.log(`${row.id.padEnd(14)}${goal.padEnd(44)}${scope}`);
+          }
+          return;
+        }
+        case 'add': {
+          if (!target || !opts.scope) {
+            console.error('Usage: pup plan add "<goal>" --scope <glob...>');
+            process.exitCode = 1;
+            return;
+          }
+          let id: string;
+          try {
+            id = planTask(db, {
+              repoPath,
+              task: {
+                id: `t-${Date.now().toString(36)}` as TaskId,
+                goal: target,
+                scopeIn: opts.scope,
+                scopeOut: opts.scopeOut,
+                acceptance: opts.accept ?? ['goal met and committed'],
+              },
+            });
+          } catch (error) {
+            if (!(error instanceof InvalidProfileError)) throw error;
+            console.error(error.message);
+            process.exitCode = 1;
+            return;
+          }
+          console.log(`Planned ${id}. Launch it with \`pup launch ${id}\`.`);
+          return;
+        }
+        case 'drop': {
+          if (!target) {
+            console.error('Usage: pup plan drop <task>');
+            process.exitCode = 1;
+            return;
+          }
+          if (!deleteTask(db, target)) {
+            console.error(`No planned task ${target} (a session may already have claimed it).`);
+            process.exitCode = 1;
+            return;
+          }
+          console.log(`Dropped ${target}.`);
+          return;
+        }
+        case 'edit': {
+          if (!target) {
+            console.error('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
+            process.exitCode = 1;
+            return;
+          }
+          const row = getTask(db, target);
+          if (!row) {
+            console.error(`No task ${target}.`);
+            process.exitCode = 1;
+            return;
+          }
+          const spec = JSON.parse(row.spec) as TaskSpec;
+          const edited: TaskSpec = {
+            ...spec,
+            goal: opts.goal ?? spec.goal,
+            scopeIn: opts.scope ?? spec.scopeIn ?? [],
+            scopeOut: opts.scopeOut ?? spec.scopeOut,
+            acceptance: opts.accept ?? spec.acceptance,
+          };
+          // The only `UPDATE tasks SET spec` there is, so it runs exactly the
+          // validation `plan add` runs — otherwise edit could store a spec add
+          // would have refused, and the failure would surface at launch.
+          try {
+            assertPlannableSpec(edited);
+          } catch (error) {
+            if (!(error instanceof InvalidProfileError)) throw error;
+            console.error(error.message);
+            process.exitCode = 1;
+            return;
+          }
+          if (!updateTaskSpec(db, target, JSON.stringify(edited))) {
+            console.error(`Task ${target} is already claimed by a session; its spec is frozen.`);
+            process.exitCode = 1;
+            return;
+          }
+          console.log(`Updated ${target}.`);
+          return;
+        }
+        default:
+          console.error(`Unknown plan action \`${action}\` (expected list|add|drop|edit).`);
+          process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('launch <task>')
+    .description('Start a session for a task already in the backlog')
+    .option('--model <model>', 'claude model for the session')
+    .action((taskId: string, opts: { model?: string }) => {
+      const { repoPath, db } = resolveProject();
+      const planned = getTask(db, taskId);
+      if (planned) {
+        const spec = JSON.parse(planned.spec) as TaskSpec;
+        console.log(`goal: ${sanitizeReason(spec.goal ?? '')}`);
+        console.log(`scope-in: ${sanitizeReason((spec.scopeIn ?? []).join(', '))}`);
+      }
+      let sessionId: string;
+      try {
+        sessionId = launchTask(db, {
+          repoPath,
+          base: DEFAULT_BASE_PROFILE,
+          taskId,
+          claudeUserDir: join(homedir(), '.claude'),
+          model: opts.model,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof UnknownTaskError) &&
+          !(error instanceof TaskAlreadyClaimedError) &&
+          !(error instanceof InvalidProfileError)
+        ) {
+          throw error;
+        }
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
       console.log(`Launched session ${sessionId} (tmux: pup-${sessionId}).`);
       console.log(`Attach with: tmux attach -t pup-${sessionId}`);
     });
@@ -565,10 +755,7 @@ export function buildProgram(): Command {
         // this makes the audit trail honest, not tamper-proof (decision 27). The
         // env var only counts when it names a session that exists, so it cannot
         // write arbitrary text into the ledger's acceptor column.
-        const declaredSession = process.env.PUP_SESSION_ID;
-        const caller =
-          findSessionByWorktree(db, process.cwd())?.id ??
-          (declaredSession && getSession(db, declaredSession) ? declaredSession : undefined);
+        const caller = callingSession(db);
         if (opts.pr && caller) {
           console.error('`pup merge --pr` is operator-only; sessions cannot open pull requests.');
           process.exitCode = 1;

@@ -38,7 +38,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   project_id TEXT NOT NULL REFERENCES projects(id),
   spec TEXT NOT NULL,
   role TEXT,
-  status TEXT NOT NULL DEFAULT 'open',
   origin TEXT NOT NULL DEFAULT 'human' CHECK (origin IN ('human', 'audit', 'rejection')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -115,18 +114,43 @@ CREATE INDEX IF NOT EXISTS idx_baseline_history_captured ON baseline_history(pro
 `;
 
 /** Additive columns missing from stores created before the column existed. */
-const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+/** `add` runs when the column is absent, `drop` when it is still present. */
+const MIGRATIONS: { table: string; column: string; kind: 'add' | 'drop'; ddl: string }[] = [
   {
     table: 'decision_records',
     column: 'files',
+    kind: 'add',
     ddl: "ALTER TABLE decision_records ADD COLUMN files TEXT NOT NULL DEFAULT '[]'",
+  },
+  {
+    // Written on every insert and on merge, read by nothing. The backlog asks
+    // the sessions table instead, so a second copy of session state could only
+    // drift (decision 40).
+    table: 'tasks',
+    column: 'status',
+    kind: 'drop',
+    ddl: 'ALTER TABLE tasks DROP COLUMN status',
   },
 ];
 
 function applyMigrations(db: Database.Database): void {
   for (const migration of MIGRATIONS) {
     const columns = db.pragma(`table_info(${migration.table})`) as { name: string }[];
-    if (!columns.some((c) => c.name === migration.column)) db.exec(migration.ddl);
+    const present = columns.some((c) => c.name === migration.column);
+    if (present !== (migration.kind === 'drop')) continue;
+    if (migration.kind === 'add') {
+      db.exec(migration.ddl);
+      continue;
+    }
+    // A drop is a table rewrite, so it can fail on a lock held by a concurrent
+    // pup, or on a user-added index over the column. Nothing reads a dropped
+    // column, so leaving it costs nothing — whereas throwing here would make
+    // `openStore` fail and take every pup command with it.
+    try {
+      db.exec(migration.ddl);
+    } catch {
+      // Retried on the next open.
+    }
   }
 }
 
