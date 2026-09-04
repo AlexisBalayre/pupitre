@@ -213,6 +213,23 @@ function resolveLiveSession(db: Database, session: string, verb: string): Sessio
 const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
+/**
+ * Width of the goal column in `pup plan` and `pup status`. Goals run to a
+ * paragraph (decision 41's own backlog entries are 400+ chars), so the column
+ * clips rather than pads: an unclipped goal pushed the scope column off the
+ * row on the first real backlog this rendered.
+ */
+const GOAL_COLUMN_CHARS = 44;
+
+/** One terminal-safe line of a task's goal, fitted to the goal column. */
+function goalHeadline(spec: TaskSpec): string {
+  const line = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
+  const chars = [...line];
+  return chars.length > GOAL_COLUMN_CHARS
+    ? `${chars.slice(0, GOAL_COLUMN_CHARS - 1).join('')}\u2026`
+    : line.padEnd(GOAL_COLUMN_CHARS);
+}
+
 const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
@@ -346,9 +363,8 @@ export function buildProgram(): Command {
           }
           for (const row of backlog) {
             const spec = JSON.parse(row.spec) as TaskSpec;
-            const goal = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
-            console.log(`${row.id.padEnd(14)}${goal.padEnd(44)}${scope}`);
+            console.log(`${row.id.padEnd(14)}${goalHeadline(spec)}  ${scope}`);
           }
           return;
         }
@@ -530,8 +546,7 @@ export function buildProgram(): Command {
       // (decision 41).
       for (const row of backlog) {
         const spec = JSON.parse(row.spec) as TaskSpec;
-        const goal = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
-        console.log(`${'planned'.padEnd(16)} ${row.id.padEnd(28)} ${goal}`);
+        console.log(`${'planned'.padEnd(16)} ${row.id.padEnd(28)} ${goalHeadline(spec)}`);
       }
       printConflictRadar(db, repoPath, rows);
     });

@@ -253,6 +253,18 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).toMatch(/planned\s+t-plan\s+extract the gh exec options/);
     });
 
+    // A goal is a paragraph; unclipped, it pushed the scope column off the row
+    // on the first real backlog this rendered.
+    it('clips a long goal to the column instead of letting it run', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBacklogTask(repo, 't-long', 'x'.repeat(120));
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).toMatch(/t-long\s+x{43}\u2026$/m);
+    });
+
     it('shows planned work even when the project has never run a session', () => {
       const repo = initRepo();
       useCwd(repo);
