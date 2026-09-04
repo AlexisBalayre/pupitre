@@ -11,7 +11,9 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
 - `pup launch <task>` — compile a profile, create the worktree and branch, and start a session for
   a task already in the backlog. Refuses when the task's scope-in claims tracked files a live
   session's scope already claims, naming the session and the shared files; `--allow-overlap`
-  launches anyway and records what it waved through (decision 41).
+  launches anyway and records what it waved through (decision 41). Operator-only: refused when
+  run from inside a session, like `pup new`, `pup plan add|drop|edit` and `pup merge --pr`
+  (decisions 26, 42).
 - `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path. Takes
   `--allow-overlap` for the same reason `pup launch` does.
 - `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
@@ -19,7 +21,8 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
 - `pup steer <session> "<message>"` — inject a correction into a running session.
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
 - `pup kill <session> [--respawn]` — stop; `--respawn` relaunches on a fresh context window. A
-  killed session's task returns to the backlog, so `pup launch` can retry it.
+  killed session's task returns to the backlog, so `pup launch` can retry it. Operator-only for
+  the same reason `pup launch` is: killing releases the holder's scope (decision 42).
 
 ## Review and merge
 

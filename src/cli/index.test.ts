@@ -574,32 +574,26 @@ describe('CLI commands', () => {
       expect(firstCall(launchTask)[1]).toMatchObject({ allowOverlap: true });
     });
 
-    // Waving off a collision with another session is a considered override, so
-    // it belongs to whoever answers for it — the rule that keeps `--pr` and
-    // spec authoring operator-only (decisions 26, 41).
-    it('refuses --allow-overlap when a session is calling', () => {
-      const repo = initRepo();
-      useCwd(repo);
-      seedSession(repo, 's1');
-      vi.stubEnv('PUP_SESSION_ID', 's1');
-
-      buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
-
-      expect(launchTask).not.toHaveBeenCalled();
-      expect(errors.join('\n')).toContain('operator-only');
-      expect(process.exitCode).toBe(1);
-    });
-
-    it('still launches for a session when no overlap is being waved off', () => {
+    // Guarding only `--allow-overlap` left the command open: a session could
+    // kill the holder of a scope and launch a conflicting task plainly, so the
+    // whole command is operator-only by the rule that keeps `--pr` and spec
+    // authoring so (decisions 26, 42).
+    it.each([
+      ['', []],
+      [' --allow-overlap', ['--allow-overlap']],
+    ])('refuses `launch%s` when a session is calling', (_label, flags) => {
       const repo = initRepo();
       useCwd(repo);
       seedSession(repo, 's1');
       vi.stubEnv('PUP_SESSION_ID', 's1');
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
 
-      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+      buildProgram().parse(['launch', 't-abc', ...flags], { from: 'user' });
 
-      expect(errors.join('\n')).not.toContain('operator-only');
+      expect(launchTask).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup launch` is operator-only; sessions cannot launch sessions.']);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
     });
   });
 
@@ -862,6 +856,28 @@ describe('CLI commands', () => {
       expect(errors).toEqual(['worktree is dirty']);
       expect(process.exitCode).toBe(1);
       expect(logs).toEqual([]);
+    });
+
+    // `killed` releases the scope and returns the task to the backlog (decision
+    // 40), so an open `kill` let a session clear the way for any launch; the
+    // guard covers `--respawn` too, the same authority over another window
+    // (decisions 26, 42).
+    it.each([
+      ['', []],
+      [' --respawn', ['--respawn']],
+    ])('refuses `kill%s` when a session is calling', (_label, flags) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['kill', 's2', ...flags], { from: 'user' });
+
+      expect(killSession).not.toHaveBeenCalled();
+      expect(hardRespawnSession).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup kill` is operator-only; sessions cannot kill sessions.']);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
     });
   });
 
