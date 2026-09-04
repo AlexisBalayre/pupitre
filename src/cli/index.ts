@@ -469,11 +469,13 @@ export function buildProgram(): Command {
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .action((taskId: string, opts: { model?: string; allowOverlap?: boolean }) => {
       const { repoPath, db } = resolveProject();
-      // Waving a scope conflict through is a considered override, so it belongs
-      // to whoever answers for the collision — the same rule that keeps `--pr`
-      // and spec authoring operator-only (decisions 26, 41).
-      if (opts.allowOverlap && callingSession(db)) {
-        console.error('`--allow-overlap` is operator-only; sessions cannot wave off a conflict.');
+      // Admitting work belongs to whoever answers for the collision it may
+      // cause. Guarding only `--allow-overlap` left the command itself open, so
+      // a session could kill the holder of a scope and launch a conflicting
+      // task plainly — the same rule and detection that keep `--pr` and spec
+      // authoring operator-only (decisions 26, 42).
+      if (callingSession(db)) {
+        console.error('`pup launch` is operator-only; sessions cannot launch sessions.');
         process.exitCode = 1;
         return;
       }
@@ -696,6 +698,15 @@ export function buildProgram(): Command {
     .option('--respawn', 'kill the window but relaunch the session fresh, no handoff')
     .action((session: string, opts: { respawn?: boolean }) => {
       const { repoPath, db } = resolveProject();
+      // `killed` releases the session's scope and returns its task to the
+      // backlog (decision 40), so a session that could kill could clear the
+      // way for any launch; `--respawn` is the same authority over another
+      // session's window (decisions 26, 42).
+      if (callingSession(db)) {
+        console.error('`pup kill` is operator-only; sessions cannot kill sessions.');
+        process.exitCode = 1;
+        return;
+      }
       if (opts.respawn) {
         try {
           hardRespawnSession(db, repoPath, session);
