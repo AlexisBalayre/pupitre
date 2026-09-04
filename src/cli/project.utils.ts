@@ -39,12 +39,18 @@ const INIT_HINT = 'run pup init from the repo you want to control.';
  * Resolve the main repo path from the current directory, even inside a
  * worktree. stderr is captured, not echoed: outside a repo git's own "fatal:
  * not a git repository" is the expected outcome, and pup speaks for it.
+ * `LC_ALL=C` keeps that message in English so `enclosingRepoRoot` can
+ * recognise it under a translated git.
  */
 function repoRoot(cwd: string): string {
   const commonDir = execFileSync(
     'git',
     [...GIT_SAFE_CONFIG, '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-    { encoding: 'utf8', env: scrubbedGitEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      encoding: 'utf8',
+      env: { ...scrubbedGitEnv(), LC_ALL: 'C' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
   ).trim();
   return commonDir.replace(/\/\.git\/?$/, '');
 }

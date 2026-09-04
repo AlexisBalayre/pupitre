@@ -1195,6 +1195,8 @@ if (isMainModule()) {
   try {
     buildProgram().parse();
   } catch (error) {
-    process.exit(fatalExitCode(error));
+    // exitCode, not exit(): when stderr is a pipe the write is asynchronous
+    // and exit() would drop the one line that explains the failure.
+    process.exitCode = fatalExitCode(error);
   }
 }
