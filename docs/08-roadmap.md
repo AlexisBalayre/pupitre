@@ -60,7 +60,10 @@ Definition of done: run three parallel sessions on a real repo for a week withou
     closed, and every `review_by` is prose, so nothing computes as overdue.
   - **Live/queued sessions render empty** for the same reason: sessions are
     terminal once merged. A report opening on live state is blank most of the time
-    it is opened, while 13 merged sessions of history go unshown.
+    it is opened, while 13 merged sessions of history go unshown. Resolved twice
+    over: the shipped report renders every session, newest first, and decisions 40
+    and 41 gave the section something to hold before a session exists — the
+    backlog, which `pup status` lists too.
 
   Two hazards for whoever builds it: reuse the mind-map's escaping idiom verbatim
   (JSON in a script tag with `<` escaped, everything injected via `textContent`) —

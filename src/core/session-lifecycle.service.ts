@@ -10,7 +10,8 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
-import { scrubbedGitEnv } from './git-diff.client.js';
+import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { scopeConflicts } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   compileProfile,
@@ -27,7 +28,11 @@ import {
   insertTask,
   transitionSession,
 } from './session.repository.js';
-import { TaskAlreadyClaimedError, UnknownTaskError } from './session-lifecycle.errors.js';
+import {
+  ScopeConflictError,
+  TaskAlreadyClaimedError,
+  UnknownTaskError,
+} from './session-lifecycle.errors.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { SessionId, TaskId, TaskSpec } from './types/profile.types.js';
 import type {
@@ -46,7 +51,7 @@ function git(repoPath: string, ...args: string[]): string {
   // Hooks off and the GIT_DIR family scrubbed: `worktree add` fires
   // post-checkout, and a hook planted by an earlier session lives in the shared
   // common dir, untracked (decision 28).
-  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', repoPath, ...args], {
+  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repoPath, ...args], {
     encoding: 'utf8',
     env: scrubbedGitEnv(),
   }).trim();
@@ -96,8 +101,32 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   // drifted would compile one task's hooks under another task's session row,
   // leaving the gate auditing a different spec than the hooks enforce.
   const task: TaskSpec = { ...(JSON.parse(row.spec) as TaskSpec), id: row.id as TaskId };
+  // The conflict check is now the first thing to read a stored spec's globs, so
+  // it runs after the same validation `pup plan add` did. A row written before
+  // that validation existed would otherwise reach `scopedPaths` with no
+  // `scopeIn` and throw a bare TypeError, where `compileProfile` used to raise
+  // a legible InvalidProfileError.
+  assertPlannableSpec(task);
+  // Admission control, not a report: the radar notices two sessions in one file
+  // 15 seconds after both are already editing it, which is too late to be a
+  // decision. Measured before the worktree exists so a refusal costs nothing,
+  // and always measured, so `--allow-overlap` records what it waved through
+  // rather than skipping the question (decision 41).
+  const conflicts = scopeConflicts(db, req.repoPath, task.scopeIn, task.scopeOut);
+  if (conflicts.length > 0 && !req.allowOverlap) {
+    throw new ScopeConflictError(row.id, conflicts);
+  }
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
-  return startSession(db, { ...req, task });
+  const sessionId = startSession(db, { ...req, task });
+  if (conflicts.length > 0) {
+    appendEvent(db, sessionId, 'scope_overlap', {
+      accepted: conflicts.map((conflict) => ({
+        session: conflict.sessionId,
+        files: conflict.files,
+      })),
+    });
+  }
+  return sessionId;
 }
 
 /**
@@ -105,6 +134,15 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
  * from the operator's side. Returns the created session id.
  */
 export function createSession(db: Database, req: NewSessionRequest): string {
+  // Asked before the row is written, not only inside `launchTask`. A refusal
+  // costs an operator nothing on `pup launch`, where the task already existed,
+  // but here it would leave the spec they just abandoned sitting in the backlog
+  // — unclaimed, attributed to them, and launchable by any session, since
+  // `pup launch` is not operator-only (decision 41).
+  const conflicts = scopeConflicts(db, req.repoPath, req.task.scopeIn, req.task.scopeOut);
+  if (conflicts.length > 0 && !req.allowOverlap) {
+    throw new ScopeConflictError(req.task.id, conflicts);
+  }
   planTask(db, req);
   return launchTask(db, { ...req, taskId: req.task.id });
 }

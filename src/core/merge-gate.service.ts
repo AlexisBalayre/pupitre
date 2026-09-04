@@ -8,6 +8,7 @@ import { killSession as killTmux, steerSession } from '../claude/session-runtime
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
+  GIT_SAFE_CONFIG,
   gitDiffAddedLines,
   gitDiffNumstat,
   gitDiffPaths,
@@ -65,7 +66,7 @@ import type { TaskSpec } from './types/profile.types.js';
  * session-written `.git/config` (decision 28).
  */
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-C', cwd, ...args], {
+  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
     encoding: 'utf8',
     env: scrubbedGitEnv(),
   }).trim();

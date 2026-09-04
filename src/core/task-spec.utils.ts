@@ -15,7 +15,10 @@ const GLOB_UNSAFE = /[\r\n\0]/;
  * newline inside a glob would turn the Edit/Write hook into allow-all.
  */
 export function assertPlannableSpec(task: TaskSpec): void {
-  if (task.scopeIn.filter((glob) => glob.trim()).length === 0) {
+  // `?? []` because this now also runs over specs read back from the store,
+  // where a row written before this validation existed can be missing `scopeIn`
+  // entirely — the same refusal covers it, rather than a bare TypeError.
+  if ((task.scopeIn ?? []).filter((glob) => glob.trim()).length === 0) {
     throw new InvalidProfileError(
       'Task scope-in is empty; a session with no scope can edit nothing.',
     );

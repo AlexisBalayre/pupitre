@@ -1,6 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
-import { gitDiffNumstat, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
+import {
+  GIT_SAFE_CONFIG,
+  gitDiffNumstat,
+  gitDiffPaths,
+  scrubbedGitEnv,
+} from './git-diff.client.js';
 import { countChangedLines } from './merge-gate.service.js';
 import {
   RISK_WEIGHT_OVERLAP,
@@ -14,10 +19,14 @@ import type { TaskSpec } from './types/profile.types.js';
 import type { ReviewQueueEntry, SessionReviewDetail } from './types/review.types.js';
 
 function targetBranch(repoPath: string): string {
-  const target = execFileSync('git', ['-C', repoPath, 'branch', '--show-current'], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
-  }).trim();
+  const target = execFileSync(
+    'git',
+    [...GIT_SAFE_CONFIG, '-C', repoPath, 'branch', '--show-current'],
+    {
+      encoding: 'utf8',
+      env: scrubbedGitEnv(),
+    },
+  ).trim();
   if (!target) throw new Error(`Main worktree at ${repoPath} is not on a branch.`);
   return target;
 }

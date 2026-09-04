@@ -14,8 +14,21 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !scrubbed.includes(key)));
 }
 
+/**
+ * The config every pup git call overrides, the argv half of `scrubbedGitEnv`.
+ * Linked worktrees share `$GIT_COMMON_DIR/config` and `.git/**` is untracked,
+ * so a session can set either of these keys without the scope hooks or the
+ * gate seeing it, and the operator's next git call would run what it names.
+ *
+ * `core.hooksPath` is decision 28's. `core.fsmonitor` is a second command git
+ * runs on any index read and `hooksPath` does not cover it: verified against
+ * Apple Git 2.39.5, where a plain `git ls-files` executes it, `-c
+ * core.hooksPath=/dev/null` still executes it, and only clearing it does not.
+ */
+export const GIT_SAFE_CONFIG = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor='] as const;
+
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', cwd, ...args], {
+  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
     encoding: 'utf8',
     env: scrubbedGitEnv(),
   }).trim();

@@ -14,7 +14,13 @@ import {
   parseJsonOr,
   toIsoUtc,
 } from './report-data.utils.js';
-import { listEvents, listSessions, listTasks, type SessionRow } from './session.repository.js';
+import {
+  listBacklogTasks,
+  listEvents,
+  listSessions,
+  listTasks,
+  type SessionRow,
+} from './session.repository.js';
 import { dossierFileName } from './session-dossier.service.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { GateReport } from './types/merge-gate.types.js';
@@ -32,6 +38,19 @@ export function renderReportHtml(db: Database, repoPath: string): string {
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const data = {
     repoPath,
+    // Oldest first, the order `pup plan` lists them in: the backlog is a queue,
+    // and the thing waiting longest is the one to answer for (decision 41).
+    backlog: listBacklogTasks(db, pid).map((task) => {
+      const spec = parseJsonOr<Partial<TaskSpec>>(task.spec, {});
+      return {
+        id: displayText(task.id),
+        goal: typeof spec.goal === 'string' ? displayText(spec.goal) : '',
+        scopeIn: asStringArray(spec.scopeIn).map(displayText),
+        scopeOut: asStringArray(spec.scopeOut).map(displayText),
+        origin: displayText(task.origin),
+        createdAt: toIsoUtc(task.created_at),
+      };
+    }),
     // Newest first: the latest session is what the reader came for. A session
     // whose task row is missing still renders (the client shows its no-goal
     // copy) — vanishing without trace would be the wrong failure mode.
@@ -115,6 +134,7 @@ ${PAGE_SHELL_CSS}
     padding: 12px 14px; margin-bottom: 10px;
   }
   .sid { font-weight: 600; }
+  .origin { color: var(--muted); font-size: 12px; }
   .sid a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--baseline); }
   .sid a:hover { border-bottom-color: var(--ink-2); }
   .goal-body { margin-top: 8px; white-space: pre-wrap; max-width: 65ch; }
@@ -156,6 +176,10 @@ ${PAGE_SHELL_CSS}
 <header><h1>pup report</h1><span class="repo" id="repo"></span></header>
 <main>
   <section>
+    <h2>Backlog</h2>
+    <div id="backlog-list"></div>
+  </section>
+  <section>
     <h2>Sessions</h2>
     <div id="session-list"></div>
   </section>
@@ -180,6 +204,27 @@ ${PAGE_SHELL_CSS}
   document.getElementById('repo').textContent = data.repoPath;
 
 ${PAGE_SHELL_JS}
+
+  // Backlog — intent that has not run yet, oldest first. Deliberately above
+  // the sessions: a report read to decide what to do next is answered here.
+  const backlog = document.getElementById('backlog-list');
+  if (!data.backlog.length) hint(backlog, 'Nothing planned.');
+  for (const task of data.backlog) {
+    const art = el('article', 'session');
+    art.innerHTML = '<div class="meta"><span class="state"></span><span class="sid"></span>' +
+      '<span class="when"></span><span class="origin"></span></div>';
+    stateChip(art.querySelector('.state'), 'planned');
+    art.querySelector('.sid').textContent = task.id;
+    art.querySelector('.when').textContent = when(task.createdAt);
+    // Only when something other than the operator wrote it — the audit sweep is
+    // the one such author today, and whose intent this is changes how it reads.
+    if (task.origin && task.origin !== 'human') {
+      art.querySelector('.origin').textContent = 'from ' + task.origin;
+    }
+    appendGoal(art, task.goal);
+    appendScope(art, task);
+    backlog.appendChild(art);
+  }
 
   // Sessions — newest first, each with the intent that launched it.
   const sessions = document.getElementById('session-list');
@@ -206,23 +251,7 @@ ${PAGE_SHELL_JS}
         s.rejectCount + (s.rejectCount === 1 ? ' rejection' : ' rejections');
     }
     appendGoal(art, s.goal);
-    if (s.scopeIn.length || s.scopeOut.length) {
-      const scope = el('div', 'scope');
-      const k = el('span', 'k');
-      k.textContent = 'scope';
-      scope.appendChild(k);
-      for (const glob of s.scopeIn) {
-        const c = el('code');
-        c.textContent = glob;
-        scope.appendChild(c);
-      }
-      for (const glob of s.scopeOut) {
-        const c = el('code');
-        c.textContent = 'not ' + glob;
-        scope.appendChild(c);
-      }
-      art.appendChild(scope);
-    }
+    appendScope(art, s);
     const outcome = el('div', 'outcome');
     if (s.doneSummary) {
       const done = el('div', 'done');
@@ -236,6 +265,27 @@ ${PAGE_SHELL_JS}
     }
     if (outcome.childNodes.length) art.appendChild(outcome);
     sessions.appendChild(art);
+  }
+
+  // The scope chips a planned task and a running session both carry — the same
+  // globs mean the same thing before and after a session exists.
+  function appendScope(parent, spec) {
+    if (!spec.scopeIn.length && !spec.scopeOut.length) return;
+    const scope = el('div', 'scope');
+    const k = el('span', 'k');
+    k.textContent = 'scope';
+    scope.appendChild(k);
+    for (const glob of spec.scopeIn) {
+      const c = el('code');
+      c.textContent = glob;
+      scope.appendChild(c);
+    }
+    for (const glob of spec.scopeOut) {
+      const c = el('code');
+      c.textContent = 'not ' + glob;
+      scope.appendChild(c);
+    }
+    parent.appendChild(scope);
   }
 
   // Goals run 400-1400 chars: short ones render in place, long ones get a

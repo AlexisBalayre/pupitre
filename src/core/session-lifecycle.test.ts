@@ -1,18 +1,48 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The tmux/`claude -p` boundary only: everything else (sqlite, the profile
+// compiler, git worktrees) runs for real, per docs/conventions/testing.md.
+vi.mock('../claude/session-runtime.service.js', () => ({
+  kickoff: vi.fn(() => true),
+  killSession: vi.fn(),
+  launchSession: vi.fn(() => ({ target: 'pup-s:0.0' })),
+  transcriptDir: vi.fn(() => '/transcripts'),
+}));
+
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectId } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
+  ensureProject,
   getTask,
   insertSession,
+  insertTask,
   listBacklogTasks,
+  listEvents,
   transitionSession,
 } from './session.repository.js';
-import { TaskAlreadyClaimedError, UnknownTaskError } from './session-lifecycle.errors.js';
-import { launchTask, planTask } from './session-lifecycle.service.js';
+import {
+  ScopeConflictError,
+  TaskAlreadyClaimedError,
+  UnknownTaskError,
+} from './session-lifecycle.errors.js';
+import { createSession, launchTask, planTask } from './session-lifecycle.service.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
+
+// Test repos must not inherit the developer's global git config nor GIT_DIR & co.
+// — when this suite runs inside a git hook (pre-commit), those would redirect
+// every git call at the pupitre repo instead of the temp repo.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
 
 const REPO = '/repo';
 
@@ -170,3 +200,167 @@ describe('launchTask claim guard', () => {
     expect(launch).toThrow(/session s1/);
   });
 });
+
+describe('launchTask scope-conflict guard', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    // projectPaths writes compiled profiles under $HOME/.pupitre.
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-home-'))));
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-')));
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** A running session already holding `src/core/**`. */
+  function seedHolder(): void {
+    insertTask(db, {
+      id: 't-held',
+      projectId: projectId(repo),
+      spec: JSON.stringify({ id: 't-held', goal: 'hold it', scopeIn: ['src/core/**'] }),
+    });
+    insertSession(db, {
+      id: 's-held',
+      taskId: 't-held',
+      worktreePath: join(repo, '.worktrees', 's-held'),
+      branch: 'pup/s-held',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's-held', 'running');
+  }
+
+  const launch = (allowOverlap?: boolean) =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+      allowOverlap,
+    });
+
+  it('refuses a task whose scope a live session already holds', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+
+    expect(launch).toThrow(ScopeConflictError);
+  });
+
+  it('names the session and the shared file so the operator can act', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+
+    expect(launch).toThrow(/s-held.*src\/core\/github\.client\.ts/);
+  });
+
+  // Refused before `git worktree add`, so a retry after narrowing the scope is
+  // not blocked by an orphan branch of the same name (decision 40's trap).
+  it('leaves no session, worktree or branch behind when it refuses', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+
+    expect(launch).toThrow(ScopeConflictError);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
+    expect(listBacklogTasks(db, projectId(repo)).map((t) => t.id)).toEqual(['t-1']);
+  });
+
+  it('launches when nothing live holds the scope', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+
+    expect(launch()).toBe('t-1');
+  });
+
+  it('launches over the conflict when the operator allows the overlap', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+
+    expect(launch(true)).toBe('t-1');
+  });
+
+  // The override is a considered one, so it leaves the same kind of trace
+  // `--accept-debt` does: what was waved through, and against whom.
+  it('records what an allowed overlap waved through', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+
+    const overlap = listEvents(db, launch(true)).find((e) => e.type === 'scope_overlap');
+
+    expect(JSON.parse(overlap?.payload ?? '{}')).toEqual({
+      accepted: [{ session: 's-held', files: ['src/core/github.client.ts'] }],
+    });
+  });
+
+  // `pup launch` refusing costs nothing — the task was already in the backlog.
+  // `pup new` refusing after `planTask` would leave the spec the operator just
+  // abandoned in the backlog, attributed to them and launchable by any session.
+  it('writes no task row when `pup new` is refused for a conflict', () => {
+    seedHolder();
+
+    expect(() =>
+      createSession(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        task: spec(),
+        claudeUserDir: join(repo, '.claude'),
+      }),
+    ).toThrow(ScopeConflictError);
+    expect(getTask(db, 't-1')).toBeUndefined();
+    expect(listBacklogTasks(db, projectId(repo))).toEqual([]);
+  });
+
+  it('still plans and launches through `pup new` when the operator allows the overlap', () => {
+    seedHolder();
+
+    const sessionId = createSession(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      task: spec(),
+      claudeUserDir: join(repo, '.claude'),
+      allowOverlap: true,
+    });
+
+    expect(getTask(db, 't-1')).toBeDefined();
+    expect(listEvents(db, sessionId).some((e) => e.type === 'scope_overlap')).toBe(true);
+  });
+
+  // The conflict check is the first consumer of a stored spec's globs, so a row
+  // written before `pup plan add` validated them must still fail legibly.
+  it('refuses a stored spec with no usable scope before reading its globs', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+      JSON.stringify({ id: 't-1', goal: 'legacy row', acceptance: [] }),
+      't-1',
+    );
+    seedHolder();
+
+    expect(launch).toThrow(InvalidProfileError);
+  });
+
+  it('records nothing when there was no conflict to allow', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+
+    expect(listEvents(db, launch(true)).some((e) => e.type === 'scope_overlap')).toBe(false);
+  });
+});
+
+function gitIn(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV }).trim();
+}
+
+function commitIn(dir: string, file: string, content: string): void {
+  mkdirSync(dirname(join(dir, file)), { recursive: true });
+  writeFileSync(join(dir, file), content);
+  gitIn(dir, 'add', '.');
+  gitIn(dir, 'commit', '-qm', `add ${file}`);
+}

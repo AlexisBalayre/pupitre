@@ -15,10 +15,13 @@ export interface LaunchTaskRequest {
   taskId: string;
   claudeUserDir: string;
   model?: string;
+  /** Launch despite a live session already holding files in this scope. */
+  allowOverlap?: boolean;
 }
 
 export interface NewSessionRequest extends PlanTaskRequest {
   base: ProfileLayer;
   claudeUserDir: string;
   model?: string;
+  allowOverlap?: boolean;
 }

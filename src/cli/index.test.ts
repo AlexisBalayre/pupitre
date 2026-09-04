@@ -63,7 +63,7 @@ import {
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import { UnknownTaskError } from '../core/session-lifecycle.errors.js';
+import { ScopeConflictError, UnknownTaskError } from '../core/session-lifecycle.errors.js';
 import {
   createSession,
   killSession,
@@ -124,6 +124,19 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
     worktreePath: worktreePath ?? join(repoPath, '.worktrees', sessionId),
     branch: `pup/${sessionId}`,
     profileHash: 'hash',
+  });
+  db.close();
+}
+
+/** One planned task: a row in the backlog with no session of its own. */
+function seedBacklogTask(repoPath: string, taskId: string, goal: string): void {
+  const { db } = resolveProject(repoPath);
+  const pid = projectId(repoPath);
+  ensureProject(db, pid, repoPath);
+  insertTask(db, {
+    id: taskId,
+    projectId: pid,
+    spec: JSON.stringify({ id: taskId, goal, scopeIn: ['src/**'] }),
   });
   db.close();
 }
@@ -219,13 +232,46 @@ describe('CLI commands', () => {
   }
 
   describe('status', () => {
-    it('reports no sessions for a freshly initialised repo', () => {
+    it('reports an empty project when nothing runs and nothing is planned', () => {
       useCwd(initRepo());
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      expect(logs).toContain('No sessions.');
+      expect(logs).toContain('Nothing running and nothing planned.');
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // `pup status` is where the operator looks to decide what to do next, and
+    // planned work is an answer to that question (decision 41).
+    it('lists a planned task under `planned`, with its goal', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBacklogTask(repo, 't-plan', 'extract the gh exec options');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).toMatch(/planned\s+t-plan\s+extract the gh exec options/);
+    });
+
+    it('shows planned work even when the project has never run a session', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBacklogTask(repo, 't-plan', 'the only intent there is');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).not.toContain('Nothing running and nothing planned.');
+      expect(logs.join('\n')).toContain('the only intent there is');
+    });
+
+    it('drops a task from the backlog once a session claims it', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).not.toContain('planned');
     });
 
     it('throws when run outside any git repo (no project to resolve)', () => {
@@ -321,6 +367,18 @@ describe('CLI commands', () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
       expect(() => buildProgram().parse(['audit'], { from: 'user' })).toThrow();
+    });
+
+    // A sweep is scoped to the whole repo, so it collides with every live
+    // session there is; refusing it would make `--sweep` unrunnable whenever
+    // anything else runs, and there is no flag to say otherwise (decision 41).
+    it('launches a sweep that allows the overlap it always has', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(createSession).mockReturnValue('sweep-abc');
+
+      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+
+      expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true, origin: 'audit' });
     });
   });
 
@@ -481,6 +539,55 @@ describe('CLI commands', () => {
       expect(errors.join('\n')).toContain('No task t-nope');
       expect(process.exitCode).toBe(1);
     });
+
+    it('reports a scope conflict and exits 1 rather than throwing', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new ScopeConflictError('t-1', [{ sessionId: 's1', files: ['src/a.ts'] }]);
+      });
+
+      buildProgram().parse(['launch', 't-1'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('src/a.ts');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('passes --allow-overlap through to the launch', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
+
+      expect(firstCall(launchTask)[1]).toMatchObject({ allowOverlap: true });
+    });
+
+    // Waving off a collision with another session is a considered override, so
+    // it belongs to whoever answers for it — the rule that keeps `--pr` and
+    // spec authoring operator-only (decisions 26, 41).
+    it('refuses --allow-overlap when a session is calling', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
+
+      expect(launchTask).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain('operator-only');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('still launches for a session when no overlap is being waved off', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(errors.join('\n')).not.toContain('operator-only');
+    });
   });
 
   describe('new', () => {
@@ -541,6 +648,29 @@ describe('CLI commands', () => {
 
       expect(createSession).not.toHaveBeenCalled();
       expect(errors.join('\n')).toContain('operator-only');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('passes --allow-overlap through, since `new` is `plan add` plus a launch', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**', '--allow-overlap'], {
+        from: 'user',
+      });
+
+      expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true });
+    });
+
+    it('reports a scope conflict from `new` and exits 1 rather than throwing', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new ScopeConflictError('t-1', [{ sessionId: 's1', files: ['src/a.ts'] }]);
+      });
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('src/a.ts');
       expect(process.exitCode).toBe(1);
     });
 

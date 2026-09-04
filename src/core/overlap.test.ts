@@ -5,14 +5,14 @@ import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openStore } from './db.client.js';
+import { openStore, type SessionState } from './db.client.js';
 import {
   getWatcherBeat,
   listOverlaps,
   recordWatcherBeat,
   replaceOverlaps,
 } from './overlap.repository.js';
-import { intersectSessionFiles, scanOverlaps } from './overlap.service.js';
+import { intersectSessionFiles, scanOverlaps, scopeConflicts } from './overlap.service.js';
 import { projectId } from './paths.utils.js';
 import {
   ensureProject,
@@ -132,5 +132,127 @@ describe('scanOverlaps', () => {
 
     expect(pairs).toEqual([]);
     expect(listOverlaps(db)).toEqual([]);
+  });
+});
+
+describe('scopeConflicts', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-scope-')));
+    sh(repo, 'git', 'init', '-b', 'main');
+    sh(repo, 'git', 'config', 'user.email', 't@t');
+    sh(repo, 'git', 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/gate.service.ts', 'export const gate = 1;\n');
+    commitIn(repo, 'src/core/report.service.ts', 'export const report = 1;\n');
+    commitIn(repo, 'src/cli/index.ts', 'export const cli = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+  });
+
+  /** Legal transition walks, since a session cannot be dropped into a state. */
+  const STEPS_TO: Record<string, SessionState[]> = {
+    queued: [],
+    running: ['running'],
+    'awaiting-review': ['running', 'awaiting-review'],
+    blocked: ['running', 'blocked'],
+    merged: ['running', 'awaiting-review', 'merged'],
+    killed: ['running', 'killed'],
+  };
+
+  /** A live session holding `scopeIn`, in `state`, via its own task row. */
+  function seedHolder(id: string, scopeIn: string[], state = 'running', scopeOut?: string[]): void {
+    insertTask(db, {
+      id: `task-${id}`,
+      projectId: projectId(repo),
+      spec: JSON.stringify({ id: `task-${id}`, goal: `hold ${id}`, scopeIn, scopeOut }),
+    });
+    insertSession(db, {
+      id,
+      taskId: `task-${id}`,
+      worktreePath: join(repo, '.worktrees', id),
+      branch: `pup/${id}`,
+      profileHash: 'x',
+    });
+    for (const step of STEPS_TO[state] ?? []) transitionSession(db, id, step);
+  }
+
+  it('names the live session and the tracked files two scopes both claim', () => {
+    seedHolder('s1', ['src/core/**']);
+
+    expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toEqual([
+      { sessionId: 's1', files: ['src/core/gate.service.ts'] },
+    ]);
+  });
+
+  it('finds nothing when the scopes name different files', () => {
+    seedHolder('s1', ['src/core/**']);
+
+    expect(scopeConflicts(db, repo, ['src/cli/**'])).toEqual([]);
+  });
+
+  it('reports every conflicting session, not just the first', () => {
+    seedHolder('s1', ['src/core/gate.service.ts']);
+    seedHolder('s2', ['src/core/report.service.ts']);
+
+    expect(scopeConflicts(db, repo, ['src/core/**']).map((c) => c.sessionId)).toEqual(['s1', 's2']);
+  });
+
+  // The file is in both scope-ins, so only scope-out's precedence keeps it out
+  // of the answer — the same precedence the gate audits a diff with.
+  it('does not conflict over a file the candidate excludes with scope-out', () => {
+    seedHolder('s1', ['src/core/**']);
+
+    expect(scopeConflicts(db, repo, ['src/core/**'], ['src/core/gate.service.ts'])).toEqual([
+      { sessionId: 's1', files: ['src/core/report.service.ts'] },
+    ]);
+  });
+
+  it('does not conflict over a file the holder excludes with scope-out', () => {
+    seedHolder('s1', ['src/core/**'], 'running', ['src/core/gate.service.ts']);
+
+    expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toEqual([]);
+  });
+
+  // A session in any of these can still transition back to `running`, so its
+  // worktree is still the place that file is being edited.
+  it.each(['queued', 'running', 'awaiting-review', 'blocked'] as const)(
+    'counts a %s session as still holding its scope',
+    (state) => {
+      seedHolder('s1', ['src/core/**'], state);
+
+      expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toHaveLength(1);
+    },
+  );
+
+  // Merged work is in the target and killed work is abandoned: neither is
+  // still writing, so holding the scope any longer would refuse launches
+  // forever on a repo that has ever built anything.
+  it.each(['merged', 'killed'] as const)('frees the scope once a session is %s', (state) => {
+    seedHolder('s1', ['src/core/**'], state);
+
+    expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toEqual([]);
+  });
+
+  // Scopes are resolved against `git ls-files`, so a glob naming only files
+  // that do not exist yet resolves to nothing — the stated ceiling.
+  it('cannot see a conflict over a file neither scope has created yet', () => {
+    seedHolder('s1', ['src/core/new-thing.service.ts']);
+
+    expect(scopeConflicts(db, repo, ['src/core/new-thing.service.ts'])).toEqual([]);
+  });
+
+  // Protected paths are refused for every session by the gate, so two scopes
+  // naming one is not a collision anybody could act on.
+  it('does not conflict over a protected path', () => {
+    commitIn(repo, '.claude/settings.json', '{}\n');
+    seedHolder('s1', ['**']);
+
+    expect(scopeConflicts(db, repo, ['.claude/**'])).toEqual([]);
+  });
+
+  it('asks git nothing when no session is live', () => {
+    expect(scopeConflicts(db, '/no/such/repo', ['src/**'])).toEqual([]);
   });
 });

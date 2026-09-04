@@ -38,3 +38,15 @@ const TERMINAL_STATES: readonly SessionState[] = ['merged', 'killed'];
 export function isTerminal(state: SessionState): boolean {
   return TERMINAL_STATES.includes(state);
 }
+
+/**
+ * States in which a session still holds its task's scope, so a second task
+ * over the same files would be two agents editing one file (decision 41).
+ * Narrower than `claimedStates` by exactly the terminal pair: a merged
+ * session's work is in the target and a killed one's is abandoned, so neither
+ * is still writing — while `rejected` and `blocked` both transition back to
+ * `running`, and a queued session is about to.
+ */
+export function holdingStates(): SessionState[] {
+  return claimedStates().filter((state) => !isTerminal(state));
+}

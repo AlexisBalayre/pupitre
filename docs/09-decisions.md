@@ -423,7 +423,8 @@ changes back into those docs is pending.
     gate's own `git rebase` runs before any stage — so a planted `pre-rebase` executed
     with pup's full environment ahead of the sandbox meant to confine it. Every git call
     in the gate and in session creation now passes `-c core.hooksPath=/dev/null`, which
-    outranks a session-written `.git/config`.
+    outranks a session-written `.git/config` (decision 41 adds `core.fsmonitor=` beside it,
+    a second command git runs on index reads that `hooksPath` does not cover).
     **What this is not.** It removes env-borne secrets from the child; it is not
     containment. `HOME` stays (dropping it breaks every toolchain), so a gate child can
     still read `~/.config/gh/hosts.yml`, `~/.aws/credentials`, `~/.npmrc`, `~/.ssh`, and
@@ -969,6 +970,114 @@ changes back into those docs is pending.
     task is claimed forever and can no longer be launched, dropped or edited — decisions 26 and
     27 accepted the stranded session; the stranded task is new, and is the price of deriving
     backlog membership from session state.
+
+41. **A launch is refused when its scope collides with a live session; the backlog is
+    visible where work is chosen (2026-09-04).** Decision 40 left three ceilings and this
+    closes them: no admission control, `pup status` showing the backlog nowhere, and the
+    report's live/queued section having nothing to hold. All three are the same gap — intent
+    existed in the store and nothing consulted it.
+    *The radar was the wrong instrument for the question.* `scanOverlaps` diffs live branches
+    every 15 seconds and reports two sessions in one file, which is a fact about work already
+    done: by the time it fires both agents have edited the file and one of them is going to
+    lose. `pup launch` now asks the same question of two *scopes* before either has written
+    anything, and refuses. `--allow-overlap` overrides, the considered-override shape
+    `--accept-debt` established. The refusal names the session and the shared files, because
+    "narrow the scope" is only actionable if the operator knows which files to drop.
+    *A scope resolves to files through the gate's own precedence.* `scopedPaths`
+    (`scope-audit.utils.ts`) is the complement of `auditScope`: the paths a task is allowed to
+    edit are the ones the gate would not flag. So scope-out subtracts, protected paths never
+    collide, and the check cannot drift into a second, laxer reading of what a scope means —
+    a file a session could never commit is not a file it can conflict over. Both sides go
+    through it against one `git ls-files -z` listing, then into `intersectSessionFiles`, which
+    already computed pairwise same-file overlap for the radar and had only ever seen diff
+    lists. Second use of that function, not a new abstraction.
+    *`holdingStates` is `claimedStates` minus the terminal pair.* Derived the same way and for
+    the same reason: a state added later holds its scope by default. `merged` and `killed`
+    release it — a merged session's work is in the target and a killed one's is abandoned, so
+    holding on would refuse every later launch over files the repo has ever touched. `queued`,
+    `rejected` and `blocked` all still hold, because each transitions back to `running`.
+    *The measurement reads the trusted checkout.* `repoRoot()` resolves `--git-common-dir`, so
+    `git ls-files` lists the main checkout's index even when `pup launch` is run from inside a
+    session's worktree — a session cannot aim the check at its own index to make it report
+    nothing. Decision 30's rule, and the property the whole check rests on.
+    *`--allow-overlap` is operator-only, and that is a record, not a control.* A considered
+    override that waves off a collision with *another* session belongs to whoever answers for
+    the collision, by decision 26's rule and detection, so the flag refuses a calling session.
+    But the security review is blunt about what that buys: `pup launch` is not operator-only,
+    and neither is `pup kill` — a session that wants a conflicting task launched does not need
+    the flag, it kills the holder (`killed` releases the scope and returns the task to the
+    backlog, decision 40) and launches plainly. The guard keeps the audit trail honest, the way
+    decision 26's `--pr` guard does; it stops nothing. Extending operator-only to `launch` and
+    `kill` is the natural close and is its own change.
+    *An override that leaves no record is not an override.* `--accept-debt` writes a ledger
+    entry; this writes a `scope_overlap` event naming the sessions and files waved through.
+    The conflicts are therefore computed on every launch, not only when the flag is absent:
+    skipping the question when the answer would be ignored is how a defence ends up documented
+    and inert.
+    *`pup new` asks before it writes.* `createSession` is `planTask` then `launchTask`, and a
+    refusal inside the second would have left the spec the operator just abandoned in the
+    backlog — unclaimed, attributed to them as `origin='human'`, and launchable by any session
+    through the open `pup launch`. Exactly the operator-attributed spec decision 40 stopped a
+    session from authoring, handed over by accident; each retry with a narrower scope would
+    have added another. The check now runs before the row exists, and `launchTask` measures
+    again for the `pup launch` path, where the row predates the command.
+    *The audit sweep always overlaps, and says so.* `buildSweepTask` is scoped to `**/*`, so
+    it collides with every live session there is; refusing it would have made
+    `pup audit --sweep` unrunnable whenever anything else runs, with no flag on `pup audit` to
+    say otherwise, and the refusal would have surfaced as a stack trace. It launches with the
+    overlap allowed and the `scope_overlap` event naming every session it stepped on — the
+    record was the point of the refusal, and a sweep keeps it.
+    *A stored spec is validated before its globs are read.* The check is now the first thing
+    to consume a spec read back from the store, ahead of `compileProfile`. A row written
+    before decision 40's validation could be missing `scopeIn` altogether and would have died
+    in `scopedPaths` with a bare TypeError; `launchTask` runs `assertPlannableSpec` first, and
+    that predicate now treats a missing `scopeIn` as the empty scope it already refused.
+    *Decision 28 did not cover `core.fsmonitor`, and now does.* Every pup git call passes
+    `-c core.hooksPath=/dev/null`; `git ls-files` is a new call site, and looking at it
+    showed that git runs a second configured command on any index read that `hooksPath`
+    does not disarm. Verified against Apple Git 2.39.5: a session that writes
+    `core.fsmonitor` into the shared `$GIT_COMMON_DIR/config` from its worktree — `.git/**` is
+    untracked, so neither the scope hooks nor the gate see it — gets its command executed
+    with the operator's environment on the next `pup launch`, `pup merge` or `pup watch`.
+    `GIT_SAFE_CONFIG` (`git-diff.client.ts`) now carries both keys and every pup git call
+    spreads it, including the two that already passed `hooksPath` by hand. Only clearing the
+    key stops it; this was a pre-existing class with five instances, closed at the sixth.
+    *Unreachable is loud.* Two branches in `scopeConflicts` cannot fire while the store is
+    pup's own — a session id containing `:`, and a session whose task row is missing under a
+    NOT NULL foreign key. Both throw rather than skip: a scope the check cannot read is a scope
+    it cannot clear, and comparing against nothing is the fail-open direction (decision 29).
+    The candidate is also matched on either side of a pair rather than by insertion order, so
+    a refactor that files it first cannot leave the check silently reporting no conflict.
+    *The backlog renders where work is chosen.* `pup status` lists planned tasks under
+    `planned` — the state `docs/01` has always given a task with no session row — in the
+    session table's own columns, so what will be built sits beside what is being built rather
+    than behind a second command. Its empty copy changed from "No sessions." to "Nothing
+    running and nothing planned.", and the early return that produced it had to go: a project
+    whose only content is a plan was reporting itself empty. `pup report` gains a Backlog
+    section above Sessions, on the reasoning that a report opened to decide what to do next is
+    answered there; the scope chips both sections draw are now one function.
+    Ceilings, stated plainly. **Only the main checkout's tracked files can collide:** scopes
+    resolve through `git ls-files`, so two tasks scoped to the same not-yet-created file both
+    launch, and a holder whose real activity is in files it added on its own branch is
+    invisible the same way; the radar catches both 15 seconds later like before. Widening this
+    means comparing glob strings themselves, where `src/**` and `src/core/**` overlap without
+    being equal — a real design question, deliberately not answered here. **A holder with an
+    empty scope claims nothing:** a row written before decision 40's validation and never
+    launched since is invisible to the check. **`merged` releases the scope** even for a
+    `--pr` session whose pull request is still open (decision 26) — its worktree is gone and
+    no agent is writing, so defensible, but unstated until now. **So does `killed`,** whose
+    worktree, branch and commits survive by decision 40's ceiling, so a second task can be
+    launched over files a killed session still holds commits for. **Protected paths never
+    collide,** on either side, by construction. **A live session's own scope is trusted as
+    stored:** a corrupt `tasks.spec` row throws on every launch rather than degrading, which is
+    loud on purpose — and, because every `JSON.parse(row.spec)` in the CLI is raw, it surfaces
+    as a stack trace rather than a named refusal. **Nothing re-checks after launch:** editing is
+    refused at admission only, so the radar remains the only after-the-fact check. **A session
+    can still deny launches:** `pup launch` is open, so a session can launch the broadest
+    backlog task and every later operator launch overlapping it refuses; it is loud (a tmux
+    window, a `pup status` row) and `--allow-overlap` is the operator's answer, so friction
+    rather than denial. **The backlog is still flat** — ordering, dependencies and
+    decomposition are untouched, and each still needs its own design conversation.
 
 ## Implementation notes
 

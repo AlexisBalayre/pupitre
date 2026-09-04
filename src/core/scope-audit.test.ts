@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { auditScope } from './scope-audit.utils.js';
+import { auditScope, scopedPaths } from './scope-audit.utils.js';
 
 describe('auditScope', () => {
   const scopeIn = ['src/net/**', 'docs/net.md'];
@@ -35,5 +35,25 @@ describe('auditScope', () => {
 
   it('treats a missing scope-out as empty', () => {
     expect(auditScope(['src/net/client.ts'], scopeIn)).toEqual([]);
+  });
+});
+
+describe('scopedPaths', () => {
+  it('keeps exactly the paths auditScope would not flag', () => {
+    const paths = ['src/net/client.ts', 'src/net/legacy/old.ts', 'docs/readme.md'];
+
+    expect(scopedPaths(paths, ['src/net/**'], ['src/net/legacy/**'])).toEqual([
+      'src/net/client.ts',
+    ]);
+  });
+
+  // Two scopes both naming a protected path are not a collision anyone could
+  // act on: neither session could ever commit the file (decision 41).
+  it('drops a protected path even when scope-in names it', () => {
+    expect(scopedPaths(['.claude/settings.json', 'src/a.ts'], ['**'])).toEqual(['src/a.ts']);
+  });
+
+  it('returns nothing for a scope that names no path in the list', () => {
+    expect(scopedPaths(['src/a.ts'], ['docs/**'])).toEqual([]);
   });
 });
