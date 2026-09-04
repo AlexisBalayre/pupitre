@@ -1097,6 +1097,14 @@ describe('CLI commands', () => {
   });
 
   describe('--project', () => {
+    // `--project` refuses on PUP_SESSION_ID alone, and this suite runs inside
+    // a pup session during dogfooding, where the variable is exported; the
+    // operator cases below must not inherit it. The session cases stub their
+    // own value.
+    beforeEach(() => {
+      vi.stubEnv('PUP_SESSION_ID', '');
+    });
+
     it('selects a registered project from outside any repo, before or after the command', () => {
       const repoA = initRepo();
       const repoB = initRepo();
@@ -1166,6 +1174,23 @@ describe('CLI commands', () => {
       expect(() => buildProgram().parse(['--project', other, 'status'], { from: 'user' })).toThrow(
         'operator-only',
       );
+    });
+
+    // Outside every repo there is no own store to find the session in, so the
+    // variable alone refuses; decision 42's ceiling needed both leaving the
+    // worktree and unsetting it, and this keeps it so.
+    it('refuses a session that left every repo but still exports PUP_SESSION_ID', () => {
+      registerProject(initRepo());
+      const other = registerProject(initRepo());
+      vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['--project', other, 'plan', 'add', 'goal', '--scope', 'src/**'], {
+          from: 'user',
+        }),
+      ).toThrow('operator-only');
+      expect(planTask).not.toHaveBeenCalled();
     });
 
     it('lets an operator inside one repo author work in another', () => {

@@ -1210,9 +1210,11 @@ changes back into those docs is pending.
     `PUP_SESSION_ID` are rows there — and a session handed another project's store is unknown
     in it, so `pup --project <other> new|plan|launch|kill` from inside a session would have
     passed every guard at once. The shared resolver refuses `--project` when the store of the
-    repo around cwd, the session's own, reports a calling session, before any command runs;
-    same detection, same ceiling as decision 27, and the target store is never opened for the
-    check because it is exactly the store that cannot know.
+    repo around cwd, the session's own, reports a calling session, before any command runs,
+    and refuses on `PUP_SESSION_ID` alone before that lookup, because a session that cd's
+    outside every repo has no own store to be found in and the ceiling must still need both
+    the move and the unset; same detection, same ceiling as decision 27, and the target store
+    is never opened for the check because it is exactly the store that cannot know.
     *The scan trusts nothing under `~/.pupitre`.* Every store there is read, including ones a
     session wrote through the shared base or a stray file dropped in: read-only, without the
     schema and migrations `openStore` runs, and a store that cannot be read is no project rather

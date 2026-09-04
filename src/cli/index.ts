@@ -268,6 +268,12 @@ function callingSession(db: Database): string | undefined {
   );
 }
 
+function operatorOnlyProject(): ProjectResolutionError {
+  return new ProjectResolutionError(
+    '`--project` is operator-only; a session controls only the project it runs in.',
+  );
+}
+
 interface PlanOptions {
   scope?: string[];
   scopeOut?: string[];
@@ -296,14 +302,14 @@ export function buildProgram(): Command {
   const project = (): ResolvedProject => {
     const selected = program.opts().project as string | undefined;
     if (selected === undefined) return resolveProject(process.cwd());
+    // The variable alone refuses, before any store is asked: a session that
+    // cd's outside every repo has no own store to be found in, and decision
+    // 42's ceiling needed it to also unset the variable — this keeps it so.
+    if (process.env.PUP_SESSION_ID) throw operatorOnlyProject();
     const own = enclosingProject(process.cwd());
     const caller = own ? callingSession(own.db) : undefined;
     own?.db.close();
-    if (caller) {
-      throw new ProjectResolutionError(
-        '`--project` is operator-only; a session controls only the project it runs in.',
-      );
-    }
+    if (caller) throw operatorOnlyProject();
     return resolveProject(process.cwd(), selected);
   };
 
