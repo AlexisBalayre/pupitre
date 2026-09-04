@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -1364,5 +1365,23 @@ describe('CLI commands', () => {
 
       expect(() => buildProgram().parse(['merge', 's1'], { from: 'user' })).toThrow();
     });
+  });
+});
+
+// `npm link` installs `bin/pup` as a symlink; `process.argv[1]` is that link
+// while `import.meta.url` is the resolved file, so without a realpath the
+// entry point decides it is being imported and exits 0 without parsing argv.
+describe('executable entry point', () => {
+  it('parses argv when invoked through a symlink, as the linked `pup` binary is', () => {
+    const link = join(tempDir('pup-bin-'), 'pup');
+    symlinkSync(join(process.cwd(), 'src', 'cli', 'index.ts'), link);
+
+    const out = execFileSync(process.execPath, ['--import', 'tsx', link, '--help'], {
+      encoding: 'utf8',
+      env: GIT_ENV,
+      cwd: process.cwd(),
+    });
+
+    expect(out).toContain('Usage:');
   });
 });
