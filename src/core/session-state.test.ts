@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionState } from './db.client.js';
-import { canTransition, isTerminal } from './session-state.utils.js';
+import { canTransition, claimedStates, isTerminal } from './session-state.utils.js';
 
 describe('session state machine', () => {
   it('permits the documented happy path', () => {
@@ -28,5 +28,30 @@ describe('session state machine', () => {
     for (const s of ['queued', 'running', 'awaiting-review', 'rejected', 'blocked'] as const) {
       expect(isTerminal(s)).toBe(false);
     }
+  });
+});
+
+describe('claimedStates', () => {
+  // The whole backlog derivation rests on this: a task is in the backlog when
+  // no session of its own is in one of these states. Pinned as "every state
+  // except killed" rather than as a literal list, so a SessionState added later
+  // lands in the claimed set — the fail-safe direction, since a state left out
+  // would let a task with a live session be launched a second time.
+  it('claims every session state except killed', () => {
+    const states: SessionState[] = [
+      'queued',
+      'running',
+      'awaiting-review',
+      'merged',
+      'killed',
+      'rejected',
+      'blocked',
+    ];
+
+    expect([...claimedStates()].sort()).toEqual(states.filter((s) => s !== 'killed').sort());
+  });
+
+  it('never claims a terminal killed session', () => {
+    expect(claimedStates()).not.toContain('killed');
   });
 });

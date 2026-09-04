@@ -3,17 +3,22 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
 import {
   appendEvent,
+  claimingSession,
+  deleteTask,
   ensureProject,
   findSessionByWorktree,
   getSession,
+  getTask,
   InvalidTransitionError,
   incrementRejectCount,
   insertSession,
   insertTask,
+  listBacklogTasks,
   listEvents,
   listSessions,
   listTasks,
   transitionSession,
+  updateTaskSpec,
 } from './session.repository.js';
 
 function seedSession(db: Database, id: string): void {
@@ -115,5 +120,137 @@ describe('session repository', () => {
 
     expect(rows.map((e) => e.type)).toEqual(['steer', 'session_done']);
     expect(rows[1]?.payload).toBe(JSON.stringify({ summary: 'shipped' }));
+  });
+});
+
+describe('the backlog', () => {
+  let db: Database;
+  const planned = (id: string) => {
+    ensureProject(db, 'proj-1', '/repo');
+    insertTask(db, { id, projectId: 'proj-1', spec: JSON.stringify({ goal: id }) });
+  };
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+  });
+
+  it('holds a task no session has claimed', () => {
+    planned('t-1');
+
+    expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
+  });
+
+  it('scopes to one project', () => {
+    planned('t-1');
+    ensureProject(db, 'proj-2', '/other');
+    insertTask(db, { id: 't-2', projectId: 'proj-2', spec: '{}' });
+
+    expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
+  });
+
+  // Every state a session can reach means the task is spoken for, except
+  // `killed` — abandoned work is worth relaunching (decision 40).
+  it.each(['queued', 'running', 'awaiting-review', 'rejected', 'blocked', 'merged'] as const)(
+    'drops a task whose session is %s',
+    (state) => {
+      planned('t-1');
+      insertSession(db, {
+        id: 's1',
+        taskId: 't-1',
+        worktreePath: '/repo/.worktrees/s1',
+        branch: 'pup/s1',
+        profileHash: 'hash',
+      });
+      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+
+      expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
+    },
+  );
+
+  it('returns a task to the backlog when its session is killed', () => {
+    planned('t-1');
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's1', 'running');
+    expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
+
+    transitionSession(db, 's1', 'killed');
+
+    expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
+  });
+
+  it('drops a planned task and reports when there was none to drop', () => {
+    planned('t-1');
+
+    expect(deleteTask(db, 't-1')).toBe(true);
+    expect(deleteTask(db, 't-1')).toBe(false);
+    expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
+  });
+
+  it("rewrites a planned task's spec", () => {
+    planned('t-1');
+
+    expect(updateTaskSpec(db, 't-1', JSON.stringify({ goal: 'sharper' }))).toBe(true);
+    expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}')).toEqual({ goal: 'sharper' });
+  });
+
+  // The spec is compiled into the session's context.md at launch, so editing or
+  // deleting it afterwards would leave the store disagreeing with what the
+  // agent was actually told.
+  // `sessions.task_id` is a NOT NULL foreign key, so a task with history cannot
+  // be deleted at all — the guard must refuse rather than let SQLite abort the
+  // statement and surface a raw constraint error to the operator.
+  it('refuses to drop a task whose killed session returned it to the backlog', () => {
+    planned('t-1');
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's1', 'killed');
+    expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
+
+    expect(() => deleteTask(db, 't-1')).not.toThrow();
+    expect(deleteTask(db, 't-1')).toBe(false);
+    expect(getTask(db, 't-1')).toBeDefined();
+  });
+
+  it('names the session that claimed a task, and nothing for a planned one', () => {
+    planned('t-1');
+    expect(claimingSession(db, 't-1')).toBeUndefined();
+
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's1', 'running');
+
+    expect(claimingSession(db, 't-1')).toBe('s1');
+  });
+
+  it('refuses to drop or edit a task a session has claimed', () => {
+    planned('t-1');
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's1', 'running');
+
+    expect(deleteTask(db, 't-1')).toBe(false);
+    expect(updateTaskSpec(db, 't-1', '{}')).toBe(false);
+    expect(getTask(db, 't-1')?.spec).toBe(JSON.stringify({ goal: 't-1' }));
   });
 });

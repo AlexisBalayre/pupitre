@@ -691,7 +691,6 @@ function gateAndMerge(
       JSON.stringify(next),
     );
   }
-  db.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(session.task_id);
   const decisionRecordId = draftDecisionRecord(db, {
     sessionId: session.id,
     spec,

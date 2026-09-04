@@ -46,6 +46,17 @@ function validateInput(input: CompileInput): void {
       'Task scope-in is empty; a session with no scope can edit nothing.',
     );
   }
+  // The scope files are line-oriented and read by `grep -qE -f`, where a blank
+  // line is a pattern matching everything — so one newline inside a glob turns
+  // the Edit/Write hook into allow-all. Specs now outlive the command that
+  // wrote them (decision 40), so this is checked on every compile.
+  for (const glob of [...input.task.scopeIn, ...(input.task.scopeOut ?? [])]) {
+    if (/[\r\n\0]/.test(glob)) {
+      throw new InvalidProfileError(
+        `Scope glob contains a control character: ${JSON.stringify(glob)}`,
+      );
+    }
+  }
   for (const [label, path] of [
     ['worktreePath', input.worktreePath],
     ['eventsFile', input.eventsFile],

@@ -46,6 +46,29 @@ describe('openStore', () => {
     reopened.close();
   });
 
+  it('drops a column a pre-existing store still has, keeping its rows', () => {
+    // Unlike the additive entries, this migration runs while the column is
+    // still present. `tasks.status` duplicated session state and was never
+    // read; the backlog derives it from the sessions table (decision 40).
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const old = openStore(dbPath);
+    old.exec("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'open'");
+    old.prepare("INSERT INTO projects (id, repo_path) VALUES ('p1', '/repo')").run();
+    old.prepare("INSERT INTO tasks (id, project_id, spec) VALUES ('t-1', 'p1', '{}')").run();
+    old.close();
+
+    const reopened = openStore(dbPath);
+
+    const columns = (reopened.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name);
+    expect(columns).not.toContain('status');
+    expect(reopened.prepare('SELECT id FROM tasks').all()).toEqual([{ id: 't-1' }]);
+    // Idempotent: the guard sees the column already gone on the next open.
+    reopened.close();
+    const again = openStore(dbPath);
+    expect(again.prepare('SELECT id FROM tasks').all()).toEqual([{ id: 't-1' }]);
+    again.close();
+  });
+
   it('rejects sessions referencing a missing task', () => {
     const db = openStore(':memory:');
     expect(() =>

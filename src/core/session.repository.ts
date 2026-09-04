@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import type { EventType, SessionState } from './db.client.js';
-import { canTransition } from './session-state.utils.js';
+import { canTransition, claimedStates } from './session-state.utils.js';
 
 export interface SessionRow {
   id: string;
@@ -34,13 +34,12 @@ export interface NewSessionInput {
   transcriptPath?: string;
 }
 
-interface TaskRow {
+export interface TaskRow {
   id: string;
   project_id: string;
   /** JSON TaskSpec. */
   spec: string;
   role: string | null;
-  status: string;
   origin: string;
   created_at: string;
 }
@@ -107,6 +106,88 @@ export function listTasks(db: Database, projectId: string): TaskRow[] {
   return db
     .prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at, id')
     .all(projectId) as TaskRow[];
+}
+
+export function getTask(db: Database, id: string): TaskRow | undefined {
+  return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
+}
+
+/** The session, if any, that has claimed this task and so freezes its spec. */
+export function claimingSession(db: Database, taskId: string): string | undefined {
+  const claimed = claimedStates();
+  const row = db
+    .prepare(
+      `SELECT id FROM sessions
+        WHERE task_id = ? AND state IN (${claimed.map(() => '?').join(', ')})
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(taskId, ...claimed) as { id: string } | undefined;
+  return row?.id;
+}
+
+/**
+ * The backlog: tasks no live or finished session has claimed, oldest first.
+ *
+ * Derived rather than stored. `tasks.status` used to carry this and was written
+ * but never read, so it could drift from the sessions table without anything
+ * noticing; the sessions table is the one place session state actually lives,
+ * so the backlog is a question asked of it (decision 40).
+ */
+export function listBacklogTasks(db: Database, projectId: string): TaskRow[] {
+  const claimed = claimedStates();
+  return db
+    .prepare(
+      `SELECT * FROM tasks t
+        WHERE t.project_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM sessions s
+             WHERE s.task_id = t.id AND s.state IN (${claimed.map(() => '?').join(', ')})
+          )
+        ORDER BY t.created_at, t.id`,
+    )
+    .all(projectId, ...claimed) as TaskRow[];
+}
+
+/**
+ * Returns false when the task does not exist or any session ever ran for it.
+ *
+ * The guard is "no session row at all", not "no claiming session": a killed
+ * session's task returns to the backlog, but `sessions.task_id` is a NOT NULL
+ * foreign key, so deleting the task would abort on the constraint rather than
+ * refuse. History outlives the backlog entry (decision 40).
+ */
+export function deleteTask(db: Database, id: string): boolean {
+  return (
+    db
+      .prepare(
+        `DELETE FROM tasks
+          WHERE id = ?
+            AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = tasks.id)`,
+      )
+      .run(id).changes > 0
+  );
+}
+
+/**
+ * Rewrite a planned task's spec. Refuses once a session has claimed the task:
+ * the spec is compiled into that session's `context.md` at launch and is what
+ * the merge gate audits scope against, so editing it afterwards would leave the
+ * store disagreeing with what the agent was actually told.
+ */
+export function updateTaskSpec(db: Database, id: string, spec: string): boolean {
+  const claimed = claimedStates();
+  return (
+    db
+      .prepare(
+        `UPDATE tasks SET spec = ?
+          WHERE id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM sessions s
+               WHERE s.task_id = tasks.id AND s.state IN (${claimed.map(() => '?').join(', ')})
+            )`,
+      )
+      .run(spec, id, ...claimed).changes > 0
+  );
 }
 
 export function insertSession(db: Database, input: NewSessionInput): void {

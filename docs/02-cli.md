@@ -5,11 +5,17 @@ Binary: `pup`. All commands run from the target repo or with `--project <id>`.
 ## Lifecycle
 
 - `pup init` — onboard a repo: detect stack, run audit, snapshot baseline, draft conventions, open review step (see 07-onboarding.md).
-- `pup new <task> [--role <role>] [--scope <glob>...]` — create task spec (opens editor with template), compile profile, create worktree and branch, launch session.
+- `pup plan add "<goal>" --scope <glob>...` — record a task with no session. `pup plan` lists the
+  backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
+  rewrites one. A task is in the backlog until a session claims it (decision 40).
+- `pup launch <task>` — compile a profile, create the worktree and branch, and start a session for
+  a task already in the backlog.
+- `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path.
 - `pup status` — all sessions by state, pending reviews, live scope overlaps between running sessions.
 - `pup steer <session> "<message>"` — inject a correction into a running session.
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
-- `pup kill <session> [--respawn]` — stop; optionally restart with the same or edited spec.
+- `pup kill <session> [--respawn]` — stop; `--respawn` relaunches on a fresh context window. A
+  killed session's task returns to the backlog, so `pup launch` can retry it.
 
 ## Review and merge
 

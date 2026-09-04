@@ -29,8 +29,8 @@ Sessions read the knowledge layer at compile time; the orchestrator writes it at
 
 ## Session state machine
 
-queued -> running -> awaiting-review -> merged
-running -> killed
+planned (no session row) -> queued -> running -> awaiting-review -> merged
+running -> killed -> planned (the task returns to the backlog)
 awaiting-review -> rejected -> running (gate report injected as correction prompt)
 
 `pup status` is a filter on state; the daily question is "which sessions need me now".
