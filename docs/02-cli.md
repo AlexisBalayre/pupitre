@@ -12,6 +12,8 @@ exit 1.
 
 - `--project <id>` — control a registered project by id; the ids are the directory names under
   `~/.pupitre`, and `pup status` from outside any repo lists them when more than one exists.
+  Operator-only: refused from inside a session, whose guards live in its own project's store
+  (decision 43).
 
 ## Lifecycle
 

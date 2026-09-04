@@ -1205,6 +1205,22 @@ changes back into those docs is pending.
     have been the answer, so it does not count toward the choice; it is still shown in the
     listing marked `(missing)`, and an explicit `--project` on it refuses with the id and the
     path that is gone, because most commands shell into that path and would fail worse.
+    *`--project` is operator-only.* Every operator-only guard (decisions 26, 40, 42) asks
+    `callingSession` of the store it was handed — the session's worktree and its
+    `PUP_SESSION_ID` are rows there — and a session handed another project's store is unknown
+    in it, so `pup --project <other> new|plan|launch|kill` from inside a session would have
+    passed every guard at once. The shared resolver refuses `--project` when the store of the
+    repo around cwd, the session's own, reports a calling session, before any command runs;
+    same detection, same ceiling as decision 27, and the target store is never opened for the
+    check because it is exactly the store that cannot know.
+    *The scan trusts nothing under `~/.pupitre`.* Every store there is read, including ones a
+    session wrote through the shared base or a stray file dropped in: read-only, without the
+    schema and migrations `openStore` runs, and a store that cannot be read is no project rather
+    than every command's crash. A row counts only when its id is the directory's name and the
+    hash of its own `repo_path` — ids derive from paths, so a row that fails to derive is a
+    store planted or renamed to answer for a repo it is not keyed to, and is skipped. The
+    `repo_path` a store reports and the id argv passes are sanitized before they reach the
+    terminal, the listing included, by decision 29's rule.
     *What this leaves open.* An explicit `--project` on a gone repo could still serve the
     read-only commands (`report`, `log`, `debt`) from history alone; it refuses today for the
     simpler rule, and reading history for a deleted repo is its own change if it is wanted. A

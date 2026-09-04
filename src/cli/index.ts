@@ -95,7 +95,12 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
-import { ProjectResolutionError, type ResolvedProject, resolveProject } from './project.utils.js';
+import {
+  enclosingProject,
+  ProjectResolutionError,
+  type ResolvedProject,
+  resolveProject,
+} from './project.utils.js';
 
 /**
  * One-keystroke approval of the decision record a merge just drafted. TTY
@@ -281,9 +286,26 @@ export function buildProgram(): Command {
     writeOut: (str) => process.stdout.write(str),
     writeErr: (str) => process.stderr.write(str),
   });
-  /** The one resolver every command shares, so `--project` needs no per-command branch. */
-  const project = (): ResolvedProject =>
-    resolveProject(process.cwd(), program.opts().project as string | undefined);
+  /**
+   * The one resolver every command shares, so `--project` needs no
+   * per-command branch. `--project` is operator-only: every operator-only
+   * guard asks `callingSession` of the store it was handed, and a session
+   * handed another project's store is unknown there — its worktree and its
+   * id are rows in its own store, so that is the store asked (decision 43).
+   */
+  const project = (): ResolvedProject => {
+    const selected = program.opts().project as string | undefined;
+    if (selected === undefined) return resolveProject(process.cwd());
+    const own = enclosingProject(process.cwd());
+    const caller = own ? callingSession(own.db) : undefined;
+    own?.db.close();
+    if (caller) {
+      throw new ProjectResolutionError(
+        '`--project` is operator-only; a session controls only the project it runs in.',
+      );
+    }
+    return resolveProject(process.cwd(), selected);
+  };
 
   program
     .command('init')

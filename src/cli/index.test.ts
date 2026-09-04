@@ -1133,6 +1133,55 @@ describe('CLI commands', () => {
       ).toThrow(new ProjectResolutionError(`No project ghost; registered projects: ${id}.`));
     });
 
+    // Every operator-only guard asks `callingSession` of the store it was
+    // handed; a session handed another project's store is unknown there, so
+    // `--project` itself is operator-only (decision 43).
+    it('refuses a session calling from its worktree, before any command runs', () => {
+      const own = initRepo();
+      const worktree = join(own, '.worktrees', 's1');
+      mkdirSync(worktree, { recursive: true });
+      seedSession(own, 's1', worktree);
+      const other = registerProject(initRepo());
+      useCwd(worktree);
+
+      expect(() =>
+        buildProgram().parse(['--project', other, 'plan', 'add', 'goal', '--scope', 'src/**'], {
+          from: 'user',
+        }),
+      ).toThrow(
+        new ProjectResolutionError(
+          '`--project` is operator-only; a session controls only the project it runs in.',
+        ),
+      );
+      expect(planTask).not.toHaveBeenCalled();
+    });
+
+    it('refuses a session declared by PUP_SESSION_ID from its own repo', () => {
+      const own = initRepo();
+      seedSession(own, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      const other = registerProject(initRepo());
+      useCwd(own);
+
+      expect(() => buildProgram().parse(['--project', other, 'status'], { from: 'user' })).toThrow(
+        'operator-only',
+      );
+    });
+
+    it('lets an operator inside one repo author work in another', () => {
+      const other = initRepo();
+      const otherId = registerProject(other);
+      vi.mocked(planTask).mockReturnValue('t-abc');
+      useCwd(initRepo());
+
+      buildProgram().parse(['--project', otherId, 'plan', 'add', 'goal', '--scope', 'src/**'], {
+        from: 'user',
+      });
+
+      expect(firstCall(planTask)[1]).toMatchObject({ repoPath: other });
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('reaches commands that read the project dir, not only the store', () => {
       const id = registerProject(initRepo());
       useCwd(tempDir('pup-cli-noproj-'));

@@ -2,14 +2,15 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Database } from 'better-sqlite3';
+import Database from 'better-sqlite3';
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import { openStore } from '../core/db.client.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
-import { projectPaths } from '../core/paths.utils.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
 
 export interface ResolvedProject {
   repoPath: string;
-  db: Database;
+  db: Database.Database;
 }
 
 /** A project `pup init` registered, read back from its own store under `~/.pupitre`. */
@@ -67,10 +68,34 @@ function enclosingRepoRoot(cwd: string): string | undefined {
 }
 
 /**
+ * The project rows a store holds, read without touching it: no schema, no
+ * migrations, no `-wal` created — this runs against every store under the
+ * base, including ones a session wrote or a stray file dropped there, and a
+ * store that cannot be read is no project rather than every command's crash.
+ */
+function readProjectRows(dbFile: string): { id: string; repo_path: string }[] {
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbFile, { readonly: true, fileMustExist: true });
+    return db.prepare('SELECT id, repo_path FROM projects ORDER BY id').all() as {
+      id: string;
+      repo_path: string;
+    }[];
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
+/**
  * Every project registered in the store, one directory per project id under
  * `~/.pupitre` (the base `projectPaths` defaults to), each holding its own
  * `state.db` with its own `projects` row. A directory with no store — one
- * `pup report` wrote into, or a leftover — is not a project.
+ * `pup report` wrote into, or a leftover — is not a project, and neither is a
+ * row whose id is not the hash of its own `repo_path` under the directory of
+ * that name: ids are derived, so a row that fails to derive is a store planted
+ * or renamed to answer for a repo it is not keyed to (decision 43).
  */
 export function listRegisteredProjects(base = join(homedir(), '.pupitre')): RegisteredProject[] {
   if (!existsSync(base)) return [];
@@ -78,31 +103,29 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
   for (const entry of readdirSync(base, { withFileTypes: true })) {
     const dbFile = join(base, entry.name, 'state.db');
     if (!entry.isDirectory() || !existsSync(dbFile)) continue;
-    const db = openStore(dbFile);
-    try {
-      const rows = db.prepare('SELECT id, repo_path FROM projects ORDER BY id').all() as {
-        id: string;
-        repo_path: string;
-      }[];
-      for (const row of rows) {
-        projects.push({
-          id: row.id,
-          repoPath: row.repo_path,
-          dbFile,
-          repoExists: existsSync(row.repo_path),
-        });
-      }
-    } finally {
-      db.close();
+    for (const row of readProjectRows(dbFile)) {
+      if (row.id !== entry.name || projectId(row.repo_path) !== entry.name) continue;
+      projects.push({
+        id: row.id,
+        repoPath: row.repo_path,
+        dbFile,
+        repoExists: existsSync(row.repo_path),
+      });
     }
   }
   return projects;
 }
 
+/**
+ * A registered project's ids are hex by construction (they hash-match their
+ * directory), but its `repo_path` is whatever the store says and the
+ * `--project` argument is whatever argv says; both reach the operator's
+ * terminal only through here (decision 29).
+ */
 function openRegistered(project: RegisteredProject): ResolvedProject {
   if (!project.repoExists) {
     throw new ProjectResolutionError(
-      `Project ${project.id} is registered at ${project.repoPath}, which no longer exists; ${INIT_HINT}`,
+      `Project ${project.id} is registered at ${sanitizeReason(project.repoPath)}, which no longer exists; ${INIT_HINT}`,
     );
   }
   return { repoPath: project.repoPath, db: openStore(project.dbFile) };
@@ -112,10 +135,11 @@ function selectById(id: string, registered: RegisteredProject[]): ResolvedProjec
   const project = registered.find((candidate) => candidate.id === id);
   if (project) return openRegistered(project);
   const known = registered.map((candidate) => candidate.id).join(', ');
+  const shown = sanitizeReason(id);
   throw new ProjectResolutionError(
     known
-      ? `No project ${id}; registered projects: ${known}.`
-      : `No project ${id}; no project registered, ${INIT_HINT}`,
+      ? `No project ${shown}; registered projects: ${known}.`
+      : `No project ${shown}; no project registered, ${INIT_HINT}`,
   );
 }
 
@@ -136,7 +160,8 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
     );
   }
   const listing = registered.map(
-    (project) => `${project.id}  ${project.repoPath}${project.repoExists ? '' : '  (missing)'}`,
+    (project) =>
+      `${project.id}  ${sanitizeReason(project.repoPath)}${project.repoExists ? '' : '  (missing)'}`,
   );
   throw new ProjectResolutionError(
     [...listing, 'Not inside a git repository; pass --project <id> to pick one of these.'].join(
@@ -146,15 +171,24 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
 }
 
 /**
+ * The project of the repo around cwd, or undefined outside any — never the
+ * store's guess. This is where a session's own guards live: its worktree and
+ * its `PUP_SESSION_ID` are rows in this store and no other.
+ */
+export function enclosingProject(cwd = process.cwd()): ResolvedProject | undefined {
+  const repoPath = enclosingRepoRoot(cwd);
+  if (repoPath === undefined) return undefined;
+  return { repoPath, db: openStore(projectPaths(repoPath).dbFile) };
+}
+
+/**
  * The project a command runs against, the one seam every command goes
  * through. `--project <id>` wins from anywhere, even inside another repo;
  * otherwise the repo around cwd, unchanged from before; outside any repo the
  * store decides only when it cannot be wrong — exactly one project — and
  * refuses with the choices otherwise (decision 43).
  */
-export function resolveProject(cwd = process.cwd(), projectId?: string): ResolvedProject {
-  if (projectId !== undefined) return selectById(projectId, listRegisteredProjects());
-  const repoPath = enclosingRepoRoot(cwd);
-  if (repoPath !== undefined) return { repoPath, db: openStore(projectPaths(repoPath).dbFile) };
-  return selectTheOnlyOne(listRegisteredProjects());
+export function resolveProject(cwd = process.cwd(), selectedId?: string): ResolvedProject {
+  if (selectedId !== undefined) return selectById(selectedId, listRegisteredProjects());
+  return enclosingProject(cwd) ?? selectTheOnlyOne(listRegisteredProjects());
 }
