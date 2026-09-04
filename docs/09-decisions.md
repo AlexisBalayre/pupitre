@@ -1019,8 +1019,13 @@ changes back into those docs is pending.
     backlog — unclaimed, attributed to them as `origin='human'`, and launchable by any session
     through the open `pup launch`. Exactly the operator-attributed spec decision 40 stopped a
     session from authoring, handed over by accident; each retry with a narrower scope would
-    have added another. The check now runs before the row exists, and `launchTask` measures
-    again for the `pup launch` path, where the row predates the command.
+    have added another. The check now runs before the row exists, and the decision is made
+    once: `createSession` hands `launchTask` an allowed overlap, so `launchTask` still
+    measures — for its own `pup launch` path and for the `scope_overlap` record — but cannot
+    refuse after the row is written. The second review found the version that re-decided: a
+    holder appearing in the window between the two reads refused after `planTask`, recreating
+    exactly the orphan the reordering was for. A holder that appears in that window is now
+    recorded instead, the trade `--allow-overlap` already makes.
     *The audit sweep always overlaps, and says so.* `buildSweepTask` is scoped to `**/*`, so
     it collides with every live session there is; refusing it would have made
     `pup audit --sweep` unrunnable whenever anything else runs, with no flag on `pup audit` to
@@ -1032,16 +1037,34 @@ changes back into those docs is pending.
     before decision 40's validation could be missing `scopeIn` altogether and would have died
     in `scopedPaths` with a bare TypeError; `launchTask` runs `assertPlannableSpec` first, and
     that predicate now treats a missing `scopeIn` as the empty scope it already refused.
-    *Decision 28 did not cover `core.fsmonitor`, and now does.* Every pup git call passes
-    `-c core.hooksPath=/dev/null`; `git ls-files` is a new call site, and looking at it
-    showed that git runs a second configured command on any index read that `hooksPath`
-    does not disarm. Verified against Apple Git 2.39.5: a session that writes
-    `core.fsmonitor` into the shared `$GIT_COMMON_DIR/config` from its worktree — `.git/**` is
-    untracked, so neither the scope hooks nor the gate see it — gets its command executed
-    with the operator's environment on the next `pup launch`, `pup merge` or `pup watch`.
-    `GIT_SAFE_CONFIG` (`git-diff.client.ts`) now carries both keys and every pup git call
-    spreads it, including the two that already passed `hooksPath` by hand. Only clearing the
-    key stops it; this was a pre-existing class with five instances, closed at the sixth.
+    *Decision 28 closed hooks; the config keys git consults on pup's own commands were a
+    class, and most of it is closed now.* `git ls-files` is a new call site, and looking at
+    it showed that a session can write the shared, untracked `$GIT_COMMON_DIR/config` from
+    its worktree with a plain `git config` — `.git/**` is seen by neither the scope hooks nor
+    the gate — and name a command git then runs with the operator's environment. Each of
+    these was verified against Apple Git 2.39.5, and each of the first attempts at the fix
+    was reviewed again, which is how the second and third were found. **`core.fsmonitor`**
+    runs on any index read (`ls-files`, `status`); `-c core.hooksPath=/dev/null` does not
+    stop it, only `-c core.fsmonitor=` does, and the `=` is load-bearing since the bare key
+    means `true`. **`gpg.program`** runs once per commit the gate's `git rebase` recreates
+    whenever `commit.gpgsign` is set; clearing the sign flags is the lever, because
+    `gpg.program` has no safe empty value. **`diff.external` and `diff.<driver>.textconv`**
+    are the worst of the three, because they do not merely run: an armed external diff emits
+    no hunks, `gitDiffAddedLines` returns nothing, and the coverage stage reads "no
+    instrumentable changed lines" as a **pass** — decision 29's invariant inverted from a
+    file the session writes. They are disarmed per call with `--no-ext-diff --no-textconv`
+    (diff-subcommand flags, not top-level ones), not through `GIT_SAFE_CONFIG`, because an
+    empty `diff.external` makes every diff die. `GIT_SAFE_CONFIG` (`git-diff.client.ts`)
+    carries `hooksPath`, `fsmonitor` and both `gpgsign` keys, and every pup git call now
+    spreads it — including `pushBranch`'s two, which the first version of this text claimed
+    were converted and were not, and the three read-only calls (`log`, two `rev-parse`)
+    that consult none of these keys today but cost nothing to cover. This was a
+    pre-existing class; the change that happened to add a sixth instance is where it got
+    closed. **What is not closed:** a smudge filter armed through the untracked
+    `info/attributes` runs on `git worktree add` and on the gate's rebase, and has no `-c`
+    disarm because its driver name is chosen by whoever wrote it. The honest fix is a loud
+    refusal when that surface is armed, decision 6's shape, and it is its own change; until
+    then it is a stated ceiling, verified reachable, not an accepted one.
     *Unreachable is loud.* Two branches in `scopeConflicts` cannot fire while the store is
     pup's own — a session id containing `:`, and a session whose task row is missing under a
     NOT NULL foreign key. Both throw rather than skip: a scope the check cannot read is a scope
@@ -1071,7 +1094,9 @@ changes back into those docs is pending.
     collide,** on either side, by construction. **A live session's own scope is trusted as
     stored:** a corrupt `tasks.spec` row throws on every launch rather than degrading, which is
     loud on purpose — and, because every `JSON.parse(row.spec)` in the CLI is raw, it surfaces
-    as a stack trace rather than a named refusal. **Nothing re-checks after launch:** editing is
+    as a stack trace rather than a named refusal. **A session-armed smudge filter still runs
+    with the operator's environment** on `worktree add` and the gate's rebase, per the
+    paragraph above. **Nothing re-checks after launch:** editing is
     refused at admission only, so the radar remains the only after-the-fact check. **A session
     can still deny launches:** `pup launch` is open, so a session can launch the broadest
     backlog task and every later operator launch overlapping it refuses; it is loud (a tmux

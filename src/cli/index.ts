@@ -544,7 +544,7 @@ export function buildProgram(): Command {
     for (const pair of listOverlaps(db)) {
       const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
       console.log(
-        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files[0]}${extra}${stale ? '  (stale)' : ''}`,
+        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${sanitizeReason(pair.files[0] ?? '')}${extra}${stale ? '  (stale)' : ''}`,
       );
     }
     if (live.length >= 2 && stale) {

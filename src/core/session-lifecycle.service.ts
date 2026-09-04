@@ -144,7 +144,11 @@ export function createSession(db: Database, req: NewSessionRequest): string {
     throw new ScopeConflictError(req.task.id, conflicts);
   }
   planTask(db, req);
-  return launchTask(db, { ...req, taskId: req.task.id });
+  // Decided once, above. `launchTask` re-measures for its own `pup launch` path
+  // and for the `scope_overlap` record, but must not re-decide: a holder that
+  // appears in the window between the two reads would otherwise refuse after
+  // the row exists, which is the orphan this function was reordered to prevent.
+  return launchTask(db, { ...req, taskId: req.task.id, allowOverlap: true });
 }
 
 /**

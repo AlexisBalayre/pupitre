@@ -732,8 +732,7 @@ function pushBranch(repoPath: string, branch: string): void {
       execFileSync(
         'git',
         [
-          '-c',
-          'core.hooksPath=/dev/null',
+          ...GIT_SAFE_CONFIG,
           '-C',
           repoPath,
           'rev-parse',
@@ -754,8 +753,7 @@ function pushBranch(repoPath: string, branch: string): void {
   execFileSync(
     'git',
     [
-      '-c',
-      'core.hooksPath=/dev/null',
+      ...GIT_SAFE_CONFIG,
       '-C',
       repoPath,
       'push',

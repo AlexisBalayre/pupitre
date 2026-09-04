@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { scrubbedGitEnv } from '../core/git-diff.client.js';
+import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { hasUnsubmittedInput } from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
@@ -131,7 +131,14 @@ function mainRepoRoot(worktreePath: string): string[] {
   try {
     const commonDir = execFileSync(
       'git',
-      ['-C', worktreePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      [
+        ...GIT_SAFE_CONFIG,
+        '-C',
+        worktreePath,
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-common-dir',
+      ],
       { encoding: 'utf8', env: scrubbedGitEnv() },
     ).trim();
     return [realpathSync(dirname(commonDir))];

@@ -20,12 +20,39 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * so a session can set either of these keys without the scope hooks or the
  * gate seeing it, and the operator's next git call would run what it names.
  *
- * `core.hooksPath` is decision 28's. `core.fsmonitor` is a second command git
- * runs on any index read and `hooksPath` does not cover it: verified against
- * Apple Git 2.39.5, where a plain `git ls-files` executes it, `-c
- * core.hooksPath=/dev/null` still executes it, and only clearing it does not.
+ * `core.hooksPath` is decision 28's. The rest are the keys decision 41's
+ * review found git consulting on the commands pup runs, each verified against
+ * Apple Git 2.39.5: `core.fsmonitor` runs on any index read (`ls-files`,
+ * `status`) and `hooksPath` does not stop it — the `=` is load-bearing, since
+ * `-c core.fsmonitor` alone means `true`; `gpg.program` runs once per commit
+ * the gate's rebase recreates whenever `commit.gpgsign` is on, and clearing
+ * the sign flag is the lever, because `gpg.program` has no safe empty value.
+ * `diff.external` and `textconv` are disarmed per diff call instead — see
+ * `git()` below — because an empty `diff.external` makes every diff die.
+ *
+ * Not covered, and stated as decision 41's ceiling: a smudge filter armed
+ * through the untracked `info/attributes`, which runs on `worktree add` and
+ * the rebase and has no `-c` disarm because its driver name is chosen by
+ * whoever wrote it.
  */
-export const GIT_SAFE_CONFIG = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor='] as const;
+export const GIT_SAFE_CONFIG = [
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.fsmonitor=',
+  '-c',
+  'commit.gpgsign=false',
+  '-c',
+  'tag.gpgsign=false',
+] as const;
+
+/**
+ * Diff-subcommand flags (they are not accepted at top level) that stop git
+ * running a session-configured `diff.external` or `diff.<driver>.textconv`.
+ * Without them an armed external diff emits no hunks, `gitDiffAddedLines`
+ * returns nothing, and the coverage stage reads that absence as a pass.
+ */
+const DIFF_SAFE_FLAGS = ['--no-ext-diff', '--no-textconv'] as const;
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
@@ -41,7 +68,7 @@ function git(cwd: string, ...args: string[]): string {
  * protected-glob backstop.
  */
 export function gitDiffPaths(repoPath: string, target: string, branch: string): string[] {
-  return git(repoPath, 'diff', '-z', '--name-only', `${target}...${branch}`)
+  return git(repoPath, 'diff', ...DIFF_SAFE_FLAGS, '-z', '--name-only', `${target}...${branch}`)
     .split('\0')
     .filter(Boolean);
 }
@@ -60,7 +87,15 @@ export function gitDiffAddedLines(
   const added: Record<string, number[]> = {};
   for (const path of gitDiffPaths(repoPath, target, branch)) {
     const lines: number[] = [];
-    const patch = git(repoPath, 'diff', '-U0', `${target}...${branch}`, '--', path);
+    const patch = git(
+      repoPath,
+      'diff',
+      ...DIFF_SAFE_FLAGS,
+      '-U0',
+      `${target}...${branch}`,
+      '--',
+      path,
+    );
     for (const line of patch.split('\n')) {
       const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
       if (!hunk) continue;
@@ -77,7 +112,14 @@ export function gitDiffAddedLines(
 export function gitDiffNumstat(repoPath: string, target: string, branch: string): DiffFileStat[] {
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
   // paths as two separate NUL fields.
-  const fields = git(repoPath, 'diff', '-z', '--numstat', `${target}...${branch}`).split('\0');
+  const fields = git(
+    repoPath,
+    'diff',
+    ...DIFF_SAFE_FLAGS,
+    '-z',
+    '--numstat',
+    `${target}...${branch}`,
+  ).split('\0');
   const stats: DiffFileStat[] = [];
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];
