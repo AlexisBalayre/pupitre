@@ -350,22 +350,32 @@ describe('launchTask scope-conflict guard', () => {
 
   // `createSession` admits before the row exists and cannot refuse after, so a
   // holder that appears between its read and `launchTask`'s is recorded — but
-  // as raced, not as something the operator accepted (decision 41).
+  // as raced, not as something the operator accepted (decision 41). The race
+  // is staged in the store: a trigger seeds the holder the moment the
+  // candidate's own task row lands, i.e. after the first read, before the second.
   it('records a holder that raced in as raced, not as operator-accepted', () => {
-    planTask(db, { repoPath: repo, task: spec() });
-    seedHolder();
+    insertTask(db, {
+      id: 't-held',
+      projectId: projectId(repo),
+      spec: JSON.stringify({ id: 't-held', goal: 'hold it', scopeIn: ['src/core/**'] }),
+    });
+    db.exec(`CREATE TRIGGER race AFTER INSERT ON tasks WHEN NEW.id = 't-1' BEGIN
+      INSERT INTO sessions (id, task_id, worktree_path, branch, profile_hash)
+      VALUES ('s-held', 't-held', '${join(repo, '.worktrees', 's-held')}', 'pup/s-held', 'h');
+    END`);
 
-    const sessionId = launchTask(db, {
+    const sessionId = createSession(db, {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
-      taskId: 't-1',
+      task: spec(),
       claudeUserDir: join(repo, '.claude'),
-      allowOverlap: true,
-      overlapVia: 'raced',
     });
 
     const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
-    expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('raced');
+    expect(JSON.parse(overlap?.payload ?? '{}')).toMatchObject({
+      via: 'raced',
+      accepted: [{ session: 's-held' }],
+    });
   });
 
   it('records the operator as the one who waved an overlap through `pup new`', () => {
