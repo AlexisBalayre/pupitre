@@ -95,7 +95,12 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
-import { repoRoot, resolveProject } from './project.utils.js';
+import {
+  enclosingProject,
+  ProjectResolutionError,
+  type ResolvedProject,
+  resolveProject,
+} from './project.utils.js';
 
 /**
  * One-keystroke approval of the decision record a merge just drafted. TTY
@@ -263,6 +268,12 @@ function callingSession(db: Database): string | undefined {
   );
 }
 
+function operatorOnlyProject(): ProjectResolutionError {
+  return new ProjectResolutionError(
+    'Reaching another project is operator-only; a session controls only the project it runs in.',
+  );
+}
+
 interface PlanOptions {
   scope?: string[];
   scopeOut?: string[];
@@ -275,18 +286,43 @@ export function buildProgram(): Command {
   program
     .name('pup')
     .description('Control plane for parallel Claude Code sessions')
-    .version('0.1.0');
+    .version('0.1.0')
+    .option('--project <id>', 'control a registered project by id, from anywhere');
   program.exitOverride().configureOutput({
     writeOut: (str) => process.stdout.write(str),
     writeErr: (str) => process.stderr.write(str),
   });
+  /**
+   * The one resolver every command shares, so `--project` needs no
+   * per-command branch. The repo around cwd is the only project a session
+   * may reach; `--project` and the store's auto-select outside any repo both
+   * hand a command another project's store, where every operator-only guard
+   * asks `callingSession` and a session is unknown — so both are refused for
+   * a session here, by the variable first and by its own store's rows second
+   * (decision 43).
+   */
+  const project = (): ResolvedProject => {
+    const selected = program.opts().project as string | undefined;
+    const own = enclosingProject(process.cwd());
+    if (own && selected === undefined) return own;
+    try {
+      // The variable alone refuses: a session that cd's outside every repo
+      // has no own store to be found in, and decision 42's ceiling needed it
+      // to also unset the variable — this keeps it so.
+      if (process.env.PUP_SESSION_ID) throw operatorOnlyProject();
+      if (own && callingSession(own.db)) throw operatorOnlyProject();
+    } finally {
+      own?.db.close();
+    }
+    return resolveProject(process.cwd(), selected);
+  };
 
   program
     .command('init')
     .description('Onboard a repo: detect stack, baseline, conventions')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .action((opts: { gateEnv?: string }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const report = runOrReportNoAdapter(() =>
         initProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
       );
@@ -306,7 +342,7 @@ export function buildProgram(): Command {
     .option('--model <model>', 'claude model for the session')
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .action((goal: string, opts: Record<string, string[] | string | boolean | undefined>) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       // `pup new` is `pup plan add` plus a launch, so it carries the same rule:
       // a session authoring a spec writes a later session's kickoff prompt and
       // the hook allowlist the gate audits against, and would also mint itself a
@@ -351,7 +387,7 @@ export function buildProgram(): Command {
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--goal <goal>', 'replacement goal (edit)')
     .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const verb = action ?? 'list';
       // Writing a spec is operator-only: `goal` becomes a later session's
       // kickoff prompt verbatim and `scopeIn` becomes the hook allowlist the
@@ -468,7 +504,7 @@ export function buildProgram(): Command {
     .option('--model <model>', 'claude model for the session')
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .action((taskId: string, opts: { model?: string; allowOverlap?: boolean }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       // Admitting work belongs to whoever answers for the collision it may
       // cause. Guarding only `--allow-overlap` left the command itself open, so
       // a session could kill the holder of a scope and launch a conflicting
@@ -516,7 +552,7 @@ export function buildProgram(): Command {
     .command('status')
     .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
     .action(() => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const overdue = listOverdueLedgerEntries(db, projectId(repoPath), new Date());
       for (const entry of overdue) {
         console.log(
@@ -619,7 +655,7 @@ export function buildProgram(): Command {
     .option('--stop', 'stop the detached radar')
     .option('--interval <seconds>', 'seconds between scans', String(WATCH_INTERVAL_MS / 1000))
     .action((opts: { once?: boolean; start?: boolean; stop?: boolean; interval: string }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const pid = projectId(repoPath);
       if (opts.stop) {
         killWatcher(pid);
@@ -666,7 +702,7 @@ export function buildProgram(): Command {
     .command('steer <session> <message>')
     .description('Inject a correction into a running session')
     .action((session: string, message: string) => {
-      const { db } = resolveProject();
+      const { db } = project();
       if (!resolveLiveSession(db, session, 'steer')) return;
       steerSession(session, message);
       appendEvent(db, session, 'steer', { kind: 'manual' });
@@ -677,7 +713,7 @@ export function buildProgram(): Command {
     .command('interrupt <session> [message]')
     .description("Abort the session's in-flight tool call (Escape), optionally steering a message")
     .action((session: string, message?: string) => {
-      const { db } = resolveProject();
+      const { db } = project();
       if (!resolveLiveSession(db, session, 'interrupt')) return;
       interruptSession(session);
       if (message) steerSession(session, message);
@@ -697,7 +733,7 @@ export function buildProgram(): Command {
     )
     .option('--respawn', 'kill the window but relaunch the session fresh, no handoff')
     .action((session: string, opts: { respawn?: boolean }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       // `killed` releases the session's scope and returns its task to the
       // backlog (decision 40), so a session that could kill could clear the
       // way for any launch; `--respawn` is the same authority over another
@@ -731,7 +767,7 @@ export function buildProgram(): Command {
       String(HANDOFF_WAIT_DEFAULT_MS / 1000),
     )
     .action((session: string, opts: { wait: string }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       if (!isHandoffReady(db, session)) {
         const handoffPath = requestHandoff(db, repoPath, session);
         console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
@@ -752,7 +788,7 @@ export function buildProgram(): Command {
     .command('review [session]')
     .description('Risk-ordered review queue, or one branch in detail')
     .action((session?: string) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       if (!session) {
         const queue = buildReviewQueue(db, repoPath);
         if (queue.length === 0) {
@@ -821,7 +857,7 @@ export function buildProgram(): Command {
           process.exitCode = 1;
           return;
         }
-        const { repoPath, db } = resolveProject();
+        const { repoPath, db } = project();
         // Worktree first: it survives `env -u PUP_SESSION_ID`. Neither is proof
         // against a determined session (it can also `cd` out of its worktree) —
         // this makes the audit trail honest, not tamper-proof (decision 27). The
@@ -914,7 +950,7 @@ export function buildProgram(): Command {
     .description('Code map: text tree, or one module in detail; --open for the mind-map')
     .option('--open', 'render the interactive mind-map and open it in the browser')
     .action((module: string | undefined, opts: { open?: boolean }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const [adapter] = detectAdapters(repoPath);
       if (!adapter) {
         console.error(
@@ -943,7 +979,7 @@ export function buildProgram(): Command {
     .description('Render the project report (sessions with intent, drift, debt, decisions) as HTML')
     .option('--open', 'open the rendered report in the browser')
     .action((opts: { open?: boolean }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const outDir = projectPaths(repoPath).root;
       let dossiers = 0;
       for (const session of listSessions(db)) {
@@ -968,7 +1004,7 @@ export function buildProgram(): Command {
     });
   const debt = program.command('debt').description('Open ledger entries, oldest first');
   debt.action(() => {
-    const { repoPath, db } = resolveProject();
+    const { repoPath, db } = project();
     const entries = listLedgerEntries(db, projectId(repoPath));
     if (entries.length === 0) {
       console.log('No open ledger entries.');
@@ -985,7 +1021,7 @@ export function buildProgram(): Command {
     .command('close <id>')
     .description('Close a ledger entry once a merge has removed the shortcut')
     .action((id: string) => {
-      const { db } = resolveProject();
+      const { db } = project();
       if (closeLedgerEntry(db, Number(id))) {
         console.log(`Closed ledger entry #${id}.`);
       } else {
@@ -997,7 +1033,7 @@ export function buildProgram(): Command {
     .command('log [module]')
     .description('Decision records, newest first, optionally filtered by module or file')
     .action((module?: string) => {
-      const { db } = resolveProject();
+      const { db } = project();
       const records = listDecisionRecords(db, module);
       if (records.length === 0) {
         console.log(module ? `No decision records touching ${module}.` : 'No decision records.');
@@ -1017,7 +1053,7 @@ export function buildProgram(): Command {
     .command('profile <action> [name]')
     .description('Manage profile layers (list|show|edit|stale)')
     .action((action: string, name?: string) => {
-      const { profilesDir } = projectPaths(repoRoot());
+      const { profilesDir } = projectPaths(project().repoPath);
       try {
         switch (action) {
           case 'list': {
@@ -1063,7 +1099,7 @@ export function buildProgram(): Command {
     .option('--model <model>', 'claude model for the sweep session (with --sweep)')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .action((opts: { sweep?: boolean; model?: string; gateEnv?: string }) => {
-      const { repoPath, db } = resolveProject();
+      const { repoPath, db } = project();
       const report = runOrReportNoAdapter(() =>
         auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
       );
@@ -1134,7 +1170,7 @@ export function buildProgram(): Command {
         process.exitCode = 1;
         return;
       }
-      const { db } = resolveProject();
+      const { db } = project();
       markSessionDone(db, sessionId, summary);
       console.log(`Session ${sessionId} marked done: ${summary}`);
     });
@@ -1150,7 +1186,7 @@ export function buildProgram(): Command {
         process.exitCode = 1;
         return;
       }
-      const { db } = resolveProject();
+      const { db } = project();
       markHandoffReady(db, sessionId);
       console.log(`Session ${sessionId} handoff recorded; Pupitre will respawn you shortly.`);
     });
@@ -1173,13 +1209,26 @@ function isMainModule(): boolean {
   }
 }
 
+/**
+ * The exit code for an error that escaped `parse`: commander's own (help,
+ * version, usage) already wrote their message; a project that cannot be
+ * resolved gets its one line here. Anything else is a bug and stays a crash.
+ */
+export function fatalExitCode(error: unknown): number {
+  if (error instanceof CommanderError) return error.exitCode;
+  if (error instanceof ProjectResolutionError) {
+    console.error(error.message);
+    return 1;
+  }
+  throw error;
+}
+
 if (isMainModule()) {
   try {
     buildProgram().parse();
   } catch (error) {
-    if (error instanceof CommanderError) {
-      process.exit(error.exitCode);
-    }
-    throw error;
+    // exitCode, not exit(): when stderr is a pipe the write is asynchronous
+    // and exit() would drop the one line that explains the failure.
+    process.exitCode = fatalExitCode(error);
   }
 }

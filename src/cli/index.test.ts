@@ -4,12 +4,14 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CommanderError } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
@@ -73,8 +75,8 @@ import {
   planTask,
 } from '../core/session-lifecycle.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
-import { buildProgram } from './index.js';
-import { resolveProject } from './project.utils.js';
+import { buildProgram, fatalExitCode } from './index.js';
+import { ProjectResolutionError, resolveProject } from './project.utils.js';
 
 const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
@@ -127,6 +129,15 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
     profileHash: 'hash',
   });
   db.close();
+}
+
+/** Registers the repo in the store the way `pup init` does, with nothing planned. */
+function registerProject(repoPath: string): string {
+  const { db } = resolveProject(repoPath);
+  const pid = projectId(repoPath);
+  ensureProject(db, pid, repoPath);
+  db.close();
+  return pid;
 }
 
 /** One planned task: a row in the backlog with no session of its own. */
@@ -197,6 +208,10 @@ describe('CLI commands', () => {
     // resolveProject() always resolves state under homedir() — point it at a
     // throwaway HOME so a test run never touches the developer's real ~/.pupitre.
     vi.stubEnv('HOME', tempDir('pup-cli-home-'));
+    // Reaching another project refuses on PUP_SESSION_ID alone, and this suite
+    // runs inside a pup session during dogfooding, where the variable is
+    // exported; operator cases must not inherit it. Session cases stub their own.
+    vi.stubEnv('PUP_SESSION_ID', '');
     // repoRoot() shells out to `git -C <cwd> rev-parse ...` with no env
     // override, so it inherits process.env as-is. Running inside the repo's
     // own pre-commit hook leaves GIT_DIR (and friends) set, which silently
@@ -287,10 +302,68 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('planned');
     });
 
-    it('throws when run outside any git repo (no project to resolve)', () => {
+    // Outside any repo the store decides, but only when it cannot be wrong
+    // (decision 43).
+    it('runs against the only registered project when outside any repo', () => {
+      const repo = initRepo();
+      seedBacklogTask(repo, 't-plan', 'the one project there is');
       useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow();
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('the one project there is');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('runs against the one project still on disk when the others are stale', () => {
+      const live = initRepo();
+      seedBacklogTask(live, 't-plan', 'the one repo still here');
+      const stale = initRepo();
+      registerProject(stale);
+      rmSync(stale, { recursive: true });
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('the one repo still here');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('lists the registered projects and refuses when several could apply', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      const idA = registerProject(repoA);
+      const idB = registerProject(repoB);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
+        new ProjectResolutionError(
+          [
+            ...[`${idA}  ${repoA}`, `${idB}  ${repoB}`].sort(),
+            'Not inside a git repository; pass --project <id> to pick one of these.',
+          ].join('\n'),
+        ),
+      );
+    });
+
+    it('refuses in one line when outside any repo and nothing is registered', () => {
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
+        new ProjectResolutionError(
+          'Not inside a git repository and no project registered; run pup init from the repo you want to control.',
+        ),
+      );
+    });
+
+    it('ignores the store while inside a repo', () => {
+      const registered = initRepo();
+      seedBacklogTask(registered, 't-plan', 'planned elsewhere');
+      useCwd(initRepo());
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).toContain('Nothing running and nothing planned.');
     });
 
     it('marks a running session STALLED with its age and sorts it before a fresh one', () => {
@@ -1024,6 +1097,155 @@ describe('CLI commands', () => {
         expect(errors).toEqual(['No open ledger entry #999.']);
         expect(process.exitCode).toBe(1);
       });
+    });
+  });
+
+  describe('--project', () => {
+    it('selects a registered project from outside any repo, before or after the command', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      seedBacklogTask(repoA, 't-a', 'planned in A');
+      const idB = registerProject(repoB);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['--project', idB, 'status'], { from: 'user' });
+      buildProgram().parse(['status', '--project', idB], { from: 'user' });
+
+      expect(logs).toEqual([
+        'Nothing running and nothing planned.',
+        'Nothing running and nothing planned.',
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('wins over the repo around cwd', () => {
+      const repoA = initRepo();
+      seedBacklogTask(repoA, 't-a', 'planned in A');
+      useCwd(initRepo());
+
+      buildProgram().parse(['--project', projectId(repoA), 'status'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('planned in A');
+    });
+
+    it('refuses an unknown id in one line', () => {
+      const id = registerProject(initRepo());
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['--project', 'ghost', 'status'], { from: 'user' }),
+      ).toThrow(new ProjectResolutionError(`No project ghost; registered projects: ${id}.`));
+    });
+
+    // Every operator-only guard asks `callingSession` of the store it was
+    // handed; a session handed another project's store is unknown there, so
+    // `--project` itself is operator-only (decision 43).
+    it('refuses a session calling from its worktree, before any command runs', () => {
+      const own = initRepo();
+      const worktree = join(own, '.worktrees', 's1');
+      mkdirSync(worktree, { recursive: true });
+      seedSession(own, 's1', worktree);
+      const other = registerProject(initRepo());
+      useCwd(worktree);
+
+      expect(() =>
+        buildProgram().parse(['--project', other, 'plan', 'add', 'goal', '--scope', 'src/**'], {
+          from: 'user',
+        }),
+      ).toThrow(
+        new ProjectResolutionError(
+          'Reaching another project is operator-only; a session controls only the project it runs in.',
+        ),
+      );
+      expect(planTask).not.toHaveBeenCalled();
+    });
+
+    it('refuses a session declared by PUP_SESSION_ID from its own repo', () => {
+      const own = initRepo();
+      seedSession(own, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      const other = registerProject(initRepo());
+      useCwd(own);
+
+      expect(() => buildProgram().parse(['--project', other, 'status'], { from: 'user' })).toThrow(
+        'operator-only',
+      );
+    });
+
+    // Outside every repo there is no own store to find the session in, so the
+    // variable alone refuses; decision 42's ceiling needed both leaving the
+    // worktree and unsetting it, and this keeps it so.
+    it('refuses a session that left every repo but still exports PUP_SESSION_ID', () => {
+      registerProject(initRepo());
+      const other = registerProject(initRepo());
+      vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['--project', other, 'plan', 'add', 'goal', '--scope', 'src/**'], {
+          from: 'user',
+        }),
+      ).toThrow('operator-only');
+      expect(planTask).not.toHaveBeenCalled();
+    });
+
+    // The store's auto-select is the same door as `--project`: another
+    // project's store, where the session's guards cannot find it.
+    it('refuses a session outside every repo even when the store would auto-select', () => {
+      const only = initRepo();
+      registerProject(only);
+      vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['plan', 'add', 'goal', '--scope', 'src/**'], { from: 'user' }),
+      ).toThrow('operator-only');
+      expect(planTask).not.toHaveBeenCalled();
+    });
+
+    it('lets an operator inside one repo author work in another', () => {
+      const other = initRepo();
+      const otherId = registerProject(other);
+      vi.mocked(planTask).mockReturnValue('t-abc');
+      useCwd(initRepo());
+
+      buildProgram().parse(['--project', otherId, 'plan', 'add', 'goal', '--scope', 'src/**'], {
+        from: 'user',
+      });
+
+      expect(firstCall(planTask)[1]).toMatchObject({ repoPath: other });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reaches commands that read the project dir, not only the store', () => {
+      const id = registerProject(initRepo());
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['--project', id, 'profile', 'list'], { from: 'user' });
+
+      expect(logs.some((l) => l.startsWith(DEFAULT_BASE_PROFILE.name))).toBe(true);
+    });
+  });
+
+  // The entry point maps what escaped parse to an exit code; tests drive parse
+  // in-process, so this is the only place the one-line contract is checked.
+  describe('fatalExitCode', () => {
+    it('prints a project resolution failure as one message and exits 1', () => {
+      expect(fatalExitCode(new ProjectResolutionError('No project ghost.'))).toBe(1);
+
+      expect(errors).toEqual(['No project ghost.']);
+    });
+
+    it("keeps commander's own exit code, whose message is already written", () => {
+      expect(fatalExitCode(new CommanderError(2, 'commander.unknownOption', 'unknown'))).toBe(2);
+
+      expect(errors).toEqual([]);
+    });
+
+    it('rethrows anything else, so a bug still crashes with its stack', () => {
+      const bug = new TypeError('undefined is not a function');
+
+      expect(() => fatalExitCode(bug)).toThrow(bug);
     });
   });
 
