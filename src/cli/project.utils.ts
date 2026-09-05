@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { sanitizeReason } from '../adapters/capability.utils.js';
+import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { openStore } from '../core/db.client.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
@@ -72,6 +72,9 @@ function enclosingRepoRoot(cwd: string): string | undefined {
  * migrations, no `-wal` created — this runs against every store under the
  * base, including ones a session wrote or a stray file dropped there, and a
  * store that cannot be read is no project rather than every command's crash.
+ * It is said once on stderr, not swallowed: a project that vanishes from the
+ * listing because its store lost its permissions is otherwise a mystery. An
+ * empty `projects` table is a store `pup status` created and is silent.
  */
 function readProjectRows(dbFile: string): { id: string; repo_path: string }[] {
   let db: Database.Database | undefined;
@@ -81,7 +84,8 @@ function readProjectRows(dbFile: string): { id: string; repo_path: string }[] {
       id: string;
       repo_path: string;
     }[];
-  } catch {
+  } catch (error) {
+    console.error(`Skipping unreadable store ${dbFile}: ${failureSummary(error)}`);
     return [];
   } finally {
     db?.close();
@@ -150,7 +154,13 @@ function selectById(id: string, registered: RegisteredProject[]): ResolvedProjec
  */
 function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
   const live = registered.filter((project) => project.repoExists);
-  if (live.length === 1) return openRegistered(live[0] as RegisteredProject);
+  if (live.length === 1) {
+    const chosen = live[0] as RegisteredProject;
+    // The choice was pup's, so it is said: the command's output otherwise
+    // reads as if the operator had named the project.
+    console.error(`Using project ${chosen.id} at ${sanitizeReason(chosen.repoPath)}`);
+    return openRegistered(chosen);
+  }
   if (live.length === 0) {
     const stale = registered.map((project) => project.id).join(', ');
     throw new ProjectResolutionError(

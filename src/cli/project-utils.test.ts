@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -39,6 +39,19 @@ function register(base: string, repoPath: string): string {
   return id;
 }
 
+let errors: string[];
+let originalConsoleError: typeof console.error;
+
+beforeEach(() => {
+  errors = [];
+  originalConsoleError = console.error;
+  console.error = (message: string) => errors.push(message);
+});
+
+afterEach(() => {
+  console.error = originalConsoleError;
+});
+
 describe('listRegisteredProjects', () => {
   it('is empty when the store directory does not exist yet', () => {
     expect(listRegisteredProjects(join(tempDir('pup-proj-'), 'never'))).toEqual([]);
@@ -68,6 +81,31 @@ describe('listRegisteredProjects', () => {
     const id = register(base, repo);
 
     expect(listRegisteredProjects(base).map((project) => project.id)).toEqual([id]);
+  });
+
+  it('says once on stderr which store it could not read, and reads the rest', () => {
+    const base = tempDir('pup-proj-base-');
+    const repo = initRepo();
+    const id = register(base, repo);
+    const locked = initRepo();
+    register(base, locked);
+    const lockedDb = projectPaths(locked, base).dbFile;
+    chmodSync(lockedDb, 0o000);
+
+    try {
+      expect(listRegisteredProjects(base).map((project) => project.id)).toEqual([id]);
+    } finally {
+      chmodSync(lockedDb, 0o644);
+    }
+    expect(errors).toEqual([expect.stringMatching(`^Skipping unreadable store ${lockedDb}: `)]);
+  });
+
+  it('is silent about a store whose projects table is empty', () => {
+    const base = tempDir('pup-proj-base-');
+    openStore(join(base, 'fresh', 'state.db')).close();
+
+    expect(listRegisteredProjects(base)).toEqual([]);
+    expect(errors).toEqual([]);
   });
 
   // Ids derive from repo_path, so a row that does not derive is a store
@@ -142,6 +180,20 @@ describe('resolveProject', () => {
       resolved.db.close();
 
       expect(resolved.repoPath).toBe(repo);
+    });
+
+    // The choice was pup's, so it is said, and said clean: the path is the
+    // store's to write (decision 29).
+    it('says which project it chose, with control characters stripped', () => {
+      const repo = join(tempDir('pup-proj-evil-'), 'x\u001b[31my');
+      mkdirSync(repo);
+      execFileSync('git', ['init', '-b', 'main'], { cwd: repo, env: GIT_ENV, encoding: 'utf8' });
+      const id = register(base, repo);
+
+      resolveProject(tempDir('pup-proj-nowhere-')).db.close();
+
+      expect(errors).toEqual([`Using project ${id} at ${repo.replace('\u001b', ' ')}`]);
+      expect(errors[0]).not.toContain('\u001b');
     });
 
     it('refuses in one line when nothing is registered', () => {

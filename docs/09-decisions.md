@@ -1218,7 +1218,12 @@ changes back into those docs is pending.
     *The scan trusts nothing under `~/.pupitre`.* Every store there is read, including ones a
     session wrote through the shared base or a stray file dropped in: read-only, without the
     schema and migrations `openStore` runs, and a store that cannot be read is no project rather
-    than every command's crash. A row counts only when its id is the directory's name and the
+    than every command's crash — said once on stderr, naming the store, because a project that
+    vanishes from the listing when its store loses its permissions is otherwise a mystery; an
+    empty `projects` table, which `pup status` in a never-initialised repo creates, is silent.
+    When the store makes the choice it says so too, `Using project <id> at <path>` on stderr,
+    since the command's output otherwise reads as if the operator had named the project, and
+    the path is the store's to write. A row counts only when its id is the directory's name and the
     hash of its own `repo_path` — ids derive from paths, so a row that fails to derive is a
     store planted or renamed to answer for a repo it is not keyed to, and is skipped. The
     `repo_path` a store reports and the id argv passes are sanitized before they reach the
