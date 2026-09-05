@@ -85,7 +85,7 @@ function readProjectRows(dbFile: string): { id: string; repo_path: string }[] {
       repo_path: string;
     }[];
   } catch (error) {
-    console.error(`Skipping unreadable store ${dbFile}: ${failureSummary(error)}`);
+    console.error(`Skipping unreadable store ${sanitizeReason(dbFile)}: ${failureSummary(error)}`);
     return [];
   } finally {
     db?.close();

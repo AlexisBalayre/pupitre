@@ -1205,16 +1205,19 @@ changes back into those docs is pending.
     have been the answer, so it does not count toward the choice; it is still shown in the
     listing marked `(missing)`, and an explicit `--project` on it refuses with the id and the
     path that is gone, because most commands shell into that path and would fail worse.
-    *`--project` is operator-only.* Every operator-only guard (decisions 26, 40, 42) asks
-    `callingSession` of the store it was handed — the session's worktree and its
+    *Reaching another project is operator-only.* Every operator-only guard (decisions 26, 40,
+    42) asks `callingSession` of the store it was handed — the session's worktree and its
     `PUP_SESSION_ID` are rows there — and a session handed another project's store is unknown
     in it, so `pup --project <other> new|plan|launch|kill` from inside a session would have
-    passed every guard at once. The shared resolver refuses `--project` when the store of the
-    repo around cwd, the session's own, reports a calling session, before any command runs,
-    and refuses on `PUP_SESSION_ID` alone before that lookup, because a session that cd's
-    outside every repo has no own store to be found in and the ceiling must still need both
-    the move and the unset; same detection, same ceiling as decision 27, and the target store
-    is never opened for the check because it is exactly the store that cannot know.
+    passed every guard at once; and the store's auto-select outside any repo is the same door
+    without the flag, since a session that cd's out of every repo is handed the only live
+    project's store just the same. The repo around cwd is therefore the one project the shared
+    resolver hands over unguarded; every other path — `--project`, or the store choosing —
+    refuses on `PUP_SESSION_ID` alone first, because outside every repo there is no own store
+    to be found in and decision 42's ceiling must still need both the move and the unset, and
+    then when the session's own store, the repo around cwd, reports a calling session; same
+    detection, same ceiling as decision 27, and the target store is never opened for the check
+    because it is exactly the store that cannot know.
     *The scan trusts nothing under `~/.pupitre`.* Every store there is read, including ones a
     session wrote through the shared base or a stray file dropped in: read-only, without the
     schema and migrations `openStore` runs, and a store that cannot be read is no project rather

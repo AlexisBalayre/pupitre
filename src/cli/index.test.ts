@@ -208,6 +208,10 @@ describe('CLI commands', () => {
     // resolveProject() always resolves state under homedir() — point it at a
     // throwaway HOME so a test run never touches the developer's real ~/.pupitre.
     vi.stubEnv('HOME', tempDir('pup-cli-home-'));
+    // Reaching another project refuses on PUP_SESSION_ID alone, and this suite
+    // runs inside a pup session during dogfooding, where the variable is
+    // exported; operator cases must not inherit it. Session cases stub their own.
+    vi.stubEnv('PUP_SESSION_ID', '');
     // repoRoot() shells out to `git -C <cwd> rev-parse ...` with no env
     // override, so it inherits process.env as-is. Running inside the repo's
     // own pre-commit hook leaves GIT_DIR (and friends) set, which silently
@@ -1097,14 +1101,6 @@ describe('CLI commands', () => {
   });
 
   describe('--project', () => {
-    // `--project` refuses on PUP_SESSION_ID alone, and this suite runs inside
-    // a pup session during dogfooding, where the variable is exported; the
-    // operator cases below must not inherit it. The session cases stub their
-    // own value.
-    beforeEach(() => {
-      vi.stubEnv('PUP_SESSION_ID', '');
-    });
-
     it('selects a registered project from outside any repo, before or after the command', () => {
       const repoA = initRepo();
       const repoB = initRepo();
@@ -1158,7 +1154,7 @@ describe('CLI commands', () => {
         }),
       ).toThrow(
         new ProjectResolutionError(
-          '`--project` is operator-only; a session controls only the project it runs in.',
+          'Reaching another project is operator-only; a session controls only the project it runs in.',
         ),
       );
       expect(planTask).not.toHaveBeenCalled();
@@ -1189,6 +1185,20 @@ describe('CLI commands', () => {
         buildProgram().parse(['--project', other, 'plan', 'add', 'goal', '--scope', 'src/**'], {
           from: 'user',
         }),
+      ).toThrow('operator-only');
+      expect(planTask).not.toHaveBeenCalled();
+    });
+
+    // The store's auto-select is the same door as `--project`: another
+    // project's store, where the session's guards cannot find it.
+    it('refuses a session outside every repo even when the store would auto-select', () => {
+      const only = initRepo();
+      registerProject(only);
+      vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['plan', 'add', 'goal', '--scope', 'src/**'], { from: 'user' }),
       ).toThrow('operator-only');
       expect(planTask).not.toHaveBeenCalled();
     });

@@ -270,7 +270,7 @@ function callingSession(db: Database): string | undefined {
 
 function operatorOnlyProject(): ProjectResolutionError {
   return new ProjectResolutionError(
-    '`--project` is operator-only; a session controls only the project it runs in.',
+    'Reaching another project is operator-only; a session controls only the project it runs in.',
   );
 }
 
@@ -294,22 +294,26 @@ export function buildProgram(): Command {
   });
   /**
    * The one resolver every command shares, so `--project` needs no
-   * per-command branch. `--project` is operator-only: every operator-only
-   * guard asks `callingSession` of the store it was handed, and a session
-   * handed another project's store is unknown there — its worktree and its
-   * id are rows in its own store, so that is the store asked (decision 43).
+   * per-command branch. The repo around cwd is the only project a session
+   * may reach; `--project` and the store's auto-select outside any repo both
+   * hand a command another project's store, where every operator-only guard
+   * asks `callingSession` and a session is unknown — so both are refused for
+   * a session here, by the variable first and by its own store's rows second
+   * (decision 43).
    */
   const project = (): ResolvedProject => {
     const selected = program.opts().project as string | undefined;
-    if (selected === undefined) return resolveProject(process.cwd());
-    // The variable alone refuses, before any store is asked: a session that
-    // cd's outside every repo has no own store to be found in, and decision
-    // 42's ceiling needed it to also unset the variable — this keeps it so.
-    if (process.env.PUP_SESSION_ID) throw operatorOnlyProject();
     const own = enclosingProject(process.cwd());
-    const caller = own ? callingSession(own.db) : undefined;
-    own?.db.close();
-    if (caller) throw operatorOnlyProject();
+    if (own && selected === undefined) return own;
+    try {
+      // The variable alone refuses: a session that cd's outside every repo
+      // has no own store to be found in, and decision 42's ceiling needed it
+      // to also unset the variable — this keeps it so.
+      if (process.env.PUP_SESSION_ID) throw operatorOnlyProject();
+      if (own && callingSession(own.db)) throw operatorOnlyProject();
+    } finally {
+      own?.db.close();
+    }
     return resolveProject(process.cwd(), selected);
   };
 
