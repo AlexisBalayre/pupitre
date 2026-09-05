@@ -14,7 +14,7 @@ export interface ResolvedProject {
 }
 
 /** A project `pup init` registered, read back from its own store under `~/.pupitre`. */
-export interface RegisteredProject {
+interface RegisteredProject {
   id: string;
   repoPath: string;
   dbFile: string;
@@ -40,7 +40,7 @@ const INIT_HINT = 'run pup init from the repo you want to control.';
  * Resolve the main repo path from the current directory, even inside a
  * worktree. stderr is captured, not echoed: outside a repo git's own "fatal:
  * not a git repository" is the expected outcome, and pup speaks for it.
- * `LC_ALL=C` keeps that message in English so `enclosingRepoRoot` can
+ * `LC_ALL=C` keeps that message in English so `enclosingProject` can
  * recognise it under a translated git.
  */
 function repoRoot(cwd: string): string {
@@ -56,15 +56,9 @@ function repoRoot(cwd: string): string {
   return commonDir.replace(/\/\.git\/?$/, '');
 }
 
-/** The repo around cwd, or undefined outside any — every other git failure still throws. */
-function enclosingRepoRoot(cwd: string): string | undefined {
-  try {
-    return repoRoot(cwd);
-  } catch (error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    if (String(stderr).includes('not a git repository')) return undefined;
-    throw error;
-  }
+interface ProjectRow {
+  id: string;
+  repo_path: string;
 }
 
 /**
@@ -76,14 +70,11 @@ function enclosingRepoRoot(cwd: string): string | undefined {
  * listing because its store lost its permissions is otherwise a mystery. An
  * empty `projects` table is a store `pup status` created and is silent.
  */
-function readProjectRows(dbFile: string): { id: string; repo_path: string }[] {
+function readProjectRows(dbFile: string): ProjectRow[] {
   let db: Database.Database | undefined;
   try {
     db = new Database(dbFile, { readonly: true, fileMustExist: true });
-    return db.prepare('SELECT id, repo_path FROM projects ORDER BY id').all() as {
-      id: string;
-      repo_path: string;
-    }[];
+    return db.prepare('SELECT id, repo_path FROM projects ORDER BY id').all() as ProjectRow[];
   } catch (error) {
     console.error(`Skipping unreadable store ${sanitizeReason(dbFile)}: ${failureSummary(error)}`);
     return [];
@@ -93,31 +84,36 @@ function readProjectRows(dbFile: string): { id: string; repo_path: string }[] {
 }
 
 /**
+ * A row answers for the directory it sits in only when both its id and the
+ * hash of its own `repo_path` are that directory's name: ids are derived, so
+ * a row that fails to derive is a store planted or renamed to answer for a
+ * repo it is not keyed to (decision 43).
+ */
+function keyedTo(dirName: string, row: ProjectRow): boolean {
+  return [row.id, projectId(row.repo_path)].every((id) => id === dirName);
+}
+
+/**
  * Every project registered in the store, one directory per project id under
  * `~/.pupitre` (the base `projectPaths` defaults to), each holding its own
  * `state.db` with its own `projects` row. A directory with no store — one
- * `pup report` wrote into, or a leftover — is not a project, and neither is a
- * row whose id is not the hash of its own `repo_path` under the directory of
- * that name: ids are derived, so a row that fails to derive is a store planted
- * or renamed to answer for a repo it is not keyed to (decision 43).
+ * `pup report` wrote into, or a leftover — is not a project.
  */
 export function listRegisteredProjects(base = join(homedir(), '.pupitre')): RegisteredProject[] {
   if (!existsSync(base)) return [];
-  const projects: RegisteredProject[] = [];
-  for (const entry of readdirSync(base, { withFileTypes: true })) {
-    const dbFile = join(base, entry.name, 'state.db');
-    if (!entry.isDirectory() || !existsSync(dbFile)) continue;
-    for (const row of readProjectRows(dbFile)) {
-      if (row.id !== entry.name || projectId(row.repo_path) !== entry.name) continue;
-      projects.push({
-        id: row.id,
-        repoPath: row.repo_path,
-        dbFile,
-        repoExists: existsSync(row.repo_path),
-      });
-    }
-  }
-  return projects;
+  return readdirSync(base)
+    .map((name) => ({ name, dbFile: join(base, name, 'state.db') }))
+    .filter(({ dbFile }) => existsSync(dbFile))
+    .flatMap(({ name, dbFile }) =>
+      readProjectRows(dbFile)
+        .filter((row) => keyedTo(name, row))
+        .map((row) => ({
+          id: row.id,
+          repoPath: row.repo_path,
+          dbFile,
+          repoExists: existsSync(row.repo_path),
+        })),
+    );
 }
 
 /**
@@ -186,8 +182,15 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
  * its `PUP_SESSION_ID` are rows in this store and no other.
  */
 export function enclosingProject(cwd = process.cwd()): ResolvedProject | undefined {
-  const repoPath = enclosingRepoRoot(cwd);
-  if (repoPath === undefined) return undefined;
+  let repoPath: string;
+  try {
+    repoPath = repoRoot(cwd);
+  } catch (error) {
+    // Outside any repo is the one git failure that is an answer, not an error.
+    const stderr = (error as { stderr?: unknown }).stderr;
+    if (String(stderr).includes('not a git repository')) return undefined;
+    throw error;
+  }
   return { repoPath, db: openStore(projectPaths(repoPath).dbFile) };
 }
 
