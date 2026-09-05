@@ -41,15 +41,24 @@ function register(base: string, repoPath: string): string {
 
 let errors: string[];
 let originalConsoleError: typeof console.error;
+/** The store under the stubbed HOME, for the cases that resolve through homedir(). */
+let base: string;
 
 beforeEach(() => {
   errors = [];
   originalConsoleError = console.error;
   console.error = (message: string) => errors.push(message);
+  // The store lives under homedir(); a throwaway HOME for every test keeps
+  // the developer's real ~/.pupitre out of reach — the merge gate's sandbox
+  // forbids writing there, and a test that reaches it passes only locally.
+  const home = tempDir('pup-proj-home-');
+  vi.stubEnv('HOME', home);
+  base = join(home, '.pupitre');
 });
 
 afterEach(() => {
   console.error = originalConsoleError;
+  vi.unstubAllEnvs();
 });
 
 describe('listRegisteredProjects', () => {
@@ -134,20 +143,6 @@ describe('listRegisteredProjects', () => {
 });
 
 describe('resolveProject', () => {
-  let base: string;
-
-  beforeEach(() => {
-    base = tempDir('pup-proj-home-');
-    // The store lives under homedir(); a throwaway HOME keeps the developer's
-    // real ~/.pupitre out of every case below.
-    vi.stubEnv('HOME', base);
-    base = join(base, '.pupitre');
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it('resolves the repo around cwd, even from a linked worktree', () => {
     const repo = initRepo();
     execFileSync('git', ['commit', '--allow-empty', '-m', 'root'], { cwd: repo, env: GIT_ENV });
