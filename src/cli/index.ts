@@ -18,11 +18,10 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
-  interruptSession,
   killWatcher,
   launchWatcher,
+  SessionPaneMissingError,
   SteerNotDeliveredError,
-  steerSession,
 } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
@@ -85,10 +84,12 @@ import {
 } from '../core/session-lifecycle.errors.js';
 import {
   createSession,
+  interruptSession,
   killSession,
   launchTask,
   markSessionDone,
   planTask,
+  steerSession,
 } from '../core/session-lifecycle.service.js';
 import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
@@ -258,12 +259,24 @@ const ALLOW_OVERLAP_DESCRIPTION =
  * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
  * Prints the refusal, the rollback, and how to retry; sets the exit code.
  */
-function rollBackRefusedLaunch(db: Database, error: SteerNotDeliveredError, retry: string): void {
+function rollBackRefusedLaunch(db: Database, error: RefusedSteer, retry: string): void {
   // The refusal first: a kill that throws must not hide why the launch failed.
   console.error(error.message);
   killSession(db, error.sessionId);
   console.error(`Launch rolled back (session ${error.sessionId} killed). Re-run \`${retry}\`.`);
   process.exitCode = 1;
+}
+
+/**
+ * The two ways a steer, a kickoff included, is refused with nothing typed: the
+ * paste never landed whole (decision 45), or the pane recorded at launch is
+ * not there to type into (decision 46) — for a launch, a window that died
+ * before its context arrived.
+ */
+type RefusedSteer = SteerNotDeliveredError | SessionPaneMissingError;
+
+function isRefusedSteer(error: unknown): error is RefusedSteer {
+  return error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError;
 }
 
 /**
@@ -431,7 +444,7 @@ export function buildProgram(): Command {
           allowOverlap: opts.allowOverlap === true,
         });
       } catch (error) {
-        if (error instanceof SteerNotDeliveredError) {
+        if (isRefusedSteer(error)) {
           rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
           return;
         }
@@ -597,7 +610,7 @@ export function buildProgram(): Command {
           allowOverlap: opts.allowOverlap,
         });
       } catch (error) {
-        if (error instanceof SteerNotDeliveredError) {
+        if (isRefusedSteer(error)) {
           rollBackRefusedLaunch(db, error, `pup launch ${taskId}`);
           return;
         }
@@ -774,9 +787,9 @@ export function buildProgram(): Command {
       const { db } = project();
       if (!resolveLiveSession(db, session, 'steer')) return;
       try {
-        steerSession(session, message);
+        steerSession(db, session, message);
       } catch (error) {
-        if (!(error instanceof SteerNotDeliveredError)) throw error;
+        if (!isRefusedSteer(error)) throw error;
         console.error(error.message);
         process.exitCode = 1;
         return;
@@ -791,11 +804,19 @@ export function buildProgram(): Command {
     .action((session: string, message?: string) => {
       const { db } = project();
       if (!resolveLiveSession(db, session, 'interrupt')) return;
-      interruptSession(session);
       try {
-        if (message) steerSession(session, message);
+        interruptSession(db, session);
       } catch (error) {
-        if (!(error instanceof SteerNotDeliveredError)) throw error;
+        // Nothing landed, so nothing is on record.
+        if (!(error instanceof SessionPaneMissingError)) throw error;
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        if (message) steerSession(db, session, message);
+      } catch (error) {
+        if (!isRefusedSteer(error)) throw error;
         // Escape already landed, so the interrupt is on record; only the
         // steer is refused.
         appendEvent(db, session, 'interrupt', { steered: false });
@@ -878,9 +899,15 @@ export function buildProgram(): Command {
         }
         respawnSession(db, repoPath, session);
       } catch (error) {
-        if (!(error instanceof SteerNotDeliveredError)) throw error;
+        if (!isRefusedSteer(error)) throw error;
         console.error(error.message);
-        console.error(`Re-run \`pup respawn ${session}\`.`);
+        // A paste that never landed is worth asking again; a pane that is not
+        // there to ask needs a fresh window, and that is the hard respawn.
+        console.error(
+          error instanceof SteerNotDeliveredError
+            ? `Re-run \`pup respawn ${session}\`.`
+            : `Relaunch it without a handoff: \`pup kill --respawn ${session}\`.`,
+        );
         process.exitCode = 1;
         return;
       }
@@ -1230,7 +1257,7 @@ export function buildProgram(): Command {
             allowOverlap: true,
           });
         } catch (error) {
-          if (!(error instanceof SteerNotDeliveredError)) throw error;
+          if (!isRefusedSteer(error)) throw error;
           rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
           return;
         }

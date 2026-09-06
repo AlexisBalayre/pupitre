@@ -12,9 +12,10 @@ import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../claude/session-runtime.service.js', () => ({
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   killSession: vi.fn(),
-  steerSession: vi.fn(),
+  steerPane: vi.fn(),
 }));
 
 // Without this, every merging test would spawn a real `claude -p` call.
@@ -30,7 +31,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
-import { killSession, steerSession } from '../claude/session-runtime.service.js';
+import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
@@ -82,6 +83,8 @@ function commitIn(dir: string, file: string, content: string): void {
 
 const SESSION_ID = 's1';
 const BRANCH = `pup/${SESSION_ID}`;
+/** The pane `launchSession` would have recorded for the seeded session. */
+const LAUNCH_PANE = '%4';
 
 function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> = {}): string {
   ensureProject(db, 'proj-1', repo);
@@ -102,6 +105,7 @@ function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> = {}): 
     worktreePath: worktree,
     branch: BRANCH,
     profileHash: 'hash',
+    tmuxTarget: LAUNCH_PANE,
   });
   transitionSession(db, SESSION_ID, 'running');
   transitionSession(db, SESSION_ID, 'awaiting-review');
@@ -172,7 +176,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // A merged session claims its task, so the task leaves the backlog without
     // anything writing a second copy of that fact (decision 40).
     expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
-    expect(killSession).toHaveBeenCalledWith(SESSION_ID);
+    // By the launch pane as well as the name (decision 46).
+    expect(killSession).toHaveBeenCalledWith(SESSION_ID, LAUNCH_PANE);
     expect(existsSync(worktree)).toBe(false);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
@@ -219,7 +224,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('rejected');
     expect(outcome.rejectCount).toBe(1);
     expect(getSession(db, SESSION_ID)?.state).toBe('running');
-    expect(vi.mocked(steerSession).mock.calls[0]?.[1]).toContain('rebase');
+    // Into the pane recorded at launch, never a session target (decision 46).
+    expect(vi.mocked(steerPane).mock.calls[0]?.[0]).toEqual({
+      sessionId: SESSION_ID,
+      paneId: LAUNCH_PANE,
+    });
+    expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('rebase');
   });
 
   it('rejects on a build failure and stops the pipeline there', () => {
@@ -231,7 +241,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
     expect(outcome.report.stages.map((s) => s.stage)).not.toContain('scope-audit');
-    expect(steerSession).toHaveBeenCalled();
+    expect(steerPane).toHaveBeenCalled();
   });
 
   it('runs gate commands without the operator secrets in pup’s own environment', () => {
@@ -378,7 +388,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     expect(getSession(db, SESSION_ID)?.reject_count).toBe(0);
-    expect(steerSession).not.toHaveBeenCalled();
+    expect(steerPane).not.toHaveBeenCalled();
   });
 
   it('merges an oversize diff with --accept-debt and writes a ledger entry', () => {
@@ -431,13 +441,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('blocked');
     expect(outcome.rejectCount).toBe(3);
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
-    expect(steerSession).not.toHaveBeenCalled();
+    expect(steerPane).not.toHaveBeenCalled();
   });
 
   it('blocks instead of rejecting when the re-steer cannot be delivered', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    vi.mocked(steerSession).mockImplementationOnce(() => {
+    vi.mocked(steerPane).mockImplementationOnce(() => {
       throw new Error('no tmux session');
     });
 
@@ -445,6 +455,24 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(outcome.status).toBe('blocked');
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+  });
+
+  it('blocks, and types nothing, when the session has no pane recorded to re-steer into', () => {
+    // A session target would resolve to whichever pane is active, which the
+    // agent can move; with no pane pinned there is nothing to address, and the
+    // gate parks the session rather than paste its report anywhere (decision 46).
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    db.prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ?').run(SESSION_ID);
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      throw new Error('steerPane must not be reached without a pane');
+    });
+
+    const outcome = merge(failingBuildAdapter);
+
+    expect(outcome.status).toBe('blocked');
+    expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    expect(steerPane).not.toHaveBeenCalled();
   });
 
   it('refuses to run while another merge holds the lock', () => {

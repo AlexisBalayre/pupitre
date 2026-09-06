@@ -5,10 +5,11 @@ import {
   kickoff,
   killSession as killTmux,
   launchSession,
-  steerSession,
+  steerPane,
 } from '../claude/session-runtime.service.js';
 import { projectPaths } from './paths.utils.js';
 import { appendEvent, getSession, type SessionRow } from './session.repository.js';
+import { sessionPane } from './session-lifecycle.service.js';
 
 const HANDOFF_POLL_MS = 5_000;
 export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
@@ -51,9 +52,9 @@ export function requestHandoff(
   sessionId: string,
   pathsBase?: string,
 ): string {
-  requireRunning(db, sessionId);
+  const session = requireRunning(db, sessionId);
   const handoffPath = projectPaths(repoPath, pathsBase).handoffFile(sessionId);
-  steerSession(sessionId, handoffInstructions(handoffPath));
+  steerPane(sessionPane(session), handoffInstructions(handoffPath));
   appendEvent(db, sessionId, 'steer', { kind: 'handoff-request' });
   return handoffPath;
 }
@@ -152,13 +153,16 @@ function relaunchWindow(
   extras: { promptSuffix: string; eventPayload: Record<string, unknown> },
 ): void {
   const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
-  killTmux(sessionId);
-  const { target } = launchSession({
+  killTmux(sessionId, session.tmux_target);
+  const pane = launchSession({
     sessionId,
     worktreePath: session.worktree_path,
     settingsPath: join(compiledDir, 'settings.json'),
   });
-  db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(target, sessionId);
-  const delivered = kickoff(sessionId, contextMarkdown + extras.promptSuffix);
+  // A fresh window is a fresh pane: stored before the kickoff types into it,
+  // so a steer that races the respawn is refused or lands here, never in the
+  // old pane's successor.
+  db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);
+  const delivered = kickoff(pane, contextMarkdown + extras.promptSuffix);
   appendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
-import { killSession as killTmux, steerSession } from '../claude/session-runtime.service.js';
+import { killSession as killTmux } from '../claude/session-runtime.service.js';
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
@@ -47,6 +47,7 @@ import {
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
+import { steerSession } from './session-lifecycle.service.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type {
@@ -699,7 +700,9 @@ function gateAndMerge(
     commitSubjects,
   });
 
-  killTmux(session.id);
+  // By pane as well as name: a rename from inside the session would leave
+  // the name pointing at nothing while the window ran on (decision 46).
+  killTmux(session.id, session.tmux_target);
   git(req.repoPath, 'worktree', 'remove', '--force', worktree);
   // PR mode needs -D: the branch is not in the local target's history, only on origin.
   git(req.repoPath, 'branch', req.openPr ? '-D' : '-d', session.branch);
@@ -813,7 +816,7 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
     return { status: 'blocked', report, rejectCount };
   }
   try {
-    steerSession(report.sessionId, formatGateReport(report));
+    steerSession(db, report.sessionId, formatGateReport(report));
   } catch {
     transitionSession(db, report.sessionId, 'blocked', {
       reason: 're-steer failed — session unreachable',

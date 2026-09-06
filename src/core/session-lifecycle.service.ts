@@ -4,9 +4,13 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import {
+  interruptPane,
   kickoff,
   killSession as killTmux,
   launchSession,
+  type SessionPane,
+  SessionPaneMissingError,
+  steerPane,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
@@ -26,6 +30,7 @@ import {
   getTask,
   insertSession,
   insertTask,
+  type SessionRow,
   transitionSession,
 } from './session.repository.js';
 import {
@@ -217,17 +222,19 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
     transcriptPath: transcriptDir(worktreePath),
   });
 
-  const { target } = launchSession({
+  const pane = launchSession({
     sessionId,
     worktreePath,
     settingsPath: join(compiledDir, 'settings.json'),
     model: req.model,
   });
-  db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(target, sessionId);
+  // The pane id, not the session name: every later steer is addressed to it
+  // (decision 46), so it is stored before anything is typed into it.
+  db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);
   transitionSession(db, sessionId, 'running', { profileHash: compiled.hash });
 
   // Deliver the compiled task context as the opening prompt once the UI is ready.
-  const started = kickoff(sessionId, compiled.contextMarkdown);
+  const started = kickoff(pane, compiled.contextMarkdown);
   appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered: started });
   return sessionId;
 }
@@ -238,9 +245,44 @@ export function markSessionDone(db: Database, sessionId: string, summary: string
   transitionSession(db, sessionId, 'awaiting-review', { summary });
 }
 
+/**
+ * The pane a session's window was opened in, as `launchSession` recorded it.
+ * The only way a row's pane reaches the runtime, so a steer, interrupt or
+ * kickoff is addressed to the pane pinned at launch and never to the session,
+ * whose active pane the agent can move (decision 46). Refuses a row with none
+ * recorded — a launch that failed before its update — rather than let a
+ * caller fall back to a name.
+ */
+export function sessionPane(row: SessionRow): SessionPane {
+  if (row.tmux_target === null) throw new SessionPaneMissingError(row.id, null, 'unrecorded');
+  return { sessionId: row.id, paneId: row.tmux_target };
+}
+
+/**
+ * Steer a session by id, into the pane recorded at its launch. The session
+ * half of `steerPane`: resolves the row, refuses one with no pane recorded,
+ * and lets the runtime's own refusals (a gone pane, a paste that never landed)
+ * through untouched for the caller to print.
+ */
+export function steerSession(db: Database, sessionId: string, message: string): void {
+  steerPane(sessionPane(requireSession(db, sessionId)), message);
+}
+
+/** Send Escape to a session's launch pane; see `steerSession` for the shape. */
+export function interruptSession(db: Database, sessionId: string): void {
+  interruptPane(sessionPane(requireSession(db, sessionId)));
+}
+
 export function killSession(db: Database, sessionId: string): void {
+  const row = requireSession(db, sessionId);
+  // The pane too, not the name alone: a rename from inside the session would
+  // leave the name pointing at nothing while the window ran on.
+  killTmux(sessionId, row.tmux_target);
+  transitionSession(db, sessionId, 'killed');
+}
+
+function requireSession(db: Database, sessionId: string): SessionRow {
   const row = getSession(db, sessionId);
   if (!row) throw new Error(`No session ${sessionId}.`);
-  killTmux(sessionId);
-  transitionSession(db, sessionId, 'killed');
+  return row;
 }

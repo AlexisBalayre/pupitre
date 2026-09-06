@@ -7,24 +7,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The tmux/`claude -p` boundary only: everything else (sqlite, the profile
 // compiler, git worktrees) runs for real, per docs/conventions/testing.md.
-vi.mock('../claude/session-runtime.service.js', () => ({
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  interruptPane: vi.fn(),
   kickoff: vi.fn(() => true),
   killSession: vi.fn(),
-  launchSession: vi.fn(() => ({ target: 'pup-s:0.0' })),
+  launchSession: vi.fn(({ sessionId }: { sessionId: string }) => ({ sessionId, paneId: '%7' })),
+  steerPane: vi.fn(),
   transcriptDir: vi.fn(() => '/transcripts'),
 }));
 
+import {
+  interruptPane,
+  kickoff,
+  killSession as killTmux,
+  SessionPaneMissingError,
+  steerPane,
+} from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectId } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
   ensureProject,
+  getSession,
   getTask,
   insertSession,
   insertTask,
   listBacklogTasks,
   listEvents,
+  type SessionRow,
   transitionSession,
 } from './session.repository.js';
 import {
@@ -32,7 +44,15 @@ import {
   TaskAlreadyClaimedError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
-import { createSession, launchTask, planTask } from './session-lifecycle.service.js';
+import {
+  createSession,
+  interruptSession,
+  killSession,
+  launchTask,
+  planTask,
+  sessionPane,
+  steerSession,
+} from './session-lifecycle.service.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
@@ -281,6 +301,18 @@ describe('launchTask scope-conflict guard', () => {
     expect(launch()).toBe('t-1');
   });
 
+  // The pane id, not the session name: a session target resolves to whichever
+  // pane is active, and the agent can split (decision 46). Stored before the
+  // kickoff types into it, and the kickoff goes to the same pane.
+  it('stores the launch pane and kicks off into it', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+
+    const sessionId = launch();
+
+    expect(getSession(db, sessionId)?.tmux_target).toBe('%7');
+    expect(vi.mocked(kickoff).mock.calls[0]?.[0]).toEqual({ sessionId, paneId: '%7' });
+  });
+
   it('launches over the conflict when the operator allows the overlap', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder();
@@ -410,3 +442,58 @@ function commitIn(dir: string, file: string, content: string): void {
   gitIn(dir, 'add', '.');
   gitIn(dir, 'commit', '-qm', `add ${file}`);
 }
+
+describe('steer, interrupt and kill by session id', () => {
+  let db: Database;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    ensureProject(db, 'proj-1', REPO);
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}' });
+    insertSession(db, {
+      id: 's-1',
+      taskId: 't-1',
+      worktreePath: `${REPO}/.worktrees/s-1`,
+      branch: 'pup/s-1',
+      profileHash: 'hash',
+      tmuxTarget: '%7',
+    });
+    transitionSession(db, 's-1', 'running');
+  });
+
+  it('addresses the pane recorded at launch, never the session', () => {
+    steerSession(db, 's-1', 'do X instead');
+    interruptSession(db, 's-1');
+
+    expect(steerPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' }, 'do X instead');
+    expect(interruptPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' });
+  });
+
+  // A launch that failed before its update leaves no pane on the row. There
+  // is no name to fall back to: a session target would resolve to whichever
+  // pane is active, which is the hole the pane pin closes.
+  it('refuses a session with no pane recorded, and sends nothing', () => {
+    db.prepare("UPDATE sessions SET tmux_target = NULL WHERE id = 's-1'").run();
+
+    expect(() => steerSession(db, 's-1', 'do X')).toThrow(SessionPaneMissingError);
+    expect(() => interruptSession(db, 's-1')).toThrow(
+      'Session s-1 has no pane recorded at launch; nothing was sent.',
+    );
+    expect(() => sessionPane(getSession(db, 's-1') as SessionRow)).toThrow(SessionPaneMissingError);
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(interruptPane).not.toHaveBeenCalled();
+  });
+
+  it('names a session the store does not hold', () => {
+    expect(() => steerSession(db, 's-9', 'do X')).toThrow('No session s-9.');
+    expect(() => interruptSession(db, 's-9')).toThrow('No session s-9.');
+  });
+
+  it('kills by the recorded pane as well as the name, then marks the row killed', () => {
+    killSession(db, 's-1');
+
+    expect(killTmux).toHaveBeenCalledWith('s-1', '%7');
+    expect(getSession(db, 's-1')?.state).toBe('killed');
+  });
+});

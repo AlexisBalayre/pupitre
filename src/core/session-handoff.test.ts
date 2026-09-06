@@ -4,23 +4,26 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../claude/session-runtime.service.js', () => ({
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   kickoff: vi.fn(() => true),
   killSession: vi.fn(),
-  launchSession: vi.fn(() => ({ target: 'pup-s1' })),
-  steerSession: vi.fn(),
+  launchSession: vi.fn(() => ({ sessionId: 's1', paneId: '%8' })),
+  steerPane: vi.fn(),
 }));
 
 import {
   kickoff,
   killSession,
   launchSession,
-  steerSession,
+  SessionPaneMissingError,
+  steerPane,
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { projectPaths } from './paths.utils.js';
 import {
   ensureProject,
+  getSession,
   insertSession,
   insertTask,
   transitionSession,
@@ -51,6 +54,7 @@ describe('session handoff', () => {
       worktreePath: join(repoPath, '.worktrees', 's1'),
       branch: 'pup/s1',
       profileHash: 'hash',
+      tmuxTarget: '%3',
     });
     transitionSession(db, 's1', 'running');
   });
@@ -70,8 +74,20 @@ describe('session handoff', () => {
     const handoffPath = requestHandoff(db, repoPath, 's1');
 
     expect(handoffPath).toContain('handoff.md');
-    expect(vi.mocked(steerSession).mock.calls[0]?.[1]).toContain('pup session handoff-done');
+    // Into the pane recorded at launch, never a session target (decision 46).
+    expect(vi.mocked(steerPane).mock.calls[0]?.[0]).toEqual({ sessionId: 's1', paneId: '%3' });
+    expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('pup session handoff-done');
     expect(isHandoffReady(db, 's1')).toBe(false);
+  });
+
+  it('refuses to request a handoff from a session with no pane recorded', () => {
+    db.prepare("UPDATE sessions SET tmux_target = NULL WHERE id = 's1'").run();
+
+    expect(() => requestHandoff(db, repoPath, 's1')).toThrow(SessionPaneMissingError);
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'steer'").get()).toEqual({
+      n: 0,
+    });
   });
 
   it('becomes ready only after handoff-done follows the request', () => {
@@ -104,11 +120,15 @@ describe('session handoff', () => {
 
     respawnSessionWithTestPaths();
 
-    expect(killSession).toHaveBeenCalledWith('s1');
+    // The old pane is killed by id as well as by name, the fresh pane is
+    // stored before the kickoff types into it, and the kickoff goes there.
+    expect(killSession).toHaveBeenCalledWith('s1', '%3');
     expect(vi.mocked(launchSession).mock.calls[0]?.[0]).toMatchObject({
       sessionId: 's1',
       worktreePath: join(repoPath, '.worktrees', 's1'),
     });
+    expect(getSession(db, 's1')?.tmux_target).toBe('%8');
+    expect(vi.mocked(kickoff).mock.calls[0]?.[0]).toEqual({ sessionId: 's1', paneId: '%8' });
     const prompt = vi.mocked(kickoff).mock.calls[0]?.[1] ?? '';
     expect(prompt).toContain('# task context');
     expect(prompt).toContain('## Handoff from your previous run');
@@ -132,7 +152,7 @@ describe('session handoff', () => {
 
     hardRespawnSession(db, repoPath, 's1', stateBase);
 
-    expect(killSession).toHaveBeenCalledWith('s1');
+    expect(killSession).toHaveBeenCalledWith('s1', '%3');
     const prompt = vi.mocked(kickoff).mock.calls[0]?.[1] ?? '';
     expect(prompt).toContain('# task context');
     expect(prompt).toMatch(/previous run .* killed/i);

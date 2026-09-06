@@ -18,6 +18,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', () => ({
+  SessionPaneMissingError: class SessionPaneMissingError extends Error {
+    readonly sessionId: string;
+    constructor(sessionId: string, paneId: string) {
+      super(`Session ${sessionId}'s pane ${paneId} no longer exists; nothing was sent.`);
+      this.sessionId = sessionId;
+    }
+  },
   SteerNotDeliveredError: class SteerNotDeliveredError extends Error {
     readonly sessionId: string;
     constructor(sessionId: string, chars: number) {
@@ -25,20 +32,20 @@ vi.mock('../claude/session-runtime.service.js', () => ({
       this.sessionId = sessionId;
     }
   },
-  interruptSession: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
-  steerSession: vi.fn(),
 }));
 vi.mock('../core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
 }));
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
+  interruptSession: vi.fn(),
   killSession: vi.fn(),
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   planTask: vi.fn(),
+  steerSession: vi.fn(),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
@@ -52,9 +59,8 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
-  interruptSession,
+  SessionPaneMissingError,
   SteerNotDeliveredError,
-  steerSession,
 } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
@@ -80,10 +86,12 @@ import {
 import { ScopeConflictError, UnknownTaskError } from '../core/session-lifecycle.errors.js';
 import {
   createSession,
+  interruptSession,
   killSession,
   launchTask,
   markSessionDone,
   planTask,
+  steerSession,
 } from '../core/session-lifecycle.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { buildProgram, fatalExitCode } from './index.js';
@@ -716,6 +724,25 @@ describe('CLI commands', () => {
       expect(errors).toEqual(['Steer to session t-abc-0 did not land: 3000 chars']);
     });
 
+    it('rolls back a launch whose window was gone before the kickoff could type into it', () => {
+      // The same three steps had already happened — task claimed, row running,
+      // window opened — when the pane vanished under the kickoff, so the same
+      // rollback applies (decision 46).
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new SessionPaneMissingError('t-abc-0', '%3', 'gone');
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(firstCall(killSession)[1]).toBe('t-abc-0');
+      expect(errors).toEqual([
+        "Session t-abc-0's pane %3 no longer exists; nothing was sent.",
+        'Launch rolled back (session t-abc-0 killed). Re-run `pup launch t-abc`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
     it('passes --allow-overlap through to the launch', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
@@ -886,7 +913,9 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
 
-      expect(steerSession).toHaveBeenCalledWith('s1', 'do X instead');
+      // By session id through the lifecycle, which resolves the pane recorded
+      // at launch; the CLI never forms a tmux target itself (decision 46).
+      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'do X instead');
       expect(logs).toContain('Steered session s1.');
       expect(process.exitCode).toBeUndefined();
 
@@ -927,6 +956,27 @@ describe('CLI commands', () => {
         n: 0,
       });
     });
+
+    it('exits 1 with the named message, and records no steer, when the launch pane is gone', () => {
+      // The pane pinned at launch no longer exists; nothing was pasted into
+      // whatever pane the session now shows (decision 46).
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw new SessionPaneMissingError('s1', '%3', 'gone');
+      });
+
+      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
+
+      expect(errors).toEqual(["Session s1's pane %3 no longer exists; nothing was sent."]);
+      expect(process.exitCode).toBe(1);
+      expect(logs).not.toContain('Steered session s1.');
+      const { db } = resolveProject(repo);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 's1'").get()).toEqual({
+        n: 0,
+      });
+    });
   });
 
   describe('interrupt', () => {
@@ -956,8 +1006,8 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
 
-      expect(interruptSession).toHaveBeenCalledWith('s1');
-      expect(steerSession).toHaveBeenCalledWith('s1', 'retry the fetch');
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1');
+      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'retry the fetch');
       // The whole point of `interrupt <sid> "msg"` over `steer` is Escape lands
       // FIRST, so the steer is not queued behind the hung tool call.
       const escapeOrder = vi.mocked(interruptSession).mock.invocationCallOrder[0];
@@ -1002,7 +1052,7 @@ describe('CLI commands', () => {
       buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
 
       // Escape had already landed when the paste was refused.
-      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1');
       expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
       expect(process.exitCode).toBe(1);
       expect(sessionEvents(repo, 's1')).toEqual([
@@ -1017,7 +1067,7 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['interrupt', 's1'], { from: 'user' });
 
-      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1');
       expect(steerSession).not.toHaveBeenCalled();
       expect(logs).toContain('Interrupted session s1.');
       expect(process.exitCode).toBeUndefined();
@@ -1025,6 +1075,24 @@ describe('CLI commands', () => {
         type: 'interrupt',
         payload: JSON.stringify({ steered: false }),
       });
+    });
+
+    it('records nothing, and does not steer, when the launch pane is gone before Escape', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(interruptSession).mockImplementation(() => {
+        throw new SessionPaneMissingError('s1', '%3', 'gone');
+      });
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      // Escape never landed, so there is no interrupt to put on record, and
+      // the steer is not attempted into a pane that is not there.
+      expect(errors).toEqual(["Session s1's pane %3 no longer exists; nothing was sent."]);
+      expect(process.exitCode).toBe(1);
+      expect(steerSession).not.toHaveBeenCalled();
+      expect(sessionEvents(repo, 's1')).toEqual([]);
     });
   });
 
@@ -1153,6 +1221,24 @@ describe('CLI commands', () => {
       ]);
       expect(process.exitCode).toBe(1);
       expect(logs.join('\n')).not.toContain('Respawned s1');
+    });
+
+    it('points at the hard respawn, not a re-run, when the launch pane is gone', () => {
+      // Asking again cannot help: the handoff request has no pane to land in.
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(false);
+      vi.mocked(requestHandoff).mockImplementation(() => {
+        throw new SessionPaneMissingError('s1', '%3', 'gone');
+      });
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        "Session s1's pane %3 no longer exists; nothing was sent.",
+        'Relaunch it without a handoff: `pup kill --respawn s1`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(respawnSession).not.toHaveBeenCalled();
     });
 
     it('forwards a custom --wait as milliseconds', () => {

@@ -1,7 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Fakes `tmux`/`which` so this suite never spawns a real tmux pane or shells
@@ -11,7 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const fakeExecFileSync = vi.fn((file: string, args?: readonly string[], options?: unknown) => {
-    if (file === 'tmux') return '';
+    // new-session is asked to print the pane it opened (-P -F '#{pane_id}').
+    if (file === 'tmux') return args?.[0] === 'new-session' ? '%7\n' : '';
     if (file === 'which') return '/fake/bin/claude\n';
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
   });
@@ -38,14 +46,17 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
-  interruptSession,
+  interruptPane,
   kickoff,
+  killSession,
   launchArgs,
   launchSession,
   launchWatcher,
   preseedTrust,
+  type SessionPane,
+  SessionPaneMissingError,
   SteerNotDeliveredError,
-  steerSession,
+  steerPane,
 } from './session-runtime.service.js';
 
 beforeEach(() => {
@@ -172,10 +183,12 @@ describe('launchArgs', () => {
 const FAKE_CLAUDE_BIN = '/fake/bin/claude';
 
 describe('launchSession', () => {
-  it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary', () => {
-    const { target } = launchSession(OPTS);
+  it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary, and returns the pane it printed', () => {
+    const pane = launchSession(OPTS);
 
-    expect(target).toBe('pup-s-1');
+    // The pane id, not the session name: it is what every later steer,
+    // interrupt and capture is addressed to (decision 46).
+    expect(pane).toEqual({ sessionId: 's-1', paneId: '%7' });
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
     expect(tmuxCalls).toHaveLength(2);
     expect(tmuxCalls[0]).toEqual([
@@ -186,6 +199,9 @@ describe('launchSession', () => {
     expect(tmuxCalls[1]?.[1]).toEqual([
       'new-session',
       '-d',
+      '-P',
+      '-F',
+      '#{pane_id}',
       '-s',
       'pup-s-1',
       '-x',
@@ -202,26 +218,83 @@ describe('launchSession', () => {
       ...launchArgs(OPTS),
     ]);
   });
+
+  it('fails the launch when tmux prints anything but a pane id', () => {
+    // The id is checked where it is minted: every later command trusts it,
+    // and a launch is the one place a bad one can fail loudly rather than late.
+    const original = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation((file, args, options) =>
+      file === 'tmux' && args?.[0] === 'new-session'
+        ? ''
+        : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
+    );
+    try {
+      expect(() => launchSession(OPTS)).toThrow('tmux new-session printed "", not a pane id.');
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(original as never);
+    }
+  });
 });
 
-describe('interruptSession', () => {
-  it('sends Escape to the exact-match pinned pane target and spawns nothing else', () => {
+const PANE: SessionPane = { sessionId: 's-1', paneId: '%7' };
+
+describe('interruptPane', () => {
+  it('sends Escape to the pane id and spawns nothing else', () => {
     // Skip the real post-Escape settle — spying (not restoreAllMocks) so the
     // module-level execFileSync fake survives for the rest of the suite.
     const wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
     try {
-      interruptSession('s-1');
+      interruptPane(PANE);
     } finally {
       wait.mockRestore();
     }
 
     // Full call list, not a tmux-filtered one — a future non-tmux spawn here
-    // must fail this test too. The '=...:' pin is load-bearing: a bare name
-    // prefix-matches a live sibling once this session's window is gone.
+    // must fail this test too. The pane id is load-bearing: a session target
+    // resolves to the active pane, which a split from inside the session moves.
     const calls = vi.mocked(execFileSync).mock.calls;
     expect(calls).toHaveLength(1);
     expect(calls[0]?.[0]).toBe('tmux');
-    expect(calls[0]?.[1]).toEqual(['send-keys', '-t', '=pup-s-1:', 'Escape']);
+    expect(calls[0]?.[1]).toEqual(['send-keys', '-t', '%7', 'Escape']);
+  });
+
+  it('refuses a recorded target that is not a pane id before touching tmux', () => {
+    // A row from before panes were pinned holds the session NAME, which tmux
+    // would resolve to the active pane — the hole this closes. Nothing is sent.
+    const legacy: SessionPane = { sessionId: 's-1', paneId: 'pup-s-1' };
+
+    expect(() => interruptPane(legacy)).toThrow(SessionPaneMissingError);
+    expect(() => steerPane(legacy, 'do X')).toThrow(
+      'Session s-1 recorded "pup-s-1" as its pane, which is not a tmux pane id (it was ' +
+        'launched before panes were pinned); nothing was sent. Respawn it: ' +
+        '`pup kill --respawn s-1`.',
+    );
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('killSession', () => {
+  it('kills the session holding the launch pane, then any session still wearing the name', () => {
+    killSession('s-1', '%7');
+
+    // By pane first: kill-session resolves a pane id to the session it is in,
+    // so a rename-session from inside cannot leave the window running under
+    // another name. By pinned name second, for what the pane kill could not
+    // reach (verified on tmux 3.7b: the pane kill survives a rename).
+    expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['kill-session', '-t', '%7'],
+      ['kill-session', '-t', '=pup-s-1:'],
+    ]);
+  });
+
+  it('kills by name alone when no pane was recorded, or the record is not a pane id', () => {
+    killSession('s-1', null);
+    killSession('s-1', 'pup-s-1');
+
+    expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['kill-session', '-t', '=pup-s-1:'],
+      ['kill-session', '-t', '=pup-s-1:'],
+    ]);
   });
 });
 
@@ -240,6 +313,9 @@ describe('launchWatcher', () => {
     expect(tmuxCalls[1]?.[1]).toEqual([
       'new-session',
       '-d',
+      '-P',
+      '-F',
+      '#{pane_id}',
       '-s',
       'pup-watch-proj-1',
       '-c',
@@ -261,14 +337,39 @@ describe('launchWatcher', () => {
  * takes one row per press, as the real UI does, and none at all when
  * `FAKE_TMUX_STUCK` is set. Every capture's box line is logged too, so a test
  * can read what the runtime saw before it pressed a key.
+ *
+ * Panes are modelled the way tmux resolves `-t`: a pane id names that pane,
+ * which must be listed in `panes` or the command fails with tmux's own
+ * can't-find-pane line; anything else is a session target and resolves to
+ * the pane named in `active`, which a split from inside the session moves.
+ * Each pane has its own box, and what was pasted or keyed into it is kept in
+ * `typed-<pane>`, so a test can tell which pane a steer reached. With
+ * `FAKE_TMUX_DOWN` set every command fails the way a dead server does.
  */
 const FAKE_TMUX = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_TMUX_LOG"
-box="$FAKE_TMUX_STATE/box"
+if [ -n "$FAKE_TMUX_DOWN" ]; then
+  echo 'error connecting to /private/tmp/tmux-501/default (No such file or directory)' >&2
+  exit 1
+fi
+target=''
+prev=''
+for arg in "$@"; do
+  [ "$prev" = -t ] && target="$arg"
+  prev="$arg"
+done
+case "$target" in
+  %*) pane="\${target#%}"
+      grep -qx "$pane" "$FAKE_TMUX_STATE/panes" || { echo "can't find pane: $target" >&2; exit 1; } ;;
+  *) pane=$(cat "$FAKE_TMUX_STATE/active") ;;
+esac
+box="$FAKE_TMUX_STATE/box-$pane"
+typed="$FAKE_TMUX_STATE/typed-$pane"
 case "$1" in
   load-buffer) cat > "$FAKE_TMUX_STATE/buffer" ;;
-  paste-buffer) cp "$FAKE_TMUX_STATE/buffer" "$box" ;;
+  paste-buffer) cp "$FAKE_TMUX_STATE/buffer" "$box"; cat "$box" >> "$typed"; echo >> "$typed" ;;
   send-keys)
+    echo "$4" >> "$typed"
     [ "$4" = Enter ] && rm -f "$box"
     if [ "$4" = C-u ] && [ -z "$FAKE_TMUX_STUCK" ] && [ -f "$box" ]; then
       rows=$(grep -c '' "$box")
@@ -290,22 +391,29 @@ case "$1" in
 esac
 `;
 
-describe('steerSession with a fake tmux on PATH', () => {
+describe('steerPane with a fake tmux on PATH', () => {
   const original = vi.mocked(execFileSync).getMockImplementation();
   let log: string;
+  let state: string;
   let landsAfter: number;
   let stuck: boolean;
+  let down: boolean;
   let wait: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fake-tmux-')));
     mkdirSync(join(dir, 'bin'));
-    mkdirSync(join(dir, 'state'));
+    state = join(dir, 'state');
+    mkdirSync(state);
     writeFileSync(join(dir, 'bin', 'tmux'), FAKE_TMUX, { mode: 0o755 });
     log = join(dir, 'tmux.log');
     writeFileSync(log, '');
+    // The session was launched into pane 3, which is also its active pane.
+    writeFileSync(join(state, 'panes'), '3\n');
+    writeFileSync(join(state, 'active'), '3\n');
     landsAfter = 0;
     stuck = false;
+    down = false;
     // Every settle is skipped: what is under test is what the runtime does
     // between settles, and the fake's clock is the capture count.
     wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
@@ -318,9 +426,10 @@ describe('steerSession with a fake tmux on PATH', () => {
               ...process.env,
               PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`,
               FAKE_TMUX_LOG: log,
-              FAKE_TMUX_STATE: join(dir, 'state'),
+              FAKE_TMUX_STATE: state,
               FAKE_TMUX_LANDS_AFTER: String(landsAfter),
               ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
+              ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
             },
           })
         : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
@@ -338,9 +447,16 @@ describe('steerSession with a fake tmux on PATH', () => {
       .filter((line) => line.length > 0);
   }
 
+  /** What reached pane `n`: each paste's text, then each key, one per line. */
+  function typedInto(n: number): string | undefined {
+    const file = join(state, `typed-${n}`);
+    return existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+  }
+
+  const LAUNCH_PANE: SessionPane = { sessionId: 's-1', paneId: '%3' };
   const STEER_3000 = `FIRSTWORD ${'tok '.repeat(745)}LASTWORDS.`;
-  const ENTER = 'send-keys -t =pup-s-1: Enter';
-  const CLEAR = 'send-keys -t =pup-s-1: C-u';
+  const ENTER = 'send-keys -t %3 Enter';
+  const CLEAR = 'send-keys -t %3 C-u';
 
   it('pastes a 3000-char steer bracketed and presses Enter only once the pane shows it whole', () => {
     expect(STEER_3000).toHaveLength(3000);
@@ -348,68 +464,109 @@ describe('steerSession with a fake tmux on PATH', () => {
     // then appears at the third settle, not the first.
     landsAfter = 4;
 
-    steerSession('s-1', STEER_3000);
+    steerPane(LAUNCH_PANE, STEER_3000);
 
     const lines = argvLog();
     expect(lines.slice(0, 4)).toEqual([
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ ',
       'load-buffer -',
-      'paste-buffer -d -p -t =pup-s-1:',
+      'paste-buffer -d -p -t %3',
     ]);
     const enterAt = lines.indexOf(ENTER);
     expect(enterAt).toBeGreaterThan(0);
     expect(lines.slice(4, enterAt)).toEqual([
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ k LASTWORDS.',
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ k LASTWORDS.',
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ [Pasted text #1]',
     ]);
     // Submission verified after Enter, exactly as before; no clear was needed.
-    expect(lines.slice(enterAt + 1)).toEqual(['capture-pane -p -t =pup-s-1:', 'capture => ❯ ']);
+    expect(lines.slice(enterAt + 1)).toEqual(['capture-pane -p -t %3', 'capture => ❯ ']);
     expect(lines.filter((line) => line === ENTER)).toHaveLength(1);
     expect(lines).not.toContain(CLEAR);
+  });
+
+  it('lands in the launch pane after a split from inside the session moved the active pane', () => {
+    // The agent ran `tmux split-window`: pane 9 is now the session's active
+    // pane, so a session target would resolve to it — and it is a shell of
+    // the agent's own, where Enter runs whatever was pasted. The steer is
+    // addressed to the pane recorded at launch and never sees the split.
+    writeFileSync(join(state, 'panes'), '3\n9\n');
+    writeFileSync(join(state, 'active'), '9\n');
+    landsAfter = 4;
+
+    steerPane(LAUNCH_PANE, STEER_3000);
+
+    expect(typedInto(3)).toBe(`${STEER_3000}\nEnter\n`);
+    expect(typedInto(9)).toBeUndefined();
+    expect(argvLog()).not.toContainEqual(expect.stringContaining('=pup-s-1:'));
+  });
+
+  it('refuses, naming the pane, when it no longer exists, and pastes nothing', () => {
+    // The launch pane was killed; pane 9 is what the session now shows. A
+    // session target would land there. Nothing is sent anywhere, and the
+    // refusal is tmux's own can't-find-pane turned into a named error.
+    writeFileSync(join(state, 'panes'), '9\n');
+    writeFileSync(join(state, 'active'), '9\n');
+
+    expect(() => steerPane(LAUNCH_PANE, STEER_3000)).toThrow(SessionPaneMissingError);
+    expect(() => steerPane(LAUNCH_PANE, STEER_3000)).toThrow(
+      "Session s-1's pane %3 no longer exists; nothing was sent.",
+    );
+
+    expect(argvLog()).toEqual(['capture-pane -p -t %3', 'capture-pane -p -t %3']);
+    expect(typedInto(9)).toBeUndefined();
+  });
+
+  it('refuses the same way when the tmux server itself is gone', () => {
+    down = true;
+
+    expect(() => interruptPane(LAUNCH_PANE)).toThrow(
+      "Session s-1's pane %3 no longer exists; nothing was sent.",
+    );
+    expect(() => steerPane(LAUNCH_PANE, 'do X')).toThrow(SessionPaneMissingError);
   });
 
   it('clears a draft the box already holds before pasting', () => {
     // A box with leftover text reads as text plus placeholder after the
     // paste, never as the message alone (seen live: `row one[Pasted text #33]`).
-    writeFileSync(join(dirname(log), 'state', 'box'), 'row one\nrow two\nrow three');
+    writeFileSync(join(state, 'box-3'), 'row one\nrow two\nrow three');
     // The draft and then the short message both render inline (as their
     // own tail); nothing folds.
     landsAfter = Number.MAX_SAFE_INTEGER;
 
-    steerSession('s-1', 'do X instead');
+    steerPane(LAUNCH_PANE, 'do X instead');
 
     // Ctrl-U takes one row per press, so clearing is a loop checked against
     // the pane after each press, not one press and a hope.
     const lines = argvLog();
     expect(lines.slice(0, 12)).toEqual([
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ row three',
       CLEAR,
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ row two',
       CLEAR,
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ row one',
       CLEAR,
-      'capture-pane -p -t =pup-s-1:',
+      'capture-pane -p -t %3',
       'capture => ❯ ',
       'load-buffer -',
     ]);
-    expect(lines.indexOf('paste-buffer -d -p -t =pup-s-1:')).toBeGreaterThan(lines.indexOf(CLEAR));
+    expect(lines.indexOf('paste-buffer -d -p -t %3')).toBeGreaterThan(lines.indexOf(CLEAR));
   });
 
   it('gives a steer one settle per KB, then clears the box and refuses without pressing Enter', () => {
     landsAfter = Number.MAX_SAFE_INTEGER;
 
-    expect(() => steerSession('s-1', `${STEER_3000}${'tok '.repeat(750)}`)).toThrow(
+    expect(() => steerPane(LAUNCH_PANE, `${STEER_3000}${'tok '.repeat(750)}`)).toThrow(
       SteerNotDeliveredError,
     );
-    expect(() => steerSession('s-1', STEER_3000)).toThrow(
+    expect(() => steerPane(LAUNCH_PANE, STEER_3000)).toThrow(
       'Steer to session s-1 did not land: its input box never held the whole 3000-char message. ' +
         'Cleared the box and submitted nothing; the session is still running with an empty prompt.',
     );
@@ -419,13 +576,13 @@ describe('steerSession with a fake tmux on PATH', () => {
     // ceil(6000 / 1000) settles for the first call, each ending in a look at the box.
     const settles = lines.filter((line) => line === 'capture => ❯ tok tok tok ');
     expect(settles).toHaveLength(6);
-    expect(lines.slice(-3)).toEqual([CLEAR, 'capture-pane -p -t =pup-s-1:', 'capture => ❯ ']);
+    expect(lines.slice(-3)).toEqual([CLEAR, 'capture-pane -p -t %3', 'capture => ❯ ']);
   });
 
   it('floors a short steer at five settles, so a late repaint under load is not a refusal', () => {
     landsAfter = Number.MAX_SAFE_INTEGER;
 
-    expect(() => steerSession('s-1', 'do X instead, then run the tests')).toThrow(
+    expect(() => steerPane(LAUNCH_PANE, 'do X instead, then run the tests')).toThrow(
       SteerNotDeliveredError,
     );
 
@@ -433,10 +590,10 @@ describe('steerSession with a fake tmux on PATH', () => {
   });
 
   it('refuses, naming the box, when Ctrl-U cannot empty it, and pastes nothing', () => {
-    writeFileSync(join(dirname(log), 'state', 'box'), 'x');
+    writeFileSync(join(state, 'box-3'), 'x');
     stuck = true;
 
-    expect(() => steerSession('s-1', STEER_3000)).toThrow(
+    expect(() => steerPane(LAUNCH_PANE, STEER_3000)).toThrow(
       'Steer to session s-1 did not land: its input box held text that Ctrl-U could not clear, ' +
         'so the 3000-char message was not pasted. Nothing was submitted; the session is still ' +
         'running with the box as it was.',
@@ -455,7 +612,7 @@ describe('steerSession with a fake tmux on PATH', () => {
       expect(CONTEXT.length).toBeGreaterThan(5000);
       landsAfter = 4;
 
-      expect(kickoff('s-1', CONTEXT)).toBe(true);
+      expect(kickoff(LAUNCH_PANE, CONTEXT)).toBe(true);
 
       const lines = argvLog();
       const enterAt = lines.indexOf(ENTER);
@@ -463,14 +620,16 @@ describe('steerSession with a fake tmux on PATH', () => {
       expect(lines.slice(0, enterAt)).toContain('capture => ❯ ion protocol');
     });
 
+    // Every C-u press of the clear loop spawns the fake, a shell script, twice
+    // (the key, then a capture): 64 presses on an 800-line context run ~4 s.
     it('throws rather than start the agent on the tail of its context', () => {
       landsAfter = Number.MAX_SAFE_INTEGER;
 
-      expect(() => kickoff('s-1', CONTEXT)).toThrow(SteerNotDeliveredError);
+      expect(() => kickoff(LAUNCH_PANE, CONTEXT)).toThrow(SteerNotDeliveredError);
 
       const lines = argvLog();
       expect(lines).not.toContain(ENTER);
       expect(lines).toContain(CLEAR);
-    });
+    }, 20_000);
   });
 });
