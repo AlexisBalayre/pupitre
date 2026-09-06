@@ -485,10 +485,14 @@ describe('CLI commands', () => {
       buildProgram().parse(['audit', '--sweep'], { from: 'user' });
 
       expect(firstCall(killSession)[1]).toBe('sweep-abc');
+      // The sweep task was already planned, so the retry is a launch of it,
+      // not another `--sweep` that would plan a second one beside the orphan.
+      const [, request] = firstCall(createSession);
       expect(errors).toEqual([
         'Steer to session sweep-abc did not land: 3000 chars',
-        'Launch rolled back (session sweep-abc killed). Re-run `pup audit --sweep`.',
+        `Launch rolled back (session sweep-abc killed). Re-run \`pup launch ${(request as { task: { id: string } }).task.id}\`.`,
       ]);
+      expect(errors[1]).toMatch(/Re-run `pup launch sweep-[a-z0-9]+`\.$/);
       expect(process.exitCode).toBe(1);
       expect(logs.join('\n')).not.toContain('Launched sweep session');
     });
@@ -694,6 +698,22 @@ describe('CLI commands', () => {
       ]);
       expect(process.exitCode).toBe(1);
       expect(logs.join('\n')).not.toContain('Launched session');
+    });
+
+    it('prints the refusal before the rollback, so a kill that throws does not hide it', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new SteerNotDeliveredError('t-abc-0', 3000);
+      });
+      vi.mocked(killSession).mockImplementation(() => {
+        throw new Error('tmux server gone');
+      });
+
+      expect(() => buildProgram().parse(['launch', 't-abc'], { from: 'user' })).toThrow(
+        'tmux server gone',
+      );
+
+      expect(errors).toEqual(['Steer to session t-abc-0 did not land: 3000 chars']);
     });
 
     it('passes --allow-overlap through to the launch', () => {

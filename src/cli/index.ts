@@ -253,12 +253,15 @@ const ALLOW_OVERLAP_DESCRIPTION =
  * all three. Left as is, the task reads as claimed (a re-launch raises
  * TaskAlreadyClaimedError) and the window sits empty. Killing the session
  * undoes it: the window goes, the row is `killed`, and the task returns to
- * the backlog (decision 40). Prints the refusal, the rollback, and how to
- * retry; sets the exit code.
+ * the backlog (decision 40), where the task now sits — so the retry is always
+ * `pup launch <task>`, for a sweep too: `createSession` had already planned the
+ * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
+ * Prints the refusal, the rollback, and how to retry; sets the exit code.
  */
 function rollBackRefusedLaunch(db: Database, error: SteerNotDeliveredError, retry: string): void {
-  killSession(db, error.sessionId);
+  // The refusal first: a kill that throws must not hide why the launch failed.
   console.error(error.message);
+  killSession(db, error.sessionId);
   console.error(`Launch rolled back (session ${error.sessionId} killed). Re-run \`${retry}\`.`);
   process.exitCode = 1;
 }
@@ -1228,7 +1231,7 @@ export function buildProgram(): Command {
           });
         } catch (error) {
           if (!(error instanceof SteerNotDeliveredError)) throw error;
-          rollBackRefusedLaunch(db, error, 'pup audit --sweep');
+          rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
           return;
         }
         console.log(`Launched sweep session ${sessionId} (tmux: pup-${sessionId}).`);
