@@ -1345,8 +1345,10 @@ describe('CLI commands', () => {
         expect(markSessionDone).not.toHaveBeenCalled();
       });
 
-      it('marks the session done', () => {
-        useCwd(initRepo());
+      it('marks the session done from inside its own worktree', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
         vi.stubEnv('PUP_SESSION_ID', 's1');
 
         buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
@@ -1356,23 +1358,41 @@ describe('CLI commands', () => {
         expect(sessionId).toBe('s1');
         expect(summary).toBe('shipped the thing');
         expect(logs).toContain('Session s1 marked done: shipped the thing');
-      });
-
-      it('marks the session done from inside its own worktree', () => {
-        const repo = initRepo();
-        seedSession(repo, 's1');
-        useCwd(worktreeOf(repo, 's1'));
-        vi.stubEnv('PUP_SESSION_ID', 's1');
-
-        buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
-
-        expect(firstCall(markSessionDone)[1]).toBe('s1');
         expect(process.exitCode).toBeUndefined();
       });
 
       // `PUP_SESSION_ID` is the session's own word; the worktree around cwd is
-      // decision 26's detection, so exporting a running victim's id cannot move
-      // that victim to `awaiting-review` (decision 44).
+      // decision 26's detection, and the match is required, not only the absence
+      // of a contradiction: a session that exports a running victim's id from
+      // the repo root is inside no worktree at all (decision 44).
+      it('refuses an id that names no session instead of throwing from the store', () => {
+        const repo = initRepo();
+        useCwd(worktreeOf(repo, 'ghost'));
+        vi.stubEnv('PUP_SESSION_ID', 'ghost');
+
+        buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
+
+        expect(markSessionDone).not.toHaveBeenCalled();
+        expect(errors).toEqual(['pup session done: PUP_SESSION_ID names no session (ghost).']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('refuses from the repo root, inside no worktree', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(repo);
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
+
+        expect(markSessionDone).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          "`pup session done` reports only its own session; this directory is not inside s1's worktree.",
+        ]);
+        expect(logs).toEqual([]);
+        expect(process.exitCode).toBe(1);
+      });
+
       it('refuses when the worktree around cwd belongs to another session', () => {
         const repo = initRepo();
         seedSession(repo, 's1');
@@ -1405,8 +1425,10 @@ describe('CLI commands', () => {
         expect(markHandoffReady).not.toHaveBeenCalled();
       });
 
-      it('records the handoff', () => {
-        useCwd(initRepo());
+      it('records the handoff from inside its own worktree', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
         vi.stubEnv('PUP_SESSION_ID', 's1');
 
         buildProgram().parse(['session', 'handoff-done'], { from: 'user' });
@@ -1415,6 +1437,22 @@ describe('CLI commands', () => {
         const [, sessionId] = firstCall(markHandoffReady);
         expect(sessionId).toBe('s1');
         expect(logs).toContain('Session s1 handoff recorded; Pupitre will respawn you shortly.');
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      it('refuses from the repo root, inside no worktree', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(repo);
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'handoff-done'], { from: 'user' });
+
+        expect(markHandoffReady).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          "`pup session handoff-done` reports only its own session; this directory is not inside s1's worktree.",
+        ]);
+        expect(process.exitCode).toBe(1);
       });
 
       it('refuses when the worktree around cwd belongs to another session', () => {
@@ -1490,6 +1528,19 @@ describe('CLI commands', () => {
       expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
       expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
+      expect(runMergeGate).not.toHaveBeenCalled();
+    });
+
+    // The variable once counted only when it named a session that exists, to
+    // keep garbage out of the ledger's acceptor; with the acceptor constant, a
+    // variable naming no session is still a session, not an operator (decision 44).
+    it('refuses when PUP_SESSION_ID names no session', () => {
+      useCwd(initRepoWithAdapter());
+      vi.stubEnv('PUP_SESSION_ID', 'does-not-exist');
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
       expect(runMergeGate).not.toHaveBeenCalled();
     });
 

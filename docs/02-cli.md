@@ -51,8 +51,8 @@ exit 1.
 ## Session protocol
 
 Run by the agent, never by the operator. Each takes its session from `PUP_SESSION_ID` and is
-refused when the worktree around cwd belongs to a different session, so a session reports only
-its own state (decision 44).
+refused unless cwd is inside that session's own worktree — the repo root and another session's
+worktree both refuse — so a session reports only its own state (decision 44).
 
 - `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
   session to `awaiting-review` (decision 3).

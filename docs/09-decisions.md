@@ -1243,14 +1243,21 @@ changes back into those docs is pending.
     of commands by which a session could still end a *running* session's work, and two more
     commands that reach into another session's window or branch. Each link is closed here by
     the detection decisions 26 and 27 established, so that none of them is a new rule.
-    *`pup session done` and `handoff-done` cross-check the worktree.* Both took their identity
-    from `PUP_SESSION_ID` alone, so a session that exported a running victim's id moved that
-    victim to `awaiting-review` mid-turn, or marked its handoff ready. The variable is still
-    the session's word — the protocol's hooks inject it and nothing else names the session
-    from inside — but `findSessionByWorktree(cwd)` is asked beside it, and when the worktree
-    around cwd belongs to a different session the command refuses, naming both. A cwd inside
-    no worktree at all still passes on the variable: the operator's shell has no worktree
-    either, and a session that `cd`s out of its own is decision 27's ceiling, unchanged.
+    *`pup session done` and `handoff-done` require cwd inside the declared session's worktree.*
+    Both took their identity from `PUP_SESSION_ID` alone, so a session that exported a running
+    victim's id moved that victim to `awaiting-review` mid-turn, or marked its handoff ready.
+    The variable is still the session's word, but `findSessionByWorktree(cwd)` must name the
+    same session, and anything else refuses: another session's worktree, naming both, and no
+    worktree at all — the repo root, where the first cut of this change still passed on the
+    variable alone, because it refused only a contradiction and the security review walked a
+    session `cd ../..` straight past it. Requiring the match costs no legitimate caller: only
+    sessions run these commands, and the protocol launches them with cwd in their worktree.
+    *What the check is, plainly.* It closes the plain path and the accident — a forged or stale
+    variable run from wherever the session happens to be. It does not stop an impersonator who
+    also changes directory: a session that `cd`s into the victim's worktree with the victim's
+    id exported passes either form of the check, since from inside that worktree it is
+    indistinguishable from the victim. That is decision 27's ceiling, and a sandbox that keeps
+    a session out of other worktrees is the instrument for it, not a fourth read of cwd.
     *`pup merge` is operator-only, not only `--pr`.* The gate's verdict moves another session's
     branch — merged, or rejected and parked `blocked` by decision 7's cap — so the guard
     decision 26 put on `--pr` now fronts the whole command, one `callingSession` check where
@@ -1271,12 +1278,25 @@ changes back into those docs is pending.
     worktree cross-check (both protocol commands), the `merge` guard on the plain and `--pr`
     paths, the `respawn` guard, and the `COALESCE` floor put back — run against the mutated
     source before this landed.
+    *`callingSession` counts any declared id.* It counted `PUP_SESSION_ID` only when the id
+    named a session that exists, so the ledger's acceptor could not be written to arbitrary
+    text; with the acceptor the constant `human`, that reason is gone, and the rule it left
+    behind was a hole — `PUP_SESSION_ID=does-not-exist` from the repo root ran `pup merge` and
+    `pup respawn` as an operator. A variable naming no session is a session that changed it,
+    and refuses. The protocol commands still check the id exists, so a bogus one is refused
+    with a message rather than the store's raw throw.
     *What this leaves open.* `pup steer` and `pup interrupt` are still session-callable, each a
     prompt or an Escape into another agent's window, and `pup audit --sweep` still reaches
     `createSession` from inside a session; each is the same close as this one and its own
-    change. The detection stays decision 27's best effort: a session that leaves its worktree
-    and forges or unsets `PUP_SESSION_ID` passes the protocol commands as itself and the
-    operator-only ones as an operator; a sandbox is a different instrument.
+    change. **Handoff file integrity** is open too: a session's `handoff.md` under the store's
+    sessions dir is writable by any session, and nothing records or verifies who wrote it, so
+    an operator's `pup respawn <victim>` still delivers attacker-authored context if the file
+    is overwritten between the victim's `handoff-done` and the `respawnSession` read —
+    `awaitHandoffReady` polls every 5 s, which is the window. Its own change, planned in the
+    backlog. The detection stays decision 27's best effort: a session that leaves its worktree
+    and unsets `PUP_SESSION_ID` passes the operator-only commands as an operator, and one that
+    enters the victim's worktree with the victim's id passes the protocol commands as the
+    victim; a sandbox is a different instrument.
 
 ## Implementation notes
 
