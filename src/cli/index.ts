@@ -248,6 +248,22 @@ const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
 /**
+ * A launch whose kickoff was refused has already claimed its task, inserted
+ * its row as `running` and opened its window — `startSession` throws after
+ * all three. Left as is, the task reads as claimed (a re-launch raises
+ * TaskAlreadyClaimedError) and the window sits empty. Killing the session
+ * undoes it: the window goes, the row is `killed`, and the task returns to
+ * the backlog (decision 40). Prints the refusal, the rollback, and how to
+ * retry; sets the exit code.
+ */
+function rollBackRefusedLaunch(db: Database, error: SteerNotDeliveredError, retry: string): void {
+  killSession(db, error.sessionId);
+  console.error(error.message);
+  console.error(`Launch rolled back (session ${error.sessionId} killed). Re-run \`${retry}\`.`);
+  process.exitCode = 1;
+}
+
+/**
  * Builds the commander program without parsing argv — the executable entry
  * point below is the only caller that actually parses; tests build a fresh
  * program and drive command actions in-process instead. exitOverride keeps
@@ -412,9 +428,11 @@ export function buildProgram(): Command {
           allowOverlap: opts.allowOverlap === true,
         });
       } catch (error) {
-        if (!(error instanceof ScopeConflictError) && !(error instanceof SteerNotDeliveredError)) {
-          throw error;
+        if (error instanceof SteerNotDeliveredError) {
+          rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
+          return;
         }
+        if (!(error instanceof ScopeConflictError)) throw error;
         console.error(error.message);
         process.exitCode = 1;
         return;
@@ -576,12 +594,15 @@ export function buildProgram(): Command {
           allowOverlap: opts.allowOverlap,
         });
       } catch (error) {
+        if (error instanceof SteerNotDeliveredError) {
+          rollBackRefusedLaunch(db, error, `pup launch ${taskId}`);
+          return;
+        }
         if (
           !(error instanceof UnknownTaskError) &&
           !(error instanceof TaskAlreadyClaimedError) &&
           !(error instanceof ScopeConflictError) &&
-          !(error instanceof InvalidProfileError) &&
-          !(error instanceof SteerNotDeliveredError)
+          !(error instanceof InvalidProfileError)
         ) {
           throw error;
         }
@@ -856,6 +877,7 @@ export function buildProgram(): Command {
       } catch (error) {
         if (!(error instanceof SteerNotDeliveredError)) throw error;
         console.error(error.message);
+        console.error(`Re-run \`pup respawn ${session}\`.`);
         process.exitCode = 1;
         return;
       }
@@ -1206,8 +1228,7 @@ export function buildProgram(): Command {
           });
         } catch (error) {
           if (!(error instanceof SteerNotDeliveredError)) throw error;
-          console.error(error.message);
-          process.exitCode = 1;
+          rollBackRefusedLaunch(db, error, 'pup audit --sweep');
           return;
         }
         console.log(`Launched sweep session ${sessionId} (tmux: pup-${sessionId}).`);

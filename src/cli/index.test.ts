@@ -19,8 +19,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', () => ({
   SteerNotDeliveredError: class SteerNotDeliveredError extends Error {
+    readonly sessionId: string;
     constructor(sessionId: string, chars: number) {
       super(`Steer to session ${sessionId} did not land: ${chars} chars`);
+      this.sessionId = sessionId;
     }
   },
   interruptSession: vi.fn(),
@@ -474,6 +476,23 @@ describe('CLI commands', () => {
     // A sweep is scoped to the whole repo, so it collides with every live
     // session there is; refusing it would make `--sweep` unrunnable whenever
     // anything else runs, and there is no flag to say otherwise (decision 41).
+    it('rolls the sweep launch back when its kickoff never lands whole', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('sweep-abc', 3000);
+      });
+
+      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+
+      expect(firstCall(killSession)[1]).toBe('sweep-abc');
+      expect(errors).toEqual([
+        'Steer to session sweep-abc did not land: 3000 chars',
+        'Launch rolled back (session sweep-abc killed). Re-run `pup audit --sweep`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Launched sweep session');
+    });
+
     it('launches a sweep that allows the overlap it always has', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockReturnValue('sweep-abc');
@@ -665,7 +684,14 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
-      expect(errors).toEqual(['Steer to session t-abc-0 did not land: 3000 chars']);
+      // startSession throws after the task is claimed, the row is `running`
+      // and the window is up; killing the session returns the task to the
+      // backlog (decision 40) so `pup launch` can be re-run.
+      expect(firstCall(killSession)[1]).toBe('t-abc-0');
+      expect(errors).toEqual([
+        'Steer to session t-abc-0 did not land: 3000 chars',
+        'Launch rolled back (session t-abc-0 killed). Re-run `pup launch t-abc`.',
+      ]);
       expect(process.exitCode).toBe(1);
       expect(logs.join('\n')).not.toContain('Launched session');
     });
@@ -772,6 +798,23 @@ describe('CLI commands', () => {
       });
 
       expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true });
+    });
+
+    it('rolls the launch back when the kickoff never lands whole', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('t-new-0', 3000);
+      });
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
+
+      expect(firstCall(killSession)[1]).toBe('t-new-0');
+      expect(errors[0]).toBe('Steer to session t-new-0 did not land: 3000 chars');
+      expect(errors[1]).toMatch(
+        /^Launch rolled back \(session t-new-0 killed\)\. Re-run `pup launch t-[a-z0-9]+`\.$/,
+      );
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Launched session');
     });
 
     it('reports a scope conflict from `new` and exits 1 rather than throwing', () => {
@@ -1067,7 +1110,10 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['respawn', 's1'], { from: 'user' });
 
-      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(errors).toEqual([
+        'Steer to session s1 did not land: 3000 chars',
+        'Re-run `pup respawn s1`.',
+      ]);
       expect(process.exitCode).toBe(1);
       expect(respawnSession).not.toHaveBeenCalled();
     });
@@ -1081,7 +1127,10 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['respawn', 's1'], { from: 'user' });
 
-      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(errors).toEqual([
+        'Steer to session s1 did not land: 3000 chars',
+        'Re-run `pup respawn s1`.',
+      ]);
       expect(process.exitCode).toBe(1);
       expect(logs.join('\n')).not.toContain('Respawned s1');
     });

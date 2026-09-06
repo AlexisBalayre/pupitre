@@ -31,11 +31,14 @@ const READY_POLL_MS = 1000;
  */
 const PASTE_SETTLE_MS = 700;
 /**
- * How many settles a paste gets: one, plus one per this many chars. The
- * observed cliff was a single 700 ms settle for 1.5-1.7 KB, so the bound grows
- * with the message and a multi-KB kickoff is never given up on early.
+ * How many settles a paste gets: one per this many chars, floored at
+ * PASTE_SETTLE_MIN. The observed cliff was a single 700 ms settle for
+ * 1.5-1.7 KB, so the bound grows with the message and a multi-KB kickoff is
+ * never given up on early; the floor keeps a one-line steer from being refused
+ * because a loaded machine (an audit pushes it past 60) repainted late.
  */
 const PASTE_SETTLE_CHARS = 1000;
+const PASTE_SETTLE_MIN = 5;
 /**
  * Ctrl-U clears one row of the input box per press (verified on Claude Code
  * 2.1.263), so clearing a partial paste is a bounded loop of presses, each
@@ -198,17 +201,30 @@ export function launchSession(opts: LaunchOptions): { target: string } {
 }
 
 /**
- * A steer whose paste never showed up whole in the session's input box. The
- * box was cleared and nothing was submitted; the session runs on untouched.
+ * A steer that was not submitted: either its paste never showed up whole in
+ * the session's input box (the box was then cleared), or the box held text
+ * Ctrl-U could not clear, so nothing was pasted at all. Either way nothing
+ * was submitted and the session runs on untouched.
  */
 export class SteerNotDeliveredError extends Error {
-  constructor(sessionId: string, chars: number) {
+  readonly sessionId: string;
+
+  constructor(
+    sessionId: string,
+    chars: number,
+    reason: 'never-landed' | 'box-not-cleared' = 'never-landed',
+  ) {
     super(
-      `Steer to session ${sessionId} did not land: its input box never held the whole ` +
-        `${chars}-char message. Cleared the box and submitted nothing; the session is still ` +
-        'running with an empty prompt.',
+      reason === 'never-landed'
+        ? `Steer to session ${sessionId} did not land: its input box never held the whole ` +
+            `${chars}-char message. Cleared the box and submitted nothing; the session is ` +
+            'still running with an empty prompt.'
+        : `Steer to session ${sessionId} did not land: its input box held text that Ctrl-U ` +
+            `could not clear, so the ${chars}-char message was not pasted. Nothing was ` +
+            'submitted; the session is still running with the box as it was.',
     );
     this.name = 'SteerNotDeliveredError';
+    this.sessionId = sessionId;
   }
 }
 
@@ -226,8 +242,11 @@ export class SteerNotDeliveredError extends Error {
 export function steerSession(sessionId: string, message: string): void {
   const target = tmuxTarget(sessionId);
   // A paste appends to whatever the box holds (a draft, a leftover), and the
-  // box then never reads as the message alone; start from an empty one.
-  if (hasUnsubmittedInput(capturePane(sessionId))) clearInputBox(sessionId);
+  // box then never reads as the message alone; start from an empty one, and
+  // say so when one cannot be had rather than paste into it and refuse later.
+  if (hasUnsubmittedInput(capturePane(sessionId)) && !clearInputBox(sessionId)) {
+    throw new SteerNotDeliveredError(sessionId, message.length, 'box-not-cleared');
+  }
   execFileSync('tmux', ['load-buffer', '-'], { input: message });
   tmux('paste-buffer', '-d', '-p', '-t', target);
   if (!awaitPasteLanded(sessionId, message)) {
@@ -244,7 +263,7 @@ export function steerSession(sessionId: string, message: string): void {
 
 /** Settle, then look for the message in the input box; bounded by its length. */
 function awaitPasteLanded(sessionId: string, message: string): boolean {
-  const settles = 1 + Math.ceil(message.length / PASTE_SETTLE_CHARS);
+  const settles = Math.max(PASTE_SETTLE_MIN, Math.ceil(message.length / PASTE_SETTLE_CHARS));
   for (let settle = 0; settle < settles; settle++) {
     syncSleep(PASTE_SETTLE_MS);
     if (pasteLanded(capturePane(sessionId), message)) return true;
@@ -252,14 +271,15 @@ function awaitPasteLanded(sessionId: string, message: string): boolean {
   return false;
 }
 
-/** Press Ctrl-U until the input box is empty (or the press budget is spent). */
-function clearInputBox(sessionId: string): void {
+/** Press Ctrl-U until the input box is empty; false when the press budget is spent first. */
+function clearInputBox(sessionId: string): boolean {
   const target = tmuxTarget(sessionId);
   for (let press = 0; press < CLEAR_KEY_LIMIT; press++) {
     tmux('send-keys', '-t', target, 'C-u');
     syncSleep(CLEAR_SETTLE_MS);
-    if (!hasUnsubmittedInput(capturePane(sessionId))) return;
+    if (!hasUnsubmittedInput(capturePane(sessionId))) return true;
   }
+  return false;
 }
 
 /**

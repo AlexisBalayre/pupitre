@@ -256,10 +256,11 @@ describe('launchWatcher', () => {
  * (docs/conventions/testing.md, "Faking an external CLI"): `load-buffer` keeps
  * the message, `paste-buffer` puts it in the box, and `capture-pane` renders
  * the box the way 2.1.263 does — the message's tail while the paste is still
- * being ingested, then, from the `FAKE_TMUX_LANDS_AFTER`th capture on, the
- * folded placeholder with its newline count. Enter and Ctrl-U empty the box.
- * Every capture's box line is logged too, so a test can read what the runtime
- * saw before it pressed a key.
+ * being ingested (its last row's tail), then, from the `FAKE_TMUX_LANDS_AFTER`th capture on, the
+ * folded placeholder with its newline count. Enter empties the box; Ctrl-U
+ * takes one row per press, as the real UI does, and none at all when
+ * `FAKE_TMUX_STUCK` is set. Every capture's box line is logged too, so a test
+ * can read what the runtime saw before it pressed a key.
  */
 const FAKE_TMUX = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_TMUX_LOG"
@@ -267,12 +268,18 @@ box="$FAKE_TMUX_STATE/box"
 case "$1" in
   load-buffer) cat > "$FAKE_TMUX_STATE/buffer" ;;
   paste-buffer) cp "$FAKE_TMUX_STATE/buffer" "$box" ;;
-  send-keys) [ "$4" = Enter ] || [ "$4" = C-u ] && rm -f "$box" ;;
+  send-keys)
+    [ "$4" = Enter ] && rm -f "$box"
+    if [ "$4" = C-u ] && [ -z "$FAKE_TMUX_STUCK" ] && [ -f "$box" ]; then
+      rows=$(grep -c '' "$box")
+      if [ "$rows" -le 1 ]; then rm -f "$box"
+      else head -n $((rows - 1)) "$box" > "$box.tmp" && mv "$box.tmp" "$box"; fi
+    fi ;;
   capture-pane)
     n=$(( $(cat "$FAKE_TMUX_STATE/captures" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$FAKE_TMUX_STATE/captures"
     if [ ! -f "$box" ]; then line='❯ '
-    elif [ "$n" -lt "$FAKE_TMUX_LANDS_AFTER" ]; then line="❯ $(tail -c 12 "$box")"
+    elif [ "$n" -lt "$FAKE_TMUX_LANDS_AFTER" ]; then line="❯ $(tail -n 1 "$box" | tail -c 12)"
     else
       newlines=$(tr -cd '\\n' < "$box" | wc -c | tr -d ' ')
       if [ "$newlines" -gt 0 ]; then line="❯ [Pasted text #1 +$newlines lines]"
@@ -287,6 +294,7 @@ describe('steerSession with a fake tmux on PATH', () => {
   const original = vi.mocked(execFileSync).getMockImplementation();
   let log: string;
   let landsAfter: number;
+  let stuck: boolean;
   let wait: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
@@ -297,6 +305,7 @@ describe('steerSession with a fake tmux on PATH', () => {
     log = join(dir, 'tmux.log');
     writeFileSync(log, '');
     landsAfter = 0;
+    stuck = false;
     // Every settle is skipped: what is under test is what the runtime does
     // between settles, and the fake's clock is the capture count.
     wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
@@ -311,6 +320,7 @@ describe('steerSession with a fake tmux on PATH', () => {
               FAKE_TMUX_LOG: log,
               FAKE_TMUX_STATE: join(dir, 'state'),
               FAKE_TMUX_LANDS_AFTER: String(landsAfter),
+              ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
             },
           })
         : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
@@ -366,15 +376,23 @@ describe('steerSession with a fake tmux on PATH', () => {
   it('clears a draft the box already holds before pasting', () => {
     // A box with leftover text reads as text plus placeholder after the
     // paste, never as the message alone (seen live: `row one[Pasted text #33]`).
-    writeFileSync(join(dirname(log), 'state', 'box'), 'row one');
+    writeFileSync(join(dirname(log), 'state', 'box'), 'row one\nrow two\nrow three');
     // The draft and then the short message both render inline (as their
     // own tail); nothing folds.
     landsAfter = Number.MAX_SAFE_INTEGER;
 
     steerSession('s-1', 'do X instead');
 
+    // Ctrl-U takes one row per press, so clearing is a loop checked against
+    // the pane after each press, not one press and a hope.
     const lines = argvLog();
-    expect(lines.slice(0, 6)).toEqual([
+    expect(lines.slice(0, 12)).toEqual([
+      'capture-pane -p -t =pup-s-1:',
+      'capture => ❯ row three',
+      CLEAR,
+      'capture-pane -p -t =pup-s-1:',
+      'capture => ❯ row two',
+      CLEAR,
       'capture-pane -p -t =pup-s-1:',
       'capture => ❯ row one',
       CLEAR,
@@ -388,7 +406,9 @@ describe('steerSession with a fake tmux on PATH', () => {
   it('gives a steer one settle per KB, then clears the box and refuses without pressing Enter', () => {
     landsAfter = Number.MAX_SAFE_INTEGER;
 
-    expect(() => steerSession('s-1', STEER_3000)).toThrow(SteerNotDeliveredError);
+    expect(() => steerSession('s-1', `${STEER_3000}${'tok '.repeat(750)}`)).toThrow(
+      SteerNotDeliveredError,
+    );
     expect(() => steerSession('s-1', STEER_3000)).toThrow(
       'Steer to session s-1 did not land: its input box never held the whole 3000-char message. ' +
         'Cleared the box and submitted nothing; the session is still running with an empty prompt.',
@@ -396,20 +416,36 @@ describe('steerSession with a fake tmux on PATH', () => {
 
     const lines = argvLog().slice(0, argvLog().indexOf(CLEAR) + 3);
     expect(lines).not.toContain(ENTER);
-    // 1 + ceil(3000 / 1000) settles, each ending in a look at the box.
-    const settles = lines.filter((line) => line === 'capture => ❯ k LASTWORDS.');
-    expect(settles).toHaveLength(4);
+    // ceil(6000 / 1000) settles for the first call, each ending in a look at the box.
+    const settles = lines.filter((line) => line === 'capture => ❯ tok tok tok ');
+    expect(settles).toHaveLength(6);
     expect(lines.slice(-3)).toEqual([CLEAR, 'capture-pane -p -t =pup-s-1:', 'capture => ❯ ']);
   });
 
-  it('gives a short steer fewer settles', () => {
+  it('floors a short steer at five settles, so a late repaint under load is not a refusal', () => {
     landsAfter = Number.MAX_SAFE_INTEGER;
 
     expect(() => steerSession('s-1', 'do X instead, then run the tests')).toThrow(
       SteerNotDeliveredError,
     );
 
-    expect(argvLog().filter((line) => line === 'capture => ❯ un the tests')).toHaveLength(2);
+    expect(argvLog().filter((line) => line === 'capture => ❯ un the tests')).toHaveLength(5);
+  });
+
+  it('refuses, naming the box, when Ctrl-U cannot empty it, and pastes nothing', () => {
+    writeFileSync(join(dirname(log), 'state', 'box'), 'x');
+    stuck = true;
+
+    expect(() => steerSession('s-1', STEER_3000)).toThrow(
+      'Steer to session s-1 did not land: its input box held text that Ctrl-U could not clear, ' +
+        'so the 3000-char message was not pasted. Nothing was submitted; the session is still ' +
+        'running with the box as it was.',
+    );
+
+    const lines = argvLog();
+    expect(lines.filter((line) => line === CLEAR)).toHaveLength(64);
+    expect(lines).not.toContain('load-buffer -');
+    expect(lines).not.toContain(ENTER);
   });
 
   describe('kickoff', () => {
