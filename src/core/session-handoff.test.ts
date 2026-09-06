@@ -75,14 +75,23 @@ describe('session handoff', () => {
   });
 
   it('becomes ready only after handoff-done follows the request', () => {
-    markHandoffReady(db, 's1');
-    expect(isHandoffReady(db, 's1')).toBe(true);
-
     requestHandoff(db, repoPath, 's1');
     expect(isHandoffReady(db, 's1')).toBe(false);
 
     markHandoffReady(db, 's1');
     expect(isHandoffReady(db, 's1')).toBe(true);
+
+    requestHandoff(db, repoPath, 's1');
+    expect(isHandoffReady(db, 's1')).toBe(false);
+  });
+
+  // A `handoff_ready` nobody asked for is not readiness: otherwise a session
+  // could write another session's handoff, mark it ready, and have `pup respawn`
+  // relaunch that session on its text without ever steering it (decision 44).
+  it('is not ready when no handoff was requested', () => {
+    markHandoffReady(db, 's1');
+
+    expect(isHandoffReady(db, 's1')).toBe(false);
   });
 
   it('refuses to request a handoff from a session that is not running', () => {

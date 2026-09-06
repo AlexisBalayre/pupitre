@@ -131,6 +131,13 @@ function seedSession(repoPath: string, sessionId: string, worktreePath?: string)
   db.close();
 }
 
+/** The seeded session's worktree, created so `git -C` inside it resolves the repo. */
+function worktreeOf(repoPath: string, sessionId: string): string {
+  const path = join(repoPath, '.worktrees', sessionId);
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
 /** Registers the repo in the store the way `pup init` does, with nothing planned. */
 function registerProject(repoPath: string): string {
   const { db } = resolveProject(repoPath);
@@ -649,7 +656,7 @@ describe('CLI commands', () => {
 
     // Guarding only `--allow-overlap` left the command open: a session could
     // kill the holder of a scope and launch a conflicting task plainly, so the
-    // whole command is operator-only by the rule that keeps `--pr` and spec
+    // whole command is operator-only by the rule that keeps `pup merge` and spec
     // authoring so (decisions 26, 42).
     it.each([
       ['', []],
@@ -1013,6 +1020,24 @@ describe('CLI commands', () => {
         expect.stringContaining('Session s1 has not signalled handoff-done yet'),
       ]);
     });
+
+    // A respawn kicks another session off with whatever its handoff file says,
+    // so a session that could respawn could author another's context (decision 44).
+    it('refuses when a session is calling', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+
+      buildProgram().parse(['respawn', 's2'], { from: 'user' });
+
+      expect(requestHandoff).not.toHaveBeenCalled();
+      expect(respawnSession).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup respawn` is operator-only; sessions cannot respawn sessions.']);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
   });
 
   describe('report', () => {
@@ -1332,6 +1357,38 @@ describe('CLI commands', () => {
         expect(summary).toBe('shipped the thing');
         expect(logs).toContain('Session s1 marked done: shipped the thing');
       });
+
+      it('marks the session done from inside its own worktree', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
+
+        expect(firstCall(markSessionDone)[1]).toBe('s1');
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      // `PUP_SESSION_ID` is the session's own word; the worktree around cwd is
+      // decision 26's detection, so exporting a running victim's id cannot move
+      // that victim to `awaiting-review` (decision 44).
+      it('refuses when the worktree around cwd belongs to another session', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        seedSession(repo, 's2');
+        useCwd(worktreeOf(repo, 's2'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
+
+        expect(markSessionDone).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          '`pup session done` reports only its own session; this worktree belongs to s2, not s1.',
+        ]);
+        expect(logs).toEqual([]);
+        expect(process.exitCode).toBe(1);
+      });
     });
 
     describe('handoff-done', () => {
@@ -1358,6 +1415,22 @@ describe('CLI commands', () => {
         const [, sessionId] = firstCall(markHandoffReady);
         expect(sessionId).toBe('s1');
         expect(logs).toContain('Session s1 handoff recorded; Pupitre will respawn you shortly.');
+      });
+
+      it('refuses when the worktree around cwd belongs to another session', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        seedSession(repo, 's2');
+        useCwd(worktreeOf(repo, 's2'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'handoff-done'], { from: 'user' });
+
+        expect(markHandoffReady).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          '`pup session handoff-done` reports only its own session; this worktree belongs to s2, not s1.',
+        ]);
+        expect(process.exitCode).toBe(1);
       });
     });
   });
@@ -1402,16 +1475,20 @@ describe('CLI commands', () => {
       expect(runMergeGate).not.toHaveBeenCalled();
     });
 
-    it('refuses --pr when called from inside the session being merged', () => {
+    // Only `--pr` was guarded, so a session could merge or reject another
+    // session's branch plainly and park it `blocked` (decisions 26, 44).
+    it.each([
+      ['', []],
+      [' --pr', ['--pr']],
+    ])('refuses `merge%s` when a session is calling', (_label, flags) => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       seedSession(repo, 's1', repo);
 
-      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+      buildProgram().parse(['merge', 's2', ...flags], { from: 'user' });
 
-      expect(errors).toEqual([
-        '`pup merge --pr` is operator-only; sessions cannot open pull requests.',
-      ]);
+      expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
+      expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
       expect(runMergeGate).not.toHaveBeenCalled();
     });
@@ -1566,7 +1643,7 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('forwards --accept-debt/--review-by, defaulting acceptedBy to human', () => {
+    it('forwards --accept-debt/--review-by, attributed to the human the guard admits', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
 
@@ -1581,21 +1658,6 @@ describe('CLI commands', () => {
         reviewBy: 'before v2',
         acceptedBy: 'human',
       });
-    });
-
-    it('attributes accepted debt to the calling session when merge runs from inside it', () => {
-      const repo = initRepoWithAdapter();
-      useCwd(repo);
-      seedSession(repo, 's1', repo);
-      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
-
-      buildProgram().parse(
-        ['merge', 's1', '--accept-debt', 'shipped a shortcut', '--review-by', 'before v2'],
-        { from: 'user' },
-      );
-
-      const [, request] = firstCall(runMergeGate);
-      expect(request.acceptDebt?.acceptedBy).toBe('s1');
     });
 
     it('throws when run outside any git repo (no project to resolve)', () => {

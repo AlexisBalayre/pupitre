@@ -25,8 +25,8 @@ exit 1.
   a task already in the backlog. Refuses when the task's scope-in claims tracked files a live
   session's scope already claims, naming the session and the shared files; `--allow-overlap`
   launches anyway and records what it waved through (decision 41). Operator-only: refused when
-  run from inside a session, like `pup new`, `pup plan add|drop|edit` and `pup merge --pr`
-  (decisions 26, 42).
+  run from inside a session, like `pup new`, `pup plan add|drop|edit`, `pup merge` and
+  `pup respawn` (decisions 26, 42, 44).
 - `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path. Takes
   `--allow-overlap` for the same reason `pup launch` does.
 - `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
@@ -36,13 +36,27 @@ exit 1.
 - `pup kill <session> [--respawn]` — stop; `--respawn` relaunches on a fresh context window. A
   killed session's task returns to the backlog, so `pup launch` can retry it. Operator-only for
   the same reason `pup launch` is: killing releases the holder's scope (decision 42).
+- `pup respawn <session> [--wait <seconds>]` — ask the session for a handoff, wait for its
+  `handoff-done`, then relaunch it on a fresh context window with the handoff as kickoff
+  (decision 18). A handoff nobody requested does not count as ready. Operator-only: the kickoff
+  quotes the handoff file, context a session could author for another (decision 44).
 
 ## Review and merge
 
 - `pup review` — the queue: pending branches ordered by risk score, each with generated diff summary, gate results, debt delta.
 - `pup review <session>` — full detail for one branch.
-- `pup merge <session>` — run the gate pipeline; on pass, merge and write knowledge layer in the same transaction; on fail, move to rejected and inject the report.
+- `pup merge <session>` — run the gate pipeline; on pass, merge and write knowledge layer in the same transaction; on fail, move to rejected and inject the report. Operator-only, `--pr` included: the verdict moves another session's branch (decisions 26, 44).
 - `pup merge <session> --accept-debt "<reason>" --review-by "<condition>"` — merge despite a flagged shortcut, creating a ledger entry.
+
+## Session protocol
+
+Run by the agent, never by the operator. Each takes its session from `PUP_SESSION_ID` and is
+refused when the worktree around cwd belongs to a different session, so a session reports only
+its own state (decision 44).
+
+- `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
+  session to `awaiting-review` (decision 3).
+- `pup session handoff-done` — the handoff `pup respawn` asked for is written (decision 18).
 
 ## Knowledge
 
