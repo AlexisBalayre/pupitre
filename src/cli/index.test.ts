@@ -18,6 +18,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', () => ({
+  SteerNotDeliveredError: class SteerNotDeliveredError extends Error {
+    constructor(sessionId: string, chars: number) {
+      super(`Steer to session ${sessionId} did not land: ${chars} chars`);
+    }
+  },
   interruptSession: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
@@ -44,7 +49,11 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
-import { interruptSession, steerSession } from '../claude/session-runtime.service.js';
+import {
+  interruptSession,
+  SteerNotDeliveredError,
+  steerSession,
+} from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -645,6 +654,22 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('fails loudly when the kickoff context never lands whole in the new window', () => {
+      // kickoff() delivers the compiled context through the same paste, so a
+      // launch whose context arrived as a tail is a launch that failed, not a
+      // session to attach to (decision 45).
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new SteerNotDeliveredError('t-abc-0', 3000);
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(errors).toEqual(['Steer to session t-abc-0 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Launched session');
+    });
+
     it('passes --allow-overlap through to the launch', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
@@ -820,6 +845,25 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
       expect(steerSession).not.toHaveBeenCalled();
     });
+
+    it('exits 1 with the named message, and records no steer, when the paste never lands', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['steer', 's1', 'a'.repeat(3000)], { from: 'user' });
+
+      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(logs).not.toContain('Steered session s1.');
+      const { db } = resolveProject(repo);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 's1'").get()).toEqual({
+        n: 0,
+      });
+    });
   });
 
   describe('interrupt', () => {
@@ -882,6 +926,25 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
       expect(interruptSession).not.toHaveBeenCalled();
       expect(steerSession).not.toHaveBeenCalled();
+    });
+
+    it('records the interrupt but not the steer, and exits 1, when the message never lands', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      // Escape had already landed when the paste was refused.
+      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(sessionEvents(repo, 's1')).toEqual([
+        { type: 'interrupt', payload: JSON.stringify({ steered: false }) },
+      ]);
     });
 
     it('does not steer when no message is given', () => {
@@ -993,6 +1056,34 @@ describe('CLI commands', () => {
       );
       expect(respawnSession).toHaveBeenCalledTimes(1);
       expect(logs).toContain('Respawned s1 on a fresh context window with its handoff.');
+    });
+
+    it('exits 1 with the named message when the handoff request never lands', () => {
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(false);
+      vi.mocked(requestHandoff).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(respawnSession).not.toHaveBeenCalled();
+    });
+
+    it('exits 1 with the named message when the relaunch kickoff never lands', () => {
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+      vi.mocked(respawnSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Respawned s1');
     });
 
     it('forwards a custom --wait as milliseconds', () => {
