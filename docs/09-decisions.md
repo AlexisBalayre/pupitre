@@ -1442,11 +1442,15 @@ changes back into those docs is pending.
     path; an agent that edits `sessions.tmux_target` in the store, which its shell can reach,
     points a steer wherever it likes, as it could already write any row. The sandbox that
     keeps the agent's hands off its own window and store is the instrument, as decisions 44
-    and 45 said. **A swap across sessions.** `swap-pane` between two pup sessions moves the
-    launch pane into a sibling's window; steers still reach it, and a kill by pane then kills
-    the sibling's session around it. Nothing in the split-only threat model does this, and
-    the pane-first kill is still the right order: without it a rename leaves the window
-    running. **Denial of steering** stands as decision 45 left it.
+    and 45 said. **A move across sessions.** `swap-pane`, `join-pane`, `break-pane -t` and
+    `move-pane` between two pup sessions each carry the launch pane into a sibling's window;
+    steers still reach it, and a kill by pane then kills the sibling's session around it.
+    With `join-pane` the source session is emptied and tmux destroys it itself, so the
+    name-kill that follows finds nothing and only the sibling dies (verified on tmux 3.7b:
+    `join-pane -s %0 -t =pupB:` then `kill-session -t %0` killed B). Nothing in the
+    split-only threat model does this, and the pane-first kill is still the right order:
+    without it a rename leaves the window running. **Denial of steering** stands as
+    decision 45 left it.
 
 ## Implementation notes
 
