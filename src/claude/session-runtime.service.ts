@@ -18,6 +18,19 @@ export interface LaunchOptions {
   model?: string;
 }
 
+/**
+ * The pane a session was launched into. Every later command is addressed to
+ * `paneId`, never to the session: a session target resolves to the session's
+ * ACTIVE pane, and the agent holds `$TMUX`, so one `split-window` from inside
+ * moved paste-buffer, send-keys and capture-pane into a shell of its own
+ * (decision 46). A pane id (`%N`) is server-unique and never reissued, so a
+ * split, a swap-pane or a rename-session cannot move it onto another pane.
+ */
+export interface SessionPane {
+  sessionId: string;
+  paneId: string;
+}
+
 const CLAUDE_JSON = join(homedir(), '.claude.json');
 
 const READY_MARKER = /\? for shortcuts|bypass permissions on/i;
@@ -57,6 +70,9 @@ const SUBMIT_VERIFY_MS = 1000;
 const INTERRUPT_SETTLE_MS = 700;
 const SUBMIT_RETRY_LIMIT = 2;
 
+/** What tmux 3.7b prints when the pane, or the whole server, is gone. */
+const PANE_GONE = /can't find pane|error connecting to|no server running/;
+
 function tmux(...args: string[]): string {
   return execFileSync('tmux', args, { encoding: 'utf8' });
 }
@@ -72,29 +88,90 @@ function tmuxName(sessionId: string): string {
 }
 
 /**
- * Exact-match pin for every lookup (send-keys, paste-buffer, capture-pane,
- * kill-session). The '=' pins tmux to exact matching — a bare name resolves
- * exact -> fnmatch -> PREFIX, so once `pup-t-abc` is gone its keys land in a
- * live `pup-t-abc-1`, and session slugs mint exactly such prefix pairs. The
- * trailing ':' is required: bare '=name' fails pane resolution for send-keys
- * with can't-find-pane, '=name:' works (verified on tmux 3.7b). ':' and '='
- * are both legal in session NAMES, so a double-pinned or unpinned target
- * resolves to something else — or to nothing, silently; this is the single
- * place the pin format lives.
+ * Exact-match pin for the two commands that address a session by NAME:
+ * kill-session, and the stale-name kill before new-session. The '=' pins tmux
+ * to exact matching — a bare name resolves exact -> fnmatch -> PREFIX, so once
+ * `pup-t-abc` is gone its keys land in a live `pup-t-abc-1`, and session
+ * slugs mint exactly such prefix pairs. The trailing ':' is required: bare
+ * '=name' fails pane resolution with can't-find-pane, '=name:' works
+ * (verified on tmux 3.7b). ':' and '=' are both legal in session NAMES, so a
+ * double-pinned or unpinned target resolves to something else — or to
+ * nothing, silently; this is the single place the pin format lives. Nothing
+ * that types into a pane may use it: it names a session, and tmux resolves a
+ * session to whichever pane is active (decision 46).
  */
 function pinned(name: string): string {
   return `=${name}:`;
 }
 
-function tmuxTarget(sessionId: string): string {
-  return pinned(tmuxName(sessionId));
+function isPaneId(value: string): boolean {
+  return /^%\d+$/.test(value);
+}
+
+/**
+ * The session's pane, or a refusal. Raised before anything is sent: a pane
+ * that was never recorded, or that is not a pane id — a row from before panes
+ * were pinned holds the session name, which tmux would resolve to the active
+ * pane — cannot be steered, and one tmux reports gone cannot be either. The
+ * session runs on untouched, or is already gone; either way nothing landed
+ * anywhere else.
+ */
+export class SessionPaneMissingError extends Error {
+  readonly sessionId: string;
+  readonly paneId: string | null;
+
+  constructor(sessionId: string, paneId: string | null, reason: 'unrecorded' | 'gone') {
+    super(
+      paneId === null
+        ? `Session ${sessionId} has no pane recorded at launch; nothing was sent.`
+        : reason === 'unrecorded'
+          ? `Session ${sessionId} recorded ${JSON.stringify(paneId)} as its pane, which is not ` +
+            'a tmux pane id (it was launched before panes were pinned); nothing was sent. ' +
+            `Respawn it: \`pup kill --respawn ${sessionId}\`.`
+          : `Session ${sessionId}'s pane ${paneId} no longer exists; nothing was sent.`,
+    );
+    this.name = 'SessionPaneMissingError';
+    this.sessionId = sessionId;
+    this.paneId = paneId;
+  }
+}
+
+/**
+ * The `-t` for every command that types into or reads a pane. The single
+ * place a pane target is formed, so nothing below can fall back to a session
+ * name: a value that is not `%N` is refused, never passed to tmux, where a
+ * bare name would resolve to the active pane.
+ */
+function paneTarget(pane: SessionPane): string {
+  if (!isPaneId(pane.paneId)) {
+    throw new SessionPaneMissingError(pane.sessionId, pane.paneId, 'unrecorded');
+  }
+  return pane.paneId;
+}
+
+/**
+ * Run a tmux command addressed to the session's pane. stderr is piped rather
+ * than inherited, so a gone pane is a named refusal instead of tmux's own
+ * line on the operator's terminal; any other failure is rethrown as is.
+ */
+function tmuxAt(pane: SessionPane, args: string[], input?: string): string {
+  try {
+    return execFileSync('tmux', args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], input });
+  } catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    if (typeof stderr === 'string' && PANE_GONE.test(stderr)) {
+      throw new SessionPaneMissingError(pane.sessionId, pane.paneId, 'gone');
+    }
+    throw error;
+  }
 }
 
 /**
  * Kill any stale session named `name`, then launch a fresh detached tmux
- * session running `command`. Shared by `launchSession` and `launchWatcher` —
- * tmux is pup's process supervisor everywhere (decision 1), and both spawn
- * paths need the kill-then-spawn sequence to survive a re-launch.
+ * session running `command`, and return the id of the pane it opened in.
+ * Shared by `launchSession` and `launchWatcher` — tmux is pup's process
+ * supervisor everywhere (decision 1), and both spawn paths need the
+ * kill-then-spawn sequence to survive a re-launch.
  * `name` must be BARE (never `pinned()`): '=' and ':' are legal in session
  * names, so `-s` would happily create a pin-shaped name no pinned lookup can
  * ever find again — an orphan pane invisible to every later command.
@@ -109,11 +186,14 @@ function spawnDetachedSession(
     env?: Record<string, string>;
     command: string[];
   },
-): void {
+): string {
   killIfExists(name);
-  tmux(
+  const printed = tmux(
     'new-session',
     '-d',
+    '-P',
+    '-F',
+    '#{pane_id}',
     '-s',
     name,
     ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
@@ -121,7 +201,13 @@ function spawnDetachedSession(
     opts.cwd,
     ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
     ...opts.command,
-  );
+  ).trim();
+  // Checked where it is minted: this id is what every later command trusts,
+  // and a launch is the one place a bad one can fail loudly instead of late.
+  if (!isPaneId(printed)) {
+    throw new Error(`tmux new-session printed ${JSON.stringify(printed)}, not a pane id.`);
+  }
+  return printed;
 }
 
 /**
@@ -182,11 +268,15 @@ export function launchArgs(opts: LaunchOptions): string[] {
   ];
 }
 
-export function launchSession(opts: LaunchOptions): { target: string } {
-  const target = tmuxName(opts.sessionId);
+/**
+ * Open the session's window and return the pane it runs in. The caller stores
+ * the pane (`sessions.tmux_target`) and hands it to every later command: the
+ * id is minted here, once, and nothing later re-derives it from the session.
+ */
+export function launchSession(opts: LaunchOptions): SessionPane {
   preseedTrust(opts.worktreePath);
   const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
-  spawnDetachedSession(target, {
+  const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.worktreePath,
     window: { x: 220, y: 50 },
     env: {
@@ -197,7 +287,7 @@ export function launchSession(opts: LaunchOptions): { target: string } {
     },
     command: [claudeBin, ...launchArgs(opts)],
   });
-  return { target };
+  return { sessionId: opts.sessionId, paneId };
 }
 
 /**
@@ -229,55 +319,56 @@ export class SteerNotDeliveredError extends Error {
 }
 
 /**
- * Steer a running session mid-turn. paste-buffer keeps arbitrary text intact;
- * `-p` brackets it, so the UI folds the whole message into one paste instead
- * of one per ~1 KB chunk the pty delivers. Enter is sent only once the pane
- * shows the message whole: a fixed settle let Enter fire mid-ingestion and
- * submit the tail of a 1.5 KB steer, or of the compiled kickoff context, with
- * the head lost (decision 45). A paste that never lands is cleared and refused,
- * never submitted in part. After Enter, submission is verified against the
- * pane and Enter retried: an extra Enter on an empty input box is a no-op, so
- * a false "still pending" read is harmless.
+ * Steer a running session mid-turn, into the pane it was launched in.
+ * paste-buffer keeps arbitrary text intact; `-p` brackets it, so the UI folds
+ * the whole message into one paste instead of one per ~1 KB chunk the pty
+ * delivers. Enter is sent only once the pane shows the message whole: a fixed
+ * settle let Enter fire mid-ingestion and submit the tail of a 1.5 KB steer,
+ * or of the compiled kickoff context, with the head lost (decision 45). A
+ * paste that never lands is cleared and refused, never submitted in part.
+ * After Enter, submission is verified against the pane and Enter retried: an
+ * extra Enter on an empty input box is a no-op, so a false "still pending"
+ * read is harmless.
  */
-export function steerSession(sessionId: string, message: string): void {
-  const target = tmuxTarget(sessionId);
+export function steerPane(pane: SessionPane, message: string): void {
+  const target = paneTarget(pane);
   // A paste appends to whatever the box holds (a draft, a leftover), and the
   // box then never reads as the message alone; start from an empty one, and
   // say so when one cannot be had rather than paste into it and refuse later.
-  if (hasUnsubmittedInput(capturePane(sessionId)) && !clearInputBox(sessionId)) {
-    throw new SteerNotDeliveredError(sessionId, message.length, 'box-not-cleared');
+  if (hasUnsubmittedInput(capturePane(pane)) && !clearInputBox(pane)) {
+    throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');
   }
-  execFileSync('tmux', ['load-buffer', '-'], { input: message });
-  tmux('paste-buffer', '-d', '-p', '-t', target);
-  if (!awaitPasteLanded(sessionId, message)) {
-    clearInputBox(sessionId);
-    throw new SteerNotDeliveredError(sessionId, message.length);
+  tmuxAt(pane, ['load-buffer', '-'], message);
+  tmuxAt(pane, ['paste-buffer', '-d', '-p', '-t', target]);
+  if (!awaitPasteLanded(pane, message)) {
+    clearInputBox(pane);
+    throw new SteerNotDeliveredError(pane.sessionId, message.length);
   }
-  tmux('send-keys', '-t', target, 'Enter');
+  tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
-    if (!hasUnsubmittedInput(capturePane(sessionId))) return;
-    tmux('send-keys', '-t', target, 'Enter');
+    if (!hasUnsubmittedInput(capturePane(pane))) return;
+    tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
   }
 }
 
 /** Settle, then look for the message in the input box; bounded by its length. */
-function awaitPasteLanded(sessionId: string, message: string): boolean {
+function awaitPasteLanded(pane: SessionPane, message: string): boolean {
   const settles = Math.max(PASTE_SETTLE_MIN, Math.ceil(message.length / PASTE_SETTLE_CHARS));
   for (let settle = 0; settle < settles; settle++) {
     syncSleep(PASTE_SETTLE_MS);
-    if (pasteLanded(capturePane(sessionId), message)) return true;
+    if (pasteLanded(capturePane(pane), message)) return true;
   }
   return false;
 }
 
 /** Press Ctrl-U until the input box is empty; false when the press budget is spent first. */
-function clearInputBox(sessionId: string): boolean {
-  const target = tmuxTarget(sessionId);
+function clearInputBox(pane: SessionPane): boolean {
+  const target = paneTarget(pane);
   for (let press = 0; press < CLEAR_KEY_LIMIT; press++) {
-    tmux('send-keys', '-t', target, 'C-u');
+    tmuxAt(pane, ['send-keys', '-t', target, 'C-u']);
     syncSleep(CLEAR_SETTLE_MS);
-    if (!hasUnsubmittedInput(capturePane(sessionId))) return true;
+    if (!hasUnsubmittedInput(capturePane(pane))) return true;
   }
   return false;
 }
@@ -285,21 +376,21 @@ function clearInputBox(sessionId: string): boolean {
 /**
  * Abort a session's in-flight tool call by sending Escape to its pane — the
  * escape hatch for a hung tool (e.g. a transient network error wedging a
- * session), which `steerSession` cannot reach because steers deliver only
- * after the current tool call ends. The trailing settle gives the UI a beat
- * to return to its input box, so a steer issued right after lands as a paste
+ * session), which `steerPane` cannot reach because steers deliver only after
+ * the current tool call ends. The trailing settle gives the UI a beat to
+ * return to its input box, so a steer issued right after lands as a paste
  * instead of vanishing into the interrupt redraw.
  */
-export function interruptSession(sessionId: string): void {
-  tmux('send-keys', '-t', tmuxTarget(sessionId), 'Escape');
+export function interruptPane(pane: SessionPane): void {
+  tmuxAt(pane, ['send-keys', '-t', paneTarget(pane), 'Escape']);
   syncSleep(INTERRUPT_SETTLE_MS);
 }
 
 /** Wait until the session UI is interactive. Returns false on timeout. */
-function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolean {
+function waitUntilReady(pane: SessionPane, timeoutMs = READY_TIMEOUT_MS): boolean {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (READY_MARKER.test(capturePane(sessionId))) return true;
+    if (READY_MARKER.test(capturePane(pane))) return true;
     syncSleep(READY_POLL_MS);
   }
   return false;
@@ -311,27 +402,40 @@ function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolea
  * when the context never landed whole, so a launch fails loudly rather than
  * start the agent on the tail of its own task (decision 45).
  */
-export function kickoff(sessionId: string, prompt: string): boolean {
-  if (!waitUntilReady(sessionId)) return false;
-  steerSession(sessionId, prompt);
+export function kickoff(pane: SessionPane, prompt: string): boolean {
+  if (!waitUntilReady(pane)) return false;
+  steerPane(pane, prompt);
   return true;
 }
 
-function capturePane(sessionId: string): string {
-  return tmux('capture-pane', '-p', '-t', tmuxTarget(sessionId));
+function capturePane(pane: SessionPane): string {
+  return tmuxAt(pane, ['capture-pane', '-p', '-t', paneTarget(pane)]);
 }
 
-export function killSession(sessionId: string): void {
+/**
+ * Kill the session's window: the session holding its launch pane, wherever a
+ * rename moved it (kill-session resolves a pane id to the session it is in),
+ * then any session still wearing the name, for a row whose pane was never
+ * recorded or is already gone. Both kills are silent no-ops when there is
+ * nothing to kill, so together they leave nothing of either behind.
+ */
+export function killSession(sessionId: string, paneId?: string | null): void {
+  if (paneId && isPaneId(paneId)) killTarget(paneId);
   killIfExists(tmuxName(sessionId));
 }
 
 function killIfExists(name: string): void {
+  // Pinned to exact match, or a stale name would prefix-match and kill a
+  // live sibling.
+  killTarget(pinned(name));
+}
+
+function killTarget(target: string): void {
   try {
     // Expected to fail when the session (or the tmux server itself) does not
     // exist; pipe stderr so the probe stays silent instead of leaking
-    // "error connecting to /tmp/tmux-*" to the operator's terminal. Pinned to
-    // exact match, or a stale name would prefix-match and kill a live sibling.
-    execFileSync('tmux', ['kill-session', '-t', pinned(name)], {
+    // "error connecting to /tmp/tmux-*" to the operator's terminal.
+    execFileSync('tmux', ['kill-session', '-t', target], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
   } catch {
@@ -353,7 +457,8 @@ function watcherTarget(repoProjectId: string): string {
  * Run the conflict radar in a detached tmux session — tmux is pup's process
  * supervisor everywhere else (decision 1), and it makes the radar log one
  * `tmux attach` away. Absolute node + CLI paths, since the tmux server's PATH
- * may not carry the dev toolchain.
+ * may not carry the dev toolchain. Nothing types into the radar, so its pane
+ * id is not kept; the watcher is addressed by name alone.
  */
 export function launchWatcher(repoProjectId: string, repoPath: string): { target: string } {
   const target = watcherTarget(repoProjectId);
