@@ -1298,6 +1298,89 @@ changes back into those docs is pending.
     enters the victim's worktree with the victim's id passes the protocol commands as the
     victim; a sandbox is a different instrument.
 
+45. **A steer is submitted only once the pane shows it whole, and never in part (2026-09-06).**
+    `steerSession` pasted through `tmux paste-buffer`, slept 700 ms, and pressed Enter. Twice
+    on 2026-09-05 a 1.5–1.7 KB operator steer reached the agent as its tail alone — one as the
+    four characters `ath.`, one starting mid-word — while steers under ~900 chars arrived
+    whole; and on 2026-09-06 a session opened saying its prompt carried only the session
+    protocol, which is the last section of the compiled context. That is the same failure on
+    the first prompt of every session: `kickoff` delivers the context through the same call.
+    Reproduced against a scratch Claude Code 2.1.263 pane with a 1.8 KB message: the agent
+    received `19 tok120 … LASTWORD`, the head gone.
+    *Two causes, two fixes.* First, the paste was not bracketed. The pty hands the text to the
+    UI in ~1 KB reads, and without bracket marks the UI takes each read as its own paste —
+    three placeholders for 3000 chars, `[Pasted text #1][Pasted text #2][Pasted text #3]`
+    — and an Enter timed between them submits whatever had folded. `paste-buffer -p`
+    wraps the whole buffer in the bracket marks, and the UI then folds it as one paste:
+    fifteen of fifteen trials, 3 KB single-line and 19 KB over 150 lines, one placeholder
+    each within 100 ms. Second, a fixed settle is a guess about ingestion time, and the guess
+    was wrong at 1.5 KB. Enter now waits for `capturePane` to show the message whole, one
+    settle per KB of message and never fewer than five — the first cut gave a one-line steer
+    two settles, 1.4 s on a machine an audit pushes past a load of 60, which the security
+    review named as a refusal mode of its own — and is never sent otherwise.
+    *What "whole" can mean through a pane.* The UI folds any paste over ~800 chars, or over
+    a couple of lines, into `[Pasted text #N]`, with `+L lines` where L is the newline count,
+    so the words are unreadable and the count is the one thing to check; a shorter paste
+    renders inline, and must begin with the message's first word and end with its last, in
+    the box's last column-0 `❯` block — a submitted prompt is echoed above the box under the
+    same glyph. `pasteLanded` in `pane.utils.ts` is that rule, pure over the capture, with the
+    live panes as fixtures: the tail-only box of the reproduction, and `row one[Pasted text
+    #33]`, a paste appended to a draft the box already held, which the first cut of this
+    change met in the wild and rightly refused. The box is cleared before pasting for that
+    reason, and cleared again on refusal: Ctrl-U takes one row per press, so clearing is a
+    bounded loop of presses, each checked against the pane, and a box the budget cannot
+    empty is its own refusal — the error says the box held text Ctrl-U could not clear and
+    nothing was pasted, rather than the never-landed text, which would send the operator
+    looking at the paste instead of at the box.
+    *Refusal is an exit, not an event.* A paste that never shows whole raises
+    `SteerNotDeliveredError`, named and carrying the session and the length; `pup steer`,
+    `pup interrupt`, `pup launch`, `pup new`, `pup respawn` and `pup audit --sweep` print it
+    and exit 1, and no `steer` event is written, since nothing was steered. `pup interrupt`
+    still records its interrupt, because Escape had landed; `pup respawn` adds the re-run
+    line. A launch whose kickoff is refused is rolled back, not left: `startSession` throws
+    after the task is claimed, the row is `running` and the window is open, so the first cut
+    left a claimed task (a re-launch raised `TaskAlreadyClaimedError`), an empty window and no
+    kickoff or `scope_overlap` event behind a message that read as benign — the security
+    review's finding 2. `session-lifecycle` is outside this change's scope, so `pup launch`,
+    `pup new` and `pup audit --sweep` catch the error, which carries the session id, and call
+    `killSession` on it: the window goes, the row is `killed`, the task returns to the backlog
+    (decision 40), and the two lines printed say the launch was rolled back and which command
+    to re-run. The operator sees a failed launch rather than an agent working from the tail
+    of its task — the alternative, a `delivered:false` event and a "Launched" line, is what
+    let the truncated kickoffs pass as started. `merge-gate` already treated a throwing
+    re-steer as a blocked session, and now does so for this one too, under its existing
+    reason `session unreachable`, which is now the wrong reason for a refused paste; the
+    gate is outside this change's scope, and its own reason is a small later change.
+    *Verified in vivo, then by removal.* The fixed path delivered the 1.8 KB reproduction whole
+    (`FIRST=FIRSTWORD LAST=LASTWORD TOKENS=230` from the agent). The runtime suite drives the
+    real `execFileSync` at a `tmux` script on PATH that logs its argv and plays the input box
+    (the testing convention for `gh`): a 3000-char steer's log shows two settles ending in a
+    tail, one ending in the placeholder, and only then Enter; a never-landing one shows the
+    scaled settle count, Ctrl-U, and no Enter; the kickoff cases show the `+802 lines`
+    placeholder before Enter and the throw. The fake clears one row per Ctrl-U, as the UI
+    does, so the press loop is exercised, and it can be pinned stuck for the box-not-cleared
+    case. Deleting the verification, the `-p`, the pre-paste clear, the settle floor, the
+    clear's return check, or any one command's rollback fails a named test each.
+    *What this leaves open.* **The guarantee holds for the pane the target resolves to.**
+    `tmuxTarget` builds `=pup-<id>:`, a session target, which tmux resolves to the session's
+    *active* pane, and the agent has `$TMUX`: the security review verified that one
+    `tmux split-window` from inside the session moved `capture-pane`, `paste-buffer` and
+    `send-keys` to the new pane, and `pasteLanded` returned true for the capture there. An
+    agent that splits its window can therefore receive an operator's steer in a shell of its
+    own and have Enter run it — a finding that predates this change and is not fixed by it.
+    The fix is to pin the pane, not the session: capture the pane id at launch
+    (`new-session -P -F '#{pane_id}'`), store it as `tmux_target`, and address every later
+    command to it; its own change, planned in the backlog. **Denial of steering.** The clear
+    is fail-safe, so an agent that keeps one character in its box makes every steer, handoff
+    request and respawn refuse; the refusal is loud and names the box, and the pane pin above
+    does not close it. A sandbox that keeps the agent's hands off its own window is the
+    instrument, as decision 44 said of cwd. The check also inherits the pane's rendering
+    rules: a word wider than the pane wraps mid-way and an inline paste of it is refused, and
+    a future UI that changes the placeholder text refuses every folded paste until
+    `pane.utils.ts` learns the new form — loud, on the first steer, which is the right side to
+    fail on. A steer refused mid-turn leaves the session running untouched; the operator
+    re-runs it.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

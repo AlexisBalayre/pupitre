@@ -18,6 +18,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', () => ({
+  SteerNotDeliveredError: class SteerNotDeliveredError extends Error {
+    readonly sessionId: string;
+    constructor(sessionId: string, chars: number) {
+      super(`Steer to session ${sessionId} did not land: ${chars} chars`);
+      this.sessionId = sessionId;
+    }
+  },
   interruptSession: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
@@ -44,7 +51,11 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
-import { interruptSession, steerSession } from '../claude/session-runtime.service.js';
+import {
+  interruptSession,
+  SteerNotDeliveredError,
+  steerSession,
+} from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -465,6 +476,27 @@ describe('CLI commands', () => {
     // A sweep is scoped to the whole repo, so it collides with every live
     // session there is; refusing it would make `--sweep` unrunnable whenever
     // anything else runs, and there is no flag to say otherwise (decision 41).
+    it('rolls the sweep launch back when its kickoff never lands whole', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('sweep-abc', 3000);
+      });
+
+      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+
+      expect(firstCall(killSession)[1]).toBe('sweep-abc');
+      // The sweep task was already planned, so the retry is a launch of it,
+      // not another `--sweep` that would plan a second one beside the orphan.
+      const [, request] = firstCall(createSession);
+      expect(errors).toEqual([
+        'Steer to session sweep-abc did not land: 3000 chars',
+        `Launch rolled back (session sweep-abc killed). Re-run \`pup launch ${(request as { task: { id: string } }).task.id}\`.`,
+      ]);
+      expect(errors[1]).toMatch(/Re-run `pup launch sweep-[a-z0-9]+`\.$/);
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Launched sweep session');
+    });
+
     it('launches a sweep that allows the overlap it always has', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockReturnValue('sweep-abc');
@@ -645,6 +677,45 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('fails loudly when the kickoff context never lands whole in the new window', () => {
+      // kickoff() delivers the compiled context through the same paste, so a
+      // launch whose context arrived as a tail is a launch that failed, not a
+      // session to attach to (decision 45).
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new SteerNotDeliveredError('t-abc-0', 3000);
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      // startSession throws after the task is claimed, the row is `running`
+      // and the window is up; killing the session returns the task to the
+      // backlog (decision 40) so `pup launch` can be re-run.
+      expect(firstCall(killSession)[1]).toBe('t-abc-0');
+      expect(errors).toEqual([
+        'Steer to session t-abc-0 did not land: 3000 chars',
+        'Launch rolled back (session t-abc-0 killed). Re-run `pup launch t-abc`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Launched session');
+    });
+
+    it('prints the refusal before the rollback, so a kill that throws does not hide it', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new SteerNotDeliveredError('t-abc-0', 3000);
+      });
+      vi.mocked(killSession).mockImplementation(() => {
+        throw new Error('tmux server gone');
+      });
+
+      expect(() => buildProgram().parse(['launch', 't-abc'], { from: 'user' })).toThrow(
+        'tmux server gone',
+      );
+
+      expect(errors).toEqual(['Steer to session t-abc-0 did not land: 3000 chars']);
+    });
+
     it('passes --allow-overlap through to the launch', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
@@ -749,6 +820,23 @@ describe('CLI commands', () => {
       expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true });
     });
 
+    it('rolls the launch back when the kickoff never lands whole', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('t-new-0', 3000);
+      });
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
+
+      expect(firstCall(killSession)[1]).toBe('t-new-0');
+      expect(errors[0]).toBe('Steer to session t-new-0 did not land: 3000 chars');
+      expect(errors[1]).toMatch(
+        /^Launch rolled back \(session t-new-0 killed\)\. Re-run `pup launch t-[a-z0-9]+`\.$/,
+      );
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Launched session');
+    });
+
     it('reports a scope conflict from `new` and exits 1 rather than throwing', () => {
       useCwd(initRepo());
       vi.mocked(createSession).mockImplementation(() => {
@@ -820,6 +908,25 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
       expect(steerSession).not.toHaveBeenCalled();
     });
+
+    it('exits 1 with the named message, and records no steer, when the paste never lands', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['steer', 's1', 'a'.repeat(3000)], { from: 'user' });
+
+      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(logs).not.toContain('Steered session s1.');
+      const { db } = resolveProject(repo);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 's1'").get()).toEqual({
+        n: 0,
+      });
+    });
   });
 
   describe('interrupt', () => {
@@ -882,6 +989,25 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
       expect(interruptSession).not.toHaveBeenCalled();
       expect(steerSession).not.toHaveBeenCalled();
+    });
+
+    it('records the interrupt but not the steer, and exits 1, when the message never lands', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      // Escape had already landed when the paste was refused.
+      expect(interruptSession).toHaveBeenCalledWith('s1');
+      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
+      expect(process.exitCode).toBe(1);
+      expect(sessionEvents(repo, 's1')).toEqual([
+        { type: 'interrupt', payload: JSON.stringify({ steered: false }) },
+      ]);
     });
 
     it('does not steer when no message is given', () => {
@@ -993,6 +1119,40 @@ describe('CLI commands', () => {
       );
       expect(respawnSession).toHaveBeenCalledTimes(1);
       expect(logs).toContain('Respawned s1 on a fresh context window with its handoff.');
+    });
+
+    it('exits 1 with the named message when the handoff request never lands', () => {
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(false);
+      vi.mocked(requestHandoff).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        'Steer to session s1 did not land: 3000 chars',
+        'Re-run `pup respawn s1`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(respawnSession).not.toHaveBeenCalled();
+    });
+
+    it('exits 1 with the named message when the relaunch kickoff never lands', () => {
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+      vi.mocked(respawnSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s1', 3000);
+      });
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        'Steer to session s1 did not land: 3000 chars',
+        'Re-run `pup respawn s1`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Respawned s1');
     });
 
     it('forwards a custom --wait as milliseconds', () => {

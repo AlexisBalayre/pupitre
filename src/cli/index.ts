@@ -21,6 +21,7 @@ import {
   interruptSession,
   killWatcher,
   launchWatcher,
+  SteerNotDeliveredError,
   steerSession,
 } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
@@ -247,6 +248,25 @@ const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
 /**
+ * A launch whose kickoff was refused has already claimed its task, inserted
+ * its row as `running` and opened its window — `startSession` throws after
+ * all three. Left as is, the task reads as claimed (a re-launch raises
+ * TaskAlreadyClaimedError) and the window sits empty. Killing the session
+ * undoes it: the window goes, the row is `killed`, and the task returns to
+ * the backlog (decision 40), where the task now sits — so the retry is always
+ * `pup launch <task>`, for a sweep too: `createSession` had already planned the
+ * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
+ * Prints the refusal, the rollback, and how to retry; sets the exit code.
+ */
+function rollBackRefusedLaunch(db: Database, error: SteerNotDeliveredError, retry: string): void {
+  // The refusal first: a kill that throws must not hide why the launch failed.
+  console.error(error.message);
+  killSession(db, error.sessionId);
+  console.error(`Launch rolled back (session ${error.sessionId} killed). Re-run \`${retry}\`.`);
+  process.exitCode = 1;
+}
+
+/**
  * Builds the commander program without parsing argv — the executable entry
  * point below is the only caller that actually parses; tests build a fresh
  * program and drive command actions in-process instead. exitOverride keeps
@@ -411,6 +431,10 @@ export function buildProgram(): Command {
           allowOverlap: opts.allowOverlap === true,
         });
       } catch (error) {
+        if (error instanceof SteerNotDeliveredError) {
+          rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
+          return;
+        }
         if (!(error instanceof ScopeConflictError)) throw error;
         console.error(error.message);
         process.exitCode = 1;
@@ -573,6 +597,10 @@ export function buildProgram(): Command {
           allowOverlap: opts.allowOverlap,
         });
       } catch (error) {
+        if (error instanceof SteerNotDeliveredError) {
+          rollBackRefusedLaunch(db, error, `pup launch ${taskId}`);
+          return;
+        }
         if (
           !(error instanceof UnknownTaskError) &&
           !(error instanceof TaskAlreadyClaimedError) &&
@@ -745,7 +773,14 @@ export function buildProgram(): Command {
     .action((session: string, message: string) => {
       const { db } = project();
       if (!resolveLiveSession(db, session, 'steer')) return;
-      steerSession(session, message);
+      try {
+        steerSession(session, message);
+      } catch (error) {
+        if (!(error instanceof SteerNotDeliveredError)) throw error;
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
       appendEvent(db, session, 'steer', { kind: 'manual' });
       console.log(`Steered session ${session}.`);
     });
@@ -757,7 +792,17 @@ export function buildProgram(): Command {
       const { db } = project();
       if (!resolveLiveSession(db, session, 'interrupt')) return;
       interruptSession(session);
-      if (message) steerSession(session, message);
+      try {
+        if (message) steerSession(session, message);
+      } catch (error) {
+        if (!(error instanceof SteerNotDeliveredError)) throw error;
+        // Escape already landed, so the interrupt is on record; only the
+        // steer is refused.
+        appendEvent(db, session, 'interrupt', { steered: false });
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
       appendEvent(db, session, 'interrupt', { steered: Boolean(message) });
       // The message is a real steer — log it as one too, so last-steer queries
       // see it no matter which path delivered it.
@@ -816,19 +861,29 @@ export function buildProgram(): Command {
         process.exitCode = 1;
         return;
       }
-      if (!isHandoffReady(db, session)) {
-        const handoffPath = requestHandoff(db, repoPath, session);
-        console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
-        if (!awaitHandoffReady(db, session, Number(opts.wait) * 1000)) {
-          console.error(
-            `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
-              'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
-          );
-          process.exitCode = 1;
-          return;
+      // Both the handoff request and the relaunch kickoff are steers, and
+      // either can be refused as never having landed whole.
+      try {
+        if (!isHandoffReady(db, session)) {
+          const handoffPath = requestHandoff(db, repoPath, session);
+          console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
+          if (!awaitHandoffReady(db, session, Number(opts.wait) * 1000)) {
+            console.error(
+              `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
+                'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
+            );
+            process.exitCode = 1;
+            return;
+          }
         }
+        respawnSession(db, repoPath, session);
+      } catch (error) {
+        if (!(error instanceof SteerNotDeliveredError)) throw error;
+        console.error(error.message);
+        console.error(`Re-run \`pup respawn ${session}\`.`);
+        process.exitCode = 1;
+        return;
       }
-      respawnSession(db, repoPath, session);
       console.log(`Respawned ${session} on a fresh context window with its handoff.`);
     });
 
@@ -1158,20 +1213,27 @@ export function buildProgram(): Command {
           return;
         }
         const task = buildSweepTask(`sweep-${Date.now().toString(36)}` as TaskId, report.findings);
-        const sessionId = createSession(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          task,
-          claudeUserDir: join(homedir(), '.claude'),
-          model: opts.model,
-          origin: 'audit',
-          // A sweep is scoped to the whole repo by construction, so it overlaps
-          // every live session there is. Refusing it would make `--sweep`
-          // unrunnable whenever anything else is running, with no flag to say
-          // otherwise; the `scope_overlap` event records which sessions it
-          // stepped on, which is what the refusal was protecting (decision 41).
-          allowOverlap: true,
-        });
+        let sessionId: string;
+        try {
+          sessionId = createSession(db, {
+            repoPath,
+            base: DEFAULT_BASE_PROFILE,
+            task,
+            claudeUserDir: join(homedir(), '.claude'),
+            model: opts.model,
+            origin: 'audit',
+            // A sweep is scoped to the whole repo by construction, so it overlaps
+            // every live session there is. Refusing it would make `--sweep`
+            // unrunnable whenever anything else is running, with no flag to say
+            // otherwise; the `scope_overlap` event records which sessions it
+            // stepped on, which is what the refusal was protecting (decision 41).
+            allowOverlap: true,
+          });
+        } catch (error) {
+          if (!(error instanceof SteerNotDeliveredError)) throw error;
+          rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
+          return;
+        }
         console.log(`Launched sweep session ${sessionId} (tmux: pup-${sessionId}).`);
         console.log(`Attach with: tmux attach -t pup-${sessionId}`);
         return;

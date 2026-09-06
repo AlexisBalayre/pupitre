@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
-import { hasUnsubmittedInput } from './pane.utils.js';
+import { hasUnsubmittedInput, pasteLanded } from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
 // (decision 1); state comes from hooks + transcripts, never pane scraping.
@@ -24,11 +24,28 @@ const READY_MARKER = /\? for shortcuts|bypass permissions on/i;
 const READY_TIMEOUT_MS = 45_000;
 const READY_POLL_MS = 1000;
 /**
- * Delay between paste-buffer and Enter: the UI needs a beat to fold a large
- * paste into its input box, or the Enter lands mid-processing and the prompt
- * sits unsubmitted (observed on Claude Code 2.1.218 with multi-KB kickoffs).
+ * Between paste-buffer and each look at the input box: the UI needs a beat to
+ * fold a paste into it. Enter is sent only once the box holds the message
+ * whole (decision 45); until then the paste is still being ingested and Enter
+ * would submit whatever part had arrived.
  */
 const PASTE_SETTLE_MS = 700;
+/**
+ * How many settles a paste gets: one per this many chars, floored at
+ * PASTE_SETTLE_MIN. The observed cliff was a single 700 ms settle for
+ * 1.5-1.7 KB, so the bound grows with the message and a multi-KB kickoff is
+ * never given up on early; the floor keeps a one-line steer from being refused
+ * because a loaded machine (an audit pushes it past 60) repainted late.
+ */
+const PASTE_SETTLE_CHARS = 1000;
+const PASTE_SETTLE_MIN = 5;
+/**
+ * Ctrl-U clears one row of the input box per press (verified on Claude Code
+ * 2.1.263), so clearing a partial paste is a bounded loop of presses, each
+ * followed by a repaint beat and a look at the box.
+ */
+const CLEAR_KEY_LIMIT = 64;
+const CLEAR_SETTLE_MS = 150;
 /** After Enter, how long to wait before checking that the input box cleared. */
 const SUBMIT_VERIFY_MS = 1000;
 /**
@@ -184,23 +201,85 @@ export function launchSession(opts: LaunchOptions): { target: string } {
 }
 
 /**
- * Steer a running session mid-turn. paste-buffer keeps arbitrary text intact.
- * Enter can land while the UI is still folding a large paste and leave the
- * message unsubmitted (kickoff `delivered:false` in the wild), so submission is
- * verified against the pane and Enter retried. An extra Enter on an already
- * empty input box is a no-op, so a false "still pending" read is harmless.
+ * A steer that was not submitted: either its paste never showed up whole in
+ * the session's input box (the box was then cleared), or the box held text
+ * Ctrl-U could not clear, so nothing was pasted at all. Either way nothing
+ * was submitted and the session runs on untouched.
+ */
+export class SteerNotDeliveredError extends Error {
+  readonly sessionId: string;
+
+  constructor(
+    sessionId: string,
+    chars: number,
+    reason: 'never-landed' | 'box-not-cleared' = 'never-landed',
+  ) {
+    super(
+      reason === 'never-landed'
+        ? `Steer to session ${sessionId} did not land: its input box never held the whole ` +
+            `${chars}-char message. Cleared the box and submitted nothing; the session is ` +
+            'still running with an empty prompt.'
+        : `Steer to session ${sessionId} did not land: its input box held text that Ctrl-U ` +
+            `could not clear, so the ${chars}-char message was not pasted. Nothing was ` +
+            'submitted; the session is still running with the box as it was.',
+    );
+    this.name = 'SteerNotDeliveredError';
+    this.sessionId = sessionId;
+  }
+}
+
+/**
+ * Steer a running session mid-turn. paste-buffer keeps arbitrary text intact;
+ * `-p` brackets it, so the UI folds the whole message into one paste instead
+ * of one per ~1 KB chunk the pty delivers. Enter is sent only once the pane
+ * shows the message whole: a fixed settle let Enter fire mid-ingestion and
+ * submit the tail of a 1.5 KB steer, or of the compiled kickoff context, with
+ * the head lost (decision 45). A paste that never lands is cleared and refused,
+ * never submitted in part. After Enter, submission is verified against the
+ * pane and Enter retried: an extra Enter on an empty input box is a no-op, so
+ * a false "still pending" read is harmless.
  */
 export function steerSession(sessionId: string, message: string): void {
   const target = tmuxTarget(sessionId);
+  // A paste appends to whatever the box holds (a draft, a leftover), and the
+  // box then never reads as the message alone; start from an empty one, and
+  // say so when one cannot be had rather than paste into it and refuse later.
+  if (hasUnsubmittedInput(capturePane(sessionId)) && !clearInputBox(sessionId)) {
+    throw new SteerNotDeliveredError(sessionId, message.length, 'box-not-cleared');
+  }
   execFileSync('tmux', ['load-buffer', '-'], { input: message });
-  tmux('paste-buffer', '-d', '-t', target);
-  syncSleep(PASTE_SETTLE_MS);
+  tmux('paste-buffer', '-d', '-p', '-t', target);
+  if (!awaitPasteLanded(sessionId, message)) {
+    clearInputBox(sessionId);
+    throw new SteerNotDeliveredError(sessionId, message.length);
+  }
   tmux('send-keys', '-t', target, 'Enter');
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
     if (!hasUnsubmittedInput(capturePane(sessionId))) return;
     tmux('send-keys', '-t', target, 'Enter');
   }
+}
+
+/** Settle, then look for the message in the input box; bounded by its length. */
+function awaitPasteLanded(sessionId: string, message: string): boolean {
+  const settles = Math.max(PASTE_SETTLE_MIN, Math.ceil(message.length / PASTE_SETTLE_CHARS));
+  for (let settle = 0; settle < settles; settle++) {
+    syncSleep(PASTE_SETTLE_MS);
+    if (pasteLanded(capturePane(sessionId), message)) return true;
+  }
+  return false;
+}
+
+/** Press Ctrl-U until the input box is empty; false when the press budget is spent first. */
+function clearInputBox(sessionId: string): boolean {
+  const target = tmuxTarget(sessionId);
+  for (let press = 0; press < CLEAR_KEY_LIMIT; press++) {
+    tmux('send-keys', '-t', target, 'C-u');
+    syncSleep(CLEAR_SETTLE_MS);
+    if (!hasUnsubmittedInput(capturePane(sessionId))) return true;
+  }
+  return false;
 }
 
 /**
@@ -226,7 +305,12 @@ function waitUntilReady(sessionId: string, timeoutMs = READY_TIMEOUT_MS): boolea
   return false;
 }
 
-/** Send the first prompt once the session is ready (the compiled task context). */
+/**
+ * Send the first prompt once the session is ready (the compiled task context).
+ * Returns false when the UI never became ready; throws SteerNotDeliveredError
+ * when the context never landed whole, so a launch fails loudly rather than
+ * start the agent on the tail of its own task (decision 45).
+ */
 export function kickoff(sessionId: string, prompt: string): boolean {
   if (!waitUntilReady(sessionId)) return false;
   steerSession(sessionId, prompt);
