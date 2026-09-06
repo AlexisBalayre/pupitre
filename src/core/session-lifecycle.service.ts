@@ -138,8 +138,8 @@ export function createSession(db: Database, req: NewSessionRequest): string {
   // Asked before the row is written, not only inside `launchTask`. A refusal
   // costs an operator nothing on `pup launch`, where the task already existed,
   // but here it would leave the spec they just abandoned sitting in the backlog
-  // — unclaimed, attributed to them, and launchable by any session, since
-  // `pup launch` is not operator-only (decision 41).
+  // — unclaimed, attributed to them, and listed as planned work until someone
+  // notices and drops it (decision 41).
   const conflicts = scopeConflicts(db, req.repoPath, req.task.scopeIn, req.task.scopeOut);
   if (conflicts.length > 0 && !req.allowOverlap) {
     throw new ScopeConflictError(req.task.id, conflicts);

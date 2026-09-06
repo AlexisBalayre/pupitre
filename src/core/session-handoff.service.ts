@@ -58,13 +58,18 @@ export function requestHandoff(
   return handoffPath;
 }
 
-/** True once the session has signalled handoff-done after the request steer. */
+/**
+ * True once the session has signalled handoff-done after the request steer.
+ * With no request on record `MAX(id)` is NULL and the comparison is never
+ * true: a `handoff_ready` nobody asked for does not make a session ready, so
+ * a respawn cannot be staged by writing the event first (decision 44).
+ */
 export function isHandoffReady(db: Database, sessionId: string): boolean {
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND type = 'handoff_ready'
-       AND id > COALESCE((SELECT MAX(id) FROM events WHERE session_id = ? AND type = 'steer'
-                          AND payload LIKE '%handoff-request%'), 0)`,
+       AND id > (SELECT MAX(id) FROM events WHERE session_id = ? AND type = 'steer'
+                 AND payload LIKE '%handoff-request%')`,
     )
     .get(sessionId, sessionId) as { n: number };
   return row.n > 0;

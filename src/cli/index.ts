@@ -256,16 +256,57 @@ const ALLOW_OVERLAP_DESCRIPTION =
  */
 /**
  * The session running this command, if any — worktree first, then the env var
- * it declares, which counts only when it names a session that exists. Best
- * effort against a determined session, which can `cd` out of its worktree; it
- * makes the audit trail honest, not tamper-proof (decisions 26, 27).
+ * it declares. Any non-empty declaration counts: it once had to name a session
+ * that exists so it could not write garbage into the ledger's acceptor, but the
+ * acceptor is the constant `human` now, and a variable naming no session is a
+ * session that changed it, not an operator (decision 44). Best effort against
+ * a determined session, which can `cd` out of its worktree and unset the
+ * variable; it makes the audit trail honest, not tamper-proof (decisions 26, 27).
  */
 function callingSession(db: Database): string | undefined {
   const declared = process.env.PUP_SESSION_ID;
-  return (
-    findSessionByWorktree(db, process.cwd())?.id ??
-    (declared && getSession(db, declared) ? declared : undefined)
-  );
+  return findSessionByWorktree(db, process.cwd())?.id ?? (declared || undefined);
+}
+
+/**
+ * The session a `pup session …` command reports for: the one `PUP_SESSION_ID`
+ * declares, and only when cwd is inside that session's own worktree. The
+ * variable is the session's word; the worktree is decision 26's detection
+ * turned on the protocol itself. Requiring the match, not merely the absence
+ * of a contradiction, is what closes the plain path: a session that exports a
+ * victim's id and `cd`s to the repo root is inside no worktree, and would
+ * otherwise pass on the variable alone (decision 44). Only sessions run these
+ * commands, and the protocol launches them with cwd in the worktree, so no
+ * legitimate caller is refused. Prints the refusal and returns undefined.
+ */
+function ownSession(db: Database, command: string): string | undefined {
+  const declared = process.env.PUP_SESSION_ID;
+  if (!declared) {
+    console.error(
+      `pup session ${command} must run inside a Pupitre session (PUP_SESSION_ID unset).`,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  if (!getSession(db, declared)) {
+    // The one message here that prints a value the store did not validate; a
+    // session sets the variable, so it reaches the terminal by decision 29's rule.
+    console.error(
+      `pup session ${command}: PUP_SESSION_ID names no session (${sanitizeReason(declared)}).`,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  const enclosing = findSessionByWorktree(db, process.cwd());
+  if (enclosing?.id !== declared) {
+    const where = enclosing
+      ? `this worktree belongs to ${enclosing.id}, not ${declared}`
+      : `this directory is not inside ${declared}'s worktree`;
+    console.error(`\`pup session ${command}\` reports only its own session; ${where}.`);
+    process.exitCode = 1;
+    return undefined;
+  }
+  return declared;
 }
 
 function operatorOnlyProject(): ProjectResolutionError {
@@ -768,6 +809,13 @@ export function buildProgram(): Command {
     )
     .action((session: string, opts: { wait: string }) => {
       const { repoPath, db } = project();
+      // A respawn replaces another session's window with a kickoff that quotes
+      // its handoff file — context a session could author for it (decision 44).
+      if (callingSession(db)) {
+        console.error('`pup respawn` is operator-only; sessions cannot respawn sessions.');
+        process.exitCode = 1;
+        return;
+      }
       if (!isHandoffReady(db, session)) {
         const handoffPath = requestHandoff(db, repoPath, session);
         console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
@@ -858,14 +906,13 @@ export function buildProgram(): Command {
           return;
         }
         const { repoPath, db } = project();
-        // Worktree first: it survives `env -u PUP_SESSION_ID`. Neither is proof
-        // against a determined session (it can also `cd` out of its worktree) —
-        // this makes the audit trail honest, not tamper-proof (decision 27). The
-        // env var only counts when it names a session that exists, so it cannot
-        // write arbitrary text into the ledger's acceptor column.
-        const caller = callingSession(db);
-        if (opts.pr && caller) {
-          console.error('`pup merge --pr` is operator-only; sessions cannot open pull requests.');
+        // The gate's verdict moves another session's branch and parks it
+        // `blocked` on failure, so the whole command is operator-only, not only
+        // `--pr` (decisions 26, 44). Best effort against a determined session
+        // (decision 27): the guard refuses the plain path and keeps the ledger's
+        // acceptor honest.
+        if (callingSession(db)) {
+          console.error('`pup merge` is operator-only; sessions cannot merge sessions.');
           process.exitCode = 1;
           return;
         }
@@ -888,8 +935,8 @@ export function buildProgram(): Command {
                 ? {
                     reason: opts.acceptDebt,
                     reviewBy: opts.reviewBy,
-                    // The ledger must name the real acceptor, not assume a human.
-                    acceptedBy: caller ?? 'human',
+                    // True by the guard above: only an operator reaches this line.
+                    acceptedBy: 'human',
                   }
                 : undefined,
             openPr: opts.pr,
@@ -1164,13 +1211,9 @@ export function buildProgram(): Command {
     .command('done <summary>')
     .description('Signal task completion (run by the agent)')
     .action((summary: string) => {
-      const sessionId = process.env.PUP_SESSION_ID;
-      if (!sessionId) {
-        console.error('pup session done must run inside a Pupitre session (PUP_SESSION_ID unset).');
-        process.exitCode = 1;
-        return;
-      }
       const { db } = project();
+      const sessionId = ownSession(db, 'done');
+      if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
       console.log(`Session ${sessionId} marked done: ${summary}`);
     });
@@ -1178,15 +1221,9 @@ export function buildProgram(): Command {
     .command('handoff-done')
     .description('Signal that the requested handoff document is written (run by the agent)')
     .action(() => {
-      const sessionId = process.env.PUP_SESSION_ID;
-      if (!sessionId) {
-        console.error(
-          'pup session handoff-done must run inside a Pupitre session (PUP_SESSION_ID unset).',
-        );
-        process.exitCode = 1;
-        return;
-      }
       const { db } = project();
+      const sessionId = ownSession(db, 'handoff-done');
+      if (!sessionId) return;
       markHandoffReady(db, sessionId);
       console.log(`Session ${sessionId} handoff recorded; Pupitre will respawn you shortly.`);
     });
