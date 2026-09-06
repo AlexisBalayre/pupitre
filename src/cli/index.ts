@@ -289,7 +289,11 @@ function ownSession(db: Database, command: string): string | undefined {
     return undefined;
   }
   if (!getSession(db, declared)) {
-    console.error(`pup session ${command}: PUP_SESSION_ID names no session (${declared}).`);
+    // The one message here that prints a value the store did not validate; a
+    // session sets the variable, so it reaches the terminal by decision 29's rule.
+    console.error(
+      `pup session ${command}: PUP_SESSION_ID names no session (${sanitizeReason(declared)}).`,
+    );
     process.exitCode = 1;
     return undefined;
   }

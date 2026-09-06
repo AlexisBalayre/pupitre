@@ -1377,6 +1377,19 @@ describe('CLI commands', () => {
         expect(process.exitCode).toBe(1);
       });
 
+      // The refusal echoes a value only the session set, the one message here
+      // the store did not validate first (decision 29).
+      it('sanitizes a bogus id before echoing it', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        vi.stubEnv('PUP_SESSION_ID', 'gh\u001b[2Kost\u0007');
+
+        buildProgram().parse(['session', 'done', 'shipped the thing'], { from: 'user' });
+
+        expect(markSessionDone).not.toHaveBeenCalled();
+        expect(errors).toEqual(['pup session done: PUP_SESSION_ID names no session (gh [2Kost).']);
+      });
+
       it('refuses from the repo root, inside no worktree', () => {
         const repo = initRepo();
         seedSession(repo, 's1');
