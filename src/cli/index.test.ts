@@ -580,6 +580,31 @@ describe('CLI commands', () => {
 
       expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true, origin: 'audit' });
     });
+
+    // The audit re-stamps the debt baseline, and on a `--pr` repo nothing else
+    // does, so an open `audit` let a session pick the moment its own bar moved;
+    // `--sweep` is a launch besides (decisions 26, 39, 42). The stored baseline
+    // is still null afterwards: the refusal lands before anything measures.
+    it.each([
+      ['', []],
+      [' --sweep', ['--sweep']],
+    ])('refuses `audit%s` when a session is calling', (_label, flags) => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['audit', ...flags], { from: 'user' });
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup audit` is operator-only; sessions cannot move the baseline.']);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+      const { db } = resolveProject(repo);
+      expect(db.prepare('SELECT baseline FROM projects WHERE id = ?').get(projectId(repo))).toEqual(
+        { baseline: null },
+      );
+    });
   });
 
   describe('plan', () => {

@@ -86,7 +86,11 @@ worktree both refuse — so a session reports only its own state (decision 44).
 
 - `pup profile list | show <name> | edit <name>` — manage base and role layers.
 - `pup profile stale` — running sessions whose profile version is behind current.
-- `pup audit --sweep` — spawn a deletion-only session (dead code, unused deps) from the latest audit findings.
+- `pup audit` — re-run the baseline stages and report drift against the stored baseline,
+  refreshing it. Operator-only: outside a merge this is the only thing that re-stamps the
+  debt baseline, and on a `--pr` repo it is the only thing at all, so a session running it
+  from its worktree would choose when its own bar moves (decisions 26, 39, 48).
+- `pup audit --sweep` — spawn a deletion-only session (dead code, unused deps) from the latest audit findings. Operator-only for the same reason `pup launch` is, on top of the baseline one (decision 42).
 
 ## Risk score (used by `pup review`)
 
