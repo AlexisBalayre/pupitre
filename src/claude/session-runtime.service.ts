@@ -415,7 +415,7 @@ export function steerPane(pane: SessionPane, message: string): void {
   // A paste appends to whatever the box holds (a draft, a leftover), and the
   // box then never reads as the message alone; start from an empty one, and
   // say so when one cannot be had rather than paste into it and refuse later.
-  if (hasUnsubmittedInput(capturePane(pane)) && !clearInputBox(pane)) {
+  if (hasUnsubmittedInput(captureInputBox(pane)) && !clearInputBox(pane)) {
     throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');
   }
   tmuxAt(pane, ['load-buffer', '-'], message);
@@ -427,7 +427,7 @@ export function steerPane(pane: SessionPane, message: string): void {
   tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
-    if (!hasUnsubmittedInput(capturePane(pane))) return;
+    if (!hasUnsubmittedInput(captureInputBox(pane))) return;
     tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
   }
 }
@@ -437,7 +437,7 @@ function awaitPasteLanded(pane: SessionPane, message: string): boolean {
   const settles = Math.max(PASTE_SETTLE_MIN, Math.ceil(message.length / PASTE_SETTLE_CHARS));
   for (let settle = 0; settle < settles; settle++) {
     syncSleep(PASTE_SETTLE_MS);
-    if (pasteLanded(capturePane(pane), message)) return true;
+    if (pasteLanded(captureInputBox(pane), message)) return true;
   }
   return false;
 }
@@ -448,7 +448,7 @@ function clearInputBox(pane: SessionPane): boolean {
   for (let press = 0; press < CLEAR_KEY_LIMIT; press++) {
     tmuxAt(pane, ['send-keys', '-t', target, 'C-u']);
     syncSleep(CLEAR_SETTLE_MS);
-    if (!hasUnsubmittedInput(capturePane(pane))) return true;
+    if (!hasUnsubmittedInput(captureInputBox(pane))) return true;
   }
   return false;
 }
@@ -488,8 +488,21 @@ export function kickoff(pane: SessionPane, prompt: string): boolean {
   return true;
 }
 
+/** The pane as plain text, for the markers that carry no styling of their own. */
 function capturePane(pane: SessionPane): string {
   return tmuxAt(pane, ['capture-pane', '-p', '-t', paneTarget(pane)]);
+}
+
+/**
+ * The pane with its styling kept. Every look at the input box takes this one:
+ * Claude Code renders the box's ghost text — the idle hint, and the next
+ * prompt it suggests once a turn ends — dim, and only the escapes tell that
+ * apart from a draft. Without them a suggestion reads as unsubmitted text, and
+ * `steerPane` spends its whole Ctrl-U budget on a box that was already empty
+ * (addendum to decision 45).
+ */
+function captureInputBox(pane: SessionPane): string {
+  return tmuxAt(pane, ['capture-pane', '-p', '-e', '-t', paneTarget(pane)]);
 }
 
 /**
