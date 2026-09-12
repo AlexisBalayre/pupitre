@@ -43,6 +43,7 @@ import {
   listLedgerEntries,
   listOverdueLedgerEntries,
 } from '../core/ledger.repository.js';
+import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { getWatcherBeat, listOverlaps } from '../core/overlap.repository.js';
@@ -52,6 +53,7 @@ import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { renderReportHtml } from '../core/report.service.js';
+import { parseJsonOr } from '../core/report-data.utils.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   appendEvent,
@@ -60,9 +62,11 @@ import {
   getSession,
   getTask,
   listBacklogTasks,
+  listEvents,
   listSessions,
   type SessionRow,
   type TaskRow,
+  transitionSession,
   updateTaskSpec,
 } from '../core/session.repository.js';
 import {
@@ -219,6 +223,27 @@ function resolveLiveSession(db: Database, session: string, verb: string): Sessio
     return undefined;
   }
   return row;
+}
+
+/**
+ * Why the gate parked this session, read back out of the store: the `reason`
+ * on the newest `gate_result` that moved it to `blocked` — the reject cap of
+ * decision 7, or the re-steer refusal decision 45's addendum records. Newest
+ * wins and an older block is never consulted, so a session parked twice is
+ * described by the parking that is current. Undefined when the transition
+ * carried no reason, which is every block older than those two reasons.
+ */
+function blockedReason(db: Database, sessionId: string): string | undefined {
+  for (const event of listEvents(db, sessionId).reverse()) {
+    if (event.type !== 'gate_result') continue;
+    const payload = parseJsonOr<{ to?: unknown; reason?: unknown }>(event.payload, {});
+    if (payload.to !== 'blocked') continue;
+    // Sanitized like every other stored text this prints: the reason quotes a
+    // steer refusal, and the report that refused to land is the session's own
+    // output (decision 29).
+    return typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -773,7 +798,9 @@ export function buildProgram(): Command {
       );
       for (const r of priorityFirst) {
         const marker =
-          r.state === 'blocked' ? `  needs a human (${r.reject_count} rejections)` : '';
+          r.state === 'blocked'
+            ? `  needs a human (${r.reject_count} rejections) — \`pup unblock ${r.id}\` once addressed`
+            : '';
         const tokens = r.transcript_path ? latestContextTokens(r.transcript_path) : undefined;
         const ctx =
           r.state === 'running' && tokens !== undefined
@@ -997,6 +1024,58 @@ export function buildProgram(): Command {
     });
 
   program
+    .command('unblock <session>')
+    .description('Return a blocked session to running once a human has dealt with the block')
+    .option('--reason <text>', 'what was done about it, recorded on the event')
+    .action((session: string, opts: { reason?: string }) => {
+      const { db } = project();
+      // `blocked` is decision 7's parking brake: the gate has stopped steering
+      // this session and asked for a human. A session releasing its own brake
+      // would undo the parking by the very thing it was parked for, and a
+      // session releasing another's is the same authority `pup kill` is
+      // refused (decisions 26, 42).
+      if (callingSession(db)) {
+        return refuse('`pup unblock` is operator-only; sessions cannot unblock sessions.');
+      }
+      // Refused for the reason the merge is: deciding that a gate failure has
+      // been addressed is the human's judgement, and the conductor is what the
+      // failing session was working for (decision 47).
+      if (callingConductor()) {
+        return refuse(
+          '`pup unblock` is operator-only; the conductor reports a blocked session and the operator unblocks it.',
+        );
+      }
+      const row = getSession(db, session);
+      if (!row) return refuse(`No session ${session}.`);
+      // Not `canTransition`: `queued -> running` is a legal edge that this
+      // command must still refuse, because there is no block to lift.
+      if (row.state !== 'blocked') {
+        return refuse(`Session ${session} is ${row.state}; only blocked sessions unblock.`);
+      }
+      // Printed before the transition and read out of the store rather than
+      // taken from the operator: unblocking is a claim that the block was
+      // addressed, and nobody can make that claim about a reason they were
+      // never shown — decision 45's addendum left it reachable only through
+      // the store, and this is the surface it asked for.
+      console.log(
+        `Session ${session} was blocked: ${blockedReason(db, session) ?? '(no reason recorded)'}`,
+      );
+      transitionSession(db, session, 'running', {
+        kind: 'operator-unblock',
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      });
+      // Nothing else is reset, the reject count least of all: the cap is what
+      // parked the session, and a count silently rolled back would let the
+      // same failure loop through the gate forever.
+      const capped =
+        row.reject_count > MAX_REJECTS_BEFORE_BLOCKED
+          ? ` Its ${row.reject_count} rejections are kept, so the next gate failure parks it again.`
+          : '';
+      console.log(`Unblocked ${session}; it is running again.${capped}`);
+      console.log(`Its window is untouched — \`pup kill --respawn ${session}\` if it is gone.`);
+    });
+
+  program
     .command('respawn <session>')
     .description('Ask the session for a handoff, then relaunch it on a fresh context window')
     .option(
@@ -1201,7 +1280,9 @@ export function buildProgram(): Command {
             );
             break;
           case 'blocked':
-            console.log('Gate failed; session parked as blocked — needs a human.');
+            console.log(
+              `Gate failed; session parked as blocked — needs a human. Address it, then \`pup unblock ${session}\`.`,
+            );
             break;
         }
         if (outcome.status !== 'merged') process.exitCode = 1;

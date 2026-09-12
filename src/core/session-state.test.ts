@@ -15,6 +15,16 @@ describe('session state machine', () => {
     expect(canTransition('rejected', 'blocked')).toBe(true);
   });
 
+  // `pup unblock` is the only caller of this edge: decision 7 parks a session
+  // for a human, and until the command existed nothing but `pup kill` moved it
+  // off `blocked`, throwing away a context window with committed work.
+  it('lets a human return a blocked session to running', () => {
+    expect(canTransition('blocked', 'running')).toBe(true);
+    expect(canTransition('blocked', 'killed')).toBe(true);
+    expect(canTransition('blocked', 'awaiting-review')).toBe(false);
+    expect(canTransition('blocked', 'merged')).toBe(false);
+  });
+
   it('forbids skipping review and leaving terminal states', () => {
     expect(canTransition('queued', 'merged')).toBe(false);
     expect(canTransition('running', 'merged')).toBe(false);

@@ -72,16 +72,20 @@ import {
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
 import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
+import type { SessionState } from '../core/db.client.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import {
   ensureProject,
+  getSession,
   getTask,
+  incrementRejectCount,
   insertSession,
   insertTask,
   listBacklogTasks,
+  listEvents,
   transitionSession,
 } from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
@@ -194,6 +198,21 @@ function seedKilledSession(repoPath: string, sessionId: string): void {
   seedSession(repoPath, sessionId);
   const { db } = resolveProject(repoPath);
   transitionSession(db, sessionId, 'killed');
+  db.close();
+}
+
+/** A session the gate parked, with the reason and the rejections it recorded. */
+function seedBlockedSession(
+  repoPath: string,
+  sessionId: string,
+  reason: string,
+  rejectCount = 3,
+): void {
+  seedSession(repoPath, sessionId);
+  const { db } = resolveProject(repoPath);
+  transitionSession(db, sessionId, 'running');
+  for (let i = 0; i < rejectCount; i += 1) incrementRejectCount(db, sessionId);
+  transitionSession(db, sessionId, 'blocked', { reason, rejectCount });
   db.close();
 }
 
@@ -1085,6 +1104,24 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    // The conductor is what the blocked session was working for, so its own
+    // judgement that the block is dealt with is the one the parking refuses.
+    it('is refused the unblock', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 'reject cap of 2 reached');
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup unblock` is operator-only; the conductor reports a blocked session and the operator unblocks it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      const { db } = resolveProject(repo);
+      expect(getSession(db, 's1')?.state).toBe('blocked');
+      db.close();
+    });
+
     it('is refused another project', () => {
       const repo = initRepo();
       useCwd(repo);
@@ -1504,6 +1541,175 @@ describe('CLI commands', () => {
       expect(errors).toEqual(['`pup kill` is operator-only; sessions cannot kill sessions.']);
       expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // Decision 7 parks a session for a human but left the human no command: the
+  // gate refuses a blocked session, `kill --respawn` and `respawn` both want
+  // `running`, and `pup session done` is an illegal transition — so the only
+  // way back was a hand-written transitionSession call (decision 45's addendum).
+  describe('unblock', () => {
+    function stateOf(repoPath: string, sessionId: string): string {
+      const { db } = resolveProject(repoPath);
+      const state = getSession(db, sessionId)?.state;
+      db.close();
+      return state ?? 'gone';
+    }
+
+    function unblockEvent(repoPath: string, sessionId: string): Record<string, unknown> {
+      const { db } = resolveProject(repoPath);
+      const events = listEvents(db, sessionId).map(
+        (event) => JSON.parse(event.payload) as Record<string, unknown>,
+      );
+      db.close();
+      const unblock = events.find((payload) => payload.kind === 'operator-unblock');
+      if (!unblock) throw new Error('expected an operator-unblock event');
+      return unblock;
+    }
+
+    it('returns a blocked session to running, and says what it was blocked for', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 'reject cap of 2 reached');
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(stateOf(repo, 's1')).toBe('running');
+      expect(unblockEvent(repo, 's1')).toMatchObject({
+        kind: 'operator-unblock',
+        from: 'blocked',
+        to: 'running',
+      });
+      expect(logs[0]).toBe('Session s1 was blocked: reject cap of 2 reached');
+      expect(errors).toEqual([]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    // The refusal decision 45's addendum records is 2000 characters of raw SGR
+    // away from the pane that produced it; the reason it leaves behind is text
+    // the session's own output shaped, so it is sanitized before it is printed.
+    it('flattens control characters out of the reason it prints', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 'Steer to s1 did not land:\u001b[31m 2431\nchars');
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(logs[0]).toBe('Session s1 was blocked: Steer to s1 did not land: [31m 2431 chars');
+    });
+
+    it('says so when the block carried no reason', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', 'blocked');
+      db.close();
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(logs[0]).toBe('Session s1 was blocked: (no reason recorded)');
+      expect(stateOf(repo, 's1')).toBe('running');
+    });
+
+    it('records the operator reason on the event', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 'reject cap of 2 reached');
+
+      buildProgram().parse(['unblock', 's1', '--reason', 'typed the report in by hand'], {
+        from: 'user',
+      });
+
+      expect(unblockEvent(repo, 's1')).toMatchObject({
+        kind: 'operator-unblock',
+        reason: 'typed the report in by hand',
+      });
+    });
+
+    // Rolling the count back would let one failure loop through the gate for
+    // ever; keeping it means the operator is told the next failure re-parks it.
+    it('keeps the reject count, and warns that the next failure parks it again', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 'reject cap of 2 reached', 3);
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      const { db } = resolveProject(repo);
+      expect(getSession(db, 's1')?.reject_count).toBe(3);
+      db.close();
+      expect(logs).toContain(
+        'Unblocked s1; it is running again. Its 3 rejections are kept, so the next gate failure parks it again.',
+      );
+      expect(logs).toContain('Its window is untouched — `pup kill --respawn s1` if it is gone.');
+    });
+
+    // A refused re-steer parks a session at any count, and one under the cap
+    // has rejections left — saying otherwise would send the operator to
+    // `pup kill` for a session the gate would still take.
+    it('omits the warning when the session was parked under the cap', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 're-steer failed — session unreachable', 1);
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(logs).toContain('Unblocked s1; it is running again.');
+    });
+
+    // Every state but `blocked`, reached the way the state machine allows, so
+    // the refusal covers the whole surface and not just the neighbouring one.
+    it.each([
+      ['queued', []],
+      ['running', ['running']],
+      ['awaiting-review', ['running', 'awaiting-review']],
+      ['merged', ['running', 'awaiting-review', 'merged']],
+      ['killed', ['killed']],
+    ] as [SessionState, SessionState[]][])(
+      'refuses a session that is %s, not blocked',
+      (state, steps) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        const { db } = resolveProject(repo);
+        for (const step of steps) transitionSession(db, 's1', step);
+        db.close();
+
+        buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+        expect(errors).toEqual([`Session s1 is ${state}; only blocked sessions unblock.`]);
+        expect(logs).toEqual([]);
+        expect(process.exitCode).toBe(1);
+        expect(stateOf(repo, 's1')).toBe(state);
+      },
+    );
+
+    it('refuses a session it has never heard of', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['No session s1.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // Releasing decision 7's parking brake is the one judgement the parking
+    // exists to ask a human for, so the session it parked cannot make it.
+    it('refuses when a session is calling', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBlockedSession(repo, 's1', 'reject cap of 2 reached');
+      seedSession(repo, 's2');
+      vi.stubEnv('PUP_SESSION_ID', 's2');
+
+      buildProgram().parse(['unblock', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['`pup unblock` is operator-only; sessions cannot unblock sessions.']);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+      expect(stateOf(repo, 's1')).toBe('blocked');
     });
   });
 
@@ -2301,7 +2507,9 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['merge', 's1'], { from: 'user' });
 
-      expect(logs).toContain('Gate failed; session parked as blocked — needs a human.');
+      expect(logs).toContain(
+        'Gate failed; session parked as blocked — needs a human. Address it, then `pup unblock s1`.',
+      );
       expect(process.exitCode).toBe(1);
     });
 

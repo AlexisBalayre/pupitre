@@ -6,6 +6,7 @@ import type { SessionState } from './db.client.js';
  *   running -> killed
  *   awaiting-review -> rejected -> running   (gate report injected; capped at 2)
  *   rejected|running -> blocked              (cap reached; needs a human)
+ *   blocked -> running                       (`pup unblock`: a human dealt with it)
  */
 const TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   queued: ['running', 'killed'],
