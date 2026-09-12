@@ -31,7 +31,11 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
-import { killSession, steerPane } from '../claude/session-runtime.service.js';
+import {
+  killSession,
+  SteerNotDeliveredError,
+  steerPane,
+} from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
@@ -46,6 +50,7 @@ import {
   insertSession,
   insertTask,
   listBacklogTasks,
+  listEvents,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
@@ -110,6 +115,14 @@ function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> = {}): 
   transitionSession(db, SESSION_ID, 'running');
   transitionSession(db, SESSION_ID, 'awaiting-review');
   return worktree;
+}
+
+/** The reason the last transition into `blocked` recorded, as the gate wrote it. */
+function blockedReason(db: Database): string | undefined {
+  const rows = listEvents(db, SESSION_ID).map(
+    (event) => JSON.parse(event.payload) as { to?: string; reason?: string },
+  );
+  return rows.filter((payload) => payload.to === 'blocked').at(-1)?.reason;
 }
 
 const passingAdapter: Adapter = {
@@ -242,6 +255,38 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
     expect(outcome.report.stages.map((s) => s.stage)).not.toContain('scope-audit');
     expect(steerPane).toHaveBeenCalled();
+  });
+
+  it('steers a stage detail as plain text when the command output carries ANSI escapes', () => {
+    // Live on 2026-09-12: vitest coloured its failure, the escapes went into the
+    // report whole, and the pane could not show the paste as the bytes that were
+    // sent — so `pasteLanded` refused a steer to a session that was right there.
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const colouredAdapter: Adapter = {
+      id: 'fake',
+      detect: () => true,
+      gateCommands: () => [
+        {
+          stage: 'build',
+          command: 'sh',
+          args: [
+            '-c',
+            'printf "\\033[31mFAIL\\033[0m expected \\033[1m1\\033[22m to be 2\\n"; exit 1',
+          ],
+        },
+      ],
+    };
+
+    const outcome = merge(colouredAdapter);
+
+    expect(outcome.status).toBe('rejected');
+    const steered = vi.mocked(steerPane).mock.calls[0]?.[1] as string;
+    expect(steered).toContain('FAIL expected 1 to be 2');
+    expect(steered).not.toContain('\u001b');
+    // The operator's own print and the PR body read the stored detail, so the
+    // escapes must be gone from the report too, not only from the steer.
+    expect(outcome.report.stages.at(-1)?.detail).toBe('FAIL expected 1 to be 2');
   });
 
   it('runs gate commands without the operator secrets in pup’s own environment', () => {
@@ -455,6 +500,28 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(outcome.status).toBe('blocked');
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    // A window that is gone keeps the reason it always had.
+    expect(blockedReason(db)).toBe('re-steer failed — session unreachable');
+  });
+
+  it('blocks with the refusal itself as the reason when the re-steer is not delivered', () => {
+    // A refused paste leaves a reachable session with an empty box, which
+    // `session unreachable` sends the human to the wrong place (decision 45).
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError(SESSION_ID, 1234, 'box-not-cleared');
+    });
+
+    const outcome = merge(failingBuildAdapter);
+
+    expect(outcome.status).toBe('blocked');
+    expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    const reason = blockedReason(db);
+    expect(reason).toContain(SESSION_ID);
+    expect(reason).toContain('1234-char');
+    expect(reason).toContain('Ctrl-U could not clear');
+    expect(reason).not.toContain('unreachable');
   });
 
   it('blocks, and types nothing, when the session has no pane recorded to re-steer into', () => {
