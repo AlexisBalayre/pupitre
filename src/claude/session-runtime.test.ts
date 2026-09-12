@@ -279,6 +279,36 @@ describe('launchSession', () => {
     expect(spawn).toContain('PUP_SESSION_ID=s-1');
   });
 
+  // A client that STARTS a server hands it that environment as the server's
+  // global one, which every later window inherits and any client can read back
+  // with `show-environment -g`. The conductor's Bash carries the peer channel's
+  // socket and token: a session that read those could speak on the channel as
+  // the conductor, past the tier entirely (decision 47).
+  it('hands tmux none of the agent credentials, and everything else the caller has', () => {
+    vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'peer-token');
+    vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', '/tmp/cc-socks/1.sock');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'sess-uuid');
+    vi.stubEnv('CLAUDECODE', '1');
+    vi.stubEnv('CLAUDE_CODE_EXECPATH', '/usr/local/bin/claude');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-secret');
+    vi.stubEnv('NODE_OPTIONS', '--require /tmp/evil.js');
+    vi.stubEnv('TMUX_TMPDIR', '/private/tmp');
+
+    launchSession(OPTS);
+
+    for (const [, , options] of vi
+      .mocked(execFileSync)
+      .mock.calls.filter(([file]) => file === 'tmux')) {
+      const env = (options as { env?: NodeJS.ProcessEnv }).env ?? {};
+      expect(Object.keys(env).filter((key) => /^CLAUDE|^ANTHROPIC_/.test(key))).toEqual([]);
+      expect(env.NODE_OPTIONS).toBeUndefined();
+      // Kept: tmux needs its own tmpdir to find the socket at all, and the
+      // scrub is about the caller's identity, not its shell.
+      expect(env.TMUX_TMPDIR).toBe('/private/tmp');
+      expect(env.HOME).toBe(process.env.HOME);
+    }
+  });
+
   it('fails the launch when tmux prints anything but a pane id', () => {
     // The id is checked where it is minted: every later command trusts it,
     // and a launch is the one place a bad one can fail loudly rather than late.
@@ -855,17 +885,21 @@ describe('launchConductor', () => {
     expect(conductorSocket('proj-1')).toBe(SOCKET);
     expect(conductorName('proj-1')).toBe('pup-conductor-proj-1');
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
-    expect(tmuxCalls).toHaveLength(2);
-    // Both the stale-name kill and the spawn name the server first: a
-    // kill-session on the default one would find, and kill, something else.
-    expect(tmuxCalls[0]?.[1]).toEqual([
+    expect(tmuxCalls).toHaveLength(3);
+    // The whole server first, not just the window wearing the name: a session
+    // that pre-started a server on this label would own its global
+    // environment, and the conductor's claude would inherit it at spawn. Then
+    // the usual stale-name kill, and both name the server: a kill-session on
+    // the default one would find, and kill, something else.
+    expect(tmuxCalls[0]?.[1]).toEqual(['-L', SOCKET, 'kill-server']);
+    expect(tmuxCalls[1]?.[1]).toEqual([
       '-L',
       SOCKET,
       'kill-session',
       '-t',
       '=pup-conductor-proj-1:',
     ]);
-    const spawn = tmuxCalls[1]?.[1] ?? [];
+    const spawn = tmuxCalls[2]?.[1] ?? [];
     expect(spawn.slice(0, 2)).toEqual(['-L', SOCKET]);
     expect(spawn.slice(2, 9)).toEqual(spawnPrefix('pup-conductor-proj-1'));
     expect(spawn).toContain('/tmp/repo');

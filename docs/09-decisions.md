@@ -1646,14 +1646,45 @@ changes back into those docs is pending.
     launched with no `-e` and from an environment without it. A default server first started by
     a launch from the conductor's pane would have minted sessions that read as the conductor to
     every guard. What a window is, its own `-e` says, and nothing else.
+    *And the security review found the rest of that environment worse than the two variables.*
+    `pup launch` from the conductor's Bash starts the default server whenever the operator has
+    no tmux up, and a tool shell carries `CLAUDE_CODE_MESSAGING_SOCKET` and
+    `CLAUDE_CODE_MESSAGING_TOKEN` — the peer channel's credentials — along with
+    `CLAUDE_CODE_SESSION_ID`, `CLAUDECODE` and `CLAUDE_CODE_EXECPATH`. A server's global
+    environment is readable by ANY client of that server (`show-environment -g`), so a session
+    could have read the conductor's peer credentials off the server it was launched on and
+    spoken the channel AS the conductor, past the tier entirely. The scrub is patterns now, not
+    three names: `TMUX`, `PUP_CONDUCTOR`, `PUP_SESSION_ID`, `^CLAUDE`, `^ANTHROPIC_` and
+    `NODE_OPTIONS` — the last because `--require` in a server's environment is code execution in
+    every node process a window later starts. `PATH`, `HOME`, `TERM`, `SHELL`, `LANG` and
+    `TMUX_TMPDIR` pass through; tmux needs the last to find its own socket.
+    *The conductor's server is killed whole before its window opens.* The stale-name kill was a
+    `kill-session`, which leaves the SERVER up — and whoever started a server owns its global
+    environment. The socket label is as computable as the window name, so a session could
+    pre-start a server on it carrying `NODE_OPTIONS=--require`, and the conductor's `claude`
+    would inherit that at spawn: the isolation would have handed the attacker the window it was
+    built to protect. `launchConductor` now runs `kill-server` on its socket first, so the
+    conductor always opens on a server this process started, with the environment above.
+    `pup conductor stop` keeps the name-pinned kills, which is what a leftover needs.
+    *One field to distrust.* `ConductorHandle.paneId` is a `%N` with its server stripped off; a
+    pane id is only meaningful together with its socket, and a future caller that passed this one
+    to a default-socket kill would kill whatever pane wears that id there — a session's. Nothing
+    reads the field today, and whatever does should take the socket with it.
     *Two smaller consequences.* `pup conductor stop` kills the pinned name on the conductor's
     socket AND on the default one, where nothing pup runs wears that name: what is there is a
     window from before this split, or one a session minted to look like the conductor. The
-    probe is not symmetric — `isConductorRunning` asks only the conductor's socket, or any
-    session could make `pup status` report a conductor that is not running. And both places
-    that print the window now print the socket with it (`tmux -L pup-conductor-<id> attach -t
-    pup-conductor-<id>`), `pup status` included, since a bare `tmux attach -t` no longer finds
-    it.
+    probe is not symmetric — `isConductorRunning` asks only the conductor's socket, because a
+    window on the default server is not the conductor and answering for one would report a
+    conductor that is not there. It is no forgery defence: the conductor's socket is reachable
+    by anything running as the same user, so a window minted on it passes the probe, and
+    `pup status`'s conductor line stays the tmux server's word at decision 27's ceiling, like
+    every other env-declared fact. And the attach is printed with its socket now
+    (`tmux -L pup-conductor-<id> attach -t pup-conductor-<id>`), since a bare `tmux attach -t`
+    no longer finds the window — in `pup conductor`, which is operator-only, and in
+    `pup status` only when neither `PUP_SESSION_ID` nor `PUP_CONDUCTOR` is set: the operator is
+    the only caller that attaches, and pup should not be the thing that hands a session the
+    socket the conductor lives on. A session can still compute the label, as it could the name;
+    not printing it is the same best effort as the rest.
     *Verified.* The suite's fake tmux models servers, not just panes: a leading `-L` selects a
     state directory, and a socket with no directory fails the way a socket with no server does.
     The conductor's launch, its stale-name kill, its kill, its probe and every command of its
@@ -1661,7 +1692,12 @@ changes back into those docs is pending.
     with no `-L` raise `SessionPaneMissingError` and type nothing, on either server; a session
     launched with `$TMUX` naming the conductor's socket and `PUP_CONDUCTOR` set carries no
     `-L`, and no tmux call of that launch sees `TMUX`, `PUP_CONDUCTOR` or `PUP_SESSION_ID`,
-    while the window's own `-e` still says `PUP_SESSION_ID=<id>`.
+    while the window's own `-e` still says `PUP_SESSION_ID=<id>`; a launch whose environment
+    holds the messaging token, the session id, `CLAUDECODE`, an `ANTHROPIC_API_KEY` and a
+    `NODE_OPTIONS=--require` hands tmux none of them and `TMUX_TMPDIR` and `HOME` unchanged; the
+    conductor's launch kills its whole server before the stale-name kill and the spawn; and
+    `pup status` prints the attach line to the operator and the bare `conductor running` to a
+    session and to the conductor.
     *What this leaves open.* **The OS user is still the boundary.** Socket files live in
     `$TMUX_TMPDIR/tmux-<uid>/`, a directory the user owns and can list, so a session that
     thinks of it reaches the conductor with `tmux -L pup-conductor-<id> send-keys` as before —

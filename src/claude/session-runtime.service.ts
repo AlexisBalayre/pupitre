@@ -102,22 +102,45 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
 }
 
 /**
- * The environment every tmux call here runs with: the caller's, less the three
- * variables that would otherwise decide something this module names itself.
- * `$TMUX` picks the server when no `-L` is given, and in the conductor's pane
- * it names the conductor's own socket — so `pup launch` run from inside the
- * conductor would open the session on the conductor's server, back within
- * `send-keys` reach of its input box. `PUP_CONDUCTOR` and `PUP_SESSION_ID` say
- * what a window IS: tmux copies the environment of the client that STARTS a
- * server into that server's global environment, so a default server first
- * started by a launch from the conductor's pane would hand `PUP_CONDUCTOR` to
- * every window opened on it afterwards. Each window's own `-e` says what it is
- * instead (decision 47).
+ * What no tmux call here hands the client. A tmux client that starts a server
+ * — and `pup launch` from the conductor's Bash starts the default one whenever
+ * the operator has no tmux up — gives that server its GLOBAL environment, which
+ * every window opened on it afterwards inherits and ANY client can read back
+ * with `show-environment -g` (verified on tmux 3.7b). So this is not a list of
+ * variables that would confuse tmux; it is everything about the caller that
+ * must not become a server-wide, world-readable fact:
+ *
+ * - `TMUX` picks the server when no `-L` is given, and in the conductor's pane
+ *   it names the conductor's own socket — a launch from there would open the
+ *   session on the conductor's server, back within `send-keys` reach of it.
+ * - `PUP_CONDUCTOR` and `PUP_SESSION_ID` say what a window IS; leaked into a
+ *   server's global environment they make every later window read as their
+ *   caller to every guard.
+ * - `CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
+ *   and `_TOKEN` are the peer channel, so a session that read them back could
+ *   speak on it AS the conductor, past the tier entirely. `ANTHROPIC_*` is the
+ *   API key family for the same reason.
+ * - `NODE_OPTIONS` is code execution: `--require` in a server's environment runs
+ *   in every node process a window later starts.
+ *
+ * What a window is, its own `-e` says. Everything else the caller has — `PATH`,
+ * `HOME`, `TERM`, `SHELL`, `LANG`, `TMUX_TMPDIR` — is passed through untouched
+ * (decision 47).
  */
+const NOT_INHERITED = [
+  /^TMUX$/,
+  /^PUP_CONDUCTOR$/,
+  /^PUP_SESSION_ID$/,
+  /^CLAUDE/,
+  /^ANTHROPIC_/,
+  /^NODE_OPTIONS$/,
+];
+
 function tmuxEnv(): NodeJS.ProcessEnv {
-  const inherited = ['TMUX', 'PUP_CONDUCTOR', 'PUP_SESSION_ID'];
   return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !inherited.includes(key)),
+    Object.entries(process.env).filter(
+      ([key]) => !NOT_INHERITED.some((pattern) => pattern.test(key)),
+    ),
   );
 }
 
@@ -423,6 +446,13 @@ export function conductorSocket(repoProjectId: string): string {
  * returns carries that socket, so the kickoff types onto the same server.
  */
 export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
+  // The whole server, not the window: a name kill leaves a server up, and
+  // whoever STARTED it owns its global environment — a session that pre-starts
+  // one on this label (the label is as computable as the name) with, say,
+  // `NODE_OPTIONS=--require` in its own environment would hand that to the
+  // conductor's `claude` at spawn. Killing the server means the conductor's
+  // window always opens on one pup started, with the environment above.
+  killServerOn(conductorSocket(opts.projectId));
   return spawnClaudeWindow({
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
@@ -623,6 +653,23 @@ function killIfExists(name: string, socket?: string): void {
   // Pinned to exact match, or a stale name would prefix-match and kill a
   // live sibling.
   killTarget(pinned(name), socket);
+}
+
+/**
+ * Kill the whole server on `socket`, so what comes next opens on one this
+ * process started. Only the conductor's socket is ever passed: on the default
+ * server this would kill the operator's every window. Silent when no server is
+ * there, like `killTarget`.
+ */
+function killServerOn(socket: string): void {
+  try {
+    execFileSync('tmux', onSocket(socket, ['kill-server']), {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: tmuxEnv(),
+    });
+  } catch {
+    // no server on that socket — nothing to kill
+  }
 }
 
 function killTarget(target: string, socket?: string): void {

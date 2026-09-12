@@ -745,9 +745,15 @@ export function buildProgram(): Command {
         );
       }
       if (isConductorRunning(repoPath)) {
+        // The attach line is for the operator, who is the only caller that
+        // attaches: a session and the conductor are told the conductor is up
+        // and nothing more, so pup is not the thing that hands a session the
+        // socket its window lives on (decision 47).
         const pid = projectId(repoPath);
         console.log(
-          `conductor running (attach: tmux -L ${conductorSocket(pid)} attach -t ${conductorName(pid)})`,
+          callingSession(db) || callingConductor()
+            ? 'conductor running'
+            : `conductor running (attach: tmux -L ${conductorSocket(pid)} attach -t ${conductorName(pid)})`,
         );
       }
       const rows = listSessions(db);

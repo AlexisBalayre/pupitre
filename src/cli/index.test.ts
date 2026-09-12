@@ -311,6 +311,28 @@ describe('CLI commands', () => {
       );
     });
 
+    // The operator is the only caller that attaches. A session and the
+    // conductor are told the window is up and nothing else: pup is not the
+    // thing that hands a session the socket the conductor lives on.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])(
+      'tells %s the conductor runs, without the socket to reach it on',
+      (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        vi.stubEnv(variable, value);
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs[0]).toBe('conductor running');
+        expect(logs.join('\n')).not.toContain('tmux -L');
+      },
+    );
+
     it('lists a planned task under `planned`, with its goal', () => {
       const repo = initRepo();
       useCwd(repo);
