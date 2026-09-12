@@ -27,7 +27,7 @@ exit 1.
   launches anyway and records what it waved through (decision 41). Operator-only: refused when
   run from inside a session, like `pup new`, `pup plan add|drop|edit`, `pup merge` and
   `pup respawn` (decisions 26, 42, 44). The conductor may launch, plan, `new` and kill; only
-  the operator merges, respawns or reaches another project (decision 47).
+  the operator merges, respawns, unblocks or reaches another project (decision 47).
 - `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path. Takes
   `--allow-overlap` for the same reason `pup launch` does.
 - `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
@@ -36,14 +36,23 @@ exit 1.
   project's conductor: one Claude Code window in the main checkout that plans, launches,
   steers and kills sessions and hands each finished branch to the operator. It reaches a
   session by its peer name `pup-<id>` over Claude Code's cross-session messaging, edits
-  nothing (a hook refuses every Edit and Write), and is refused `pup merge`, `pup respawn` and
-  `--project`. Tasks it plans are recorded `origin = conductor`. Operator-only (decision 47).
+  nothing (a hook refuses every Edit and Write), and is refused `pup merge`, `pup respawn`,
+  `pup unblock` and `--project`. Tasks it plans are recorded `origin = conductor`.
+  Operator-only (decision 47).
 - `pup steer <session> "<message>"` — inject a correction into a running session. `--sent`
   records a steer already delivered by cross-session message and types nothing (decision 47).
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
 - `pup kill <session> [--respawn]` — stop; `--respawn` relaunches on a fresh context window. A
   killed session's task returns to the backlog, so `pup launch` can retry it. Operator-only for
   the same reason `pup launch` is: killing releases the holder's scope (decision 42).
+- `pup unblock <session> [--reason <text>]` — return a session decision 7 parked as `blocked` to
+  `running`, once the human it asked for has dealt with the block. Prints the reason the gate
+  recorded for the block first, so unblocking is a claim that *that* was addressed. Allowed only
+  from `blocked`; it resets nothing else — the reject count stays, so a session parked by the cap
+  is parked again by its next gate failure — and it leaves the window alone: steer it with
+  `pup steer`, and if the window is gone use `pup kill --respawn`, which takes it now that it is
+  running again. Operator-only, and refused to the conductor too: the parking exists to ask a
+  human, and the conductor is what the blocked session was working for (decisions 7, 42, 47).
 - `pup respawn <session> [--wait <seconds>]` — ask the session for a handoff, wait for its
   `handoff-done`, then relaunch it on a fresh context window with the handoff as kickoff
   (decision 18). A handoff nobody requested does not count as ready. Operator-only: the kickoff
