@@ -21,7 +21,9 @@ import type { ConductorHandle, StartConductorRequest } from './types/conductor.t
  * a stale window wearing the name is replaced, as a session's would be. Not
  * a session — no task, worktree, branch or row — so nothing here touches the
  * store; the conductor's trace is the tasks it plans (`origin = conductor`)
- * and the events on the sessions it drives (decision 47).
+ * and the events on the sessions it drives (decision 47). The window opens on
+ * the conductor's own tmux socket, so the kickoff — the one thing that types
+ * into it — goes to the pane the launch returned, on that same server.
  */
 export function startConductor(req: StartConductorRequest): ConductorHandle {
   const pid = projectId(req.repoPath);

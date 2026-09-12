@@ -19,6 +19,7 @@ import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
   conductorName,
+  conductorSocket,
   killWatcher,
   launchWatcher,
   SessionPaneMissingError,
@@ -724,7 +725,12 @@ export function buildProgram(): Command {
         );
       }
       console.log(`Conductor running (tmux: ${handle.name}).`);
-      console.log(`Attach with: tmux attach -t ${handle.name}`);
+      // Its own socket, so the attach names it: a plain `tmux attach` asks the
+      // default server, which the conductor's window is deliberately not on
+      // (decision 47).
+      console.log(
+        `Attach with: tmux -L ${conductorSocket(projectId(repoPath))} attach -t ${handle.name}`,
+      );
     });
 
   program
@@ -739,7 +745,10 @@ export function buildProgram(): Command {
         );
       }
       if (isConductorRunning(repoPath)) {
-        console.log(`conductor running (tmux: ${conductorName(projectId(repoPath))})`);
+        const pid = projectId(repoPath);
+        console.log(
+          `conductor running (attach: tmux -L ${conductorSocket(pid)} attach -t ${conductorName(pid)})`,
+        );
       }
       const rows = listSessions(db);
       const backlog = listBacklogTasks(db, projectId(repoPath));
