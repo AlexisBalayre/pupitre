@@ -13,6 +13,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   launchConductor: vi.fn(({ projectId }: { projectId: string }) => ({
     sessionId: `conductor-${projectId}`,
     paneId: '%3',
+    socket: `pup-conductor-${projectId}`,
   })),
 }));
 
@@ -67,9 +68,15 @@ describe('startConductor', () => {
       model: 'fable',
     });
     // The kickoff goes to the pane the launch returned, with the compiled
-    // context — the same shape a session's launch has (decision 46).
+    // context — the same shape a session's launch has (decision 46) — and
+    // carries the socket that pane is on, or it would type into whatever wears
+    // the id on the default server (decision 47).
     const [pane, prompt] = vi.mocked(kickoff).mock.calls[0] ?? [];
-    expect(pane).toEqual({ sessionId: `conductor-${projectId(REPO)}`, paneId: '%3' });
+    expect(pane).toEqual({
+      sessionId: `conductor-${projectId(REPO)}`,
+      paneId: '%3',
+      socket: `pup-conductor-${projectId(REPO)}`,
+    });
     expect(prompt).toBe(readFileSync(join(outDir, 'context.md'), 'utf8'));
     expect(prompt).toContain('pup launch <task> --model opus');
   });

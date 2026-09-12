@@ -33,6 +33,9 @@ vi.mock('../claude/session-runtime.service.js', () => ({
     }
   },
   conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
+  // Spelled like the window name, as the runtime spells it: a separate tmux
+  // server is what keeps a session from reaching the conductor (decision 47).
+  conductorSocket: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
 }));
@@ -300,8 +303,35 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      expect(logs[0]).toMatch(/^conductor running \(tmux: pup-conductor-[0-9a-f]{12}\)$/);
+      // With the attach command, socket included: the window is on the
+      // conductor's own server, so a plain `tmux attach -t` finds nothing
+      // (decision 47).
+      expect(logs[0]).toMatch(
+        /^conductor running \(attach: tmux -L pup-conductor-([0-9a-f]{12}) attach -t pup-conductor-\1\)$/,
+      );
     });
+
+    // The operator is the only caller that attaches. A session and the
+    // conductor are told the window is up and nothing else: pup is not the
+    // thing that hands a session the socket the conductor lives on.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])(
+      'tells %s the conductor runs, without the socket to reach it on',
+      (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        vi.stubEnv(variable, value);
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs[0]).toBe('conductor running');
+        expect(logs.join('\n')).not.toContain('tmux -L');
+      },
+    );
 
     it('lists a planned task under `planned`, with its goal', () => {
       const repo = initRepo();
@@ -856,10 +886,13 @@ describe('CLI commands', () => {
         model: 'fable',
         workerModel: 'opus',
       });
-      expect(logs).toEqual([
-        'Conductor running (tmux: pup-conductor-p1).',
-        'Attach with: tmux attach -t pup-conductor-p1',
-      ]);
+      expect(logs[0]).toBe('Conductor running (tmux: pup-conductor-p1).');
+      // The socket is the project's, not the name the stub returned: the
+      // window is not on the default server, and the attach has to say so.
+      expect(logs[1]).toMatch(
+        /^Attach with: tmux -L pup-conductor-[0-9a-f]{12} attach -t pup-conductor-p1$/,
+      );
+      expect(logs).toHaveLength(2);
       expect(process.exitCode).toBeUndefined();
     });
 

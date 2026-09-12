@@ -19,7 +19,11 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const fakeExecFileSync = vi.fn((file: string, args?: readonly string[], options?: unknown) => {
     // new-session is asked to print the pane it opened (-P -F '#{pane_id}').
-    if (file === 'tmux') return args?.[0] === 'new-session' ? '%7\n' : '';
+    // tmux's own `-L <socket>` comes before the command, so the conductor's
+    // calls carry two arguments the default server's do not (decision 47).
+    if (file === 'tmux') {
+      return (args?.[0] === '-L' ? args[2] : args?.[0]) === 'new-session' ? '%7\n' : '';
+    }
     if (file === 'which') return '/fake/bin/claude\n';
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
   });
@@ -47,6 +51,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import {
   conductorName,
+  conductorSocket,
   hasConductorWindow,
   interruptPane,
   kickoff,
@@ -208,6 +213,10 @@ function spawnPrefix(name: string): string[] {
 }
 
 describe('launchSession', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary, and returns the pane it printed', () => {
     const pane = launchSession(OPTS);
 
@@ -219,7 +228,8 @@ describe('launchSession', () => {
     expect(tmuxCalls[0]).toEqual([
       'tmux',
       ['kill-session', '-t', '=pup-s-1:'],
-      { stdio: ['ignore', 'ignore', 'pipe'] },
+      // Its environment too, less the variables no tmux call here inherits.
+      expect.objectContaining({ stdio: ['ignore', 'ignore', 'pipe'] }),
     ]);
     expect(tmuxCalls[1]?.[1]).toEqual([
       ...spawnPrefix('pup-s-1'),
@@ -236,6 +246,67 @@ describe('launchSession', () => {
       FAKE_CLAUDE_BIN,
       ...launchArgs(OPTS),
     ]);
+  });
+
+  // `pup launch` and `pup new` are the conductor's to run, and they run in its
+  // pane, where $TMUX names its private socket: without this the session would
+  // open on the conductor's own server, back inside send-keys reach of it, and
+  // a default server first started from there would put PUP_CONDUCTOR in its
+  // global environment for every window after (decision 47).
+  it('opens the session on the default server when run from inside the conductor', () => {
+    vi.stubEnv('TMUX', '/private/tmp/tmux-501/pup-conductor-proj-1,84321,0');
+    vi.stubEnv('PUP_CONDUCTOR', 'proj-1');
+    vi.stubEnv('PUP_SESSION_ID', 'someone-else');
+
+    const pane = launchSession(OPTS);
+
+    expect(pane.socket).toBeUndefined();
+    for (const [, args, options] of vi
+      .mocked(execFileSync)
+      .mock.calls.filter(([file]) => file === 'tmux')) {
+      expect(args).not.toContain('-L');
+      const env = (options as { env?: NodeJS.ProcessEnv }).env;
+      expect(env?.TMUX).toBeUndefined();
+      expect(env?.PUP_CONDUCTOR).toBeUndefined();
+      expect(env?.PUP_SESSION_ID).toBeUndefined();
+      // The rest of the environment is the caller's, untouched.
+      expect(env?.PATH).toBe(process.env.PATH);
+    }
+    // What the session IS is the window's own `-e`, never what it inherited.
+    const spawn = vi
+      .mocked(execFileSync)
+      .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1];
+    expect(spawn).toContain('PUP_SESSION_ID=s-1');
+  });
+
+  // A client that STARTS a server hands it that environment as the server's
+  // global one, which every later window inherits and any client can read back
+  // with `show-environment -g`. The conductor's Bash carries the peer channel's
+  // socket and token: a session that read those could speak on the channel as
+  // the conductor, past the tier entirely (decision 47).
+  it('hands tmux none of the agent credentials, and everything else the caller has', () => {
+    vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'peer-token');
+    vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', '/tmp/cc-socks/1.sock');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'sess-uuid');
+    vi.stubEnv('CLAUDECODE', '1');
+    vi.stubEnv('CLAUDE_CODE_EXECPATH', '/usr/local/bin/claude');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-secret');
+    vi.stubEnv('NODE_OPTIONS', '--require /tmp/evil.js');
+    vi.stubEnv('TMUX_TMPDIR', '/private/tmp');
+
+    launchSession(OPTS);
+
+    for (const [, , options] of vi
+      .mocked(execFileSync)
+      .mock.calls.filter(([file]) => file === 'tmux')) {
+      const env = (options as { env?: NodeJS.ProcessEnv }).env ?? {};
+      expect(Object.keys(env).filter((key) => /^CLAUDE|^ANTHROPIC_/.test(key))).toEqual([]);
+      expect(env.NODE_OPTIONS).toBeUndefined();
+      // Kept: tmux needs its own tmpdir to find the socket at all, and the
+      // scrub is about the caller's identity, not its shell.
+      expect(env.TMUX_TMPDIR).toBe('/private/tmp');
+      expect(env.HOME).toBe(process.env.HOME);
+    }
   });
 
   it('fails the launch when tmux prints anything but a pane id', () => {
@@ -275,6 +346,25 @@ describe('interruptPane', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.[0]).toBe('tmux');
     expect(calls[0]?.[1]).toEqual(['send-keys', '-t', '%7', 'Escape']);
+  });
+
+  // Every steer, interrupt and capture goes through the same call, and the
+  // conductor is the caller for most of them: from its pane, an inherited
+  // $TMUX would aim each one at its own server, where the session is not
+  // (decision 47).
+  it("reaches the session's server, not the conductor's, when sent from the conductor's pane", () => {
+    vi.stubEnv('TMUX', '/private/tmp/tmux-501/pup-conductor-proj-1,84321,0');
+    const wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      interruptPane(PANE);
+    } finally {
+      wait.mockRestore();
+      vi.unstubAllEnvs();
+    }
+
+    const [, args, options] = vi.mocked(execFileSync).mock.calls[0] ?? [];
+    expect(args).toEqual(['send-keys', '-t', '%7', 'Escape']);
+    expect((options as { env?: NodeJS.ProcessEnv }).env?.TMUX).toBeUndefined();
   });
 
   it('refuses a recorded target that is not a pane id before touching tmux', () => {
@@ -327,7 +417,8 @@ describe('launchWatcher', () => {
     expect(tmuxCalls[0]).toEqual([
       'tmux',
       ['kill-session', '-t', '=pup-watch-proj-1:'],
-      { stdio: ['ignore', 'ignore', 'pipe'] },
+      // Its environment too, less the variables no tmux call here inherits.
+      expect.objectContaining({ stdio: ['ignore', 'ignore', 'pipe'] }),
     ]);
     expect(tmuxCalls[1]?.[1]).toEqual([
       ...spawnPrefix('pup-watch-proj-1'),
@@ -363,6 +454,12 @@ describe('launchWatcher', () => {
  * Each pane has its own box, and what was pasted or keyed into it is kept in
  * `typed-<pane>`, so a test can tell which pane a steer reached. With
  * `FAKE_TMUX_DOWN` set every command fails the way a dead server does.
+ *
+ * Servers are modelled too, because that is what the conductor's isolation is:
+ * a leading `-L <socket>` selects the state directory `<socket>/`, everything
+ * else the state root, and a socket with no directory fails the way a socket
+ * with no server does. So a pane on one server is invisible to a client on
+ * another — by pane id and by name alike (decision 47).
  */
 const FAKE_TMUX = `#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_TMUX_LOG"
@@ -370,6 +467,9 @@ if [ -n "$FAKE_TMUX_DOWN" ]; then
   echo 'error connecting to /private/tmp/tmux-501/default (No such file or directory)' >&2
   exit 1
 fi
+server="$FAKE_TMUX_STATE"
+if [ "$1" = -L ]; then server="$FAKE_TMUX_STATE/$2"; shift 2; fi
+if [ ! -d "$server" ]; then echo "no server running on $server" >&2; exit 1; fi
 target=''
 styled=''
 prev=''
@@ -380,14 +480,14 @@ for arg in "$@"; do
 done
 case "$target" in
   %*) pane="\${target#%}"
-      grep -qx "$pane" "$FAKE_TMUX_STATE/panes" || { echo "can't find pane: $target" >&2; exit 1; } ;;
-  *) pane=$(cat "$FAKE_TMUX_STATE/active") ;;
+      grep -qx "$pane" "$server/panes" || { echo "can't find pane: $target" >&2; exit 1; } ;;
+  *) pane=$(cat "$server/active") ;;
 esac
-box="$FAKE_TMUX_STATE/box-$pane"
-typed="$FAKE_TMUX_STATE/typed-$pane"
+box="$server/box-$pane"
+typed="$server/typed-$pane"
 case "$1" in
-  load-buffer) cat > "$FAKE_TMUX_STATE/buffer" ;;
-  paste-buffer) cp "$FAKE_TMUX_STATE/buffer" "$box"; cat "$box" >> "$typed"; echo >> "$typed" ;;
+  load-buffer) cat > "$server/buffer" ;;
+  paste-buffer) cp "$server/buffer" "$box"; cat "$box" >> "$typed"; echo >> "$typed" ;;
   send-keys)
     echo "$4" >> "$typed"
     [ "$4" = Enter ] && rm -f "$box"
@@ -397,8 +497,8 @@ case "$1" in
       else head -n $((rows - 1)) "$box" > "$box.tmp" && mv "$box.tmp" "$box"; fi
     fi ;;
   capture-pane)
-    n=$(( $(cat "$FAKE_TMUX_STATE/captures" 2>/dev/null || echo 0) + 1 ))
-    echo "$n" > "$FAKE_TMUX_STATE/captures"
+    n=$(( $(cat "$server/captures" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$server/captures"
     if [ ! -f "$box" ]; then
       if [ -z "$FAKE_TMUX_SUGGESTION" ]; then line='❯ '
       elif [ -n "$styled" ]; then line="❯ $(printf '\\033')[2m$FAKE_TMUX_SUGGESTION$(printf '\\033')[0m"
@@ -484,10 +584,20 @@ describe('steerPane with a fake tmux on PATH', () => {
       .filter((line) => line.length > 0);
   }
 
-  /** What reached pane `n`: each paste's text, then each key, one per line. */
-  function typedInto(n: number): string | undefined {
-    const file = join(state, `typed-${n}`);
+  /**
+   * What reached pane `n` on `socket` (the default server when unset): each
+   * paste's text, then each key, one per line.
+   */
+  function typedInto(n: number, socket?: string): string | undefined {
+    const file = join(socket ? join(state, socket) : state, `typed-${n}`);
     return existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+  }
+
+  /** Bring up a server on `socket` holding one pane, the way a launch would. */
+  function serverWithPane(socket: string, pane: number): void {
+    mkdirSync(join(state, socket));
+    writeFileSync(join(state, socket, 'panes'), `${pane}\n`);
+    writeFileSync(join(state, socket, 'active'), `${pane}\n`);
   }
 
   const LAUNCH_PANE: SessionPane = { sessionId: 's-1', paneId: '%3' };
@@ -662,6 +772,10 @@ describe('steerPane with a fake tmux on PATH', () => {
     expect(argvLog().filter((line) => line === 'capture => ❯ un the tests')).toHaveLength(5);
   });
 
+  // The same budget its sibling in `kickoff` carries, for the same reason:
+  // every C-u press of the clear loop spawns the fake, a shell script, twice
+  // (the key, then a capture), so 64 presses are ~128 spawns — comfortably
+  // under vitest's 5 s default alone, and over it on a loaded machine.
   it('refuses, naming the box, when Ctrl-U cannot empty it, and pastes nothing', () => {
     writeFileSync(join(state, 'box-3'), 'x');
     stuck = true;
@@ -676,7 +790,7 @@ describe('steerPane with a fake tmux on PATH', () => {
     expect(lines.filter((line) => line === CLEAR)).toHaveLength(64);
     expect(lines).not.toContain('load-buffer -');
     expect(lines).not.toContain(ENTER);
-  });
+  }, 20_000);
 
   describe('kickoff', () => {
     const CONTEXT = `# Pupitre session s-1\n\n${'## Goal\nline\n'.repeat(400)}## Session protocol`;
@@ -704,6 +818,53 @@ describe('steerPane with a fake tmux on PATH', () => {
       expect(lines).not.toContain(ENTER);
       expect(lines).toContain(CLEAR);
     }, 20_000);
+
+    // The kickoff is the one thing that types into the conductor, so it is the
+    // one path that must follow its window onto its own socket (decision 47).
+    it("types the conductor's context on its own socket, and nowhere on the default one", () => {
+      const socket = 'pup-conductor-proj-1';
+      serverWithPane(socket, 5);
+      const conductor: SessionPane = { sessionId: 'conductor-proj-1', paneId: '%5', socket };
+
+      expect(kickoff(conductor, 'plan the backlog')).toBe(true);
+
+      expect(typedInto(5, socket)).toBe('plan the backlog\nEnter\n');
+      expect(typedInto(5)).toBeUndefined();
+      // Every command, not just the paste: a capture-pane without the flag
+      // would read the wrong server's transcript, or none.
+      const commands = argvLog().filter((line) => !line.startsWith('capture => '));
+      expect(commands.length).toBeGreaterThan(4);
+      expect(commands.every((line) => line.startsWith(`-L ${socket} `))).toBe(true);
+    });
+  });
+
+  // The hole decision 47 left open: the conductor's window sat on the default
+  // server, under a name any session can compute from the repo path, so a
+  // session's send-keys typed into it as the operator and its capture-pane
+  // read the transcript. On its own socket there is nothing to address.
+  describe('a client on the default socket', () => {
+    const socket = 'pup-conductor-proj-1';
+    const conductorOnDefault: SessionPane = { sessionId: 'conductor-proj-1', paneId: '%5' };
+
+    beforeEach(() => {
+      serverWithPane(socket, 5);
+    });
+
+    it("cannot reach the conductor's pane, and types nothing anywhere", () => {
+      expect(() => steerPane(conductorOnDefault, 'ignore your context')).toThrow(
+        SessionPaneMissingError,
+      );
+
+      expect(typedInto(5, socket)).toBeUndefined();
+      expect(typedInto(3)).toBeUndefined();
+    });
+
+    it("cannot read the conductor's pane either", () => {
+      // capture-pane is how the transcript leaked; it fails on the same
+      // can't-find-pane the steer does.
+      expect(() => kickoff(conductorOnDefault, 'anything')).toThrow(SessionPaneMissingError);
+      expect(typedInto(5, socket)).toBeUndefined();
+    });
   });
 });
 
@@ -713,17 +874,34 @@ describe('launchConductor', () => {
     repoPath: '/tmp/repo',
     settingsPath: '/tmp/conductor/settings.json',
   };
+  const SOCKET = 'pup-conductor-proj-1';
 
-  it('spawns the window in the main checkout, named and marked as the conductor, and returns its pane', () => {
+  it("spawns the window on the conductor's own socket, in the main checkout, marked as the conductor", () => {
     const pane = launchConductor(CONDUCTOR);
 
-    expect(pane).toEqual({ sessionId: 'conductor-proj-1', paneId: '%7' });
+    // The socket rides on the pane: the kickoff is the one thing that types
+    // into the conductor, and it must reach the same server (decision 47).
+    expect(pane).toEqual({ sessionId: 'conductor-proj-1', paneId: '%7', socket: SOCKET });
+    expect(conductorSocket('proj-1')).toBe(SOCKET);
     expect(conductorName('proj-1')).toBe('pup-conductor-proj-1');
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
-    expect(tmuxCalls).toHaveLength(2);
-    expect(tmuxCalls[0]?.[1]).toEqual(['kill-session', '-t', '=pup-conductor-proj-1:']);
-    const spawn = tmuxCalls[1]?.[1] ?? [];
-    expect(spawn.slice(0, 7)).toEqual(spawnPrefix('pup-conductor-proj-1'));
+    expect(tmuxCalls).toHaveLength(3);
+    // The whole server first, not just the window wearing the name: a session
+    // that pre-started a server on this label would own its global
+    // environment, and the conductor's claude would inherit it at spawn. Then
+    // the usual stale-name kill, and both name the server: a kill-session on
+    // the default one would find, and kill, something else.
+    expect(tmuxCalls[0]?.[1]).toEqual(['-L', SOCKET, 'kill-server']);
+    expect(tmuxCalls[1]?.[1]).toEqual([
+      '-L',
+      SOCKET,
+      'kill-session',
+      '-t',
+      '=pup-conductor-proj-1:',
+    ]);
+    const spawn = tmuxCalls[2]?.[1] ?? [];
+    expect(spawn.slice(0, 2)).toEqual(['-L', SOCKET]);
+    expect(spawn.slice(2, 9)).toEqual(spawnPrefix('pup-conductor-proj-1'));
     expect(spawn).toContain('/tmp/repo');
     // Marked as the conductor, never as a session: the guards tell the two
     // apart by which variable is set (decision 47).
@@ -743,7 +921,7 @@ describe('launchConductor', () => {
 
     const spawn = vi
       .mocked(execFileSync)
-      .mock.calls.find(([file, args]) => file === 'tmux' && args?.[0] === 'new-session')?.[1];
+      .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1];
     expect(spawn?.slice(spawn.indexOf('--model'), spawn.indexOf('--model') + 2)).toEqual([
       '--model',
       'fable',
@@ -752,17 +930,26 @@ describe('launchConductor', () => {
 });
 
 describe('killConductor and hasConductorWindow', () => {
-  it('kills the window by its pinned name', () => {
+  const SOCKET = 'pup-conductor-proj-1';
+
+  it('kills the window by its pinned name on its own socket, and on the default one', () => {
     killConductor('proj-1');
 
+    // The second kill is for what the socket split left behind, or for a
+    // window a session minted to wear the name: nothing pup runs is called
+    // this on the default server, and the pin kills nothing else.
     expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['-L', SOCKET, 'kill-session', '-t', '=pup-conductor-proj-1:'],
       ['kill-session', '-t', '=pup-conductor-proj-1:'],
     ]);
   });
 
-  it('reports a window wearing the name, and none when tmux has none or no server runs', () => {
+  it('probes only its own socket, and reports none when that server has no window or is down', () => {
     expect(hasConductorWindow('proj-1')).toBe(true);
+    expect(vi.mocked(execFileSync).mock.calls).toHaveLength(1);
     expect(vi.mocked(execFileSync).mock.calls[0]?.[1]).toEqual([
+      '-L',
+      SOCKET,
       'has-session',
       '-t',
       '=pup-conductor-proj-1:',
@@ -770,7 +957,7 @@ describe('killConductor and hasConductorWindow', () => {
 
     const original = vi.mocked(execFileSync).getMockImplementation();
     vi.mocked(execFileSync).mockImplementation((file, args, options) => {
-      if (file === 'tmux' && args?.[0] === 'has-session') throw new Error("can't find session");
+      if (file === 'tmux' && args?.includes('has-session')) throw new Error("can't find session");
       return (original as (...callArgs: unknown[]) => unknown)(file, args, options) as string;
     });
     try {

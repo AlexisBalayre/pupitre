@@ -37,6 +37,13 @@ export interface ConductorLaunchOptions {
 export interface SessionPane {
   sessionId: string;
   paneId: string;
+  /**
+   * The tmux server the pane lives on, as a `-L` socket label; absent for the
+   * default server every session and the operator share. Only the conductor
+   * sets it: its window is off the default socket so no session can reach it
+   * (decision 47).
+   */
+  socket?: string;
 }
 
 const CLAUDE_JSON = join(homedir(), '.claude.json');
@@ -83,8 +90,62 @@ const WINDOW_SIZE = { x: 220, y: 50 };
 /** What tmux 3.7b prints when the pane, or the whole server, is gone. */
 const PANE_GONE = /can't find pane|error connecting to|no server running/;
 
-function tmux(...args: string[]): string {
-  return execFileSync('tmux', args, { encoding: 'utf8' });
+/**
+ * tmux's argv with the server it means in front. tmux reads `-L` first and
+ * only then `$TMUX`, so the flag is the whole isolation: a client on one
+ * socket cannot address, read or even connect to a window on another.
+ * `undefined` means the default server, which `tmuxEnv` keeps an inherited
+ * `$TMUX` from redirecting.
+ */
+function onSocket(socket: string | undefined, args: string[]): string[] {
+  return socket === undefined ? args : ['-L', socket, ...args];
+}
+
+/**
+ * What no tmux call here hands the client. A tmux client that starts a server
+ * — and `pup launch` from the conductor's Bash starts the default one whenever
+ * the operator has no tmux up — gives that server its GLOBAL environment, which
+ * every window opened on it afterwards inherits and ANY client can read back
+ * with `show-environment -g` (verified on tmux 3.7b). So this is not a list of
+ * variables that would confuse tmux; it is everything about the caller that
+ * must not become a server-wide, world-readable fact:
+ *
+ * - `TMUX` picks the server when no `-L` is given, and in the conductor's pane
+ *   it names the conductor's own socket — a launch from there would open the
+ *   session on the conductor's server, back within `send-keys` reach of it.
+ * - `PUP_CONDUCTOR` and `PUP_SESSION_ID` say what a window IS; leaked into a
+ *   server's global environment they make every later window read as their
+ *   caller to every guard.
+ * - `CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
+ *   and `_TOKEN` are the peer channel, so a session that read them back could
+ *   speak on it AS the conductor, past the tier entirely. `ANTHROPIC_*` is the
+ *   API key family for the same reason.
+ * - `NODE_OPTIONS` is code execution: `--require` in a server's environment runs
+ *   in every node process a window later starts.
+ *
+ * What a window is, its own `-e` says. Everything else the caller has — `PATH`,
+ * `HOME`, `TERM`, `SHELL`, `LANG`, `TMUX_TMPDIR` — is passed through untouched
+ * (decision 47).
+ */
+const NOT_INHERITED = [
+  /^TMUX$/,
+  /^PUP_CONDUCTOR$/,
+  /^PUP_SESSION_ID$/,
+  /^CLAUDE/,
+  /^ANTHROPIC_/,
+  /^NODE_OPTIONS$/,
+];
+
+function tmuxEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !NOT_INHERITED.some((pattern) => pattern.test(key)),
+    ),
+  );
+}
+
+function tmux(socket: string | undefined, args: string[]): string {
+  return execFileSync('tmux', onSocket(socket, args), { encoding: 'utf8', env: tmuxEnv() });
 }
 
 /** Block the current thread without spawning a process (CLI-only, short waits). */
@@ -166,7 +227,12 @@ function paneTarget(pane: SessionPane): string {
  */
 function tmuxAt(pane: SessionPane, args: string[], input?: string): string {
   try {
-    return execFileSync('tmux', args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], input });
+    return execFileSync('tmux', onSocket(pane.socket, args), {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: tmuxEnv(),
+      input,
+    });
   } catch (error) {
     const stderr = (error as { stderr?: unknown }).stderr;
     if (typeof stderr === 'string' && PANE_GONE.test(stderr)) {
@@ -195,10 +261,12 @@ function spawnDetachedSession(
     window?: { x: number; y: number };
     env?: Record<string, string>;
     command: string[];
+    /** The server to open it on; the default one when unset. */
+    socket?: string;
   },
 ): string {
-  killIfExists(name);
-  const printed = tmux(
+  killIfExists(name, opts.socket);
+  const printed = tmux(opts.socket, [
     'new-session',
     '-d',
     '-P',
@@ -211,7 +279,7 @@ function spawnDetachedSession(
     opts.cwd,
     ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
     ...opts.command,
-  ).trim();
+  ]).trim();
   // Checked where it is minted: this id is what every later command trusts,
   // and a launch is the one place a bad one can fail loudly instead of late.
   if (!isPaneId(printed)) {
@@ -297,6 +365,8 @@ interface ClaudeWindowOptions {
    * conductor's: the guards tell the two apart by which is set (decision 47).
    */
   caller: Record<string, string>;
+  /** The tmux server to open it on: the conductor's own, or the default one. */
+  socket?: string;
 }
 
 /**
@@ -319,8 +389,9 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
       PUP_BIN: process.argv[1] ?? 'pup',
     },
     command: [claudeBin, ...launchArgs(opts)],
+    socket: opts.socket,
   });
-  return { sessionId: opts.sessionId, paneId };
+  return { sessionId: opts.sessionId, paneId, socket: opts.socket };
 }
 
 /**
@@ -349,6 +420,21 @@ export function conductorName(repoProjectId: string): string {
 }
 
 /**
+ * The tmux socket the conductor's window lives on (`-L`), one per project.
+ * Its own server, not the default one every session holds `$TMUX` for: the
+ * window's name is computable from the repo path, so on the shared server one
+ * `send-keys -t =pup-conductor-<id>:` from a session typed into the operator's
+ * delegate as the operator, and `capture-pane` read its whole transcript. A
+ * socket is not a namespace to guess past — a client asks one server and sees
+ * nothing of any other (decision 47). Spelled the same as the window name,
+ * from the same project id; the two are separate namespaces, and this is the
+ * one place the label is formed.
+ */
+export function conductorSocket(repoProjectId: string): string {
+  return conductorName(repoProjectId);
+}
+
+/**
  * Open the conductor's window in the repo's main checkout and return its
  * pane. Same launch as a session — bypass permissions, compiled settings,
  * user setting sources, a peer name — but `PUP_CONDUCTOR` in place of
@@ -356,14 +442,24 @@ export function conductorName(repoProjectId: string): string {
  * and the guards tell the two apart by which variable is set (decision 47).
  * Tmux's `-e` sets the new session's environment, not the server's, so the
  * variable does not leak into the sessions the conductor launches from it.
+ * On its own socket, where no session can address it — and the pane it
+ * returns carries that socket, so the kickoff types onto the same server.
  */
 export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
+  // The whole server, not the window: a name kill leaves a server up, and
+  // whoever STARTED it owns its global environment — a session that pre-starts
+  // one on this label (the label is as computable as the name) with, say,
+  // `NODE_OPTIONS=--require` in its own environment would hand that to the
+  // conductor's `claude` at spawn. Killing the server means the conductor's
+  // window always opens on one pup started, with the environment above.
+  killServerOn(conductorSocket(opts.projectId));
   return spawnClaudeWindow({
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
     settingsPath: opts.settingsPath,
     model: opts.model,
     caller: { PUP_CONDUCTOR: opts.projectId },
+    socket: conductorSocket(opts.projectId),
   });
 }
 
@@ -374,15 +470,32 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
  * the conductor is the operator's delegate, not a worker to contain.
  */
 export function killConductor(repoProjectId: string): void {
-  killIfExists(conductorName(repoProjectId));
+  const name = conductorName(repoProjectId);
+  killIfExists(name, conductorSocket(repoProjectId));
+  // And on the default server, where nothing pup runs wears this name: what
+  // is there is a conductor window from before the socket split, or one a
+  // session minted to look like the conductor. `pup conductor stop` is what
+  // the operator has for either, and an exact-name kill reaches nothing else.
+  killIfExists(name);
 }
 
-/** Whether a window wearing the conductor's name exists; false when no server runs. */
+/**
+ * Whether a window wearing the conductor's name exists on the conductor's own
+ * socket; false when that server does not run. The default server is not
+ * probed: a window there is not the conductor, and answering for one would let
+ * any session make `pup status` report a conductor that is not running.
+ */
 export function hasConductorWindow(repoProjectId: string): boolean {
   try {
-    execFileSync('tmux', ['has-session', '-t', pinned(conductorName(repoProjectId))], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    execFileSync(
+      'tmux',
+      onSocket(conductorSocket(repoProjectId), [
+        'has-session',
+        '-t',
+        pinned(conductorName(repoProjectId)),
+      ]),
+      { stdio: ['ignore', 'ignore', 'pipe'], env: tmuxEnv() },
+    );
     return true;
   } catch {
     return false;
@@ -536,19 +649,37 @@ export function killSession(sessionId: string, paneId?: string | null): void {
   killIfExists(tmuxName(sessionId));
 }
 
-function killIfExists(name: string): void {
+function killIfExists(name: string, socket?: string): void {
   // Pinned to exact match, or a stale name would prefix-match and kill a
   // live sibling.
-  killTarget(pinned(name));
+  killTarget(pinned(name), socket);
 }
 
-function killTarget(target: string): void {
+/**
+ * Kill the whole server on `socket`, so what comes next opens on one this
+ * process started. Only the conductor's socket is ever passed: on the default
+ * server this would kill the operator's every window. Silent when no server is
+ * there, like `killTarget`.
+ */
+function killServerOn(socket: string): void {
+  try {
+    execFileSync('tmux', onSocket(socket, ['kill-server']), {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: tmuxEnv(),
+    });
+  } catch {
+    // no server on that socket — nothing to kill
+  }
+}
+
+function killTarget(target: string, socket?: string): void {
   try {
     // Expected to fail when the session (or the tmux server itself) does not
     // exist; pipe stderr so the probe stays silent instead of leaking
     // "error connecting to /tmp/tmux-*" to the operator's terminal.
-    execFileSync('tmux', ['kill-session', '-t', target], {
+    execFileSync('tmux', onSocket(socket, ['kill-session', '-t', target]), {
       stdio: ['ignore', 'ignore', 'pipe'],
+      env: tmuxEnv(),
     });
   } catch {
     // not running — nothing to kill
