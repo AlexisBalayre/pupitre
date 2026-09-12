@@ -742,6 +742,10 @@ describe('steerPane with a fake tmux on PATH', () => {
     expect(argvLog().filter((line) => line === 'capture => ❯ un the tests')).toHaveLength(5);
   });
 
+  // The same budget its sibling in `kickoff` carries, for the same reason:
+  // every C-u press of the clear loop spawns the fake, a shell script, twice
+  // (the key, then a capture), so 64 presses are ~128 spawns — comfortably
+  // under vitest's 5 s default alone, and over it on a loaded machine.
   it('refuses, naming the box, when Ctrl-U cannot empty it, and pastes nothing', () => {
     writeFileSync(join(state, 'box-3'), 'x');
     stuck = true;
@@ -756,7 +760,7 @@ describe('steerPane with a fake tmux on PATH', () => {
     expect(lines.filter((line) => line === CLEAR)).toHaveLength(64);
     expect(lines).not.toContain('load-buffer -');
     expect(lines).not.toContain(ENTER);
-  });
+  }, 20_000);
 
   describe('kickoff', () => {
     const CONTEXT = `# Pupitre session s-1\n\n${'## Goal\nline\n'.repeat(400)}## Session protocol`;
