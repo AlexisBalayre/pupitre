@@ -197,6 +197,16 @@ describe('launchArgs', () => {
 // mock above.
 const FAKE_CLAUDE_BIN = '/fake/bin/claude';
 
+/**
+ * The arguments `spawnDetachedSession` opens every window with, before the
+ * per-window ones. Written once: three windows assert the same seven, and
+ * three literal copies of them read as a clone of the production call itself
+ * (addendum to decision 47).
+ */
+function spawnPrefix(name: string): string[] {
+  return ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name];
+}
+
 describe('launchSession', () => {
   it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary, and returns the pane it printed', () => {
     const pane = launchSession(OPTS);
@@ -212,13 +222,7 @@ describe('launchSession', () => {
       { stdio: ['ignore', 'ignore', 'pipe'] },
     ]);
     expect(tmuxCalls[1]?.[1]).toEqual([
-      'new-session',
-      '-d',
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-s',
-      'pup-s-1',
+      ...spawnPrefix('pup-s-1'),
       '-x',
       '220',
       '-y',
@@ -326,13 +330,7 @@ describe('launchWatcher', () => {
       { stdio: ['ignore', 'ignore', 'pipe'] },
     ]);
     expect(tmuxCalls[1]?.[1]).toEqual([
-      'new-session',
-      '-d',
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-s',
-      'pup-watch-proj-1',
+      ...spawnPrefix('pup-watch-proj-1'),
       '-c',
       '/tmp/repo',
       process.execPath,
@@ -725,15 +723,7 @@ describe('launchConductor', () => {
     expect(tmuxCalls).toHaveLength(2);
     expect(tmuxCalls[0]?.[1]).toEqual(['kill-session', '-t', '=pup-conductor-proj-1:']);
     const spawn = tmuxCalls[1]?.[1] ?? [];
-    expect(spawn.slice(0, 7)).toEqual([
-      'new-session',
-      '-d',
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-s',
-      'pup-conductor-proj-1',
-    ]);
+    expect(spawn.slice(0, 7)).toEqual(spawnPrefix('pup-conductor-proj-1'));
     expect(spawn).toContain('/tmp/repo');
     // Marked as the conductor, never as a session: the guards tell the two
     // apart by which variable is set (decision 47).

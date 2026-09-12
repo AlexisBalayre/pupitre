@@ -241,10 +241,12 @@ describe('CLI commands', () => {
     // resolveProject() always resolves state under homedir() — point it at a
     // throwaway HOME so a test run never touches the developer's real ~/.pupitre.
     vi.stubEnv('HOME', tempDir('pup-cli-home-'));
-    // Reaching another project refuses on PUP_SESSION_ID alone, and this suite
-    // runs inside a pup session during dogfooding, where the variable is
-    // exported; operator cases must not inherit it. Session cases stub their own.
+    // Reaching another project refuses on PUP_SESSION_ID or PUP_CONDUCTOR
+    // alone, and this suite runs inside a pup session during dogfooding —
+    // under the conductor, inside its tmux, both variables are exported.
+    // Operator cases must not inherit either; the cases that want one stub it.
     vi.stubEnv('PUP_SESSION_ID', '');
+    vi.stubEnv('PUP_CONDUCTOR', '');
     // repoRoot() shells out to `git -C <cwd> rev-parse ...` with no env
     // override, so it inherits process.env as-is. Running inside the repo's
     // own pre-commit hook leaves GIT_DIR (and friends) set, which silently
