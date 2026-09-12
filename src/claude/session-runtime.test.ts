@@ -318,6 +318,25 @@ describe('interruptPane', () => {
     expect(calls[0]?.[1]).toEqual(['send-keys', '-t', '%7', 'Escape']);
   });
 
+  // Every steer, interrupt and capture goes through the same call, and the
+  // conductor is the caller for most of them: from its pane, an inherited
+  // $TMUX would aim each one at its own server, where the session is not
+  // (decision 47).
+  it("reaches the session's server, not the conductor's, when sent from the conductor's pane", () => {
+    vi.stubEnv('TMUX', '/private/tmp/tmux-501/pup-conductor-proj-1,84321,0');
+    const wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      interruptPane(PANE);
+    } finally {
+      wait.mockRestore();
+      vi.unstubAllEnvs();
+    }
+
+    const [, args, options] = vi.mocked(execFileSync).mock.calls[0] ?? [];
+    expect(args).toEqual(['send-keys', '-t', '%7', 'Escape']);
+    expect((options as { env?: NodeJS.ProcessEnv }).env?.TMUX).toBeUndefined();
+  });
+
   it('refuses a recorded target that is not a pane id before touching tmux', () => {
     // A row from before panes were pinned holds the session NAME, which tmux
     // would resolve to the active pane — the hole this closes. Nothing is sent.
