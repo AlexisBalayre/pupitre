@@ -1381,6 +1381,46 @@ changes back into those docs is pending.
     fail on. A steer refused mid-turn leaves the session running untouched; the operator
     re-runs it.
 
+    *Addendum, 2026-09-12: what the box suggests is not what the user typed.* The first
+    operator steer after this decision merged was refused with box-not-cleared, and so was
+    every steer, handoff request and gate re-steer to a session that had finished a turn:
+    the driving loop was blocked on it. Nothing was in the box. Claude Code 2.1.263 offers a
+    prompt of its own there once a turn ends — the capture read `❯ run the security review on
+    this branch` — and the offer is not text: Escape does not dismiss it and Ctrl-U does not
+    clear it, so `hasUnsubmittedInput` read a draft and `steerPane` spent all 64 presses on an
+    empty box. The `Try "…"` hint was already known and matched by its prefix; a suggestion
+    has no prefix to match, and matching its words would be matching the operator's own steers.
+    *Dim is the discriminator, and only `-e` shows it.* Both are one thing: the box's ghost
+    text, which Claude Code renders dim (SGR 2) where typed and pasted text carry no dim at
+    all. Verified live on 2.1.269 by capturing the same box in each state: the hint is
+    `\u001b[39m❯\u00a0\u001b[2mTry "how does <filepath> work?"\u001b[0m`, a typed draft is
+    `\u001b[39m❯\u00a0draft text`, and a folded paste's `[Pasted text #1]` is undimmed too —
+    which matters, since blanking it would have made every landed paste read as empty. So the
+    four looks at the input box now take `capture-pane -e`, `pane.utils.ts` blanks every dim
+    run before reading the box, and a box left with nothing else is empty. `waitUntilReady`
+    keeps the plain capture: its marker carries no styling and escapes would only hide it.
+    Two things the parser has to get right, both shapes the real capture produces: tmux emits
+    only the attribute *changes*, so dim carries from one row to the next and the whole
+    capture is scanned in order, not from the prompt down; and a 256-colour parameter has to
+    be skipped whole, or `38;5;2` reads as dim and `38;5;22` as a reset. Ghost-completion
+    falls out of the same rule — a typed head stands, the suggested tail is blanked. The
+    hint's prefix stays as the fallback for a capture with no styling to read, and the fake
+    tmux now renders a suggestion dim under `-e` and bare without it: the test that drops the
+    flag on its way to the fake spends the 64 presses again, which is what makes `-e`
+    load-bearing rather than incidental.
+    *What this leaves open.* **The suggestion could not be reproduced on demand.** Neither
+    2.1.263 nor 2.1.269 offered one across five probe turns on 2026-09-12, so the fixture's
+    styling and non-breaking space are a verbatim live capture of the hint that shares the
+    slot, and only its text is the one captured on 2026-09-06. A paste does replace a
+    suggestion — the 2026-09-06 sighting recorded that typing replaces it and Ctrl-U brings
+    it back, which is the hint's behaviour and the reason the pre-clear was the only thing in
+    the way. Had it appended instead, the box would not begin with the message's first word
+    and `pasteLanded` would refuse it as never-landed rather than submit it in part, so the
+    steer fails loudly either way. **A suggestion is still a way to deny steering**, as a
+    held character was: one the agent cannot choose, and the refusal names the box either
+    way. **The socket is unaffected** — decision 47's peer messages never touch the input
+    box, and whether a suggestion affects a message-started turn is still open there.
+
 46. **Every command that types into or reads a session goes to the pane recorded at launch,
     never to the session (2026-09-06).** `tmuxTarget` built `=pup-<id>:`, a session target,
     which tmux resolves to the session's *active* pane, and the agent holds `$TMUX`: decision

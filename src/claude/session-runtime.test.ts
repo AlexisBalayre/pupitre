@@ -353,6 +353,11 @@ describe('launchWatcher', () => {
  * `FAKE_TMUX_STUCK` is set. Every capture's box line is logged too, so a test
  * can read what the runtime saw before it pressed a key.
  *
+ * With `FAKE_TMUX_SUGGESTION` set, an empty box offers that prompt, the way
+ * Claude Code does once a turn ends: dim under `-e`, and — as real tmux
+ * strips the styling — bare text without it, which is how a capture that
+ * forgot `-e` sees a suggestion as a draft.
+ *
  * Panes are modelled the way tmux resolves `-t`: a pane id names that pane,
  * which must be listed in `panes` or the command fails with tmux's own
  * can't-find-pane line; anything else is a session target and resolves to
@@ -368,9 +373,11 @@ if [ -n "$FAKE_TMUX_DOWN" ]; then
   exit 1
 fi
 target=''
+styled=''
 prev=''
 for arg in "$@"; do
   [ "$prev" = -t ] && target="$arg"
+  [ "$arg" = -e ] && styled=1
   prev="$arg"
 done
 case "$target" in
@@ -394,7 +401,10 @@ case "$1" in
   capture-pane)
     n=$(( $(cat "$FAKE_TMUX_STATE/captures" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$FAKE_TMUX_STATE/captures"
-    if [ ! -f "$box" ]; then line='❯ '
+    if [ ! -f "$box" ]; then
+      if [ -z "$FAKE_TMUX_SUGGESTION" ]; then line='❯ '
+      elif [ -n "$styled" ]; then line="❯ $(printf '\\033')[2m$FAKE_TMUX_SUGGESTION$(printf '\\033')[0m"
+      else line="❯ $FAKE_TMUX_SUGGESTION"; fi
     elif [ "$n" -lt "$FAKE_TMUX_LANDS_AFTER" ]; then line="❯ $(tail -n 1 "$box" | tail -c 12)"
     else
       newlines=$(tr -cd '\\n' < "$box" | wc -c | tr -d ' ')
@@ -406,6 +416,11 @@ case "$1" in
 esac
 `;
 
+/** A tmux whose captures carry no styling, for the test that shows why `-e` is passed. */
+function dropStyling(args: string[]): string[] {
+  return args[0] === 'capture-pane' ? args.filter((arg) => arg !== '-e') : args;
+}
+
 describe('steerPane with a fake tmux on PATH', () => {
   const original = vi.mocked(execFileSync).getMockImplementation();
   let log: string;
@@ -413,6 +428,8 @@ describe('steerPane with a fake tmux on PATH', () => {
   let landsAfter: number;
   let stuck: boolean;
   let down: boolean;
+  let suggestion: string;
+  let stripStyling: boolean;
   let wait: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
@@ -429,24 +446,31 @@ describe('steerPane with a fake tmux on PATH', () => {
     landsAfter = 0;
     stuck = false;
     down = false;
+    suggestion = '';
+    stripStyling = false;
     // Every settle is skipped: what is under test is what the runtime does
     // between settles, and the fake's clock is the capture count.
     wait = vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
     const real = await vi.importActual<typeof import('node:child_process')>('node:child_process');
     vi.mocked(execFileSync).mockImplementation((file, args, options) =>
       file === 'tmux'
-        ? real.execFileSync(file, args as string[], {
-            ...(options as object),
-            env: {
-              ...process.env,
-              PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`,
-              FAKE_TMUX_LOG: log,
-              FAKE_TMUX_STATE: state,
-              FAKE_TMUX_LANDS_AFTER: String(landsAfter),
-              ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
-              ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
+        ? real.execFileSync(
+            file,
+            stripStyling ? dropStyling(args as string[]) : (args as string[]),
+            {
+              ...(options as object),
+              env: {
+                ...process.env,
+                PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`,
+                FAKE_TMUX_LOG: log,
+                FAKE_TMUX_STATE: state,
+                FAKE_TMUX_LANDS_AFTER: String(landsAfter),
+                FAKE_TMUX_SUGGESTION: suggestion,
+                ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
+                ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
+              },
             },
-          })
+          )
         : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
     );
   });
@@ -483,7 +507,7 @@ describe('steerPane with a fake tmux on PATH', () => {
 
     const lines = argvLog();
     expect(lines.slice(0, 4)).toEqual([
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ ',
       'load-buffer -',
       'paste-buffer -d -p -t %3',
@@ -491,15 +515,15 @@ describe('steerPane with a fake tmux on PATH', () => {
     const enterAt = lines.indexOf(ENTER);
     expect(enterAt).toBeGreaterThan(0);
     expect(lines.slice(4, enterAt)).toEqual([
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ k LASTWORDS.',
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ k LASTWORDS.',
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ [Pasted text #1]',
     ]);
     // Submission verified after Enter, exactly as before; no clear was needed.
-    expect(lines.slice(enterAt + 1)).toEqual(['capture-pane -p -t %3', 'capture => ❯ ']);
+    expect(lines.slice(enterAt + 1)).toEqual(['capture-pane -p -e -t %3', 'capture => ❯ ']);
     expect(lines.filter((line) => line === ENTER)).toHaveLength(1);
     expect(lines).not.toContain(CLEAR);
   });
@@ -532,7 +556,7 @@ describe('steerPane with a fake tmux on PATH', () => {
       "Session s-1's pane %3 no longer exists; nothing was sent.",
     );
 
-    expect(argvLog()).toEqual(['capture-pane -p -t %3', 'capture-pane -p -t %3']);
+    expect(argvLog()).toEqual(['capture-pane -p -e -t %3', 'capture-pane -p -e -t %3']);
     expect(typedInto(9)).toBeUndefined();
   });
 
@@ -559,20 +583,56 @@ describe('steerPane with a fake tmux on PATH', () => {
     // the pane after each press, not one press and a hope.
     const lines = argvLog();
     expect(lines.slice(0, 12)).toEqual([
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ row three',
       CLEAR,
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ row two',
       CLEAR,
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ row one',
       CLEAR,
-      'capture-pane -p -t %3',
+      'capture-pane -p -e -t %3',
       'capture => ❯ ',
       'load-buffer -',
     ]);
     expect(lines.indexOf('paste-buffer -d -p -t %3')).toBeGreaterThan(lines.indexOf(CLEAR));
+  });
+
+  it('steers a session showing a suggested prompt without pressing Ctrl-U at all', () => {
+    // The live refusal this fixes: a session that has finished its turn offers
+    // a prompt of its own in the box. It is dim, so it is not a draft, and
+    // Ctrl-U cannot clear it — 64 presses later every steer, handoff and gate
+    // re-steer to an idle session was refused with box-not-cleared.
+    suggestion = 'run the security review on this branch';
+    landsAfter = 4;
+
+    steerPane(LAUNCH_PANE, STEER_3000);
+
+    const lines = argvLog();
+    expect(lines).not.toContain(CLEAR);
+    expect(lines.slice(0, 2)).toEqual([
+      'capture-pane -p -e -t %3',
+      `capture => \u276f \u001b[2m${suggestion}\u001b[0m`,
+    ]);
+    expect(lines.slice(2, 4)).toEqual(['load-buffer -', 'paste-buffer -d -p -t %3']);
+    expect(typedInto(3)).toBe(`${STEER_3000}\nEnter\n`);
+    expect(lines.filter((line) => line === ENTER)).toHaveLength(1);
+  });
+
+  it('would refuse the same steer from a capture with no styling to read', () => {
+    // Why the box is captured with `-e`: without it tmux strips the escapes,
+    // and the suggestion is then a draft like any other. Dropping the flag on
+    // its way to the fake is the whole difference from the test above.
+    suggestion = 'run the security review on this branch';
+    landsAfter = 4;
+    stripStyling = true;
+
+    expect(() => steerPane(LAUNCH_PANE, STEER_3000)).toThrow(
+      'Steer to session s-1 did not land: its input box held text that Ctrl-U could not clear',
+    );
+
+    expect(argvLog().filter((line) => line === CLEAR)).toHaveLength(64);
   });
 
   it('gives a steer one settle per KB, then clears the box and refuses without pressing Enter', () => {
@@ -591,7 +651,7 @@ describe('steerPane with a fake tmux on PATH', () => {
     // ceil(6000 / 1000) settles for the first call, each ending in a look at the box.
     const settles = lines.filter((line) => line === 'capture => ❯ tok tok tok ');
     expect(settles).toHaveLength(6);
-    expect(lines.slice(-3)).toEqual([CLEAR, 'capture-pane -p -t %3', 'capture => ❯ ']);
+    expect(lines.slice(-3)).toEqual([CLEAR, 'capture-pane -p -e -t %3', 'capture => ❯ ']);
   });
 
   it('floors a short steer at five settles, so a late repaint under load is not a refusal', () => {
