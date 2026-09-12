@@ -158,7 +158,7 @@ export function createSession(db: Database, req: NewSessionRequest): string {
     ...req,
     taskId: req.task.id,
     allowOverlap: true,
-    overlapVia: req.allowOverlap ? 'operator' : 'raced',
+    overlapVia: req.allowOverlap ? (req.overlapVia ?? 'operator') : 'raced',
   });
 }
 

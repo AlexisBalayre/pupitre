@@ -229,3 +229,99 @@ describe('parseProfileLayer', () => {
     );
   });
 });
+
+describe('compileConductorProfile', () => {
+  const conductorInput = {
+    base: { name: 'base', conventions: 'correct > simple > readable > fast' },
+    repoPath: '/repo',
+    projectId: 'proj-1',
+    conductorName: 'pup-conductor-proj-1',
+    workerModel: 'opus',
+    userConfigHash: 'user-hash-a',
+    outDir: '/state/conductor/compiled',
+  };
+
+  function runConductorHook(script: string, payload: object): number | null {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-conductor-hook-')));
+    const compiled = ProfileCompiler.compileConductorProfile({ ...conductorInput, outDir: dir });
+    ProfileCompiler.writeCompiledProfile(compiled, dir);
+    return spawnSync('sh', [join(dir, script)], {
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+    }).status;
+  }
+
+  // The context is the operator's loop written down: what the conductor may
+  // run, how it reaches a session by peer name, and that the merge is not its
+  // to make (decision 47).
+  it('tells the conductor its name, the worker model, the peer protocol and what it is refused', () => {
+    const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    expect(compiled.contextMarkdown).toContain('conductor pup-conductor-proj-1');
+    expect(compiled.contextMarkdown).toContain('pup launch <task> --model opus');
+    expect(compiled.contextMarkdown).toContain('SendMessage');
+    expect(compiled.contextMarkdown).toContain('notify_when_idle');
+    expect(compiled.contextMarkdown).toContain('pup steer <session-id> --sent');
+    expect(compiled.contextMarkdown).toContain('Refused to you: `pup merge`, `pup respawn`');
+    expect(compiled.contextMarkdown).toContain('correct > simple > readable > fast');
+    expect(compiled.contextMarkdown).not.toContain('pup session done "<one-line summary>"');
+  });
+
+  it('launches on the default model when no worker model is set', () => {
+    const compiled = ProfileCompiler.compileConductorProfile({
+      ...conductorInput,
+      workerModel: undefined,
+    });
+
+    expect(compiled.contextMarkdown).toContain('`pup launch <task>`');
+    expect(compiled.contextMarkdown).not.toContain('--model');
+  });
+
+  it('wires an edit block and the bash guard, and no scope or event hooks', () => {
+    const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    const preToolUse = compiled.settings.hooks.PreToolUse ?? [];
+    expect(preToolUse.map((e) => e.matcher)).toEqual(['Edit|Write', 'Bash']);
+    expect(preToolUse[0]?.hooks[0]?.command).toContain('edit-block.sh');
+    expect(preToolUse[1]?.hooks[0]?.command).toContain('bash-guard.sh');
+    expect(Object.keys(compiled.settings.hooks)).toEqual(['PreToolUse']);
+    expect(Object.keys(compiled.files).sort()).toEqual([
+      'context.md',
+      'hooks/bash-guard.sh',
+      'hooks/edit-block.sh',
+      'settings.json',
+    ]);
+  });
+
+  it('blocks every edit, whatever the path', () => {
+    expect(
+      runConductorHook('hooks/edit-block.sh', { tool_input: { file_path: '/repo/src/a.ts' } }),
+    ).toBe(2);
+  });
+
+  it('still blocks shell writes into .claude/', () => {
+    expect(
+      runConductorHook('hooks/bash-guard.sh', {
+        tool_input: { command: 'echo "{}" > .claude/settings.json' },
+      }),
+    ).toBe(2);
+    expect(runConductorHook('hooks/bash-guard.sh', { tool_input: { command: 'pup status' } })).toBe(
+      0,
+    );
+  });
+
+  it('rejects a repo path with shell metacharacters at compile time', () => {
+    expect(() =>
+      ProfileCompiler.compileConductorProfile({ ...conductorInput, repoPath: "/repo'; touch /x" }),
+    ).toThrow(InvalidProfileError);
+  });
+
+  it('refuses to compile past the context budget', () => {
+    expect(() =>
+      ProfileCompiler.compileConductorProfile({
+        ...conductorInput,
+        base: { name: 'base', conventions: 'x'.repeat(40_000), contextBudget: 100 },
+      }),
+    ).toThrow(ContextBudgetExceededError);
+  });
+});

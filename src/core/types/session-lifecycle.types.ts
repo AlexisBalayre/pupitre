@@ -19,10 +19,11 @@ export interface LaunchTaskRequest {
   allowOverlap?: boolean;
   /**
    * Who answers for an allowed overlap in the `scope_overlap` record: the
-   * operator who passed the flag, or nobody — `createSession` admitted the
-   * task before the holder existed and a refusal now would orphan the row.
+   * operator or the conductor who passed the flag, or nobody — `createSession`
+   * admitted the task before the holder existed and a refusal now would
+   * orphan the row.
    */
-  overlapVia?: 'operator' | 'raced';
+  overlapVia?: 'operator' | 'conductor' | 'raced';
 }
 
 export interface NewSessionRequest extends PlanTaskRequest {
@@ -30,4 +31,6 @@ export interface NewSessionRequest extends PlanTaskRequest {
   claudeUserDir: string;
   model?: string;
   allowOverlap?: boolean;
+  /** Who passed `--allow-overlap`; the operator when unset. */
+  overlapVia?: 'operator' | 'conductor';
 }

@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   project_id TEXT NOT NULL REFERENCES projects(id),
   spec TEXT NOT NULL,
   role TEXT,
-  origin TEXT NOT NULL DEFAULT 'human' CHECK (origin IN ('human', 'audit', 'rejection')),
+  origin TEXT NOT NULL DEFAULT 'human' CHECK (origin IN ('human', 'audit', 'rejection', 'conductor')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -134,7 +134,62 @@ const MIGRATIONS: { table: string; column: string; kind: 'add' | 'drop'; ddl: st
   },
 ];
 
+/**
+ * The origin a conductor-authored task is recorded under (decision 47). A
+ * store created before it existed carries a CHECK that refuses it, and SQLite
+ * cannot alter a CHECK in place, so the table is rebuilt once: copied under a
+ * new name with the current constraint, swapped in, rows and ids intact. The
+ * marker is what the rebuild looks for in the stored table SQL.
+ */
+const TASKS_ORIGIN_MARKER = "'conductor'";
+const TASKS_REBUILD = `
+BEGIN;
+CREATE TABLE tasks_rebuilt (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  spec TEXT NOT NULL,
+  role TEXT,
+  origin TEXT NOT NULL DEFAULT 'human' CHECK (origin IN ('human', 'audit', 'rejection', 'conductor')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO tasks_rebuilt (id, project_id, spec, role, origin, created_at)
+  SELECT id, project_id, spec, role, origin, created_at FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_rebuilt RENAME TO tasks;
+COMMIT;
+`;
+
+/**
+ * Rebuild `tasks` when its stored CHECK predates the conductor origin. Foreign
+ * keys are off for the swap — `sessions.task_id` points at the table by name,
+ * and the name is gone between the drop and the rename — and back on after,
+ * where `foreign_key_check` is empty because every row was copied. Tolerated
+ * like the drop migration: a lock held by a concurrent pup fails the rebuild,
+ * and the next open retries it, while a throw here would take every command.
+ */
+function rebuildTasksForConductorOrigin(db: Database.Database): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
+    .get() as { sql: string } | undefined;
+  if (!row || row.sql.includes(TASKS_ORIGIN_MARKER)) return;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec(TASKS_REBUILD);
+  } catch {
+    // The rollback can fail on the same lock the commit did; the transaction
+    // dies with the connection either way, and the tolerance must hold.
+    try {
+      if (db.inTransaction) db.exec('ROLLBACK');
+    } catch {
+      // Retried on the next open.
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
 function applyMigrations(db: Database.Database): void {
+  rebuildTasksForConductorOrigin(db);
   for (const migration of MIGRATIONS) {
     const columns = db.pragma(`table_info(${migration.table})`) as { name: string }[];
     const present = columns.some((c) => c.name === migration.column);

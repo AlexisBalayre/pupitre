@@ -18,6 +18,14 @@ export interface LaunchOptions {
   model?: string;
 }
 
+export interface ConductorLaunchOptions {
+  projectId: string;
+  /** The main checkout: the conductor reads the repo, edits nothing, and launches from here. */
+  repoPath: string;
+  settingsPath: string;
+  model?: string;
+}
+
 /**
  * The pane a session was launched into. Every later command is addressed to
  * `paneId`, never to the session: a session target resolves to the session's
@@ -69,6 +77,8 @@ const SUBMIT_VERIFY_MS = 1000;
  */
 const INTERRUPT_SETTLE_MS = 700;
 const SUBMIT_RETRY_LIMIT = 2;
+/** Columns and rows a detached window opens at, so Claude Code's UI has room to fold a paste. */
+const WINDOW_SIZE = { x: 220, y: 50 };
 
 /** What tmux 3.7b prints when the pane, or the whole server, is gone. */
 const PANE_GONE = /can't find pane|error connecting to|no server running/;
@@ -256,10 +266,15 @@ function mainRepoRoot(worktreePath: string): string[] {
  * outranks allow ACROSS scopes (verified on 2.1.218), so the only way to keep a
  * repo's `.claude/settings.json` from wedging a session on a prompt is to not
  * load it. The compiled `--settings` file still applies (separate source).
+ * The display name is the tmux name: it is what a peer session sees in
+ * ListAgents and addresses with SendMessage, so the conductor reaches a
+ * session by the same `pup-<id>` the operator attaches to (decision 47).
  */
 export function launchArgs(opts: LaunchOptions): string[] {
   return [
     ...(opts.model ? ['--model', opts.model] : []),
+    '--name',
+    tmuxName(opts.sessionId),
     '--dangerously-skip-permissions',
     '--settings',
     opts.settingsPath,
@@ -278,7 +293,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
   const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.worktreePath,
-    window: { x: 220, y: 50 },
+    window: WINDOW_SIZE,
     env: {
       PUP_SESSION_ID: opts.sessionId,
       // Absolute path to this CLI, so `pup session done` works even when `pup`
@@ -288,6 +303,71 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     command: [claudeBin, ...launchArgs(opts)],
   });
   return { sessionId: opts.sessionId, paneId };
+}
+
+/** The conductor's id, one per project: its tmux name and peer name are `pup-` + this. */
+function conductorId(repoProjectId: string): string {
+  return `conductor-${repoProjectId}`;
+}
+
+/** The name the conductor's window and its peer entry both carry. */
+export function conductorName(repoProjectId: string): string {
+  return tmuxName(conductorId(repoProjectId));
+}
+
+/**
+ * Open the conductor's window in the repo's main checkout and return its
+ * pane. Same launch as a session — bypass permissions, compiled settings,
+ * user setting sources, a peer name — but `PUP_CONDUCTOR` in place of
+ * `PUP_SESSION_ID`: the conductor is not a session (no task, worktree or row)
+ * and the guards tell the two apart by which variable is set (decision 47).
+ * Tmux's `-e` sets the new session's environment, not the server's, so the
+ * variable does not leak into the sessions the conductor launches from it.
+ */
+export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
+  preseedTrust(opts.repoPath);
+  const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
+  const sessionId = conductorId(opts.projectId);
+  const paneId = spawnDetachedSession(tmuxName(sessionId), {
+    cwd: opts.repoPath,
+    window: WINDOW_SIZE,
+    env: {
+      PUP_CONDUCTOR: opts.projectId,
+      PUP_BIN: process.argv[1] ?? 'pup',
+    },
+    command: [
+      claudeBin,
+      ...launchArgs({
+        sessionId,
+        worktreePath: opts.repoPath,
+        settingsPath: opts.settingsPath,
+        model: opts.model,
+      }),
+    ],
+  });
+  return { sessionId, paneId };
+}
+
+/**
+ * Kill the conductor's window by its pinned name. No pane is recorded for it
+ * — nothing types into the conductor after its kickoff — so a rename from
+ * inside would leave it running, as decision 46 notes for a name-only kill;
+ * the conductor is the operator's delegate, not a worker to contain.
+ */
+export function killConductor(repoProjectId: string): void {
+  killIfExists(conductorName(repoProjectId));
+}
+
+/** Whether a window wearing the conductor's name exists; false when no server runs. */
+export function hasConductorWindow(repoProjectId: string): boolean {
+  try {
+    execFileSync('tmux', ['has-session', '-t', pinned(conductorName(repoProjectId))], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

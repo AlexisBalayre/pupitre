@@ -113,10 +113,13 @@ function timelineDatum(event: EventRow) {
       datum.body = safeHttpUrl(payload.prUrl);
       break;
     }
-    case 'steer':
+    case 'steer': {
+      // A message steer names its sender; the timeline is where that is read.
+      const by = typeof payload.by === 'string' ? `, by ${payload.by}` : '';
       datum.title =
-        typeof payload.kind === 'string' ? displayText(`steer (${payload.kind})`) : 'steer';
+        typeof payload.kind === 'string' ? displayText(`steer (${payload.kind}${by})`) : 'steer';
       break;
+    }
     case 'session_done':
       datum.title = 'done';
       datum.body = typeof payload.summary === 'string' ? displayText(payload.summary) : null;

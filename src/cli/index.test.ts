@@ -32,8 +32,14 @@ vi.mock('../claude/session-runtime.service.js', () => ({
       this.sessionId = sessionId;
     }
   },
+  conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
+}));
+vi.mock('../core/conductor.service.js', () => ({
+  isConductorRunning: vi.fn(() => false),
+  startConductor: vi.fn(),
+  stopConductor: vi.fn(),
 }));
 vi.mock('../core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
@@ -62,6 +68,7 @@ import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
+import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -285,6 +292,15 @@ describe('CLI commands', () => {
 
     // `pup status` is where the operator looks to decide what to do next, and
     // planned work is an answer to that question (decision 41).
+    it('names the conductor first when its window is up', () => {
+      useCwd(initRepo());
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs[0]).toMatch(/^conductor running \(tmux: pup-conductor-[0-9a-f]{12}\)$/);
+    });
+
     it('lists a planned task under `planned`, with its goal', () => {
       const repo = initRepo();
       useCwd(repo);
@@ -567,6 +583,30 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).toContain('t-1');
       expect(logs.join('\n')).toContain('sharpen the thing');
       expect(logs.join('\n')).toContain('src/**');
+      expect(logs.join('\n')).not.toContain('(from');
+    });
+
+    // A spec an agent wrote is one the operator never typed; the listing the
+    // operator launches from says so (decision 47).
+    it('marks a task the conductor authored, in the backlog and in status', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject(repo);
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-c',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({ goal: 'fold the guards', scopeIn: ['src/**'] }),
+        origin: 'conductor',
+      });
+      db.close();
+
+      buildProgram().parse(['plan'], { from: 'user' });
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const planned = logs.filter((line) => line.includes('t-c'));
+      expect(planned).toHaveLength(2);
+      for (const line of planned) expect(line).toContain('(from conductor)');
     });
 
     it('drops a planned task, and reports one it cannot drop', () => {
@@ -775,6 +815,252 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('debt close', () => {
+    // Retiring an entry erases the operator's own overdue-debt reminder; no
+    // session closes one (decisions 30, 47).
+    it('refuses a calling session and leaves the entry open', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      const id = seedLedgerEntry(repo);
+
+      buildProgram().parse(['debt', 'close', String(id)], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('operator-only');
+      expect(process.exitCode).toBe(1);
+      const { db } = resolveProject(repo);
+      expect(db.prepare('SELECT status FROM ledger_entries WHERE id = ?').get(id)).toEqual({
+        status: 'open',
+      });
+    });
+  });
+
+  describe('conductor', () => {
+    it('starts the conductor with its own model and the model its sessions get', () => {
+      useCwd(initRepo());
+      vi.mocked(startConductor).mockReturnValue({
+        name: 'pup-conductor-p1',
+        paneId: '%3',
+        delivered: true,
+      });
+
+      buildProgram().parse(['conductor', '--model', 'fable', '--worker-model', 'opus'], {
+        from: 'user',
+      });
+
+      expect(firstCall(startConductor)[0]).toMatchObject({
+        base: DEFAULT_BASE_PROFILE,
+        model: 'fable',
+        workerModel: 'opus',
+      });
+      expect(logs).toEqual([
+        'Conductor running (tmux: pup-conductor-p1).',
+        'Attach with: tmux attach -t pup-conductor-p1',
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('stops the conductor', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['conductor', 'stop'], { from: 'user' });
+
+      expect(stopConductor).toHaveBeenCalledTimes(1);
+      expect(startConductor).not.toHaveBeenCalled();
+      expect(logs).toContain('Conductor stopped.');
+    });
+
+    it('rejects an unknown action', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['conductor', 'restart'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('Unknown conductor action');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rolls the launch back when the kickoff never lands whole', () => {
+      useCwd(initRepo());
+      vi.mocked(startConductor).mockImplementation(() => {
+        throw new SteerNotDeliveredError('conductor-p1', 900);
+      });
+
+      buildProgram().parse(['conductor'], { from: 'user' });
+
+      expect(stopConductor).toHaveBeenCalledTimes(1);
+      expect(errors[0]).toContain('did not land');
+      expect(errors[1]).toContain('rolled back');
+      expect(process.exitCode).toBe(1);
+    });
+
+    // A window with no context is a bypass-permissions agent in the main
+    // checkout that has read none of its tier — killed, never left up.
+    it('kills the window and exits 1 when it never became ready to take its context', () => {
+      useCwd(initRepo());
+      vi.mocked(startConductor).mockReturnValue({
+        name: 'pup-conductor-p1',
+        paneId: '%3',
+        delivered: false,
+      });
+
+      buildProgram().parse(['conductor'], { from: 'user' });
+
+      expect(stopConductor).toHaveBeenCalledTimes(1);
+      expect(errors.join('\n')).toContain('the window was killed');
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The conductor holds every operator power but the merge, so a session or
+    // a conductor minting one would be a session launching sessions under
+    // another name (decision 47).
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1', 'start'],
+      ['a session', 'PUP_SESSION_ID', 's1', 'stop'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1', 'start'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1', 'stop'],
+    ])('refuses %s calling `conductor %s`', (_who, variable, value, verb) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['conductor', verb], { from: 'user' });
+
+      expect(startConductor).not.toHaveBeenCalled();
+      expect(stopConductor).not.toHaveBeenCalled();
+      expect(errors).toEqual([`\`pup conductor ${verb}\` is operator-only.`]);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // The conductor is the operator's delegate for planning, launching, steering
+  // and killing, refused the merge, the respawn and other projects, and what
+  // it plans is recorded as its own (decision 47).
+  describe('a calling conductor', () => {
+    beforeEach(() => {
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+    });
+
+    it('launches a task, and answers for an overlap it waves through', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
+
+      expect(firstCall(launchTask)[1]).toMatchObject({
+        taskId: 't-abc',
+        allowOverlap: true,
+        overlapVia: 'conductor',
+      });
+      expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
+    });
+
+    it('plans a task recorded as authored by the conductor, not the operator', () => {
+      useCwd(initRepo());
+      vi.mocked(planTask).mockReturnValue('t-1');
+
+      buildProgram().parse(['plan', 'add', 'fix the thing', '--scope', 'src/**'], {
+        from: 'user',
+      });
+
+      expect(firstCall(planTask)[1]).toMatchObject({ origin: 'conductor' });
+      expect(errors).toEqual([]);
+    });
+
+    it('runs `pup new` with the same attribution', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockReturnValue('t-1-0');
+
+      buildProgram().parse(['new', 'fix the thing', '--scope', 'src/**', '--allow-overlap'], {
+        from: 'user',
+      });
+
+      expect(firstCall(createSession)[1]).toMatchObject({
+        origin: 'conductor',
+        overlapVia: 'conductor',
+        allowOverlap: true,
+      });
+    });
+
+    it('kills a session', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['kill', 's1'], { from: 'user' });
+
+      expect(killSession).toHaveBeenCalledTimes(1);
+      expect(errors).toEqual([]);
+    });
+
+    // The hard respawn kicks the session off on a `context.md` the conductor's
+    // shell can rewrite: the authored kickoff `pup respawn` refuses it.
+    it('is refused the hard respawn', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['kill', 's1', '--respawn'], { from: 'user' });
+
+      expect(hardRespawnSession).not.toHaveBeenCalled();
+      expect(killSession).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup kill --respawn` is operator-only; the conductor kills, the operator respawns.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('is refused closing a ledger entry', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const id = seedLedgerEntry(repo);
+
+      buildProgram().parse(['debt', 'close', String(id)], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup debt close` is operator-only; only the operator retires a ledger entry.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      const { db } = resolveProject(repo);
+      expect(db.prepare('SELECT status FROM ledger_entries WHERE id = ?').get(id)).toEqual({
+        status: 'open',
+      });
+    });
+
+    it('is refused the merge, and told the operator merges', () => {
+      useCwd(initRepoWithAdapter());
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      expect(runMergeGate).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('is refused the respawn', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(respawnSession).not.toHaveBeenCalled();
+      expect(requestHandoff).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('is refused another project', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const other = registerProject(initRepo());
+
+      expect(() => buildProgram().parse(['--project', other, 'status'], { from: 'user' })).toThrow(
+        'operator-only',
+      );
+    });
+  });
+
   describe('new', () => {
     it('requires --scope', () => {
       useCwd(initRepo());
@@ -925,6 +1211,37 @@ describe('CLI commands', () => {
         .all() as { type: string; payload: string }[];
       expect(events).toContainEqual({ type: 'steer', payload: JSON.stringify({ kind: 'manual' }) });
     });
+
+    // A message over the peer socket lands whole and never touches the input
+    // box, so nothing is typed; the record is what the report and the
+    // last-steer queries read, and it names who sent it (decision 47).
+    it.each([
+      ['operator', '', ''],
+      ['conductor', 'p1', ''],
+      // A session pup can identify is named as one, whatever else it exports.
+      ['session:s1', 'p1', 's1'],
+    ])(
+      'records a steer already sent by message, by the %s, and types nothing',
+      (by, conductor, session) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        vi.stubEnv('PUP_CONDUCTOR', conductor);
+        vi.stubEnv('PUP_SESSION_ID', session);
+
+        buildProgram().parse(['steer', 's1', 'do X instead', '--sent'], { from: 'user' });
+
+        expect(steerSession).not.toHaveBeenCalled();
+        expect(logs).toContain('Recorded a message steer to session s1.');
+        const { db } = resolveProject(repo);
+        const events = db
+          .prepare("SELECT type, payload FROM events WHERE session_id = 's1'")
+          .all() as { type: string; payload: string }[];
+        expect(events).toEqual([
+          { type: 'steer', payload: JSON.stringify({ kind: 'message', by }) },
+        ]);
+      },
+    );
 
     it('refuses a terminal session', () => {
       const repo = initRepo();

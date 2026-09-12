@@ -1452,6 +1452,113 @@ changes back into those docs is pending.
     without it a rename leaves the window running. **Denial of steering** stands as
     decision 45 left it.
 
+47. **A conductor session is the operator's delegate for everything but the merge, and every
+    session is addressable by its peer name (2026-09-12).** The loop the operator runs by hand
+    — `pup status`, launch a task, wait for the session to go idle, steer it with evidence,
+    read the branch, hand it to review — is one a model can run, and on a larger model than the
+    sessions it drives (Fable conducting Opus sessions). Subagents inside one session were the
+    alternative and lose what a session has: its own worktree, branch, scope hook, events and
+    gate. So `pup conductor [--model <m>] [--worker-model <m>]` opens one Claude Code window
+    per project, the conductor, and `pup conductor stop` closes it.
+    *Every session launches with `--name pup-<id>`.* Claude Code's cross-session messaging
+    (ListAgents, SendMessage; on by default since 2.1.224) lists a session under its display
+    name, so the name is the tmux name: the id `pup status` prints and the operator attaches
+    to is the one a peer addresses. The peer socket is the better steer transport — a message
+    lands whole and queues until the current tool call ends, where the input box has decision
+    45's paste cliff and the dim suggested prompt that refuses every post-turn steer — and
+    `notify_when_idle` is a one-shot "finished its turn" where the operator polled
+    `events.jsonl`. pupitre never speaks the socket protocol, which is undocumented; the
+    conductor does, with its own tools. Decision 1 stands: tmux is pupitre's transport, and
+    `pup steer` still types.
+    *What the conductor is.* Not a session: no task, worktree, branch or row. An interactive
+    `claude` in tmux named `pup-conductor-<project id>`, cwd the main checkout, bypass
+    permissions and user setting sources like a session, and a compiled profile under
+    `~/.pupitre/<id>/conductor/compiled` whose PreToolUse hooks refuse every Edit and Write
+    and guard `.claude/` in shell — no scope files, no event hook, since it has no scope to
+    enforce and no row for events to land on. `PUP_CONDUCTOR=<project id>` is exported in
+    place of `PUP_SESSION_ID`; the guards tell the two apart by which variable is set, and
+    tmux's `-e` sets the window's environment, not the server's, so the variable does not
+    reach the sessions it launches. Its kickoff is a compiled context: the commands it may
+    run, the peer protocol, the refusals, and the protocol — one session per backlog task,
+    subscribe for idle, steer with the exact unmet criterion, report and stop.
+    *The tier.* A session is refused `plan add|drop|edit`, `new`, `launch`, `kill`, `merge`,
+    `respawn` and `--project` (decisions 40, 42, 43, 44). The conductor is allowed the first
+    four and `steer`, `interrupt`, `status`, `review`, `debt`, `log`; it is refused `merge`,
+    `respawn`, `kill --respawn`, `debt close`, `--project` and `pup conductor` itself. The
+    operator has everything. The merge stays with the operator because the verdict moves a
+    branch onto main and the human is the reviewer — the product is the operator's
+    understanding, not throughput, and a conductor that merged would be a session merging
+    sessions under another name. The respawn stays because its kickoff quotes a handoff any
+    window with a shell in the store can write (decision 44) — and so does `kill --respawn`,
+    whose kickoff is the `context.md` under the store's compiled dir, the same directory; the
+    security review found the plain `kill` guard covering it and the conductor walking through.
+    `debt close` was guarded for nobody; a session or a conductor retiring an entry erases the
+    operator's own overdue-debt reminder, so it is operator-only now for both. A session or a
+    conductor minting a conductor is refused for the same reason a session cannot launch: it
+    would hold every launch and kill under a name that is not its own.
+    *Attribution, not prohibition.* Decision 40 refused a session-authored spec because it
+    would carry `origin='human'` — the operator's attribution on a prompt the operator never
+    wrote. A conductor-authored task carries `origin='conductor'`: the CHECK on `tasks.origin`
+    gains the value, and a store from before it is rebuilt once on open — `tasks_rebuilt`
+    with the current constraint, rows and ids copied, the swap done with foreign keys off
+    because `sessions.task_id` names the table by a name that is gone between the drop and
+    the rename, and `foreign_key_check` empty after (verified on better-sqlite3 13 before the
+    migration was written). The rebuild is tolerated like the drop migration: a lock fails it
+    and the next open retries. An overlap the conductor waves through is recorded
+    `via: 'conductor'`, so `scope_overlap` names who answered for it. A steer delivered by
+    message never touches `pup`, so `pup steer <session> --sent "<message>"` records it —
+    `{kind: 'message', by}`, nothing typed, where `by` is `session:<id>` for a session pup can
+    identify before it is the conductor's or the operator's word (decision 44's order: a
+    session that exports `PUP_CONDUCTOR` is still the session) — because without it the
+    dossier's timeline showed a session corrected by nobody, and `isHandoffReady`'s last-steer
+    query would not see a request that went by message; the dossier prints the sender. The
+    origin is shown where the operator decides, not only in the report: `pup plan` and the
+    `planned` rows of `pup status` carry `(from conductor)`, since the loop the operator runs
+    is status, review, merge, and the report is none of those.
+    *Verified.* The runtime spawns the conductor's window with the name, `PUP_CONDUCTOR`, no
+    `PUP_SESSION_ID`, and the checkout as cwd; the compiled hooks are executed under `sh` and
+    the edit block refuses every path; the CLI suite drives each tier through every guard — a
+    session and a conductor are refused `pup conductor`, the conductor launches with
+    `overlapVia`, plans with `origin`, kills, and is refused the merge, the respawn and
+    `--project` with a message that says who merges; the migration runs against a store
+    rebuilt to the old CHECK with a session referencing its task, and the row, the foreign
+    key and idempotence are asserted.
+    *What this leaves open.* **The conductor is the highest-privilege agent in the system.**
+    Bypass permissions in the main checkout: the edit hook stops Edit and Write, the bash
+    guard stops shell writes into `.claude/`, and nothing stops `git commit` or `git push`
+    from the root — one Bash call. Remote branch protection and a sandbox are the
+    instruments, not another grep. **Any session can reach the conductor, by two channels.**
+    The peer socket namespace is per OS user, so a session's SendMessage into the conductor
+    is one injection path; the tier bounds what it can be talked into — a plan, a launch, a
+    kill, each recorded as the conductor's own, never a merge — and the context says a
+    session's message is a report. Claude Code's `crossSessionInbound: hold` on the
+    conductor's settings would put the operator on every such message, at the cost of the
+    automation; not set, and worth a flag if the injection is ever seen live. The stronger
+    channel is tmux itself: the conductor's window is on the default server every session
+    holds `$TMUX` for, under a name any session can compute from the repo path, so one
+    `tmux send-keys -t =pup-conductor-<id>:` from a session lands in the conductor's input box
+    as if the operator had typed it — no "report, not instruction" rule applies to a keystroke
+    — and `capture-pane` reads its whole transcript. The close is a separate tmux socket for
+    the conductor (`-L`), which has to be threaded through spawn, kill, probe and the kickoff's
+    paste path, and `pup launch` run from inside it must then put sessions back on the default
+    socket, since `$TMUX` in the conductor's pane would select its own. Its own change,
+    planned in the backlog; until it lands, the conductor is as reachable by a session as a
+    sibling session is (decision 46's cross-session moves), with more to lose. **`--sent` is
+    the caller's word past what pup can see.** A shell that unsets both variables writes the
+    event as the operator; the record is honest when the caller is, decision 27's best
+    effort. **Conductor-authored scope is unconstrained.** `assertPlannableSpec` refuses an
+    empty scope and control characters, nothing else, so a conductor talked into `--scope
+    '**/*'` launches a session whose hook allows every path but `.claude/`; the origin marker
+    is what the operator has, and a scope floor for agent-authored specs is a design question
+    left open. **Killed by name.** No pane is pinned
+    for the conductor (nothing types into it after its kickoff), so `pup conductor stop` is
+    the name-only kill decision 46 describes, and a rename from inside survives it. **Open as
+    before:** `pup audit` and `--sweep` are reachable by the conductor as by a session
+    (backlog t-mtnhzcng). **Unverified live:** whether a message that starts a new turn fires
+    the Stop and PostToolUse hooks the way a typed prompt does — decision 2's activity
+    classification may lag a message-driven turn — and whether the dim suggested prompt
+    affects a message-started turn at all. The first live conductor run answers both.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.
