@@ -1598,6 +1598,31 @@ changes back into those docs is pending.
     the Stop and PostToolUse hooks the way a typed prompt does — decision 2's activity
     classification may lag a message-driven turn — and whether the dim suggested prompt
     affects a message-started turn at all. The first live conductor run answers both.
+    *Addendum, 2026-09-12: the conductor's own duplication, folded.* Three merges landing the
+    conductor and the pane pin took duplication 74 -> 88 -> 106 -> 124, each increase accepted
+    as debt or merged outside the gate (ledger #10, #12). The clones were the shapes this
+    decision multiplied, not accidents: every tier guard is the same
+    `console.error` + `process.exitCode = 1` + `return`, every launch path the same
+    roll-back-a-refused-kickoff-then-print-the-window tail, and the conductor's window the same
+    trust-resolve-spawn as a session's. So each is one place now — `refuse(message)` for every
+    refusal, `launchOrRefuse` + `reportLaunched` for `new`, `launch` and `--sweep`, and
+    `spawnClaudeWindow` for both windows, whose only difference is the cwd and the one variable
+    that names the caller. `rollBackRefusedLaunch` keeps the order both rollbacks need — the
+    refusal first, so an `undo` that throws cannot hide why the launch failed — and takes the
+    undo and its sentence from the caller, because a session's rollback kills a session and the
+    conductor's kills a window. Every message is unchanged, so no test moved with them.
+    *What did not get folded, and why.* `startConductor` and `startSession` share a
+    compile-write-launch-kickoff shape, but `startSession` interleaves the worktree, the branch
+    and three store writes between those steps in an order it needs (decision 40), and lives
+    outside this task's scope; a helper spanning them would be a shape, not a behaviour. The
+    measured clone the gate had actually flagged there was between the production
+    `new-session` argv and the three test sites spelling it out, which is now one `spawnPrefix`
+    helper in the test. *Verified.* The duplication capability the merge gate runs, pointed at
+    the branch, reports 62 duplicated lines in 6 blocks against main's 124 in 11; every block
+    left is outside this change. The full suite passes unchanged but for that argv expectation
+    and one stub: `PUP_CONDUCTOR` now joins `PUP_SESSION_ID` at `''` in the CLI suite's
+    `beforeEach`, because a suite run from inside the conductor's own tmux inherits the
+    variable and 37 project-resolution tests then fail on a guard that is working correctly.
 
 ## Implementation notes
 

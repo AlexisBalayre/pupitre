@@ -210,13 +210,11 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 function resolveLiveSession(db: Database, session: string, verb: string): SessionRow | undefined {
   const row = getSession(db, session);
   if (!row) {
-    console.error(`No session ${session}.`);
-    process.exitCode = 1;
+    refuse(`No session ${session}.`);
     return undefined;
   }
   if (isTerminal(row.state)) {
-    console.error(`Session ${session} is ${row.state}; nothing to ${verb}.`);
-    process.exitCode = 1;
+    refuse(`Session ${session} is ${row.state}; nothing to ${verb}.`);
     return undefined;
   }
   return row;
@@ -253,21 +251,16 @@ const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
 /**
- * A launch whose kickoff was refused has already claimed its task, inserted
- * its row as `running` and opened its window — `startSession` throws after
- * all three. Left as is, the task reads as claimed (a re-launch raises
- * TaskAlreadyClaimedError) and the window sits empty. Killing the session
- * undoes it: the window goes, the row is `killed`, and the task returns to
- * the backlog (decision 40), where the task now sits — so the retry is always
- * `pup launch <task>`, for a sweep too: `createSession` had already planned the
- * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
- * Prints the refusal, the rollback, and how to retry; sets the exit code.
+ * Undo a launch whose kickoff was refused, in the order both refused launches
+ * need: the refusal first — an `undo` that throws must not hide why the launch
+ * failed — then the window, then the line naming the rollback and the retry.
+ * `undo` and that line are the callers' own: a session's launch kills a
+ * session, the conductor's kills a window, and each says so in its own words.
  */
-function rollBackRefusedLaunch(db: Database, error: RefusedSteer, retry: string): void {
-  // The refusal first: a kill that throws must not hide why the launch failed.
+function rollBackRefusedLaunch(error: RefusedSteer, undo: () => void, rolledBack: string): void {
   console.error(error.message);
-  killSession(db, error.sessionId);
-  console.error(`Launch rolled back (session ${error.sessionId} killed). Re-run \`${retry}\`.`);
+  undo();
+  console.error(rolledBack);
   process.exitCode = 1;
 }
 
@@ -281,6 +274,65 @@ type RefusedSteer = SteerNotDeliveredError | SessionPaneMissingError;
 
 function isRefusedSteer(error: unknown): error is RefusedSteer {
   return error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError;
+}
+
+/**
+ * Refuse the command the caller may not run, or the one it asked for that
+ * cannot be done: the reason on stderr and a failing exit code, never a throw.
+ * Every guard below reads `return refuse(…)`, so a refusal is one line and
+ * cannot silently forget the exit code that makes it a refusal.
+ */
+function refuse(message: string): void {
+  console.error(message);
+  process.exitCode = 1;
+}
+
+/** An error class a launch answers for rather than crashes on. */
+type ExpectedLaunchError = new (...args: never[]) => Error;
+
+/**
+ * The tail every command that opens a session shares. A kickoff the session
+ * refused is rolled back: the launch has already claimed its task, inserted
+ * its row as `running` and opened its window — `startSession` throws after all
+ * three — so left as is the task reads as claimed (a re-launch raises
+ * TaskAlreadyClaimedError) and the window sits empty. Killing the session
+ * undoes it: the window goes, the row is `killed`, and the task returns to the
+ * backlog (decision 40), where it now sits — so the retry is always
+ * `pup launch <task>`, for a sweep too: `createSession` had already planned the
+ * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
+ * An error the caller could not have avoided — the scope it collides with, a
+ * task already claimed — is printed as a refusal; anything else is a bug and
+ * is rethrown, so widening one caller's `expected` never widens another's.
+ * Returns the session id, or undefined once a refusal has been printed.
+ */
+function launchOrRefuse(
+  db: Database,
+  taskId: string,
+  expected: readonly ExpectedLaunchError[],
+  start: () => string,
+): string | undefined {
+  try {
+    return start();
+  } catch (error) {
+    if (isRefusedSteer(error)) {
+      const { sessionId } = error;
+      rollBackRefusedLaunch(
+        error,
+        () => killSession(db, sessionId),
+        `Launch rolled back (session ${sessionId} killed). Re-run \`pup launch ${taskId}\`.`,
+      );
+      return undefined;
+    }
+    if (!expected.some((type) => error instanceof type)) throw error;
+    refuse((error as Error).message);
+    return undefined;
+  }
+}
+
+/** How every launch reports the window it opened. */
+function reportLaunched(sessionId: string, what = 'session'): void {
+  console.log(`Launched ${what} ${sessionId} (tmux: pup-${sessionId}).`);
+  console.log(`Attach with: tmux attach -t pup-${sessionId}`);
 }
 
 /**
@@ -350,19 +402,15 @@ function originMarker(row: TaskRow): string {
 function ownSession(db: Database, command: string): string | undefined {
   const declared = process.env.PUP_SESSION_ID;
   if (!declared) {
-    console.error(
-      `pup session ${command} must run inside a Pupitre session (PUP_SESSION_ID unset).`,
-    );
-    process.exitCode = 1;
+    refuse(`pup session ${command} must run inside a Pupitre session (PUP_SESSION_ID unset).`);
     return undefined;
   }
   if (!getSession(db, declared)) {
     // The one message here that prints a value the store did not validate; a
     // session sets the variable, so it reaches the terminal by decision 29's rule.
-    console.error(
+    refuse(
       `pup session ${command}: PUP_SESSION_ID names no session (${sanitizeReason(declared)}).`,
     );
-    process.exitCode = 1;
     return undefined;
   }
   const enclosing = findSessionByWorktree(db, process.cwd());
@@ -370,8 +418,7 @@ function ownSession(db: Database, command: string): string | undefined {
     const where = enclosing
       ? `this worktree belongs to ${enclosing.id}, not ${declared}`
       : `this directory is not inside ${declared}'s worktree`;
-    console.error(`\`pup session ${command}\` reports only its own session; ${where}.`);
-    process.exitCode = 1;
+    refuse(`\`pup session ${command}\` reports only its own session; ${where}.`);
     return undefined;
   }
   return declared;
@@ -457,9 +504,7 @@ export function buildProgram(): Command {
       // the hook allowlist the gate audits against, and would also mint itself a
       // fresh session past decision 7's reject cap (decisions 26, 40).
       if (callingSession(db)) {
-        console.error('`pup new` is operator-only; sessions cannot author task specs.');
-        process.exitCode = 1;
-        return;
+        return refuse('`pup new` is operator-only; sessions cannot author task specs.');
       }
       const task: TaskSpec = {
         id: `t-${Date.now().toString(36)}` as TaskId,
@@ -468,9 +513,8 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
-      let sessionId: string;
-      try {
-        sessionId = createSession(db, {
+      const sessionId = launchOrRefuse(db, task.id, [ScopeConflictError], () =>
+        createSession(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
           task,
@@ -478,19 +522,10 @@ export function buildProgram(): Command {
           model: opts.model as string | undefined,
           allowOverlap: opts.allowOverlap === true,
           ...conductorAttribution(),
-        });
-      } catch (error) {
-        if (isRefusedSteer(error)) {
-          rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
-          return;
-        }
-        if (!(error instanceof ScopeConflictError)) throw error;
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
-      }
-      console.log(`Launched session ${sessionId} (tmux: pup-${sessionId}).`);
-      console.log(`Attach with: tmux attach -t pup-${sessionId}`);
+        }),
+      );
+      if (sessionId === undefined) return;
+      reportLaunched(sessionId);
     });
 
   program
@@ -508,9 +543,7 @@ export function buildProgram(): Command {
       // gate audits against, so a session authoring one is prompt injection
       // with the operator's attribution on it (decision 26's rule, decision 40).
       if (verb !== 'list' && callingSession(db)) {
-        console.error(`\`pup plan ${verb}\` is operator-only; sessions cannot author task specs.`);
-        process.exitCode = 1;
-        return;
+        return refuse(`\`pup plan ${verb}\` is operator-only; sessions cannot author task specs.`);
       }
       switch (verb) {
         case 'list': {
@@ -528,9 +561,7 @@ export function buildProgram(): Command {
         }
         case 'add': {
           if (!target || !opts.scope) {
-            console.error('Usage: pup plan add "<goal>" --scope <glob...>');
-            process.exitCode = 1;
-            return;
+            return refuse('Usage: pup plan add "<goal>" --scope <glob...>');
           }
           let id: string;
           try {
@@ -547,38 +578,28 @@ export function buildProgram(): Command {
             });
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
-            console.error(error.message);
-            process.exitCode = 1;
-            return;
+            return refuse(error.message);
           }
           console.log(`Planned ${id}. Launch it with \`pup launch ${id}\`.`);
           return;
         }
         case 'drop': {
           if (!target) {
-            console.error('Usage: pup plan drop <task>');
-            process.exitCode = 1;
-            return;
+            return refuse('Usage: pup plan drop <task>');
           }
           if (!deleteTask(db, target)) {
-            console.error(`No planned task ${target} (a session may already have claimed it).`);
-            process.exitCode = 1;
-            return;
+            return refuse(`No planned task ${target} (a session may already have claimed it).`);
           }
           console.log(`Dropped ${target}.`);
           return;
         }
         case 'edit': {
           if (!target) {
-            console.error('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
-            process.exitCode = 1;
-            return;
+            return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
           const row = getTask(db, target);
           if (!row) {
-            console.error(`No task ${target}.`);
-            process.exitCode = 1;
-            return;
+            return refuse(`No task ${target}.`);
           }
           const spec = JSON.parse(row.spec) as TaskSpec;
           const edited: TaskSpec = {
@@ -595,21 +616,16 @@ export function buildProgram(): Command {
             assertPlannableSpec(edited);
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
-            console.error(error.message);
-            process.exitCode = 1;
-            return;
+            return refuse(error.message);
           }
           if (!updateTaskSpec(db, target, JSON.stringify(edited))) {
-            console.error(`Task ${target} is already claimed by a session; its spec is frozen.`);
-            process.exitCode = 1;
-            return;
+            return refuse(`Task ${target} is already claimed by a session; its spec is frozen.`);
           }
           console.log(`Updated ${target}.`);
           return;
         }
         default:
-          console.error(`Unknown plan action \`${action}\` (expected list|add|drop|edit).`);
-          process.exitCode = 1;
+          refuse(`Unknown plan action \`${action}\` (expected list|add|drop|edit).`);
       }
     });
 
@@ -626,9 +642,7 @@ export function buildProgram(): Command {
       // task plainly — the same rule and detection that keep `--pr` and spec
       // authoring operator-only (decisions 26, 42).
       if (callingSession(db)) {
-        console.error('`pup launch` is operator-only; sessions cannot launch sessions.');
-        process.exitCode = 1;
-        return;
+        return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
       }
       const planned = getTask(db, taskId);
       if (planned) {
@@ -636,36 +650,23 @@ export function buildProgram(): Command {
         console.log(`goal: ${sanitizeReason(spec.goal ?? '')}`);
         console.log(`scope-in: ${sanitizeReason((spec.scopeIn ?? []).join(', '))}`);
       }
-      let sessionId: string;
-      try {
-        sessionId = launchTask(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          taskId,
-          claudeUserDir: join(homedir(), '.claude'),
-          model: opts.model,
-          allowOverlap: opts.allowOverlap,
-          overlapVia: conductorAttribution().overlapVia,
-        });
-      } catch (error) {
-        if (isRefusedSteer(error)) {
-          rollBackRefusedLaunch(db, error, `pup launch ${taskId}`);
-          return;
-        }
-        if (
-          !(error instanceof UnknownTaskError) &&
-          !(error instanceof TaskAlreadyClaimedError) &&
-          !(error instanceof ScopeConflictError) &&
-          !(error instanceof InvalidProfileError)
-        ) {
-          throw error;
-        }
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
-      }
-      console.log(`Launched session ${sessionId} (tmux: pup-${sessionId}).`);
-      console.log(`Attach with: tmux attach -t pup-${sessionId}`);
+      const sessionId = launchOrRefuse(
+        db,
+        taskId,
+        [UnknownTaskError, TaskAlreadyClaimedError, ScopeConflictError, InvalidProfileError],
+        () =>
+          launchTask(db, {
+            repoPath,
+            base: DEFAULT_BASE_PROFILE,
+            taskId,
+            claudeUserDir: join(homedir(), '.claude'),
+            model: opts.model,
+            allowOverlap: opts.allowOverlap,
+            overlapVia: conductorAttribution().overlapVia,
+          }),
+      );
+      if (sessionId === undefined) return;
+      reportLaunched(sessionId);
     });
 
   program
@@ -682,9 +683,7 @@ export function buildProgram(): Command {
       // operator starts one — a session or a conductor minting a conductor
       // would be a session launching sessions under another name (decision 47).
       if (callingSession(db) || callingConductor()) {
-        console.error(`\`pup conductor ${verb}\` is operator-only.`);
-        process.exitCode = 1;
-        return;
+        return refuse(`\`pup conductor ${verb}\` is operator-only.`);
       }
       if (verb === 'stop') {
         stopConductor(repoPath);
@@ -692,9 +691,7 @@ export function buildProgram(): Command {
         return;
       }
       if (verb !== 'start') {
-        console.error(`Unknown conductor action \`${action}\` (expected start|stop).`);
-        process.exitCode = 1;
-        return;
+        return refuse(`Unknown conductor action \`${action}\` (expected start|stop).`);
       }
       let handle: ConductorHandle;
       try {
@@ -707,24 +704,24 @@ export function buildProgram(): Command {
         });
       } catch (error) {
         if (!isRefusedSteer(error)) throw error;
-        // Rolled back like a session launch whose kickoff never landed: the
-        // refusal first, then the window, so nothing runs on an empty prompt.
-        console.error(error.message);
-        stopConductor(repoPath);
-        console.error('Conductor launch rolled back (window killed). Re-run `pup conductor`.');
-        process.exitCode = 1;
+        // Rolled back like a session launch whose kickoff never landed, so
+        // nothing runs on an empty prompt; the window is the conductor's
+        // whole footprint, so killing it is the whole rollback.
+        rollBackRefusedLaunch(
+          error,
+          () => stopConductor(repoPath),
+          'Conductor launch rolled back (window killed). Re-run `pup conductor`.',
+        );
         return;
       }
       // A window with no context is a bypass-permissions agent in the main
       // checkout that has read none of its tier; killed, not left to inspect.
       if (!handle.delivered) {
         stopConductor(repoPath);
-        console.error(
+        return refuse(
           `Conductor window ${handle.name} never became ready, so its context was not ` +
             'delivered and the window was killed. Re-run `pup conductor`.',
         );
-        process.exitCode = 1;
-        return;
       }
       console.log(`Conductor running (tmux: ${handle.name}).`);
       console.log(`Attach with: tmux attach -t ${handle.name}`);
@@ -910,9 +907,7 @@ export function buildProgram(): Command {
         steerSession(db, session, message);
       } catch (error) {
         if (!isRefusedSteer(error)) throw error;
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
+        return refuse(error.message);
       }
       appendEvent(db, session, 'steer', { kind: 'manual' });
       console.log(`Steered session ${session}.`);
@@ -929,9 +924,7 @@ export function buildProgram(): Command {
       } catch (error) {
         // Nothing landed, so nothing is on record.
         if (!(error instanceof SessionPaneMissingError)) throw error;
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
+        return refuse(error.message);
       }
       try {
         if (message) steerSession(db, session, message);
@@ -940,9 +933,7 @@ export function buildProgram(): Command {
         // Escape already landed, so the interrupt is on record; only the
         // steer is refused.
         appendEvent(db, session, 'interrupt', { steered: false });
-        console.error(error.message);
-        process.exitCode = 1;
-        return;
+        return refuse(error.message);
       }
       appendEvent(db, session, 'interrupt', { steered: Boolean(message) });
       // The message is a real steer — log it as one too, so last-steer queries
@@ -966,28 +957,22 @@ export function buildProgram(): Command {
       // way for any launch; `--respawn` is the same authority over another
       // session's window (decisions 26, 42).
       if (callingSession(db)) {
-        console.error('`pup kill` is operator-only; sessions cannot kill sessions.');
-        process.exitCode = 1;
-        return;
+        return refuse('`pup kill` is operator-only; sessions cannot kill sessions.');
       }
       // The plain kill is the conductor's; the hard respawn is not. It kicks
       // the session off again on the `context.md` under the store's compiled
       // dir, a file the conductor's shell can rewrite — the same authored
       // kickoff `pup respawn` refuses it (decision 47).
       if (opts.respawn && callingConductor()) {
-        console.error(
+        return refuse(
           '`pup kill --respawn` is operator-only; the conductor kills, the operator respawns.',
         );
-        process.exitCode = 1;
-        return;
       }
       if (opts.respawn) {
         try {
           hardRespawnSession(db, repoPath, session);
         } catch (error) {
-          console.error((error as Error).message);
-          process.exitCode = 1;
-          return;
+          return refuse((error as Error).message);
         }
         console.log(`Hard-respawned session ${session} (tmux: pup-${session}).`);
         return;
@@ -1009,18 +994,14 @@ export function buildProgram(): Command {
       // A respawn replaces another session's window with a kickoff that quotes
       // its handoff file — context a session could author for it (decision 44).
       if (callingSession(db)) {
-        console.error('`pup respawn` is operator-only; sessions cannot respawn sessions.');
-        process.exitCode = 1;
-        return;
+        return refuse('`pup respawn` is operator-only; sessions cannot respawn sessions.');
       }
       // The conductor too: the same authored-context kickoff, from a window
       // that can write any handoff file in the store (decision 47).
       if (callingConductor()) {
-        console.error(
+        return refuse(
           '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
         );
-        process.exitCode = 1;
-        return;
       }
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
@@ -1029,12 +1010,10 @@ export function buildProgram(): Command {
           const handoffPath = requestHandoff(db, repoPath, session);
           console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
           if (!awaitHandoffReady(db, session, Number(opts.wait) * 1000)) {
-            console.error(
+            return refuse(
               `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
                 'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
             );
-            process.exitCode = 1;
-            return;
           }
         }
         respawnSession(db, repoPath, session);
@@ -1043,13 +1022,11 @@ export function buildProgram(): Command {
         console.error(error.message);
         // A paste that never landed is worth asking again; a pane that is not
         // there to ask needs a fresh window, and that is the hard respawn.
-        console.error(
+        return refuse(
           error instanceof SteerNotDeliveredError
             ? `Re-run \`pup respawn ${session}\`.`
             : `Relaunch it without a handoff: \`pup kill --respawn ${session}\`.`,
         );
-        process.exitCode = 1;
-        return;
       }
       console.log(`Respawned ${session} on a fresh context window with its handoff.`);
     });
@@ -1125,9 +1102,7 @@ export function buildProgram(): Command {
         opts: { acceptDebt?: string; reviewBy?: string; pr?: boolean; gateEnv?: string },
       ) => {
         if (Boolean(opts.acceptDebt) !== Boolean(opts.reviewBy)) {
-          console.error('--accept-debt and --review-by must be passed together.');
-          process.exitCode = 1;
-          return;
+          return refuse('--accept-debt and --review-by must be passed together.');
         }
         const { repoPath, db } = project();
         // The gate's verdict moves another session's branch and parks it
@@ -1136,26 +1111,20 @@ export function buildProgram(): Command {
         // (decision 27): the guard refuses the plain path and keeps the ledger's
         // acceptor honest.
         if (callingSession(db)) {
-          console.error('`pup merge` is operator-only; sessions cannot merge sessions.');
-          process.exitCode = 1;
-          return;
+          return refuse('`pup merge` is operator-only; sessions cannot merge sessions.');
         }
         // The merge is the one act the conductor hands back: the verdict moves
         // a branch onto main, and the human is the reviewer (decision 47).
         if (callingConductor()) {
-          console.error(
+          return refuse(
             '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it.',
           );
-          process.exitCode = 1;
-          return;
         }
         const [adapter] = detectAdapters(repoPath);
         if (!adapter) {
-          console.error(
+          return refuse(
             'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
           );
-          process.exitCode = 1;
-          return;
         }
         let outcome: MergeOutcome;
         try {
@@ -1178,9 +1147,7 @@ export function buildProgram(): Command {
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          console.error(error instanceof Error ? error.message : String(error));
-          process.exitCode = 1;
-          return;
+          return refuse(error instanceof Error ? error.message : String(error));
         }
         printGateReport(outcome.report);
         switch (outcome.status) {
@@ -1233,11 +1200,9 @@ export function buildProgram(): Command {
       const { repoPath, db } = project();
       const [adapter] = detectAdapters(repoPath);
       if (!adapter) {
-        console.error(
+        return refuse(
           'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
         );
-        process.exitCode = 1;
-        return;
       }
       const nodes = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
       if (!opts.open) {
@@ -1306,17 +1271,14 @@ export function buildProgram(): Command {
       // gone; a session or the conductor closing one erases the operator's
       // own overdue-debt reminder (decisions 30, 47).
       if (callingSession(db) || callingConductor()) {
-        console.error(
+        return refuse(
           '`pup debt close` is operator-only; only the operator retires a ledger entry.',
         );
-        process.exitCode = 1;
-        return;
       }
       if (closeLedgerEntry(db, Number(id))) {
         console.log(`Closed ledger entry #${id}.`);
       } else {
-        console.error(`No open ledger entry #${id}.`);
-        process.exitCode = 1;
+        refuse(`No open ledger entry #${id}.`);
       }
     });
   program
@@ -1357,27 +1319,20 @@ export function buildProgram(): Command {
           }
           case 'show': {
             if (!name) {
-              console.error('Usage: pup profile show <name>');
-              process.exitCode = 1;
-              return;
+              return refuse('Usage: pup profile show <name>');
             }
             console.log(stringify(getProfileLayer(profilesDir, name)).trimEnd());
             return;
           }
           case 'edit':
           case 'stale':
-            console.error(`pup profile ${action}: not implemented yet`);
-            process.exitCode = 1;
-            return;
+            return refuse(`pup profile ${action}: not implemented yet`);
           default:
-            console.error(`Unknown profile action \`${action}\` (expected list|show|edit|stale).`);
-            process.exitCode = 1;
+            refuse(`Unknown profile action \`${action}\` (expected list|show|edit|stale).`);
         }
       } catch (error) {
         if (error instanceof UnknownProfileError || error instanceof InvalidProfileError) {
-          console.error(error.message);
-          process.exitCode = 1;
-          return;
+          return refuse(error.message);
         }
         throw error;
       }
@@ -1396,14 +1351,13 @@ export function buildProgram(): Command {
       if (!report) return;
       if (opts.sweep) {
         if (report.hasRegression) {
-          console.error('Baseline regressed — fix the regression before sweeping.');
-          process.exitCode = 1;
-          return;
+          return refuse('Baseline regressed — fix the regression before sweeping.');
         }
         const task = buildSweepTask(`sweep-${Date.now().toString(36)}` as TaskId, report.findings);
-        let sessionId: string;
-        try {
-          sessionId = createSession(db, {
+        // Nothing here is a refusal the operator can answer: the task was just
+        // minted, and the sweep waives the one conflict a launch can raise.
+        const sessionId = launchOrRefuse(db, task.id, [], () =>
+          createSession(db, {
             repoPath,
             base: DEFAULT_BASE_PROFILE,
             task,
@@ -1416,14 +1370,10 @@ export function buildProgram(): Command {
             // otherwise; the `scope_overlap` event records which sessions it
             // stepped on, which is what the refusal was protecting (decision 41).
             allowOverlap: true,
-          });
-        } catch (error) {
-          if (!isRefusedSteer(error)) throw error;
-          rollBackRefusedLaunch(db, error, `pup launch ${task.id}`);
-          return;
-        }
-        console.log(`Launched sweep session ${sessionId} (tmux: pup-${sessionId}).`);
-        console.log(`Attach with: tmux attach -t pup-${sessionId}`);
+          }),
+        );
+        if (sessionId === undefined) return;
+        reportLaunched(sessionId, 'sweep session');
         return;
       }
       if (!report.previous) {

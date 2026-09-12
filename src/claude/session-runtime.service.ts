@@ -270,7 +270,9 @@ function mainRepoRoot(worktreePath: string): string[] {
  * ListAgents and addresses with SendMessage, so the conductor reaches a
  * session by the same `pup-<id>` the operator attaches to (decision 47).
  */
-export function launchArgs(opts: LaunchOptions): string[] {
+export function launchArgs(
+  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'model'>,
+): string[] {
   return [
     ...(opts.model ? ['--model', opts.model] : []),
     '--name',
@@ -283,19 +285,35 @@ export function launchArgs(opts: LaunchOptions): string[] {
   ];
 }
 
+interface ClaudeWindowOptions {
+  sessionId: string;
+  /** Where the window opens: a session's worktree, the conductor's main checkout. */
+  cwd: string;
+  settingsPath: string;
+  model?: string;
+  /**
+   * The one variable that names the caller — `PUP_SESSION_ID` or
+   * `PUP_CONDUCTOR` — which is all that separates a session's window from the
+   * conductor's: the guards tell the two apart by which is set (decision 47).
+   */
+  caller: Record<string, string>;
+}
+
 /**
- * Open the session's window and return the pane it runs in. The caller stores
- * the pane (`sessions.tmux_target`) and hands it to every later command: the
- * id is minted here, once, and nothing later re-derives it from the session.
+ * Open a detached window running Claude Code on a compiled profile, and return
+ * the pane it runs in. The single launch both windows take: trust the checkout
+ * (the dialog is keyed on the repo root, so a worktree needs its parent seeded
+ * too), resolve `claude` on this PATH rather than the tmux server's, and hand
+ * the process the same bypass-permissions, user-setting-sources argv.
  */
-export function launchSession(opts: LaunchOptions): SessionPane {
-  preseedTrust(opts.worktreePath);
+function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
+  preseedTrust(opts.cwd);
   const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
-    cwd: opts.worktreePath,
+    cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
-      PUP_SESSION_ID: opts.sessionId,
+      ...opts.caller,
       // Absolute path to this CLI, so `pup session done` works even when `pup`
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',
@@ -303,6 +321,21 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     command: [claudeBin, ...launchArgs(opts)],
   });
   return { sessionId: opts.sessionId, paneId };
+}
+
+/**
+ * Open the session's window and return the pane it runs in. The caller stores
+ * the pane (`sessions.tmux_target`) and hands it to every later command: the
+ * id is minted here, once, and nothing later re-derives it from the session.
+ */
+export function launchSession(opts: LaunchOptions): SessionPane {
+  return spawnClaudeWindow({
+    sessionId: opts.sessionId,
+    cwd: opts.worktreePath,
+    settingsPath: opts.settingsPath,
+    model: opts.model,
+    caller: { PUP_SESSION_ID: opts.sessionId },
+  });
 }
 
 /** The conductor's id, one per project: its tmux name and peer name are `pup-` + this. */
@@ -325,27 +358,13 @@ export function conductorName(repoProjectId: string): string {
  * variable does not leak into the sessions the conductor launches from it.
  */
 export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
-  preseedTrust(opts.repoPath);
-  const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
-  const sessionId = conductorId(opts.projectId);
-  const paneId = spawnDetachedSession(tmuxName(sessionId), {
+  return spawnClaudeWindow({
+    sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
-    window: WINDOW_SIZE,
-    env: {
-      PUP_CONDUCTOR: opts.projectId,
-      PUP_BIN: process.argv[1] ?? 'pup',
-    },
-    command: [
-      claudeBin,
-      ...launchArgs({
-        sessionId,
-        worktreePath: opts.repoPath,
-        settingsPath: opts.settingsPath,
-        model: opts.model,
-      }),
-    ],
+    settingsPath: opts.settingsPath,
+    model: opts.model,
+    caller: { PUP_CONDUCTOR: opts.projectId },
   });
-  return { sessionId, paneId };
 }
 
 /**
