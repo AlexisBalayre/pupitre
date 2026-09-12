@@ -1441,6 +1441,14 @@ export function buildProgram(): Command {
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .action((opts: { sweep?: boolean; model?: string; gateEnv?: string }) => {
       const { repoPath, db } = project();
+      // Outside a merge the audit is the only thing that re-stamps the debt
+      // baseline, and on a `--pr` repo it is the only thing at all (decisions
+      // 26, 30) — so a session running it from its worktree chooses the moment
+      // its own bar moves. `--sweep` is a launch besides, and launches are
+      // operator-only for their own reasons (decision 42).
+      if (callingSession(db)) {
+        return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
+      }
       const report = runOrReportNoAdapter(() =>
         auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
       );
