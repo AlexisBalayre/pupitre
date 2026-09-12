@@ -1421,6 +1421,53 @@ changes back into those docs is pending.
     way. **The socket is unaffected** — decision 47's peer messages never touch the input
     box, and whether a suggestion affects a message-started turn is still open there.
 
+    *Addendum, 2026-09-12: the gate's own report, and the reason a refused one leaves behind.*
+    The merge gate steers its report at a rejected session, and this decision gave it a second
+    way to fail that its one reason did not describe. Live on 2026-09-12, session
+    `t-mtycrep1`: the test stage failed, vitest had coloured its output, and the detail reached
+    `formatGateReport` as 2000 characters of raw SGR. A pane shows an escape as what it does,
+    never as the bytes that were sent, so `pasteLanded` could not match the paste, the steer
+    was refused, and `runMergeGate`'s bare `catch` parked the session as
+    `re-steer failed — session unreachable` — while its pane sat there alive with an empty box.
+    Both halves were wrong: the report should not have carried escapes, and the reason sent
+    the human to look for a window that was never gone.
+    *Plain at the producer, not over the finished report.* `plainDetail` drops CSI sequences
+    and sweeps the remaining control characters to spaces, keeping newlines — the scope audit
+    puts a path on each — and the full `GATE_OUTPUT_TAIL_CHARS`, which is what makes it a
+    sibling of decision 29's `sanitizeReason` rather than that function itself. It is applied
+    in `commandFailureDetail`, where a gate command's output is captured, and the tail is cut
+    after the strip so the cut cannot land mid-escape and leave its parameters as text. That
+    site rather than `formatGateReport` because it covers every reader — the stored stages,
+    the PR body, and the operator's own `printGateReport`, which prints details raw and lives
+    in the CLI, outside this change's scope — and because it is the only route an escape
+    takes into a stage that steers: git C-quotes a control byte in a pathname whatever
+    `core.quotePath` says (checked, not assumed), `quotePath` already sanitizes the scope
+    audit's, and an adapter's own text reaches flagged stages only, which are refused and
+    never steered. A guard over the formatter would have been a branch no test could reach.
+    *The refusal is its own reason.* `SteerNotDeliveredError` is caught apart from everything
+    else and its message — the session, the character count, and which of the two refusals it
+    was — is recorded as the blocked reason; every other throw keeps `session unreachable`.
+    The two ask for different hands: a refused paste leaves a reachable session with an empty
+    box and an agent still working from its last turn, a gone window leaves nothing to type
+    into at all.
+    *Verified by removal.* Three mutations, one named test each: dropping the strip leaves the
+    steer carrying `\u001b`, collapsing the two arms into the message blocks an unreachable
+    session with `no tmux session` as its reason, and collapsing them into the old string
+    blocks a refused paste as `unreachable`.
+    *What this leaves open.* **Nothing reads the reason back.** It is written to the
+    `gate_result` event payload, which is where the old one went too, and no surface prints
+    it: `pup status` shows `needs a human (N rejections)`, the review detail and the session
+    dossier show neither. So the better reason is only reachable through the store until a CLI
+    change surfaces it, and that is outside this change's scope. **`blocked` is a one-way
+    door.** Nothing transitions a session back to `running` — `pup respawn` and
+    `pup kill --respawn` both refuse anything that is not already running — so the operator's
+    only move on a blocked session is `pup kill`, which returns its task to the backlog and
+    throws away a context window that may be one steer from done. That was tolerable while
+    blocked meant the reject cap or a dead window; a refused paste now parks a live session
+    whose box is empty, which is exactly the case where typing the report in by hand and
+    letting it run is the right answer. An `unblock` that re-steers and transitions
+    `blocked -> running` — the state machine already allows the edge — deserves its own change.
+
 46. **Every command that types into or reads a session goes to the pane recorded at launch,
     never to the session (2026-09-06).** `tmuxTarget` built `=pup-<id>:`, a session target,
     which tmux resolves to the session's *active* pane, and the agent holds `$TMUX`: decision

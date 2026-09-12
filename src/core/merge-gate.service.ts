@@ -4,7 +4,10 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
-import { killSession as killTmux } from '../claude/session-runtime.service.js';
+import {
+  killSession as killTmux,
+  SteerNotDeliveredError,
+} from '../claude/session-runtime.service.js';
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
@@ -93,10 +96,46 @@ function quotePath(path: string): string {
   return sanitizeReason(path);
 }
 
+/** A CSI escape — where a test runner's colour and cursor moves are carried. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const CSI_ESCAPE = /\u001b\[[0-9;:?]*[ -/]*[@-~]/g;
+/** Everything else a terminal writes. Newline stays: a detail may list a line each. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const CONTROL_CHARS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
+
+/**
+ * A stage detail on its way into the report. A gate command runs in a pty-less
+ * child but writes what it would to a terminal — vitest's failures arrived as
+ * 2000 chars of raw SGR — and the report is printed to the operator's terminal,
+ * fenced into the PR body, and pasted back into the session's input box as the
+ * re-steer. Escapes there repaint the report the operator decides from
+ * (decision 29's rationale, applied to command output), and worse: a pasted
+ * escape never shows in the input box as the characters that were sent, so
+ * `pasteLanded` cannot match the paste and the whole re-steer is refused
+ * (decision 45). A sibling of `sanitizeReason` rather than that function
+ * itself — a detail keeps its newlines, because the scope audit puts a path on
+ * each, and its full `GATE_OUTPUT_TAIL_CHARS` of output. An escape of any
+ * other form loses its ESC to the control sweep and lands as inert text.
+ * Applied to the captured output rather than over the finished report, so the
+ * stored stages, the operator's own print and the PR body are plain too and
+ * not just the steer. It is the only route an escape takes into a stage that
+ * steers: git C-quotes a control byte in a pathname whatever `core.quotePath`
+ * says, `quotePath` already sanitizes the scope audit's, and an adapter's own
+ * text reaches flagged stages only, which are refused and never steered.
+ */
+function plainDetail(detail: string): string {
+  return detail.replace(CSI_ESCAPE, '').replace(CONTROL_CHARS, ' ').trimEnd();
+}
+
 function commandFailureDetail(error: unknown): string {
   const failure = error as { stdout?: string; stderr?: string; message?: string };
   const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
-  return (output || (failure.message ?? 'command failed')).slice(-GATE_OUTPUT_TAIL_CHARS);
+  // Plain before the tail is taken, never after: the cut would otherwise land
+  // mid-escape and leave its parameters as text, and a coloured runner spends
+  // much of the budget on bytes nobody reads.
+  return plainDetail(output || (failure.message ?? 'command failed')).slice(
+    -GATE_OUTPUT_TAIL_CHARS,
+  );
 }
 
 /** Adds + deletes across the branch diff, excluding lockfiles and binary files. */
@@ -817,9 +856,18 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
   }
   try {
     steerSession(db, report.sessionId, formatGateReport(report));
-  } catch {
+  } catch (error) {
+    // Two different sessions to walk up to, so two different reasons. A
+    // refused paste (decision 45) leaves a live pane with an empty box and an
+    // agent still working from its last turn; everything else — a gone
+    // window, no pane recorded — leaves nothing to type into at all. The
+    // error's own message names the session, the length and which of the two
+    // refusals it was, which is what the human needs before deciding.
     transitionSession(db, report.sessionId, 'blocked', {
-      reason: 're-steer failed — session unreachable',
+      reason:
+        error instanceof SteerNotDeliveredError
+          ? error.message
+          : 're-steer failed — session unreachable',
       rejectCount,
     });
     return { status: 'blocked', report, rejectCount };
