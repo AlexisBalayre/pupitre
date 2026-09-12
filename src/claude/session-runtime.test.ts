@@ -46,10 +46,14 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
+  conductorName,
+  hasConductorWindow,
   interruptPane,
   kickoff,
+  killConductor,
   killSession,
   launchArgs,
+  launchConductor,
   launchSession,
   launchWatcher,
   preseedTrust,
@@ -175,6 +179,17 @@ describe('launchArgs', () => {
   it('passes the model flag only when a model is set', () => {
     expect(launchArgs(OPTS)).not.toContain('--model');
     expect(launchArgs({ ...OPTS, model: 'opus' })).toContain('--model');
+  });
+
+  // The peer name is what the conductor sees in ListAgents and addresses with
+  // SendMessage; it is the tmux name so one id reaches the session everywhere
+  // (decision 47).
+  it('names the session after its tmux window so a peer can address it', () => {
+    const args = launchArgs(OPTS);
+
+    const flag = args.indexOf('--name');
+    expect(flag).toBeGreaterThan(-1);
+    expect(args[flag + 1]).toBe('pup-s-1');
   });
 });
 
@@ -631,5 +646,87 @@ describe('steerPane with a fake tmux on PATH', () => {
       expect(lines).not.toContain(ENTER);
       expect(lines).toContain(CLEAR);
     }, 20_000);
+  });
+});
+
+describe('launchConductor', () => {
+  const CONDUCTOR = {
+    projectId: 'proj-1',
+    repoPath: '/tmp/repo',
+    settingsPath: '/tmp/conductor/settings.json',
+  };
+
+  it('spawns the window in the main checkout, named and marked as the conductor, and returns its pane', () => {
+    const pane = launchConductor(CONDUCTOR);
+
+    expect(pane).toEqual({ sessionId: 'conductor-proj-1', paneId: '%7' });
+    expect(conductorName('proj-1')).toBe('pup-conductor-proj-1');
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toHaveLength(2);
+    expect(tmuxCalls[0]?.[1]).toEqual(['kill-session', '-t', '=pup-conductor-proj-1:']);
+    const spawn = tmuxCalls[1]?.[1] ?? [];
+    expect(spawn.slice(0, 7)).toEqual([
+      'new-session',
+      '-d',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '-s',
+      'pup-conductor-proj-1',
+    ]);
+    expect(spawn).toContain('/tmp/repo');
+    // Marked as the conductor, never as a session: the guards tell the two
+    // apart by which variable is set (decision 47).
+    expect(spawn).toContain('PUP_CONDUCTOR=proj-1');
+    expect(spawn.some((arg) => String(arg).startsWith('PUP_SESSION_ID='))).toBe(false);
+    expect(spawn).toContain(FAKE_CLAUDE_BIN);
+    expect(spawn.slice(spawn.indexOf('--name'), spawn.indexOf('--name') + 2)).toEqual([
+      '--name',
+      'pup-conductor-proj-1',
+    ]);
+    expect(spawn).toContain('--dangerously-skip-permissions');
+    expect(spawn).toContain(CONDUCTOR.settingsPath);
+  });
+
+  it('passes the conductor its own model', () => {
+    launchConductor({ ...CONDUCTOR, model: 'fable' });
+
+    const spawn = vi
+      .mocked(execFileSync)
+      .mock.calls.find(([file, args]) => file === 'tmux' && args?.[0] === 'new-session')?.[1];
+    expect(spawn?.slice(spawn.indexOf('--model'), spawn.indexOf('--model') + 2)).toEqual([
+      '--model',
+      'fable',
+    ]);
+  });
+});
+
+describe('killConductor and hasConductorWindow', () => {
+  it('kills the window by its pinned name', () => {
+    killConductor('proj-1');
+
+    expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['kill-session', '-t', '=pup-conductor-proj-1:'],
+    ]);
+  });
+
+  it('reports a window wearing the name, and none when tmux has none or no server runs', () => {
+    expect(hasConductorWindow('proj-1')).toBe(true);
+    expect(vi.mocked(execFileSync).mock.calls[0]?.[1]).toEqual([
+      'has-session',
+      '-t',
+      '=pup-conductor-proj-1:',
+    ]);
+
+    const original = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation((file, args, options) => {
+      if (file === 'tmux' && args?.[0] === 'has-session') throw new Error("can't find session");
+      return (original as (...callArgs: unknown[]) => unknown)(file, args, options) as string;
+    });
+    try {
+      expect(hasConductorWindow('proj-1')).toBe(false);
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(original as never);
+    }
   });
 });

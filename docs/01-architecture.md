@@ -11,17 +11,19 @@
 
 ## Layering
 
-You (review, steer)
+You (review, merge)
+-> Conductor (optional: one Claude Code session that plans, launches and steers, decision 47)
 -> Orchestrator (scope hook, merge gate, conflict check)
 -> Knowledge layer (code map, decision log, debt ledger)
--> Sessions (Claude Code, one git worktree each)
+-> Sessions (Claude Code, one git worktree each, each addressable by peer name `pup-<id>`)
 
 Sessions read the knowledge layer at compile time; the orchestrator writes it at merge time.
+The conductor holds every operator power but the merge; the merge is yours.
 
 ## Data model
 
 - Project: id, repo path, adapters, baseline snapshot, config (`~/.pupitre/<id>/`, optional shared `.pupitre.yml` in repo root).
-- Task: id, spec (goal, scope-in, scope-out, acceptance criteria), role, status, origin (human | audit | rejection).
+- Task: id, spec (goal, scope-in, scope-out, acceptance criteria), role, status, origin (human | audit | rejection | conductor).
 - Session: task id, worktree path, branch, PID, state, profile hash, transcript path.
 - Event: append-only log. Types: tool_call, scope_violation, gate_result, merge, steer, config_drift, scope_overlap. All derived views come from this table.
 - LedgerEntry: id, description, files, reason, accepted_by, review_by condition, status (open | closed).

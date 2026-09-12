@@ -20,6 +20,8 @@ export interface ProjectPaths {
   compiledDir(sessionId: string): string;
   eventsFile(sessionId: string): string;
   handoffFile(sessionId: string): string;
+  /** The conductor's compiled profile — one per project, beside the sessions (decision 47). */
+  conductorCompiledDir: string;
 }
 
 export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre')): ProjectPaths {
@@ -35,5 +37,6 @@ export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre'
     compiledDir: (sessionId) => join(sessionDir(sessionId), 'compiled'),
     eventsFile: (sessionId) => join(sessionDir(sessionId), 'events.jsonl'),
     handoffFile: (sessionId) => join(sessionDir(sessionId), 'handoff.md'),
+    conductorCompiledDir: join(root, 'conductor', 'compiled'),
   };
 }

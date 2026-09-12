@@ -18,6 +18,7 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
+  conductorName,
   killWatcher,
   launchWatcher,
   SessionPaneMissingError,
@@ -26,6 +27,7 @@ import {
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
+import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import {
   deleteDecisionRecord,
   getDecisionRecord,
@@ -59,6 +61,7 @@ import {
   listBacklogTasks,
   listSessions,
   type SessionRow,
+  type TaskRow,
   updateTaskSpec,
 } from '../core/session.repository.js';
 import {
@@ -93,6 +96,7 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
+import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -302,6 +306,37 @@ function callingSession(db: Database): string | undefined {
 }
 
 /**
+ * The conductor running this command, if any: the project id its launch
+ * exported as `PUP_CONDUCTOR`. The conductor is the operator's delegate for
+ * planning, launching, steering and killing, and is refused the merge, the
+ * respawn and other projects; what it plans is recorded as its own. The
+ * variable is its word, at decision 27's ceiling, like a session's (decision 47).
+ */
+function callingConductor(): string | undefined {
+  return process.env.PUP_CONDUCTOR || undefined;
+}
+
+/**
+ * What a plan, launch or `pup new` records about who asked for it. A task the
+ * conductor authors is a later session's kickoff prompt, so its origin says
+ * so rather than wearing the operator's `human` (decision 40's rule); an
+ * overlap it waves through is answered for by it. Empty for the operator, so
+ * the defaults stand.
+ */
+function conductorAttribution(): { origin?: 'conductor'; overlapVia?: 'conductor' } {
+  return callingConductor() ? { origin: 'conductor', overlapVia: 'conductor' } : {};
+}
+
+/**
+ * Who authored a planned task, where the operator decides what to launch: a
+ * spec an agent wrote is one the operator never typed, and the report alone
+ * showing `from conductor` left `pup status` and `pup plan` silent on it.
+ */
+function originMarker(row: TaskRow): string {
+  return row.origin === 'human' ? '' : `  (from ${sanitizeReason(row.origin)})`;
+}
+
+/**
  * The session a `pup session …` command reports for: the one `PUP_SESSION_ID`
  * declares, and only when cwd is inside that session's own worktree. The
  * variable is the session's word; the worktree is decision 26's detection
@@ -383,7 +418,7 @@ export function buildProgram(): Command {
       // The variable alone refuses: a session that cd's outside every repo
       // has no own store to be found in, and decision 42's ceiling needed it
       // to also unset the variable — this keeps it so.
-      if (process.env.PUP_SESSION_ID) throw operatorOnlyProject();
+      if (process.env.PUP_SESSION_ID || callingConductor()) throw operatorOnlyProject();
       if (own && callingSession(own.db)) throw operatorOnlyProject();
     } finally {
       own?.db.close();
@@ -442,6 +477,7 @@ export function buildProgram(): Command {
           claudeUserDir: join(homedir(), '.claude'),
           model: opts.model as string | undefined,
           allowOverlap: opts.allowOverlap === true,
+          ...conductorAttribution(),
         });
       } catch (error) {
         if (isRefusedSteer(error)) {
@@ -486,7 +522,7 @@ export function buildProgram(): Command {
           for (const row of backlog) {
             const spec = JSON.parse(row.spec) as TaskSpec;
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
-            console.log(`${row.id.padEnd(14)}${goalHeadline(spec)}  ${scope}`);
+            console.log(`${row.id.padEnd(14)}${goalHeadline(spec)}  ${scope}${originMarker(row)}`);
           }
           return;
         }
@@ -507,6 +543,7 @@ export function buildProgram(): Command {
                 scopeOut: opts.scopeOut,
                 acceptance: opts.accept ?? ['goal met and committed'],
               },
+              origin: conductorAttribution().origin,
             });
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
@@ -608,6 +645,7 @@ export function buildProgram(): Command {
           claudeUserDir: join(homedir(), '.claude'),
           model: opts.model,
           allowOverlap: opts.allowOverlap,
+          overlapVia: conductorAttribution().overlapVia,
         });
       } catch (error) {
         if (isRefusedSteer(error)) {
@@ -631,6 +669,68 @@ export function buildProgram(): Command {
     });
 
   program
+    .command('conductor [action]')
+    .description(
+      'Start a Claude session that plans, launches, steers and reports on sessions (start|stop)',
+    )
+    .option('--model <model>', 'claude model for the conductor itself')
+    .option('--worker-model <model>', 'claude model the conductor launches sessions on')
+    .action((action: string | undefined, opts: { model?: string; workerModel?: string }) => {
+      const { repoPath, db } = project();
+      const verb = action ?? 'start';
+      // The conductor holds every operator power but the merge, so only the
+      // operator starts one — a session or a conductor minting a conductor
+      // would be a session launching sessions under another name (decision 47).
+      if (callingSession(db) || callingConductor()) {
+        console.error(`\`pup conductor ${verb}\` is operator-only.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (verb === 'stop') {
+        stopConductor(repoPath);
+        console.log('Conductor stopped.');
+        return;
+      }
+      if (verb !== 'start') {
+        console.error(`Unknown conductor action \`${action}\` (expected start|stop).`);
+        process.exitCode = 1;
+        return;
+      }
+      let handle: ConductorHandle;
+      try {
+        handle = startConductor({
+          repoPath,
+          base: DEFAULT_BASE_PROFILE,
+          claudeUserDir: join(homedir(), '.claude'),
+          model: opts.model,
+          workerModel: opts.workerModel,
+        });
+      } catch (error) {
+        if (!isRefusedSteer(error)) throw error;
+        // Rolled back like a session launch whose kickoff never landed: the
+        // refusal first, then the window, so nothing runs on an empty prompt.
+        console.error(error.message);
+        stopConductor(repoPath);
+        console.error('Conductor launch rolled back (window killed). Re-run `pup conductor`.');
+        process.exitCode = 1;
+        return;
+      }
+      // A window with no context is a bypass-permissions agent in the main
+      // checkout that has read none of its tier; killed, not left to inspect.
+      if (!handle.delivered) {
+        stopConductor(repoPath);
+        console.error(
+          `Conductor window ${handle.name} never became ready, so its context was not ` +
+            'delivered and the window was killed. Re-run `pup conductor`.',
+        );
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Conductor running (tmux: ${handle.name}).`);
+      console.log(`Attach with: tmux attach -t ${handle.name}`);
+    });
+
+  program
     .command('status')
     .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
     .action(() => {
@@ -640,6 +740,9 @@ export function buildProgram(): Command {
         console.log(
           `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.review_by})`,
         );
+      }
+      if (isConductorRunning(repoPath)) {
+        console.log(`conductor running (tmux: ${conductorName(projectId(repoPath))})`);
       }
       const rows = listSessions(db);
       const backlog = listBacklogTasks(db, projectId(repoPath));
@@ -674,7 +777,9 @@ export function buildProgram(): Command {
       // (decision 41).
       for (const row of backlog) {
         const spec = JSON.parse(row.spec) as TaskSpec;
-        console.log(`${'planned'.padEnd(16)} ${row.id.padEnd(28)} ${goalHeadline(spec)}`);
+        console.log(
+          `${'planned'.padEnd(16)} ${row.id.padEnd(28)} ${goalHeadline(spec)}${originMarker(row)}`,
+        );
       }
       printConflictRadar(db, repoPath, rows);
     });
@@ -783,9 +888,24 @@ export function buildProgram(): Command {
   program
     .command('steer <session> <message>')
     .description('Inject a correction into a running session')
-    .action((session: string, message: string) => {
+    .option('--sent', 'record a steer already delivered by cross-session message; type nothing')
+    .action((session: string, message: string, opts: { sent?: boolean }) => {
       const { db } = project();
       if (!resolveLiveSession(db, session, 'steer')) return;
+      // A message sent over the peer socket lands whole and never touches the
+      // input box, so it needs no typing — but it needs the record, or the
+      // report and last-steer queries would show a session corrected by
+      // nobody. The event names the sender, and a session pup can identify is
+      // named as one before its word is taken (decisions 44, 47).
+      if (opts.sent) {
+        const sender = callingSession(db);
+        appendEvent(db, session, 'steer', {
+          kind: 'message',
+          by: sender ? `session:${sender}` : callingConductor() ? 'conductor' : 'operator',
+        });
+        console.log(`Recorded a message steer to session ${session}.`);
+        return;
+      }
       try {
         steerSession(db, session, message);
       } catch (error) {
@@ -850,6 +970,17 @@ export function buildProgram(): Command {
         process.exitCode = 1;
         return;
       }
+      // The plain kill is the conductor's; the hard respawn is not. It kicks
+      // the session off again on the `context.md` under the store's compiled
+      // dir, a file the conductor's shell can rewrite — the same authored
+      // kickoff `pup respawn` refuses it (decision 47).
+      if (opts.respawn && callingConductor()) {
+        console.error(
+          '`pup kill --respawn` is operator-only; the conductor kills, the operator respawns.',
+        );
+        process.exitCode = 1;
+        return;
+      }
       if (opts.respawn) {
         try {
           hardRespawnSession(db, repoPath, session);
@@ -879,6 +1010,15 @@ export function buildProgram(): Command {
       // its handoff file — context a session could author for it (decision 44).
       if (callingSession(db)) {
         console.error('`pup respawn` is operator-only; sessions cannot respawn sessions.');
+        process.exitCode = 1;
+        return;
+      }
+      // The conductor too: the same authored-context kickoff, from a window
+      // that can write any handoff file in the store (decision 47).
+      if (callingConductor()) {
+        console.error(
+          '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
+        );
         process.exitCode = 1;
         return;
       }
@@ -936,8 +1076,10 @@ export function buildProgram(): Command {
       const detail = buildSessionReview(db, repoPath, session);
       console.log(`${detail.entry.sessionId}  (${detail.state}, risk ${detail.entry.risk})`);
       console.log(`branch: ${detail.entry.branch}  worktree: ${detail.worktreePath}`);
-      console.log(`goal: ${detail.spec.goal}`);
-      console.log(`scope-in: ${detail.spec.scopeIn.join(', ')}`);
+      // Sanitized like every other goal print: with the conductor, a goal is
+      // a string an agent chose (decisions 29, 47).
+      console.log(`goal: ${sanitizeReason(detail.spec.goal)}`);
+      console.log(`scope-in: ${sanitizeReason(detail.spec.scopeIn.join(', '))}`);
       if (detail.spec.scopeOut?.length)
         console.log(`scope-out: ${detail.spec.scopeOut.join(', ')}`);
       console.log(`acceptance: ${detail.spec.acceptance.join('; ')}`);
@@ -995,6 +1137,15 @@ export function buildProgram(): Command {
         // acceptor honest.
         if (callingSession(db)) {
           console.error('`pup merge` is operator-only; sessions cannot merge sessions.');
+          process.exitCode = 1;
+          return;
+        }
+        // The merge is the one act the conductor hands back: the verdict moves
+        // a branch onto main, and the human is the reviewer (decision 47).
+        if (callingConductor()) {
+          console.error(
+            '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it.',
+          );
           process.exitCode = 1;
           return;
         }
@@ -1151,6 +1302,16 @@ export function buildProgram(): Command {
     .description('Close a ledger entry once a merge has removed the shortcut')
     .action((id: string) => {
       const { db } = project();
+      // Closing an entry is the operator's judgement that the shortcut is
+      // gone; a session or the conductor closing one erases the operator's
+      // own overdue-debt reminder (decisions 30, 47).
+      if (callingSession(db) || callingConductor()) {
+        console.error(
+          '`pup debt close` is operator-only; only the operator retires a ledger entry.',
+        );
+        process.exitCode = 1;
+        return;
+      }
       if (closeLedgerEntry(db, Number(id))) {
         console.log(`Closed ledger entry #${id}.`);
       } else {

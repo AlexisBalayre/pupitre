@@ -26,12 +26,20 @@ exit 1.
   session's scope already claims, naming the session and the shared files; `--allow-overlap`
   launches anyway and records what it waved through (decision 41). Operator-only: refused when
   run from inside a session, like `pup new`, `pup plan add|drop|edit`, `pup merge` and
-  `pup respawn` (decisions 26, 42, 44).
+  `pup respawn` (decisions 26, 42, 44). The conductor may launch, plan, `new` and kill; only
+  the operator merges, respawns or reaches another project (decision 47).
 - `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path. Takes
   `--allow-overlap` for the same reason `pup launch` does.
 - `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
   overlaps between running sessions.
-- `pup steer <session> "<message>"` — inject a correction into a running session.
+- `pup conductor [start|stop] [--model <m>] [--worker-model <m>]` — open (or close) the
+  project's conductor: one Claude Code window in the main checkout that plans, launches,
+  steers and kills sessions and hands each finished branch to the operator. It reaches a
+  session by its peer name `pup-<id>` over Claude Code's cross-session messaging, edits
+  nothing (a hook refuses every Edit and Write), and is refused `pup merge`, `pup respawn` and
+  `--project`. Tasks it plans are recorded `origin = conductor`. Operator-only (decision 47).
+- `pup steer <session> "<message>"` — inject a correction into a running session. `--sent`
+  records a steer already delivered by cross-session message and types nothing (decision 47).
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
 - `pup kill <session> [--respawn]` — stop; `--respawn` relaunches on a fresh context window. A
   killed session's task returns to the backlog, so `pup launch` can retry it. Operator-only for
