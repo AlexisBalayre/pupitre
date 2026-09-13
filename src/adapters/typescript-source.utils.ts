@@ -64,8 +64,10 @@ export function isCoverageExcluded(path: string): boolean {
 
 /**
  * Resolve a relative import specifier to a repo file. Tries the literal path,
- * `.js`->`.ts` (ESM-style extensioned imports of TS sources), appended
- * extensions, and directory index files.
+ * `.js`->`.ts` and `.js`->`.tsx` (ESM-style extensioned imports of TS sources:
+ * under NodeNext a `.tsx` module is imported as `.js` too, so a `.ts`-only
+ * mapping read every component of the first `.tsx` files as unimported and
+ * their exports as dead), appended extensions, and directory index files.
  */
 export function resolveImport(
   fromFile: string,
@@ -75,7 +77,9 @@ export function resolveImport(
   const base = normalize(join(dirname(fromFile), specifier));
   if (base.startsWith('..')) return undefined;
   const candidates = [base];
-  if (/\.js$/.test(base)) candidates.push(base.replace(/\.js$/, '.ts'));
+  if (/\.js$/.test(base)) {
+    candidates.push(base.replace(/\.js$/, '.ts'), base.replace(/\.js$/, '.tsx'));
+  }
   if (/\.jsx$/.test(base)) candidates.push(base.replace(/\.jsx$/, '.tsx'));
   for (const ext of SOURCE_EXTENSIONS) candidates.push(`${base}${ext}`);
   for (const ext of SOURCE_EXTENSIONS) candidates.push(join(base, `index${ext}`));
