@@ -1,5 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { DiffFileStat } from './types/git-diff.types.js';
 
 export type { DiffFileStat };
@@ -30,10 +33,9 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `git()` below — because an empty `diff.external` makes every diff die.
  *
- * Not covered, and stated as decision 41's ceiling: a smudge filter armed
- * through the untracked `info/attributes`, which runs on `worktree add` and
- * the rebase and has no `-c` disarm because its driver name is chosen by
- * whoever wrote it.
+ * A smudge filter or merge driver armed through the untracked `info/attributes`
+ * has no `-c` disarm at all — its driver name is chosen by whoever wrote it —
+ * so it is refused rather than disarmed; see `armedGitDrivers` (decision 50).
  */
 export const GIT_SAFE_CONFIG = [
   '-c',
@@ -149,4 +151,98 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
     });
   }
   return stats;
+}
+
+/**
+ * The `filter` and `merge` config keys whose value is a command git runs.
+ * Deliberately not the whole of either namespace: `merge.conflictstyle`,
+ * `merge.ff` and `filter.<name>.required` execute nothing, and refusing on
+ * them would refuse a repo whose operator set an ordinary preference.
+ */
+const ARMED_DRIVER_KEY = /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver)$/;
+
+/**
+ * The config scopes a session can reach. Both files sit inside the shared
+ * `$GIT_COMMON_DIR` — `config` and `config.worktree` for the main checkout,
+ * `worktrees/<slug>/config.worktree` for a linked one — so both are writable
+ * from a worktree with a plain `git config` and invisible to the scope hooks
+ * and the gate. `global` and `system` are the operator's own and are theirs to
+ * set; `command` is pup's own `GIT_SAFE_CONFIG`.
+ */
+const SESSION_WRITABLE_SCOPES = ['local', 'worktree'];
+
+/** Armed surfaces named in a refusal before the count takes over. */
+const ARMED_NAMES_SHOWN = 4;
+
+export class ArmedGitDriverError extends Error {
+  constructor(gitPath: string, armed: string[]) {
+    const shown = armed.slice(0, ARMED_NAMES_SHOWN).join(', ');
+    const rest = armed.length - ARMED_NAMES_SHOWN;
+    super(
+      `Refusing to run git in ${gitPath}: a filter or merge driver is armed, and git would ` +
+        `run it with your environment — ${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
+        'These live in the untracked $GIT_COMMON_DIR, so no diff and no scope audit shows ' +
+        'them. Clear them (`git config --unset <key>`, `rm .git/info/attributes`) and retry, ' +
+        'and treat a session that wrote them as compromised.',
+    );
+    this.name = 'ArmedGitDriverError';
+  }
+}
+
+/**
+ * What is armed, at the path git is about to run in, named for a refusal —
+ * empty when nothing is. The two surfaces `GIT_SAFE_CONFIG` cannot cover: a
+ * `filter.<name>.smudge` or `merge.<name>.driver` in the shared config, which
+ * has no `-c` disarm because the driver name is chosen by whoever wrote it,
+ * and the untracked `info/attributes` that attaches one. `git worktree add`
+ * runs the smudge filter on every file it checks out and the gate's `git
+ * rebase` runs both it and the merge driver, in each case before the sandbox
+ * that is supposed to confine the session (decision 50).
+ *
+ * Attributes are reported on their own, without a matching driver: the file is
+ * inert until a driver is named, but nothing else writes it, and `-diff`
+ * patterns there already forge the diff the coverage stage reads.
+ *
+ * Read at the path the command will run in rather than only at the trusted
+ * checkout, which is the opposite of decision 30's rule and safe here because
+ * this measurement only ever adds findings — the config and the attributes
+ * file are shared, so a worktree reports everything the main checkout does
+ * plus its own worktree scope, and a session cannot aim the read somewhere
+ * quieter than the one git itself will consult.
+ */
+export function armedGitDrivers(gitPath: string): string[] {
+  const armed: string[] = [];
+  const commonDir = git(gitPath, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+  const [pattern] = attributePatterns(join(commonDir, 'info', 'attributes'));
+  if (pattern) armed.push(`info/attributes (${sanitizeReason(pattern)})`);
+  // `--list --show-scope` rather than `--local --get-regexp`: `--worktree`
+  // silently falls back to the local file when `extensions.worktreeConfig` is
+  // off, so it cannot be read on its own, and one listing covers both scopes.
+  // Entries are `<scope>\0<key>\n<value>\0`, so they come out in pairs.
+  const listed = git(gitPath, 'config', '--list', '--show-scope', '-z').split('\0');
+  for (let i = 0; i + 1 < listed.length; i += 2) {
+    const [key] = (listed[i + 1] as string).split('\n');
+    if (!SESSION_WRITABLE_SCOPES.includes(listed[i] as string)) continue;
+    if (key && ARMED_DRIVER_KEY.test(key)) armed.push(sanitizeReason(key));
+  }
+  return armed;
+}
+
+/** Pattern lines of an attributes file — blank lines and comments are inert. */
+function attributePatterns(file: string): string[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+}
+
+/**
+ * Refuse to run git at `gitPath` while a filter or merge driver is armed.
+ * Decision 6's loud-backstop shape: there is no disarm to fall back on, so the
+ * only honest answer is to stop and name what is armed (decision 50).
+ */
+export function assertNoArmedGitDrivers(gitPath: string): void {
+  const armed = armedGitDrivers(gitPath);
+  if (armed.length > 0) throw new ArmedGitDriverError(gitPath, armed);
 }
