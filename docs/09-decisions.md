@@ -42,6 +42,24 @@ changes back into those docs is pending.
     them. `pup status` prints `STALLED (Nm)` and sorts stalled sessions to the top alongside
     `blocked` ones; `pup watch` emits one `STALLED` line per sweep for each.
 
+    *Addendum, 2026-09-13: one reader of session activity, and it is not the CLI.* The stall
+    rule and `classifySessionActivity` both lived in `src/cli/index.ts`, which was fine while
+    the terminal list was the only surface that asked. The terminal UI is a second one, and
+    two surfaces each reading the events files their own way is how a session ends up STALLED
+    on one and working on the other — the exact failure this decision was written against,
+    one layer up. So `buildDashboardSnapshot` (`core/dashboard.service.ts`) is now the single
+    reader: it opens each running session's events file once, classifies it, ages it by mtime,
+    and hands both out on the session row. `findStalledSessions` moved there beside it, since
+    `pup watch` asks the same question on a sweep where there is no snapshot to build. The CLI
+    keeps only the printing — `activityMarker` now reads the row, never the file.
+    Two rules survive the move as written, and are worth naming because a reader of the
+    snapshot could reasonably assume otherwise. Activity is read **only** for a running
+    session with an events file: a finished session's last hook event is history, not
+    activity, so the field is absent rather than `unknown`, and the marker is empty for the
+    same reason it always was. And `needsHuman` is deliberately wider than what sorts first —
+    it counts awaiting-input, which the sort does not, because a five-second permission ask
+    flagged at the top would bury the blocked session the operator actually has to act on.
+
 37. **Force-interrupt is its own command, and every tmux lookup is pinned to exact match
     (2026-08-03).** `pup interrupt <session> ["<message>"]` sends Escape to the session's
     pane, aborting the in-flight tool call, then optionally steers — the recovery decision 35
