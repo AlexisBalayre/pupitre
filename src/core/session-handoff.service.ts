@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
@@ -22,6 +23,30 @@ export const RESPAWN_SUGGEST_TOKENS = 120_000;
 
 function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Thrown when `handoff-done` is run before the handoff document exists. */
+export class HandoffMissingError extends Error {
+  constructor(sessionId: string, handoffPath: string) {
+    super(
+      `No handoff at ${handoffPath}. Write the document for ${sessionId} before running ` +
+        '`pup session handoff-done`.',
+    );
+    this.name = 'HandoffMissingError';
+  }
+}
+
+/**
+ * The handoff document, or undefined when there is none. Read as text rather
+ * than hashed in place so a caller hashes the very bytes it goes on to use:
+ * two reads are two chances for the file to change between them (decision 49).
+ */
+function readHandoff(handoffPath: string): string | undefined {
+  return existsSync(handoffPath) ? readFileSync(handoffPath, 'utf8') : undefined;
+}
+
+function hashHandoff(document: string): string {
+  return createHash('sha256').update(document).digest('hex');
 }
 
 function requireRunning(db: Database, sessionId: string): SessionRow {
@@ -54,44 +79,83 @@ export function requestHandoff(
 ): string {
   const session = requireRunning(db, sessionId);
   const handoffPath = projectPaths(repoPath, pathsBase).handoffFile(sessionId);
+  // A new request answers with a new file. Whatever is on disk now — the
+  // session's own handoff from an earlier round, or one another session wrote
+  // while waiting for this moment — must not be able to satisfy this request
+  // by sitting there unchanged (decision 49).
+  rmSync(handoffPath, { force: true });
   steerPane(sessionPane(session), handoffInstructions(handoffPath));
   appendEvent(db, sessionId, 'steer', { kind: 'handoff-request' });
   return handoffPath;
 }
 
 /**
- * True once the session has signalled handoff-done after the request steer.
- * With no request on record `MAX(id)` is NULL and the comparison is never
- * true: a `handoff_ready` nobody asked for does not make a session ready, so
- * a respawn cannot be staged by writing the event first (decision 44).
+ * The hash the session signalled for, from the latest `handoff_ready` that
+ * follows the request steer. With no request on record `MAX(id)` is NULL and
+ * the comparison is never true, so a `handoff_ready` nobody asked for names no
+ * hash and no session is ready by it (decision 44).
  */
-export function isHandoffReady(db: Database, sessionId: string): boolean {
+function signalledHash(db: Database, sessionId: string): string | undefined {
   const row = db
     .prepare(
-      `SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND type = 'handoff_ready'
+      `SELECT payload FROM events WHERE session_id = ? AND type = 'handoff_ready'
        AND id > (SELECT MAX(id) FROM events WHERE session_id = ? AND type = 'steer'
-                 AND payload LIKE '%handoff-request%')`,
+                 AND payload LIKE '%handoff-request%')
+       ORDER BY id DESC LIMIT 1`,
     )
-    .get(sessionId, sessionId) as { n: number };
-  return row.n > 0;
+    .get(sessionId, sessionId) as { payload: string } | undefined;
+  const hash = row ? (JSON.parse(row.payload) as { hash?: unknown }).hash : undefined;
+  return typeof hash === 'string' ? hash : undefined;
 }
 
-/** Recorded by `pup session handoff-done` (run by the agent). */
-export function markHandoffReady(db: Database, sessionId: string): void {
-  appendEvent(db, sessionId, 'handoff_ready', {});
+/**
+ * True once the session has signalled handoff-done after the request steer and
+ * the file on disk is still the one it signalled for. A tampered file is not
+ * readiness but a fresh request: `pup respawn` asks again rather than wedging
+ * on a document the respawn is going to refuse anyway (decision 49).
+ */
+export function isHandoffReady(
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  pathsBase?: string,
+): boolean {
+  const signalled = signalledHash(db, sessionId);
+  if (signalled === undefined) return false;
+  const document = readHandoff(projectPaths(repoPath, pathsBase).handoffFile(sessionId));
+  return document !== undefined && hashHandoff(document) === signalled;
+}
+
+/**
+ * Recorded by `pup session handoff-done` (run by the agent). The event names
+ * the content the session is signalling for, which is what lets the respawn
+ * tell that document from one substituted afterwards (decision 49).
+ */
+export function markHandoffReady(
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  pathsBase?: string,
+): void {
+  const handoffPath = projectPaths(repoPath, pathsBase).handoffFile(sessionId);
+  const document = readHandoff(handoffPath);
+  if (document === undefined) throw new HandoffMissingError(sessionId, handoffPath);
+  appendEvent(db, sessionId, 'handoff_ready', { hash: hashHandoff(document) });
 }
 
 export function awaitHandoffReady(
   db: Database,
+  repoPath: string,
   sessionId: string,
   timeoutMs = HANDOFF_WAIT_DEFAULT_MS,
+  pathsBase?: string,
 ): boolean {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (isHandoffReady(db, sessionId)) return true;
+    if (isHandoffReady(db, repoPath, sessionId, pathsBase)) return true;
     syncSleep(HANDOFF_POLL_MS);
   }
-  return isHandoffReady(db, sessionId);
+  return isHandoffReady(db, repoPath, sessionId, pathsBase);
 }
 
 /**
@@ -109,12 +173,25 @@ export function respawnSession(
   const session = requireRunning(db, sessionId);
   const paths = projectPaths(repoPath, pathsBase);
   const handoffPath = paths.handoffFile(sessionId);
-  if (!existsSync(handoffPath)) {
+  const handoff = readHandoff(handoffPath);
+  if (handoff === undefined) {
     throw new Error(
       `No handoff at ${handoffPath}. Run \`pup respawn ${sessionId}\` to request one first.`,
     );
   }
-  const handoff = readFileSync(handoffPath, 'utf8');
+  // The file is writable by anything running as this user, and the wait above
+  // polls every 5 s, so the document read here need not be the one the session
+  // signalled for. Hashing the read itself leaves no second read to substitute
+  // for: either these are the bytes handoff-done named, or nothing is kicked
+  // off on them (decision 49).
+  const signalled = signalledHash(db, sessionId);
+  if (hashHandoff(handoff) !== signalled) {
+    throw new Error(
+      `Handoff for ${sessionId} at ${handoffPath} is not the document it signalled ` +
+        `(handoff-done recorded ${signalled ?? 'no hash'}, on disk ${hashHandoff(handoff)}); ` +
+        `something replaced it since. Re-run \`pup respawn ${sessionId}\` to ask again.`,
+    );
+  }
   relaunchWindow(db, sessionId, session, paths.compiledDir(sessionId), {
     promptSuffix: `\n\n## Handoff from your previous run\n${handoff}`,
     eventPayload: { handoffBytes: handoff.length },

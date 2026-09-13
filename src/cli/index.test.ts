@@ -60,6 +60,11 @@ vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
   RESPAWN_SUGGEST_TOKENS: 120_000,
   awaitHandoffReady: vi.fn(),
+  HandoffMissingError: class HandoffMissingError extends Error {
+    constructor(sessionId: string, handoffPath: string) {
+      super(`No handoff at ${handoffPath} for ${sessionId}.`);
+    }
+  },
   hardRespawnSession: vi.fn(),
   isHandoffReady: vi.fn(),
   markHandoffReady: vi.fn(),
@@ -91,6 +96,7 @@ import {
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
   awaitHandoffReady,
+  HandoffMissingError,
   hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
@@ -1765,6 +1771,7 @@ describe('CLI commands', () => {
       );
       expect(awaitHandoffReady).toHaveBeenCalledWith(
         expect.anything(),
+        expect.any(String),
         's1',
         HANDOFF_WAIT_DEFAULT_MS,
       );
@@ -1832,7 +1839,12 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['respawn', 's1', '--wait', '30'], { from: 'user' });
 
-      expect(awaitHandoffReady).toHaveBeenCalledWith(expect.anything(), 's1', 30_000);
+      expect(awaitHandoffReady).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.any(String),
+        's1',
+        30_000,
+      );
     });
 
     it('reports and exits 1 when the handoff never arrives', () => {
@@ -2276,10 +2288,28 @@ describe('CLI commands', () => {
         buildProgram().parse(['session', 'handoff-done'], { from: 'user' });
 
         expect(markHandoffReady).toHaveBeenCalledTimes(1);
-        const [, sessionId] = firstCall(markHandoffReady);
+        const [, , sessionId] = firstCall(markHandoffReady);
         expect(sessionId).toBe('s1');
         expect(logs).toContain('Session s1 handoff recorded; Pupitre will respawn you shortly.');
         expect(process.exitCode).toBeUndefined();
+      });
+
+      // Signalling for a document that is not there would otherwise arm a
+      // respawn on whatever writes that path next (decision 49).
+      it('refuses when the document it is signalling for was never written', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+        vi.mocked(markHandoffReady).mockImplementation(() => {
+          throw new HandoffMissingError('s1', '/state/s1/handoff.md');
+        });
+
+        buildProgram().parse(['session', 'handoff-done'], { from: 'user' });
+
+        expect(errors).toEqual(['No handoff at /state/s1/handoff.md for s1.']);
+        expect(logs).toEqual([]);
+        expect(process.exitCode).toBe(1);
       });
 
       it('refuses from the repo root, inside no worktree', () => {
