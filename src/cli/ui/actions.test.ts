@@ -158,6 +158,21 @@ describe('dashboard actions', () => {
     expect(interrupt && JSON.parse(interrupt.payload)).toEqual({ steered: false });
   });
 
+  // Every message here reaches Ink, which passes an escape straight through to
+  // the one screen the operator decides from (decision 29). The refusals quote
+  // what they refused, and what they refused is a session's own output.
+  it('sanitizes what a refusal puts on screen', () => {
+    // Once, so the kill's own case below still sees the default mock.
+    vi.mocked(killSession).mockImplementationOnce(() => {
+      throw new Error('\u001b[2Krefused:\n  the pane is gone');
+    });
+
+    expect(killSelected(deps, SESSION)).toEqual({
+      message: '[2Krefused: the pane is gone',
+      failed: true,
+    });
+  });
+
   it('kills through `killSession`', () => {
     expect(killSelected(deps, SESSION).message).toContain('backlog');
 
@@ -188,6 +203,25 @@ describe('dashboard actions', () => {
 
       expect(getSession(db, SESSION)?.state).toBe('running');
       expect(result.message).toContain('untouched');
+    });
+
+    // The row the key was pressed on comes from a reading up to two seconds
+    // old, and its confirmation can sit unanswered for as long as the operator
+    // looks away. `awaiting-review -> running` is a legal edge, so a stale `y`
+    // would quietly reopen a branch that is waiting to be merged.
+    it('refuses a session that stopped being blocked while the prompt was open', () => {
+      transitionSession(db, SESSION, 'running', { kind: 'operator-unblock' });
+      transitionSession(db, SESSION, 'awaiting-review');
+
+      const result = unblockSelected(deps, SESSION);
+
+      expect(result.failed).toBe(true);
+      expect(result.message).toContain('is awaiting-review; only blocked sessions unblock');
+      expect(getSession(db, SESSION)?.state).toBe('awaiting-review');
+    });
+
+    it('refuses a session that is no longer there at all', () => {
+      expect(unblockSelected(deps, 's-gone').failed).toBe(true);
     });
   });
 

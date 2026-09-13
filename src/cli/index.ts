@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -38,7 +46,7 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
-import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
+import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
@@ -1221,6 +1229,21 @@ export function buildProgram(): Command {
           );
         }
         let outcome: MergeOutcome;
+        // The gate holds a lock directory it removes in a `finally`, which a
+        // process killed by a signal never reaches — and the next merge then
+        // refuses against a lock nobody holds. Ctrl-C at the terminal and the
+        // SIGTERM `pup ui`'s `q` sends to this child are both that case, so the
+        // lock goes on the way out. Only if this run took it: a lock that was
+        // already there when the command started belongs to another merge, and
+        // is not this one's to remove.
+        const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
+        const heldOnEntry = existsSync(lockPath);
+        const releaseLock = (signal: NodeJS.Signals): void => {
+          if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
+          process.exit(signal === 'SIGTERM' ? 143 : 130);
+        };
+        process.once('SIGINT', releaseLock);
+        process.once('SIGTERM', releaseLock);
         try {
           outcome = runMergeGate(db, {
             repoPath,
@@ -1242,6 +1265,11 @@ export function buildProgram(): Command {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
           return refuse(error instanceof Error ? error.message : String(error));
+        } finally {
+          // The gate has released its own lock by now, so a later signal must
+          // not reach a handler that would delete the next run's.
+          process.off('SIGINT', releaseLock);
+          process.off('SIGTERM', releaseLock);
         }
         printGateReport(outcome.report);
         switch (outcome.status) {

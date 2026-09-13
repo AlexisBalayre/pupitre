@@ -2,6 +2,7 @@ import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
+import { sanitizeReason } from '../../adapters/capability.utils.js';
 import {
   conductorSocket,
   SessionPaneMissingError,
@@ -10,7 +11,7 @@ import {
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
-import { appendEvent, transitionSession } from '../../core/session.repository.js';
+import { appendEvent, getSession, transitionSession } from '../../core/session.repository.js';
 import {
   isHandoffReady,
   requestHandoff,
@@ -66,8 +67,21 @@ function attempt(act: () => string): ActionResult {
   try {
     return { message: act() };
   } catch (error) {
-    return { message: error instanceof Error ? error.message : String(error), failed: true };
+    return failure(error);
   }
+}
+
+/**
+ * A thrown error as a status line. Sanitized, because a refusal quotes what it
+ * refused — a gate report, a session's own words — and Ink passes an ANSI
+ * escape straight through to the one screen the operator decides from
+ * (decision 29).
+ */
+export function failure(error: unknown): ActionResult {
+  return {
+    message: sanitizeReason(error instanceof Error ? error.message : String(error)),
+    failed: true,
+  };
 }
 
 /**
@@ -144,6 +158,18 @@ export function selectedBlockedReason(deps: ActionDeps, sessionId: string): stri
  */
 export function unblockSelected(deps: ActionDeps, sessionId: string): ActionResult {
   return attempt(() => {
+    // Re-read rather than trust the row the key was pressed on: that row comes
+    // from a reading up to two seconds old, and the confirmation it opened can
+    // sit unanswered for as long as the operator looks away. `running` is a
+    // legal target from `awaiting-review`, so a stale `y` on a session that was
+    // unblocked elsewhere and has since finished would quietly reopen a branch
+    // that is waiting to be merged. `pup unblock` asks the store at the moment
+    // it acts, and so does this.
+    const row = getSession(deps.db, sessionId);
+    if (!row) throw new Error(`No session ${sessionId}.`);
+    if (row.state !== 'blocked') {
+      throw new Error(`Session ${sessionId} is ${row.state}; only blocked sessions unblock.`);
+    }
     transitionSession(deps.db, sessionId, 'running', { kind: 'operator-unblock' });
     return `Unblocked ${sessionId}; its window is untouched.`;
   });
@@ -185,7 +211,7 @@ export async function respawnSelected(
     respawnSession(db, repoPath, sessionId);
     return { message: `Respawned ${sessionId} on a fresh context window with its handoff.` };
   } catch (error) {
-    return { message: error instanceof Error ? error.message : String(error), failed: true };
+    return failure(error);
   }
 }
 

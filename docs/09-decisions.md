@@ -2237,9 +2237,14 @@ changes back into those docs is pending.
     this process's own bin: `runMergeGate` is one synchronous pipeline of clone, install, build,
     test and audit that returns a report at the end, so called in-process it would show nothing
     for the minutes the operator most wants to watch. The child prints a stage as it finishes and
-    the pane fills as the gate runs. It also puts the CLI's guards on the far side of a process
-    boundary — the child re-resolves the project and re-asks who is calling — so the rule below is
-    enforced twice.
+    the pane fills as the gate runs. What the child does *not* do is decide who may merge: it is
+    spawned with `cwd` at the repo root, where `callingSession`'s worktree detection finds
+    nothing, so its tier check is weaker than the parent's, not a second opinion on it. The parent
+    decides the tier — the rule below, applied before a key is bound at all — and the child
+    re-checks what only it can: the session's state and whether there is an adoptable PR. `q`
+    ends that child with SIGTERM rather than leaving Ctrl-C to signal it, because the gate's lock
+    directory is released in a `finally` no signal-killed process reaches; `pup merge` now removes
+    the lock on SIGINT and SIGTERM itself, so an interrupted gate cannot wedge the next one.
     *Attach is Ink's `suspendTerminal`, not an unmount.* Ink 7 leaves the alternate screen, hands
     the input stream back, runs the child and forces a full redraw after it. That is exactly an
     attach, and it costs nothing: the reading, the cursor and the status line are all still there

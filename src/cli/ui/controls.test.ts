@@ -9,11 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./actions.service.js', () => ({
   attachTo: vi.fn(() => ({ message: 'Detached from pup-s-run-1.' })),
   conductorAttachTarget: vi.fn(() => ({ label: 'conductor-window', args: ['-L', 's', 'attach'] })),
+  // A pure formatter, not a boundary — stubbed only because the factory
+  // replaces the whole module. Its sanitizing is asserted in actions.test.ts.
+  failure: (error: unknown) => ({
+    message: String((error as Error)?.message ?? error),
+    failed: true,
+  }),
   interruptSelected: vi.fn(() => ({ message: 'Interrupted.' })),
   killSelected: vi.fn(() => ({ message: 'Killed.' })),
   launchSelected: vi.fn(() => ({ message: 'Launched.' })),
   respawnSelected: vi.fn(() => Promise.resolve({ message: 'Respawned.' })),
-  runMerge: vi.fn(),
+  runMerge: vi.fn(() => ({ kill: vi.fn() })),
   selectedBlockedReason: vi.fn(() => 'the reject cap'),
   sessionAttachTarget: vi.fn((id: string) => ({ label: `pup-${id}`, args: ['attach', '-t', id] })),
   steerSelected: vi.fn(() => ({ message: 'Steered.' })),
@@ -38,6 +44,7 @@ import {
   unblockSelected,
 } from './actions.service.js';
 import { App } from './app.component.js';
+import { MERGE_LOG_LINES } from './dashboard.constants.js';
 
 const DEPS = { db: {}, repoPath: '/repo', pupBin: '/abs/pup.js' } as unknown as ActionDeps;
 
@@ -94,8 +101,16 @@ async function press(instance: ReturnType<typeof mount>, ...keys: string[]): Pro
   }
 }
 
-function settled(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 40));
+/**
+ * Several timer turns, not one: a key can start a chain that crosses the
+ * macrotask queue more than once — `waitUntilRenderFlush` yields to React's
+ * scheduler, waits for the commit, then waits for the stdout write — and one
+ * turn is enough only on an unloaded machine.
+ */
+async function settled(): Promise<void> {
+  for (let turn = 0; turn < 3; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 const ENTER = '\r';
@@ -361,6 +376,59 @@ describe('dashboard controls', () => {
       instance.unmount();
     });
 
+    // The gate runs for minutes. Without a way out that is not Ctrl-C, the
+    // only exit signals the child too, and the lock directory it releases in a
+    // `finally` is stranded for every later merge.
+    it('ends the child with SIGTERM on `q`, rather than leaving Ctrl-C to do it', async () => {
+      const child = { kill: vi.fn() };
+      vi.mocked(runMerge).mockReturnValueOnce(child as unknown as ReturnType<typeof runMerge>);
+      const instance = mount(reviewable);
+
+      await press(instance, 'm', 'y');
+      expect(instance.lastFrame()).toContain('(running)');
+
+      await press(instance, 'q');
+
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      instance.unmount();
+    });
+
+    // The ordinal is the only identity these lines have, so it has to keep
+    // counting once the tail starts scrolling — a key that came round again
+    // would draw a new line over an old one.
+    it('keeps every line in the pane distinct past the tail it holds', async () => {
+      const instance = mount(reviewable);
+      await press(instance, 'm', 'y');
+      const handlers = vi.mocked(runMerge).mock.calls[0]?.[2] as MergeHandlers;
+
+      for (let line = 0; line < MERGE_LOG_LINES + 3; line += 1) handlers.onLine(`stage ${line}`);
+      await settled();
+
+      const frame = instance.lastFrame() ?? '';
+      // The oldest three have scrolled off and the newest are all on screen,
+      // each once: a repeated key would have dropped or doubled one of them.
+      expect(frame).not.toContain('stage 0');
+      expect(frame).toContain(`stage ${MERGE_LOG_LINES + 2}`);
+      expect(frame.match(/stage \d+/g)).toHaveLength(MERGE_LOG_LINES);
+      instance.unmount();
+    });
+
+    it('gives the keys back when the child could not be spawned at all', async () => {
+      vi.mocked(runMerge).mockImplementationOnce(() => {
+        throw new Error('spawn ENOENT');
+      });
+      const instance = mount(reviewable);
+
+      await press(instance, 'm', 'y');
+
+      expect(instance.lastFrame()).toContain('spawn ENOENT');
+      expect(instance.lastFrame()).not.toContain('waiting for the first stage');
+      // Not wedged behind `busy`: the next key is answered.
+      await press(instance, 'i');
+      expect(interruptSelected).toHaveBeenCalledWith(DEPS, 's-run-1');
+      instance.unmount();
+    });
+
     it('merges only a branch that is finished', async () => {
       const instance = mount();
 
@@ -384,10 +452,14 @@ describe('dashboard controls', () => {
       instance.unmount();
     });
 
-    it.each([['s'], ['i'], ['k'], ['u'], ['R'], ['a'], ['c'], ['m'], ['l']])(
+    it.each([['s'], ['i'], ['k'], ['u'], ['R'], ['a'], ['A'], ['c'], ['m'], ['l']])(
       'does nothing on `%s`',
       async (key) => {
-        const instance = mount(snapshotFixture(), REASON);
+        // With the conductor up, so `A` is refused for the tier rather than
+        // for having no window to attach to.
+        const running = snapshotFixture();
+        running.conductor.running = true;
+        const instance = mount(running, REASON);
 
         await press(instance, key, 'y', ENTER);
 
@@ -432,6 +504,69 @@ describe('dashboard controls', () => {
       expect(reads).toBe(2);
       instance.unmount();
     });
+  });
+
+  /**
+   * `launchTask`, `startConductor` and `steerSession` all block this thread —
+   * `kickoff` polls a new window for up to ~51 s, a steer for 3.5 s — so the
+   * frame that says what is happening has to be on screen before the call, not
+   * after it. Each case asserts the line from inside the action: at that moment
+   * the thread is where it would be for the whole freeze, and the frame there
+   * is the one the operator would be staring at.
+   */
+  describe('the actions that block the thread', () => {
+    it.each([
+      [
+        'launch',
+        [DOWN, 'l', ENTER],
+        launchSelected,
+        'Launching t-planned: waiting for the window …',
+      ],
+      ['steer', ['s', 'g', 'o', ENTER], steerSelected, 'Steering s-run-1: waiting for the paste'],
+      ['conductor start', ['c', ENTER, ENTER], toggleConductor, 'Starting the conductor'],
+    ])('paints the wait before it runs the %s', async (_what, keys, action, waiting) => {
+      let frameWhenCalled = '';
+      const instance = mount();
+      vi.mocked(action).mockImplementationOnce(((...args: unknown[]) => {
+        frameWhenCalled = instance.lastFrame() ?? '';
+        return { message: `done ${args.length}` };
+      }) as never);
+
+      await press(instance, ...keys);
+
+      expect(action).toHaveBeenCalled();
+      expect(frameWhenCalled).toContain(waiting);
+      instance.unmount();
+    });
+
+    it('gives the keys back once the call returns', async () => {
+      const instance = mount();
+
+      await press(instance, 's', 'g', 'o', ENTER);
+      expect(instance.lastFrame()).toContain('Steered.');
+
+      await press(instance, 'i');
+
+      expect(interruptSelected).toHaveBeenCalledWith(DEPS, 's-run-1');
+      instance.unmount();
+    });
+  });
+
+  // Without this the dashboard is left on screen and deaf, with no way out but
+  // Ctrl-C.
+  it('gives the keys back when the terminal refuses to be handed over', async () => {
+    const instance = mount();
+    vi.mocked(attachTo).mockImplementationOnce(() => {
+      throw new Error('the terminal would not hand input back');
+    });
+
+    await press(instance, 'a');
+    expect(instance.lastFrame()).toContain('would not hand input back');
+
+    await press(instance, 'i');
+
+    expect(interruptSelected).toHaveBeenCalledWith(DEPS, 's-run-1');
+    instance.unmount();
   });
 
   it('cancels any prompt on Esc, leaving the action untaken', async () => {

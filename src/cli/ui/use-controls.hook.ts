@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process';
 import { type Key, useApp, useInput } from 'ink';
 import { useRef, useState } from 'react';
 import { HANDOFF_WAIT_DEFAULT_MS } from '../../core/session-handoff.service.js';
@@ -8,6 +9,7 @@ import {
   type AttachTarget,
   attachTo,
   conductorAttachTarget,
+  failure,
   interruptSelected,
   killSelected,
   launchSelected,
@@ -85,7 +87,7 @@ export function useControls({
   /** A session or the conductor is watching: every mutating key is unbound. */
   readOnly: boolean;
 }): Controls {
-  const { exit, suspendTerminal } = useApp();
+  const { exit, suspendTerminal, waitUntilRenderFlush } = useApp();
   const [selected, setSelected] = useState(0);
   /**
    * The model the last launch was given, offered as the next one's default: a
@@ -98,6 +100,13 @@ export function useControls({
   const [mergeLog, setMergeLog] = useState<MergeLog | undefined>();
   const [status, setStatus] = useState<ControlStatus | undefined>();
   const [busy, setBusy] = useState(false);
+  /**
+   * The merge child, while one is running. Held so `q` can end it: the gate
+   * takes minutes, and a screen whose only way out was Ctrl-C would SIGINT the
+   * child along with this process, leaving the lock directory `withMergeLock`
+   * releases in a `finally` that a signal-killed process never reaches.
+   */
+  const mergeChild = useRef<ChildProcess | undefined>(undefined);
 
   const rowCount = live.length + snapshot.backlog.length;
   // Clamped at render rather than on every keypress: a merge or a launch can
@@ -153,6 +162,28 @@ export function useControls({
     if (input && !key.ctrl && !key.meta) setPrompt({ ...prompt, value: prompt.value + input });
   }
 
+  /**
+   * Run an action that blocks this thread, after the frame that says so is on
+   * screen. `kickoff` polls a new window for readiness for up to ~51 s, a steer
+   * for 3.5 s, and a conductor start does both — called straight out of the key
+   * handler they would freeze the dashboard with the pre-keypress frame still
+   * drawn, which is exactly the freeze decision 52's addendum forbids. Ink's
+   * `waitUntilRenderFlush` yields to React's scheduler and settles once the new
+   * frame has reached stdout, so the line naming the wait is always what the
+   * operator is looking at while the thread is gone.
+   */
+  function runAfterFrame(waiting: string, act: () => ActionResult): void {
+    setBusy(true);
+    say(waiting);
+    void waitUntilRenderFlush().then(() => {
+      try {
+        settle(act());
+      } finally {
+        setBusy(false);
+      }
+    });
+  }
+
   /** The respawn's wait, and the merge's, both run past this handler's return. */
   function startRespawn(sessionId: string): void {
     setBusy(true);
@@ -168,28 +199,43 @@ export function useControls({
   function startMerge(sessionId: string): void {
     setBusy(true);
     setMergeLog({ sessionId, lines: [], firstLine: 0, running: true });
-    runMerge(deps, sessionId, {
-      onLine: (line) =>
-        setMergeLog((log) =>
-          log?.running
-            ? // Only the tail is kept: the gate prints a stage per line and the
-              // pane is a few rows of a screen that also has a fleet on it.
-              { ...log, lines: [...log.lines, line].slice(-MERGE_LOG_LINES) }
-            : log,
-        ),
-      onExit: (code) => {
-        setBusy(false);
-        setMergeLog((log) => (log ? { ...log, running: false } : log));
-        settle(
-          code === 0
-            ? { message: `Merge of ${sessionId} passed — the PR line is in the log above.` }
-            : {
-                message: `Merge of ${sessionId} did not land (exit ${code ?? 'no code'}); the log above says where it stopped.`,
-                failed: true,
-              },
-        );
-      },
-    });
+    try {
+      mergeChild.current = runMerge(deps, sessionId, {
+        onLine: (line) =>
+          setMergeLog((log) => {
+            if (!log?.running) return log;
+            // Only the tail is kept: the gate prints a stage per line and the
+            // pane is a few rows of a screen that also has a fleet on it. What
+            // scrolls off the top advances `firstLine`, because the ordinal is
+            // the only identity these lines have — two stages can both print
+            // `ok`, and a key that came round again would draw the thirteenth
+            // line over the first.
+            const kept = [...log.lines, line];
+            const dropped = Math.max(kept.length - MERGE_LOG_LINES, 0);
+            return { ...log, lines: kept.slice(dropped), firstLine: log.firstLine + dropped };
+          }),
+        onExit: (code) => {
+          mergeChild.current = undefined;
+          setBusy(false);
+          setMergeLog((log) => (log ? { ...log, running: false } : log));
+          settle(
+            code === 0
+              ? { message: `Merge of ${sessionId} passed — the PR line is in the log above.` }
+              : {
+                  message: `Merge of ${sessionId} did not land (exit ${code ?? 'no code'}); the log above says where it stopped.`,
+                  failed: true,
+                },
+          );
+        },
+      });
+    } catch (error) {
+      // A child that could not even be spawned: without this the pane would sit
+      // on `waiting for the first stage …` with every key dead behind `busy`.
+      mergeChild.current = undefined;
+      setBusy(false);
+      setMergeLog(undefined);
+      settle(failure(error));
+    }
   }
 
   /**
@@ -204,15 +250,20 @@ export function useControls({
     let result: ActionResult = { message: `Left ${target.label}.` };
     void suspendTerminal(() => {
       result = attachTo(target);
-    }).then(() => {
-      setBusy(false);
-      settle(result);
-    });
+    })
+      .then(() => settle(result))
+      // A suspension that throws — a terminal that would not hand the input
+      // stream back — must still give the keys back, or the dashboard is left
+      // on screen and deaf with no way out but Ctrl-C.
+      .catch((error: unknown) => settle(failure(error)))
+      .finally(() => setBusy(false));
   }
 
   function startConductorToggle(): void {
     if (snapshot.conductor.running) {
-      settle(toggleConductor(deps, true, { model: '', workerModel: '' }));
+      runAfterFrame('Stopping the conductor …', () =>
+        toggleConductor(deps, true, { model: '', workerModel: '' }),
+      );
       return;
     }
     setPrompt({
@@ -224,15 +275,28 @@ export function useControls({
           kind: 'input',
           label: 'worker model the conductor launches sessions on (blank for the default)',
           value: '',
-          run: (workerModel) => settle(toggleConductor(deps, false, { model, workerModel })),
+          run: (workerModel) =>
+            runAfterFrame('Starting the conductor: waiting for its window …', () =>
+              toggleConductor(deps, false, { model, workerModel }),
+            ),
         }),
     });
   }
 
   useInput((input, key) => {
     // An action in flight owns the screen: a second merge, or a kill of the
-    // session a respawn is waiting on, is not a keypress anyone means.
-    if (busy) return;
+    // session a respawn is waiting on, is not a keypress anyone means. `q` is
+    // the exception, and only against the merge: the gate runs for minutes, and
+    // the alternative way out was Ctrl-C, which signals the child along with
+    // this process and strands the lock directory it would have released.
+    if (busy) {
+      if (input === 'q' && mergeChild.current) {
+        mergeChild.current.kill('SIGTERM');
+        mergeChild.current = undefined;
+        exit();
+      }
+      return;
+    }
     if (prompt) return answerPrompt(input, key);
     if (mergeLog && (key.escape || key.return)) return setMergeLog(undefined);
     if (input === 'q') return exit();
@@ -251,7 +315,9 @@ export function useControls({
           value: lastModel.current,
           run: (model) => {
             lastModel.current = model;
-            settle(launchSelected(deps, task.id, model));
+            runAfterFrame(`Launching ${task.id}: waiting for the window …`, () =>
+              launchSelected(deps, task.id, model),
+            );
           },
         });
       case 's':
@@ -260,10 +326,12 @@ export function useControls({
             kind: 'input',
             label: `steer ${id}`,
             value: '',
-            run: (message) =>
-              message
-                ? settle(steerSelected(deps, id, message))
-                : say('Nothing typed; nothing sent.'),
+            run: (message) => {
+              if (!message) return say('Nothing typed; nothing sent.');
+              runAfterFrame(`Steering ${id}: waiting for the paste to land …`, () =>
+                steerSelected(deps, id, message),
+              );
+            },
           }),
         );
       case 'i':

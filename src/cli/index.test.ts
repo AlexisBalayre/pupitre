@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -89,6 +90,7 @@ import { isConductorRunning, startConductor, stopConductor } from '../core/condu
 import type { SessionState } from '../core/db.client.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
+import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import {
@@ -2572,6 +2574,73 @@ describe('CLI commands', () => {
         ...overrides,
       };
     }
+
+    /**
+     * The gate's lock is a directory released in a `finally`, which a process
+     * killed by a signal never reaches — Ctrl-C at the terminal, or the SIGTERM
+     * `pup ui`'s `q` sends this child. Left behind, it refuses every later
+     * merge on behalf of a run that is long gone.
+     */
+    describe('the lock a signal would otherwise strand', () => {
+      /** The signal listeners `merge` added, and the lock path it guards. */
+      function runMergeUnderSignals(repo: string): {
+        handlers: NodeJS.SignalsListener[];
+        lockPath: string;
+      } {
+        const before = process.listeners('SIGINT');
+        vi.mocked(runMergeGate).mockImplementation(() => {
+          // Inside the gate: the listeners are live and the lock is held.
+          mkdirSync(join(repo, '.git', MERGE_LOCK_DIRNAME), { recursive: true });
+          handlers = process
+            .listeners('SIGINT')
+            .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
+          throw new Error('interrupted');
+        });
+        let handlers: NodeJS.SignalsListener[] = [];
+        buildProgram().parse(['merge', 's1'], { from: 'user' });
+        return { handlers, lockPath: join(repo, '.git', MERGE_LOCK_DIRNAME) };
+      }
+
+      it('removes the lock this run took, and exits', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        const { handlers, lockPath } = runMergeUnderSignals(repo);
+        expect(handlers).toHaveLength(1);
+        handlers[0]?.('SIGINT');
+
+        expect(existsSync(lockPath)).toBe(false);
+        expect(exit).toHaveBeenCalledWith(130);
+      });
+
+      // A lock that was already there belongs to another merge, and removing it
+      // would hand that run's exclusion to whoever interrupted this one.
+      it('leaves a lock it found already held', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        mkdirSync(join(repo, '.git', MERGE_LOCK_DIRNAME), { recursive: true });
+        vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        const { handlers, lockPath } = runMergeUnderSignals(repo);
+        handlers[0]?.('SIGTERM');
+
+        expect(existsSync(lockPath)).toBe(true);
+      });
+
+      // Once the gate has returned it has released its own lock, so a later
+      // signal must not reach a handler that would delete the next run's.
+      it('takes its handlers off again when the gate returns', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        const before = process.listeners('SIGINT').length;
+
+        vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+        buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+        expect(process.listeners('SIGINT')).toHaveLength(before);
+      });
+    });
 
     it('rejects --accept-debt without --review-by', () => {
       useCwd(initRepo());
