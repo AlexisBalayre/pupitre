@@ -51,6 +51,12 @@ export interface CompileInput {
   userConfigHash: string;
   /** Absolute directory the compiled files will live in (hook paths embed it). */
   outDir: string;
+  /**
+   * Absolute path of the `codegraph` binary when the operator has one. Present
+   * compiles `mcp.json` and the context's code-graph section; absent compiles
+   * neither, and the session launches with no graph (decision 51).
+   */
+  codegraphBinary?: string;
 }
 
 export interface CompiledProfile {

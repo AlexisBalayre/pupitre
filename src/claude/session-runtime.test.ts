@@ -186,6 +186,23 @@ describe('launchArgs', () => {
     expect(launchArgs({ ...OPTS, model: 'opus' })).toContain('--model');
   });
 
+  it('passes --mcp-config only when the session has a code graph (decision 51)', () => {
+    expect(launchArgs(OPTS)).not.toContain('--mcp-config');
+
+    const args = launchArgs({ ...OPTS, mcpConfigPath: '/state/s-1/compiled/mcp.json' });
+
+    const flag = args.indexOf('--mcp-config');
+    expect(args[flag + 1]).toBe('/state/s-1/compiled/mcp.json');
+  });
+
+  // Strict mode would drop the operator's own MCP servers, and sessions inherit
+  // user config (decision 9) — the code graph is added to it, not swapped for it.
+  it('never restricts MCP to the compiled config', () => {
+    expect(launchArgs({ ...OPTS, mcpConfigPath: '/state/s-1/compiled/mcp.json' })).not.toContain(
+      '--strict-mcp-config',
+    );
+  });
+
   // The peer name is what the conductor sees in ListAgents and addresses with
   // SendMessage; it is the tmux name so one id reaches the session everywhere
   // (decision 47).

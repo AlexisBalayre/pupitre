@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -21,6 +28,7 @@ import {
   interruptPane,
   kickoff,
   killSession as killTmux,
+  launchSession,
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
@@ -64,6 +72,13 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
+
+/**
+ * A PATH with no `codegraph` on it, so a launch's code graph is a property of
+ * the test rather than of the machine running it (decision 51). `git` is still
+ * reachable — these suites drive a real repo.
+ */
+const NO_CODEGRAPH_PATH = '/usr/bin:/bin';
 
 const REPO = '/repo';
 
@@ -230,6 +245,7 @@ describe('launchTask scope-conflict guard', () => {
     db = openStore(':memory:');
     // projectPaths writes compiled profiles under $HOME/.pupitre.
     vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-home-'))));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-')));
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -451,6 +467,7 @@ describe('launchTask armed-driver guard', () => {
   beforeEach(() => {
     db = openStore(':memory:');
     vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-home-'))));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-')));
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -591,5 +608,123 @@ describe('steer, interrupt and kill by session id', () => {
 
     expect(killTmux).toHaveBeenCalledWith('s-1', '%7');
     expect(getSession(db, 's-1')?.state).toBe('killed');
+  });
+});
+
+// A session's graph is its own worktree's, built at launch, and the launch
+// survives not having one. The binary is faked per docs/conventions/testing.md:
+// what is under test is what pup asks codegraph to index and what it then hands
+// `claude`, not codegraph's own indexing (decision 51).
+describe('launchTask code graph', () => {
+  let db: Database;
+  let repo: string;
+  let cgLog: string;
+
+  /**
+   * A `codegraph` that logs its argv and leaves behind what the real one does:
+   * a `.codegraph/` whose own `.gitignore` hides the database but not the
+   * directory, which is what the exclude line exists to cover.
+   */
+  function fakeCodegraph(body: string): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-bin-')));
+    cgLog = join(dir, 'calls.log');
+    writeFileSync(
+      join(dir, 'codegraph'),
+      ['#!/bin/sh', `printf '%s\\n' "$*" >> ${cgLog}`, body].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${dir}:${NO_CODEGRAPH_PATH}`);
+    return join(dir, 'codegraph');
+  }
+
+  const INDEXES = [
+    'mkdir -p "$2/.codegraph"',
+    'printf \'*\\n!.gitignore\\n\' > "$2/.codegraph/.gitignore"',
+    'echo sqlite > "$2/.codegraph/codegraph.db"',
+    'exit 0',
+  ].join('\n');
+
+  const cgCalls = (): string[] =>
+    existsSync(cgLog) ? readFileSync(cgLog, 'utf8').split('\n').filter(Boolean) : [];
+
+  const launch = () =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+    });
+
+  // The module mocks are file-wide and never cleared, so every assertion below
+  // reads the call this test made, not the first in the file.
+  const launchedWith = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0];
+  const kickoffContext = () => vi.mocked(kickoff).mock.calls.at(-1)?.[1];
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-home-'))));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-launch-')));
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+    planTask(db, { repoPath: repo, task: spec() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    // Only the console spy: `restoreAllMocks` would strip the implementations
+    // off this file's module mocks, and later suites rely on them.
+    vi.mocked(console.error).mockRestore();
+  });
+
+  // The worktree, never the repo it was cut from — and the index it leaves
+  // behind is excluded, because the gate and the overlap radar read a clean tree.
+  it('indexes the session worktree and leaves it clean', () => {
+    fakeCodegraph(INDEXES);
+
+    const worktree = join(repo, '.worktrees', launch());
+
+    expect(cgCalls()).toEqual([`init ${worktree} --yes`]);
+    expect(existsSync(join(worktree, '.codegraph', 'codegraph.db'))).toBe(true);
+    expect(gitIn(worktree, 'status', '--porcelain')).toBe('');
+  });
+
+  it('launches claude against a compiled mcp.json naming the absolute binary', () => {
+    const binary = fakeCodegraph(INDEXES);
+
+    const sessionId = launch();
+
+    const mcpConfigPath = launchedWith()?.mcpConfigPath as string;
+    expect(mcpConfigPath).toMatch(/compiled\/mcp\.json$/);
+    const config = JSON.parse(readFileSync(mcpConfigPath, 'utf8'));
+    expect(config.mcpServers.codegraph.command).toBe(binary);
+    expect(config.mcpServers.codegraph.args).toContain(join(repo, '.worktrees', sessionId));
+    expect(kickoffContext()).toContain('## Code graph');
+  });
+
+  // No graph, never the wrong one: codegraph walks PARENTS for a `.codegraph/`,
+  // so a worktree with no index of its own would be served the main checkout's
+  // graph — main's code under this branch's name.
+  it('withholds the mcp config when the index fails, and still launches', () => {
+    fakeCodegraph('echo "out of disk" >&2\nexit 1');
+
+    const sessionId = launch();
+
+    expect(getSession(db, sessionId)?.state).toBe('running');
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain('without a code graph');
+  });
+
+  it('launches normally, with one line, when the operator has no codegraph', () => {
+    const sessionId = launch();
+
+    expect(getSession(db, sessionId)?.state).toBe('running');
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(kickoffContext()).not.toContain('## Code graph');
+    expect(vi.mocked(console.error).mock.calls).toHaveLength(1);
   });
 });
