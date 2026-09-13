@@ -12,9 +12,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   codegraphBinary,
+  codegraphLabel,
   codegraphMcpConfig,
   ensureCodegraphExcluded,
   indexDirectory,
+  prepareGraph,
 } from './codegraph.client.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
@@ -262,5 +264,101 @@ describe('codegraphMcpConfig', () => {
         CLAUDE_CODE_MESSAGING_TOKEN: '',
       },
     });
+  });
+});
+
+describe('codegraphLabel', () => {
+  it('answers the installed version, for the line beside the sandbox one', () => {
+    fakeCodegraph('#!/bin/sh\necho "codegraph 1.6.0"\nexit 0');
+
+    expect(codegraphLabel(makeRepo())).toBe('codegraph 1.6.0');
+  });
+
+  it('says so plainly when the operator has none — detected, never depended on', () => {
+    vi.stubEnv('PATH', tempDir('pup-cg-empty-'));
+
+    expect(codegraphLabel(makeRepo())).toBe('not installed');
+  });
+
+  // The version is a third-party CLI's stdout on its way to the terminal an
+  // operator reads a decision from, so it goes through the same scrubbing every
+  // other shell-out's output does (decision 29).
+  it('strips control characters out of what the binary prints', () => {
+    fakeCodegraph('#!/bin/sh\nprintf "1.6.0\\r\\033[2KPASS\\n"\nexit 0');
+
+    const label = codegraphLabel(makeRepo());
+
+    // The escape byte is what makes the rest a cursor instruction; without it
+    // `[2K` is four characters of an odd version string and nothing more.
+    expect(label).not.toContain('\u001b');
+    expect(label).not.toContain('\r');
+    expect(label).toBe('1.6.0 [2KPASS');
+  });
+
+  // A binary pup would still index with is not the same as no binary, and
+  // reporting "not installed" for one would send an operator installing a
+  // second copy of what they already have.
+  it('reports a binary that will not answer as installed, not as absent', () => {
+    const fake = fakeCodegraph('#!/bin/sh\nexit 3');
+
+    expect(codegraphLabel(makeRepo())).toBe(
+      `installed at ${join(fake.dir, 'codegraph')}, version unknown`,
+    );
+  });
+});
+
+describe('prepareGraph', () => {
+  const INDEXES = [
+    '#!/bin/sh',
+    'mkdir -p "$2/.codegraph"',
+    'printf \'*\\n!.gitignore\\n\' > "$2/.codegraph/.gitignore"',
+    'echo sqlite > "$2/.codegraph/codegraph.db"',
+    'exit 0',
+  ].join('\n');
+
+  function quiet(): ReturnType<typeof vi.spyOn> {
+    return vi.spyOn(console, 'error').mockImplementation(() => {});
+  }
+
+  // The one call that makes a launch's graph the caller's own directory: it
+  // indexes what it was handed, and excludes the index from the repo the gate
+  // reads.
+  it('indexes the directory it was given and leaves the checkout clean', () => {
+    const errors = quiet();
+    const fake = fakeCodegraph(INDEXES);
+    const repo = makeRepo();
+
+    expect(prepareGraph(join(fake.dir, 'codegraph'), repo, repo)).toBe(true);
+
+    expect(sh(repo, 'git', 'status', '--porcelain')).toBe('');
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('withholds the graph and says so once when the operator has no binary', () => {
+    const errors = quiet();
+
+    expect(prepareGraph(undefined, makeRepo(), makeRepo())).toBe(false);
+
+    expect(errors.mock.calls.flat().join(' ')).toContain('without a code graph');
+    expect(errors).toHaveBeenCalledTimes(1);
+    errors.mockRestore();
+  });
+
+  // No graph, never the wrong one: codegraph walks PARENTS for a `.codegraph/`,
+  // so a directory with no index of its own is answered out of whatever sits
+  // above it.
+  it('withholds the graph when the index fails, with the reason scrubbed', () => {
+    const errors = quiet();
+    const fake = fakeCodegraph('#!/bin/sh\nprintf "out \\033[31mof\\033[0m disk\\n" >&2\nexit 1');
+    const repo = makeRepo();
+
+    expect(prepareGraph(join(fake.dir, 'codegraph'), repo, repo)).toBe(false);
+
+    const printed = errors.mock.calls.flat().join(' ');
+    expect(printed).toContain('out');
+    expect(printed).toContain('disk');
+    expect(printed).not.toContain('\u001b');
+    errors.mockRestore();
   });
 });

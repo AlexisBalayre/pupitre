@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
 
 /**
@@ -60,6 +61,9 @@ const SERVED_ENV = {
 
 /** Indexing this repo takes ~2.4s; a ceiling for a cold, large checkout. */
 const INDEX_TIMEOUT_MS = 180_000;
+
+/** A version print is a string and a newline; anything slower is a wedged binary. */
+const VERSION_TIMEOUT_MS = 10_000;
 
 /**
  * codegraph's own `.codegraph/.gitignore` (`*` plus `!.gitignore`) hides the
@@ -169,4 +173,74 @@ export function codegraphMcpConfig(binary: string, worktreePath: string): string
     },
   };
   return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+/**
+ * Index `directory` for a launch, or say in one line why the caller gets no
+ * graph. True means `directory` now has an index of its own and the compiled
+ * `mcp.json` can be handed to `claude`; false means launch without it.
+ *
+ * Best-effort in one direction only: a failed index costs a code graph, never a
+ * launch, and it withholds the config rather than launching with one codegraph
+ * would resolve up into the main checkout (see the parent walk above). No graph
+ * is a poorer session; the wrong graph is a lying one.
+ *
+ * The line is printed here rather than returned because it is the same line at
+ * every call site, and because a capability that goes missing silently is the
+ * failure decision 29 exists to prevent: an operator who never sees it cannot
+ * tell a window with a graph from one without.
+ */
+export function prepareGraph(
+  binary: string | undefined,
+  repoPath: string,
+  directory: string,
+): boolean {
+  if (!binary) {
+    console.error('No `codegraph` outside the repo on PATH: launching without a code graph.');
+    return false;
+  }
+  try {
+    // Before the index, which is what creates the untracked `.codegraph/` that
+    // would otherwise show up in every `git status`, including the gate's.
+    ensureCodegraphExcluded(repoPath);
+    indexDirectory(binary, directory);
+    return true;
+  } catch (error) {
+    // Through `failureSummary` like every other shell-out (decision 29): this is
+    // a third-party CLI's stderr on its way to the operator's terminal, and raw
+    // ANSI there can repaint the line they are reading.
+    console.error(
+      `Could not index ${directory}: launching without a code graph. ${failureSummary(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * How `pup init` and `pup audit` phrase the capability, beside the sandbox line:
+ * the installed version, or that there is none. Detected like `gh` and `tmux`,
+ * never depended on — an operator reading "not installed" is reading a fact
+ * about their machine, not a failure of the repo.
+ *
+ * The version is the binary's own stdout, so it goes through `sanitizeReason`
+ * before reaching a terminal (decision 29). A binary that will not answer is
+ * still a binary pup would index with, so it says so rather than claiming there
+ * is none.
+ */
+export function codegraphLabel(repoPath: string): string {
+  const binary = codegraphBinary(repoPath);
+  if (!binary) return 'not installed';
+  try {
+    const version = sanitizeReason(
+      execFileSync(binary, ['--version'], {
+        encoding: 'utf8',
+        env: indexEnv(),
+        timeout: VERSION_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    );
+    return version || `installed at ${binary}, version unknown`;
+  } catch {
+    return `installed at ${binary}, version unknown`;
+  }
 }

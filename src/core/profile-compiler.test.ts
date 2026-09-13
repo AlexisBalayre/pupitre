@@ -101,6 +101,11 @@ describe('compileProfile with a code graph (decision 51)', () => {
 
     expect(compiled.contextMarkdown).toContain('## Code graph');
     expect(compiled.contextMarkdown).toContain('codegraph_explore');
+    // Which checkout the graph is of is the one thing a wrong answer turns into
+    // a plausible lie, so the session and the conductor are told different
+    // first sentences over the same tool description.
+    expect(compiled.contextMarkdown).toContain('This worktree is indexed');
+    expect(compiled.contextMarkdown).not.toContain('The main checkout is indexed');
   });
 
   it('compiles neither the file nor the section when the operator has no binary', () => {
@@ -325,6 +330,43 @@ describe('compileConductorProfile', () => {
       'hooks/edit-block.sh',
       'settings.json',
     ]);
+  });
+
+  // The conductor's graph is main's, pinned the way a session's is pinned to
+  // its worktree and recorded in its profile hash for the same reason
+  // (decision 51).
+  describe('with a code graph', () => {
+    const withGraph = { ...conductorInput, codegraphBinary: '/opt/node/bin/codegraph' };
+
+    it('compiles an mcp.json naming the binary and pinned to the main checkout', () => {
+      const compiled = ProfileCompiler.compileConductorProfile(withGraph);
+
+      const config = JSON.parse(compiled.files['mcp.json'] as string);
+      expect(config.mcpServers.codegraph.command).toBe('/opt/node/bin/codegraph');
+      expect(config.mcpServers.codegraph.args).toContain('/repo');
+    });
+
+    it("names the main checkout, so no answer of main's is read as a session branch", () => {
+      const compiled = ProfileCompiler.compileConductorProfile(withGraph);
+
+      expect(compiled.contextMarkdown).toContain('## Code graph');
+      expect(compiled.contextMarkdown).toContain('codegraph_explore');
+      expect(compiled.contextMarkdown).toContain('The main checkout is indexed');
+      expect(compiled.contextMarkdown).not.toContain('This worktree is indexed');
+    });
+
+    it('compiles neither the file nor the section when the operator has no binary', () => {
+      const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+      expect(compiled.files['mcp.json']).toBeUndefined();
+      expect(compiled.contextMarkdown).not.toContain('## Code graph');
+    });
+
+    it('changes the profile hash, because the graph is part of the profile', () => {
+      expect(ProfileCompiler.compileConductorProfile(withGraph).hash).not.toBe(
+        ProfileCompiler.compileConductorProfile(conductorInput).hash,
+      );
+    });
   });
 
   it('blocks every edit, whatever the path', () => {

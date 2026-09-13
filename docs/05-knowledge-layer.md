@@ -2,6 +2,29 @@
 
 Three artefacts. All generated or one-keystroke approvals; zero standalone maintenance tasks. A stale map that agents trust is worse than no map.
 
+## Two sources, one question (decision 51)
+
+Structure reaches an agent two ways, and they answer different halves of "does this already exist".
+
+- **CodeGraph, where installed.** An external binary detected like `gh` and `tmux`, never a
+  dependency: a local SQLite graph of every symbol and edge, served over MCP as
+  `codegraph_explore` and queried live by the agent. One graph per checkout — a session's
+  worktree, the conductor's main checkout — built at launch and kept current by codegraph's own
+  watcher. It answers at symbol granularity, with verbatim source and blast radius, which is
+  what makes "reuse this" answerable rather than aspirational.
+- **The adapter import scan, always.** Module granularity, computed by pup itself
+  (`ts.preProcessFile` for TypeScript, an import scan for Python), and the source of both the
+  compiled knowledge slice and `pup map`. It runs on every machine, needs nothing installed, and
+  is what a session reads when there is no graph.
+
+The second is not a fallback for the first yet: the slice is still cut from the import scan even
+when a graph is present, because the two are compiled at different moments (the slice at compile
+time, the graph at query time) and cutting the slice from `codegraph explore` would make every
+launch wait on a binary that may not be there. `pup init` and `pup audit` print one
+`codegraph: <version>` / `codegraph: not installed` line beside the sandbox line, so which of the
+two a fleet is running on is visible before any session starts. What switching the slice would
+cost is recorded in decision 51's addendum.
+
 ## Code map
 
 - Source: adapter dependency-graph extraction (dependency-cruiser or ts-morph for TypeScript, grimp or pydeps for Python). Fallback: Claude-generated map for unsupported stacks, coarser but functional.
@@ -11,6 +34,9 @@ Three artefacts. All generated or one-keystroke approvals; zero standalone maint
   - `pup map --open`: interactive mind-map, single local HTML file rendered from JSON (d3 or Cytoscape). Node size by churn, colour by coverage or debt, click-through to files and decision records.
 - Injection: task layer receives the compact index of in-scope nodes plus their direct neighbours. Purpose: "this already exists, reuse it".
 - Refresh: regenerated for touched modules at every merge (gate stage 6); full regeneration weekly or on demand.
+- Unchanged by the code graph: `pup map`, `pup map --open` and the injected slice all still come
+  from the import scan above. The mind-map renders the module graph, which is the granularity it
+  is a picture of; a symbol graph is not a thing to look at, it is a thing to ask.
 
 ## Decision log
 

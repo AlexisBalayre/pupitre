@@ -87,16 +87,34 @@ function mergeLayers(base: ProfileLayer, role?: ProfileLayer): ProfileLayer {
 
 /**
  * Short on purpose: the MCP server sends its own usage instructions on connect,
- * so all this adds is the part only pup knows — the graph is THIS worktree's, so
- * what it answers is this branch and not main (decision 51).
+ * so all this adds is the part only pup knows — WHICH checkout the graph is of,
+ * which is the one thing a wrong answer would turn into a plausible lie
+ * (decision 51). Only that first sentence differs between a session and the
+ * conductor; everything after it is the same tool and the same advice.
  */
-const CODE_GRAPH_SECTION =
-  '## Code graph\n' +
+function codeGraphSection(indexed: string): string {
+  return (
+    `## Code graph\n${indexed} ` +
+    'The `codegraph_explore` MCP tool answers from it: how does X work, how does X ' +
+    'reach Y, what breaks if I change Z. Reach for it BEFORE reading files — one call returns ' +
+    'the verbatim source of the symbols that matter plus their callers and blast radius, which ' +
+    'is what makes docs/05\'s "this already exists, reuse it" answerable rather than aspirational.'
+  );
+}
+
+const SESSION_GRAPH =
   'This worktree is indexed in a code graph of its own, built at launch and kept current as ' +
-  'you edit. The `codegraph_explore` MCP tool answers from it: how does X work, how does X ' +
-  'reach Y, what breaks if I change Z. Reach for it BEFORE reading files — one call returns ' +
-  'the verbatim source of the symbols that matter plus their callers and blast radius, which ' +
-  'is what makes docs/05\'s "this already exists, reuse it" answerable rather than aspirational.';
+  'you edit.';
+
+/**
+ * The conductor's is the main checkout's graph, indexed when its window opened.
+ * It plans and reviews from what has already merged, so that is the right index
+ * for it — and saying which one it is stops it reporting main's shape as a
+ * session's branch.
+ */
+const CONDUCTOR_GRAPH =
+  'The main checkout is indexed in a code graph of its own, built when your window opened and ' +
+  'kept current as merges land in it — not any session worktree, which each carry their own.';
 
 function buildContextMarkdown(merged: ProfileLayer, input: CompileInput): string {
   const { task, sessionId } = input;
@@ -109,7 +127,7 @@ function buildContextMarkdown(merged: ProfileLayer, input: CompileInput): string
     `## Acceptance criteria\n${task.acceptance.map((a) => `- ${a}`).join('\n')}`,
     merged.conventions ? `## Conventions\n${merged.conventions}` : undefined,
     task.knowledgeSlice ? `## Codebase knowledge\n${task.knowledgeSlice}` : undefined,
-    input.codegraphBinary ? CODE_GRAPH_SECTION : undefined,
+    input.codegraphBinary ? codeGraphSection(SESSION_GRAPH) : undefined,
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
@@ -314,6 +332,7 @@ function buildConductorContext(input: ConductorCompileInput): string {
       '4. Never edit, commit or push from this checkout. Never run `pup merge`.\n' +
       '5. When every session you launched is `awaiting-review`, killed or blocked, report ' +
       'and stop.',
+    input.codegraphBinary ? codeGraphSection(CONDUCTOR_GRAPH) : undefined,
     input.base.conventions ? `## Conventions\n${input.base.conventions}` : undefined,
   ];
   return sections.filter(Boolean).join('\n\n');
@@ -376,6 +395,12 @@ export function compileConductorProfile(input: ConductorCompileInput): CompiledP
   const files: Record<string, string> = {
     'context.md': contextMarkdown,
     'settings.json': `${JSON.stringify(settings, null, 2)}\n`,
+    // Pinned to the main checkout, the way a session's is pinned to its
+    // worktree, and compiled for the same reason: which binary serves the
+    // conductor's graph is recorded in its profile hash (decision 51).
+    ...(input.codegraphBinary
+      ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.repoPath) }
+      : {}),
     'hooks/edit-block.sh': buildEditBlockScript(),
     'hooks/bash-guard.sh': buildBashGuardScript(),
   };

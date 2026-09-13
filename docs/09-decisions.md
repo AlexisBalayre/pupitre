@@ -2029,6 +2029,54 @@ changes back into those docs is pending.
     The lesson the five findings share is the one that generalises — every launch flag, env block
     and exclude pattern pup hands to a third party is part of the trust boundary, and the
     interesting half is always what it inherits rather than what it is passed.
+    *Second addendum: the conductor's graph, the capability line, and the respawn gap closed
+    (2026-09-13).*
+    *The conductor gets main's graph, on the same terms a session gets its worktree's.* It plans
+    and reviews from what has merged and edits nothing, so the main checkout is the right index
+    for it — and it is the only checkout it ever reads. Same client, same anchored exclude line,
+    same compiled `mcp.json` recorded in its profile hash, same `--mcp-config` on its argv, same
+    withholding when the index fails. The one thing that differs is the first sentence of the
+    context section, which names WHICH checkout the graph is of. That is not decoration: the
+    failure this whole decision is shaped around is an answer out of one checkout believed to be
+    about another, and the conductor reading main while believing it reads a session's branch is
+    the same lie pointed the other way. So the section is one function with a parameterised
+    opening rather than one constant used twice.
+    *`pup init` and `pup audit` print `codegraph: <version>` or `codegraph: not installed`,*
+    beside the sandbox line and for decision 36's reason: an operator who never sees it cannot
+    tell a fleet whose sessions query a graph from one whose sessions grep, and "my sessions got
+    slower at finding things" is not a diagnosis anyone reaches unaided. The version is the
+    binary's own stdout, so it goes through `sanitizeReason` (decision 29) before reaching the
+    terminal. A binary that will not answer `--version` reports as installed-with-version-unknown,
+    never as absent: pup would still index with it, and telling an operator to install what they
+    already have is worse than telling them nothing. Probed at print time rather than carried on
+    `InitReport`: what it reports is the operator's machine, not the baseline the stages measured,
+    and the report is the baseline's record.
+    *The respawn gap is closed.* `relaunchWindow` now re-runs the index on the worktree and passes
+    the launch's compiled `mcp.json` when one exists. Three parts worth stating. It does not
+    recompile: a respawn is the same session on a fresh context window and its profile hash must
+    not move, so the binary and the path are the launch's. It re-INDEXES rather than only
+    re-passing, because the previous run has been editing this worktree since the launch and an
+    index its commits have outrun answers out of code that is no longer there — and it indexes
+    after the kill, when the tree has stopped moving. And it withholds the config when the
+    operator's codegraph has gone since the launch, which is the same safe direction as a failed
+    index: a config naming an absolute command that no longer exists is a server that cannot
+    start.
+    *What the slice would cost, recorded and not taken.* `buildKnowledgeSlice` still cuts from the
+    adapter import scan even where a graph exists. Reading `codegraph explore` instead would buy
+    symbol granularity in the compiled context — the slice could name the functions a task will
+    touch rather than the directories — and it would cost: a launch that blocks on a third-party
+    binary before the profile can compile (today the index runs AFTER the compile, and a failure
+    costs a graph and not a launch); a compile whose output differs by machine, so the profile
+    hash stops being comparable across operators; and a second parse-and-shape layer over
+    codegraph's output, which is prose for an agent rather than a data structure. The cheap half
+    is available today and is the part that matters: the section tells the session to ask the
+    graph BEFORE reading files, so the symbol-level answer arrives on demand instead of being
+    guessed at compile time. Revisit if the import scan's module granularity is measurably what
+    makes a session re-implement something — not before.
+    *One duplication left standing, named.* `graphForWorktree` in `session-lifecycle.service.ts`
+    is now the same code as `prepareGraph` in the client, which the conductor and the respawn both
+    call. Folding it in was outside this task's scope-in list; it is a three-line change and the
+    next thing to touch that file should make it.
 
 ## Implementation notes
 
