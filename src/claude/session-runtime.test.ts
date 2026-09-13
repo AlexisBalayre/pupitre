@@ -944,6 +944,37 @@ describe('launchConductor', () => {
       'fable',
     ]);
   });
+
+  // The conductor's context carries a `## Code graph` section whenever its
+  // profile compiled one, so the flag has to reach its argv too — the section
+  // without the server is a window told to use a tool nothing connected
+  // (decision 51).
+  it("carries the conductor's compiled mcp.json into claude's argv", () => {
+    const mcpConfigPath = '/tmp/conductor/mcp.json';
+
+    launchConductor({ ...CONDUCTOR, mcpConfigPath });
+
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    expect(spawn.slice(spawn.indexOf('--mcp-config'), spawn.indexOf('--mcp-config') + 2)).toEqual([
+      '--mcp-config',
+      mcpConfigPath,
+    ]);
+  });
+
+  it('passes no mcp flag at all when the conductor has no graph', () => {
+    launchConductor(CONDUCTOR);
+
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    expect(spawn).not.toContain('--mcp-config');
+  });
 });
 
 describe('killConductor and hasConductorWindow', () => {

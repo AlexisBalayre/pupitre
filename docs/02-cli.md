@@ -17,7 +17,11 @@ exit 1.
 
 ## Lifecycle
 
-- `pup init` — onboard a repo: detect stack, run audit, snapshot baseline, draft conventions, open review step (see 07-onboarding.md).
+- `pup init` — onboard a repo: detect stack, run audit, snapshot baseline, draft conventions, open
+  review step (see 07-onboarding.md). Prints one `codegraph: <version>` or `codegraph: not
+  installed` line beside the `sandbox:` one: an external binary detected like `gh` and `tmux`,
+  never a dependency, and the difference between a fleet whose sessions query a code graph and
+  one whose sessions grep (decision 51).
 - `pup plan add "<goal>" --scope <glob>...` — record a task with no session. `pup plan` lists the
   backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
   rewrites one. A task is in the backlog until a session claims it (decision 40).
@@ -38,6 +42,10 @@ exit 1.
   session by its peer name `pup-<id>` over Claude Code's cross-session messaging, edits
   nothing (a hook refuses every Edit and Write), and is refused `pup merge`, `pup respawn`,
   `pup unblock` and `--project`. Tasks it plans are recorded `origin = conductor`.
+  `start` cuts a private detached checkout of the merge target under
+  `~/.pupitre/<id>/conductor/checkout`, indexes it, and launches with `codegraph_explore` over
+  that — so the conductor plans and reviews against tracked content of what has merged, never a
+  working tree the sessions it supervises can write into. `stop` leaves the checkout in place.
   Operator-only (decision 47).
 - `pup steer <session> "<message>"` — inject a correction into a running session. `--sent`
   records a steer already delivered by cross-session message and types nothing (decision 47).
@@ -87,7 +95,8 @@ worktree both refuse — so a session reports only its own state (decision 44).
 - `pup profile list | show <name> | edit <name>` — manage base and role layers.
 - `pup profile stale` — running sessions whose profile version is behind current.
 - `pup audit` — re-run the baseline stages and report drift against the stored baseline,
-  refreshing it. Operator-only: outside a merge this is the only thing that re-stamps the
+  refreshing it. Prints the same `codegraph:` line `pup init` does, so the capability is
+  reported on the repeat path too and not only the first run. Operator-only: outside a merge this is the only thing that re-stamps the
   debt baseline, and on a `--pr` repo it is the only thing at all, so a session running it
   from its worktree would choose when its own bar moves (decisions 26, 39, 48).
 - `pup audit --sweep` — spawn a deletion-only session (dead code, unused deps) from the latest audit findings. Operator-only for the same reason `pup launch` is, on top of the baseline one (decision 42).

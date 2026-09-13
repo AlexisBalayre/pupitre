@@ -28,6 +28,7 @@ import {
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
+import { codegraphLabel } from '../core/codegraph.client.js';
 import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import {
   deleteDecisionRecord,
@@ -185,10 +186,22 @@ function printInitReport(report: InitReport, repoPath: string): void {
   }
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   console.log(`sandbox: ${report.sandbox}`);
+  printCodegraphLine(repoPath);
   if (report.findings.length > 0) {
     console.log('findings:');
     for (const f of report.findings) console.log(`  - ${f}`);
   }
+}
+
+/**
+ * Beside the sandbox line, and for the same reason (decision 36): an operator
+ * who never sees it cannot tell a fleet whose sessions get a code graph from one
+ * whose sessions grep. Probed here rather than carried in the report, because
+ * what it reports is the operator's machine and not the baseline the stages
+ * measured (decision 51).
+ */
+function printCodegraphLine(repoPath: string): void {
+  console.log(`codegraph: ${codegraphLabel(repoPath)}`);
 }
 
 /** The gate flags only increases over these numbers, so the human should see the bar. */
@@ -1501,6 +1514,7 @@ export function buildProgram(): Command {
       console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
       for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
       console.log(`sandbox: ${report.sandbox}`);
+      printCodegraphLine(repoPath);
       // Same findings `pup init` prints: a stage that cannot measure says why
       // here too, or the repeat path is where the gap goes quiet (decision 29).
       if (report.findings.length > 0) {

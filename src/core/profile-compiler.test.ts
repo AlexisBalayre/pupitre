@@ -101,6 +101,11 @@ describe('compileProfile with a code graph (decision 51)', () => {
 
     expect(compiled.contextMarkdown).toContain('## Code graph');
     expect(compiled.contextMarkdown).toContain('codegraph_explore');
+    // Which checkout the graph is of is the one thing a wrong answer turns into
+    // a plausible lie, so the session and the conductor are told different
+    // first sentences over the same tool description.
+    expect(compiled.contextMarkdown).toContain('This worktree is indexed');
+    expect(compiled.contextMarkdown).not.toContain('The main checkout is indexed');
   });
 
   it('compiles neither the file nor the section when the operator has no binary', () => {
@@ -273,6 +278,7 @@ describe('compileConductorProfile', () => {
     workerModel: 'opus',
     userConfigHash: 'user-hash-a',
     outDir: '/state/conductor/compiled',
+    checkoutPath: '/state/conductor/checkout',
   };
 
   function runConductorHook(script: string, payload: object): number | null {
@@ -325,6 +331,51 @@ describe('compileConductorProfile', () => {
       'hooks/edit-block.sh',
       'settings.json',
     ]);
+  });
+
+  // The conductor's graph is main's, pinned the way a session's is pinned to
+  // its worktree and recorded in its profile hash for the same reason
+  // (decision 51).
+  describe('with a code graph', () => {
+    const withGraph = { ...conductorInput, codegraphBinary: '/opt/node/bin/codegraph' };
+
+    // The private checkout, never `repoPath`: a live working tree carries
+    // untracked files and a session-writable `codegraph.json`, and the conductor
+    // is the last reader that should be fed either.
+    it('pins the served graph at the private checkout and never at the live repo', () => {
+      const compiled = ProfileCompiler.compileConductorProfile(withGraph);
+
+      const config = JSON.parse(compiled.files['mcp.json'] as string);
+      expect(config.mcpServers.codegraph.command).toBe('/opt/node/bin/codegraph');
+      expect(config.mcpServers.codegraph.args).toContain('/state/conductor/checkout');
+      expect(config.mcpServers.codegraph.args).not.toContain('/repo');
+    });
+
+    // It is told the graph is a snapshot of a pristine copy, not the tree it
+    // sits in: an answer out of one checkout believed to be about another is
+    // the failure this whole decision is shaped around.
+    it('tells the conductor its graph is a pristine snapshot of the merge target', () => {
+      const compiled = ProfileCompiler.compileConductorProfile(withGraph);
+
+      expect(compiled.contextMarkdown).toContain('## Code graph');
+      expect(compiled.contextMarkdown).toContain('codegraph_explore');
+      expect(compiled.contextMarkdown).toContain('A pristine copy of the merge target');
+      expect(compiled.contextMarkdown).toContain('not the working tree you sit in');
+      expect(compiled.contextMarkdown).not.toContain('This worktree is indexed');
+    });
+
+    it('compiles neither the file nor the section when the operator has no binary', () => {
+      const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+      expect(compiled.files['mcp.json']).toBeUndefined();
+      expect(compiled.contextMarkdown).not.toContain('## Code graph');
+    });
+
+    it('changes the profile hash, because the graph is part of the profile', () => {
+      expect(ProfileCompiler.compileConductorProfile(withGraph).hash).not.toBe(
+        ProfileCompiler.compileConductorProfile(conductorInput).hash,
+      );
+    });
   });
 
   it('blocks every edit, whatever the path', () => {

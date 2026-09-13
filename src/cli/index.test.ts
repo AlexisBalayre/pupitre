@@ -154,6 +154,22 @@ function initRepoWithAdapter(): string {
   return repo;
 }
 
+/**
+ * A `codegraph` on PATH printing `version`, or a PATH with none at all. The
+ * capability line reports the operator's machine, so every test that reads it
+ * says which machine it is pretending to be (decision 51).
+ */
+function stubCodegraph(version?: string): void {
+  const dir = tempDir('pup-cli-cg-');
+  if (version !== undefined) {
+    writeFileSync(join(dir, 'codegraph'), `#!/bin/sh\necho "${version}"\nexit 0\n`, {
+      mode: 0o755,
+    });
+  }
+  // `git` stays reachable: `pup init` resolves its project through it.
+  vi.stubEnv('PATH', `${dir}:/usr/bin:/bin`);
+}
+
 /** Inserts the project/task/session rows a real (unmocked) `getSession` needs. */
 function seedSession(repoPath: string, sessionId: string, worktreePath?: string): void {
   const { db } = resolveProject(repoPath);
@@ -535,6 +551,30 @@ describe('CLI commands', () => {
 
       expect(() => buildProgram().parse(['init'], { from: 'user' })).toThrow();
     });
+
+    // Beside the sandbox line and for the same reason (decision 36): an
+    // operator who never sees it cannot tell a fleet whose sessions get a code
+    // graph from one whose sessions grep.
+    it('reports the installed codegraph version beside the sandbox line', () => {
+      useCwd(initRepoWithAdapter());
+      stubCodegraph('codegraph 1.6.0');
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(logs).toContain('codegraph: codegraph 1.6.0');
+      expect(logs.indexOf('codegraph: codegraph 1.6.0')).toBe(
+        logs.findIndex((line) => line.startsWith('sandbox: ')) + 1,
+      );
+    });
+
+    it('says so when the operator has none — detected like gh and tmux, never required', () => {
+      useCwd(initRepoWithAdapter());
+      stubCodegraph();
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(logs).toContain('codegraph: not installed');
+    });
   });
 
   describe('audit', () => {
@@ -552,6 +592,26 @@ describe('CLI commands', () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
       expect(() => buildProgram().parse(['audit'], { from: 'user' })).toThrow();
+    });
+
+    // The repeat path prints it too, or the capability goes quiet on every run
+    // after the first (decision 29).
+    it('reports the codegraph capability on the re-run path as well', () => {
+      useCwd(initRepoWithAdapter());
+      stubCodegraph('1.6.0');
+
+      buildProgram().parse(['audit'], { from: 'user' });
+
+      expect(logs).toContain('codegraph: 1.6.0');
+    });
+
+    it('reports an absent codegraph on the re-run path too', () => {
+      useCwd(initRepoWithAdapter());
+      stubCodegraph();
+
+      buildProgram().parse(['audit'], { from: 'user' });
+
+      expect(logs).toContain('codegraph: not installed');
     });
 
     // A sweep is scoped to the whole repo, so it collides with every live

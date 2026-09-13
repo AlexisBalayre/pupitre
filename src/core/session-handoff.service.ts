@@ -8,6 +8,7 @@ import {
   launchSession,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { projectPaths } from './paths.utils.js';
 import { appendEvent, getSession, type SessionRow } from './session.repository.js';
 import { sessionPane } from './session-lifecycle.service.js';
@@ -192,7 +193,7 @@ export function respawnSession(
         `something replaced it since. Re-run \`pup respawn ${sessionId}\` to ask again.`,
     );
   }
-  relaunchWindow(db, sessionId, session, paths.compiledDir(sessionId), {
+  relaunchWindow(db, repoPath, sessionId, session, paths.compiledDir(sessionId), {
     promptSuffix: `\n\n## Handoff from your previous run\n${handoff}`,
     eventPayload: { handoffBytes: handoff.length },
   });
@@ -212,7 +213,7 @@ export function hardRespawnSession(
 ): void {
   const session = requireRunning(db, sessionId);
   const paths = projectPaths(repoPath, pathsBase);
-  relaunchWindow(db, sessionId, session, paths.compiledDir(sessionId), {
+  relaunchWindow(db, repoPath, sessionId, session, paths.compiledDir(sessionId), {
     promptSuffix:
       '\n\n## Fresh start after a kill\n' +
       'The previous run of this session was killed without writing a handoff (it was ' +
@@ -222,8 +223,33 @@ export function hardRespawnSession(
   });
 }
 
+/**
+ * The respawned window's code graph, or undefined when it gets none. The
+ * compiled `mcp.json` is the launch's, binary and worktree path already fixed
+ * at compile time — nothing is recompiled here, because a respawn is the same
+ * session on a fresh context window and its profile hash must not move.
+ *
+ * The index IS re-run: the worktree has been edited since the launch, and an
+ * index the session's own commits have outrun answers its questions out of code
+ * that is no longer there. Withheld when the operator's codegraph has gone
+ * since, so a window is never pointed at a server that cannot start
+ * (decision 51).
+ */
+function graphForRespawn(
+  repoPath: string,
+  worktreePath: string,
+  compiledDir: string,
+): string | undefined {
+  const mcpConfigPath = join(compiledDir, 'mcp.json');
+  if (!existsSync(mcpConfigPath)) return undefined;
+  return prepareGraph(codegraphBinary(repoPath), repoPath, worktreePath)
+    ? mcpConfigPath
+    : undefined;
+}
+
 function relaunchWindow(
   db: Database,
+  repoPath: string,
   sessionId: string,
   session: SessionRow,
   compiledDir: string,
@@ -231,10 +257,18 @@ function relaunchWindow(
 ): void {
   const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
   killTmux(sessionId, session.tmux_target);
+  // After the kill: the previous run writes to this worktree until it dies, and
+  // an index taken while it is still editing is an index of a tree nothing will
+  // ever see again.
+  const mcpConfigPath = graphForRespawn(repoPath, session.worktree_path, compiledDir);
   const pane = launchSession({
     sessionId,
     worktreePath: session.worktree_path,
     settingsPath: join(compiledDir, 'settings.json'),
+    // The context carries the `## Code graph` section whenever the launch
+    // compiled one, so a respawn without this flag tells the session to use a
+    // tool that is not connected — the gap decision 51's addendum named.
+    mcpConfigPath,
   });
   // A fresh window is a fresh pane: stored before the kickoff types into it,
   // so a steer that races the respawn is refused or lands here, never in the

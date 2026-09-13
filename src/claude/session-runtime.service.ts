@@ -30,6 +30,12 @@ export interface ConductorLaunchOptions {
   repoPath: string;
   settingsPath: string;
   model?: string;
+  /**
+   * Compiled mcp.json path, passed to `claude --mcp-config`. Absent when the
+   * conductor gets no code graph — either the operator has no codegraph binary,
+   * or indexing the main checkout failed (decision 51).
+   */
+  mcpConfigPath?: string;
 }
 
 /**
@@ -472,6 +478,7 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
     cwd: opts.repoPath,
     settingsPath: opts.settingsPath,
     model: opts.model,
+    mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_CONDUCTOR: opts.projectId },
     socket: conductorSocket(opts.projectId),
   });

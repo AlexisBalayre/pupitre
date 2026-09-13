@@ -4,6 +4,11 @@
 
 TypeScript. Claude Code is Node-based, its hooks and Agent SDK are TypeScript-first, and the v1 adapters cover TypeScript and Python targets regardless of the tool's own language. SQLite via better-sqlite3, commander for the CLI.
 
+CodeGraph is an *optional external binary*, not a package dependency: detected on PATH the way
+`gh` and `tmux` are, absent it every command still runs and sessions launch with no code graph.
+Nothing installs it, nothing bundles it, and `pup init` / `pup audit` report which of the two a
+machine is on (decision 51).
+
 ## v1 — control (the week-of-evenings cut)
 
 - Profile compiler: base + role + task layers, token budget, hash recording.

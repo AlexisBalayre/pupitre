@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
 
 /**
@@ -60,6 +61,9 @@ const SERVED_ENV = {
 
 /** Indexing this repo takes ~2.4s; a ceiling for a cold, large checkout. */
 const INDEX_TIMEOUT_MS = 180_000;
+
+/** A version print is a string and a newline; anything slower is a wedged binary. */
+const VERSION_TIMEOUT_MS = 10_000;
 
 /**
  * codegraph's own `.codegraph/.gitignore` (`*` plus `!.gitignore`) hides the
@@ -132,6 +136,42 @@ export function ensureCodegraphExcluded(cwd: string): void {
 }
 
 /**
+ * Refuse to index a directory whose `.codegraph/` is not actually in it.
+ *
+ * The index is addressed by PATH, and every caller here hands codegraph a path
+ * an agent can write inside. A session that replaces its worktree's
+ * `.codegraph` with a symlink to another checkout's — the conductor's, say —
+ * gets `existsSync` to follow it, which picks the `index` branch below, and
+ * `codegraph index <worktree>` then rebuilds THAT database from the worktree's
+ * files. The victim's own files drop out of its graph and its agent is answered
+ * out of the attacker's tree: a write through a path the attacker chose, with
+ * the whole point of the feature — "this is the verbatim source" — carrying the
+ * lie.
+ *
+ * So both the directory and the database are `lstat`ed before anything runs: a
+ * symlink is refused outright, and anything whose real path lands outside
+ * `directory` is refused too (a symlinked parent, a bind mount). Absent is
+ * fine — that is the `init` path. Throwing is the whole contract: the caller's
+ * catch turns this into one printed line and no config, which is the same safe
+ * direction a failed index takes.
+ */
+function assertIndexIsOwnedBy(directory: string): void {
+  const inside = `${realpathSync(directory)}/`;
+  const root = join(directory, '.codegraph');
+  for (const path of [root, join(root, 'codegraph.db')]) {
+    let link: ReturnType<typeof lstatSync>;
+    try {
+      link = lstatSync(path);
+    } catch {
+      continue; // absent: nothing to index through
+    }
+    if (link.isSymbolicLink() || !realpathSync(path).startsWith(inside)) {
+      throw new Error(`${path} is not inside ${directory}: refusing to index through it`);
+    }
+  }
+}
+
+/**
  * Build or refresh one directory's graph, and throw if it cannot be built — the
  * caller decides what a missing graph costs. `init` creates `.codegraph/` and
  * indexes as it goes; `index` refuses to run before it ("CodeGraph not
@@ -139,6 +179,9 @@ export function ensureCodegraphExcluded(cwd: string): void {
  * path, and neither indexes twice.
  */
 export function indexDirectory(binary: string, directory: string): void {
+  // Before the existsSync below, which is the call an escaping symlink turns
+  // into someone else's `index`.
+  assertIndexIsOwnedBy(directory);
   const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
   execFileSync(
     binary,
@@ -169,4 +212,74 @@ export function codegraphMcpConfig(binary: string, worktreePath: string): string
     },
   };
   return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+/**
+ * Index `directory` for a launch, or say in one line why the caller gets no
+ * graph. True means `directory` now has an index of its own and the compiled
+ * `mcp.json` can be handed to `claude`; false means launch without it.
+ *
+ * Best-effort in one direction only: a failed index costs a code graph, never a
+ * launch, and it withholds the config rather than launching with one codegraph
+ * would resolve up into the main checkout (see the parent walk above). No graph
+ * is a poorer session; the wrong graph is a lying one.
+ *
+ * The line is printed here rather than returned because it is the same line at
+ * every call site, and because a capability that goes missing silently is the
+ * failure decision 29 exists to prevent: an operator who never sees it cannot
+ * tell a window with a graph from one without.
+ */
+export function prepareGraph(
+  binary: string | undefined,
+  repoPath: string,
+  directory: string,
+): boolean {
+  if (!binary) {
+    console.error('No `codegraph` outside the repo on PATH: launching without a code graph.');
+    return false;
+  }
+  try {
+    // Before the index, which is what creates the untracked `.codegraph/` that
+    // would otherwise show up in every `git status`, including the gate's.
+    ensureCodegraphExcluded(repoPath);
+    indexDirectory(binary, directory);
+    return true;
+  } catch (error) {
+    // Through `failureSummary` like every other shell-out (decision 29): this is
+    // a third-party CLI's stderr on its way to the operator's terminal, and raw
+    // ANSI there can repaint the line they are reading.
+    console.error(
+      `Could not index ${directory}: launching without a code graph. ${failureSummary(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * How `pup init` and `pup audit` phrase the capability, beside the sandbox line:
+ * the installed version, or that there is none. Detected like `gh` and `tmux`,
+ * never depended on — an operator reading "not installed" is reading a fact
+ * about their machine, not a failure of the repo.
+ *
+ * The version is the binary's own stdout, so it goes through `sanitizeReason`
+ * before reaching a terminal (decision 29). A binary that will not answer is
+ * still a binary pup would index with, so it says so rather than claiming there
+ * is none.
+ */
+export function codegraphLabel(repoPath: string): string {
+  const binary = codegraphBinary(repoPath);
+  if (!binary) return 'not installed';
+  try {
+    const version = sanitizeReason(
+      execFileSync(binary, ['--version'], {
+        encoding: 'utf8',
+        env: indexEnv(),
+        timeout: VERSION_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    );
+    return version || `installed at ${binary}, version unknown`;
+  } catch {
+    return `installed at ${binary}, version unknown`;
+  }
 }

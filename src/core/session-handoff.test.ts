@@ -1,9 +1,17 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -247,6 +255,122 @@ describe('session handoff', () => {
     expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
       'only running sessions',
     );
+  });
+
+  /**
+   * The gap decision 51's addendum named: `relaunchWindow` respawned with the
+   * compiled context — which carries the `## Code graph` section whenever the
+   * launch compiled one — but without `--mcp-config`, so the fresh window was
+   * told to use a tool that was not connected.
+   */
+  describe('code graph', () => {
+    let cgLog: string;
+
+    // Without the GIT_* strip this `init` runs against the pupitre repo when the
+    // suite runs inside its own pre-commit hook, and the exclude line below
+    // then cannot find the fixture's git dir at all.
+    function gitInit(): void {
+      execFileSync('git', ['init', '-b', 'main'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+          ),
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_CONFIG_SYSTEM: '/dev/null',
+        },
+      });
+    }
+
+    /** The launch's compiled config: this is read, never recompiled. */
+    function writeCompiledMcp(): string {
+      const path = join(paths().compiledDir('s1'), 'mcp.json');
+      writeFileSync(path, '{"mcpServers":{}}\n');
+      return path;
+    }
+
+    function fakeCodegraph(): void {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-bin-')));
+      cgLog = join(dir, 'calls.log');
+      writeFileSync(
+        join(dir, 'codegraph'),
+        ['#!/bin/sh', `printf '%s\\n' "$*" >> ${cgLog}`, 'exit 0'].join('\n'),
+        { mode: 0o755 },
+      );
+      vi.stubEnv('PATH', `${dir}:/usr/bin:/bin`);
+    }
+
+    const cgCalls = (): string[] =>
+      cgLog && existsSync(cgLog) ? readFileSync(cgLog, 'utf8').split('\n').filter(Boolean) : [];
+
+    const launchedWith = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0];
+
+    beforeEach(() => {
+      cgLog = '';
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      writeCompiled();
+      gitInit();
+      // A respawn always has a real worktree to re-index; without one the
+      // client refuses before it reaches the binary, which is the right answer
+      // to a path that is not there and the wrong fixture for this test.
+      mkdirSync(join(repoPath, '.worktrees', 's1'), { recursive: true });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      vi.mocked(console.error).mockRestore();
+    });
+
+    // Re-indexed, not just re-passed: the previous run has been editing this
+    // worktree since the launch, and an index its commits have outrun answers
+    // out of code that is no longer there.
+    it('re-indexes the worktree and hands the fresh window the compiled config', () => {
+      const mcpConfigPath = writeCompiledMcp();
+      fakeCodegraph();
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(cgCalls()).toEqual([`init ${join(repoPath, '.worktrees', 's1')} --yes`]);
+      expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
+    });
+
+    // Withheld rather than passed at a binary that is gone: the config names an
+    // absolute command, and pointing claude at one that cannot start is the
+    // same wasted tool call in a different place.
+    it("withholds the config when the operator's codegraph has gone since the launch", () => {
+      writeCompiledMcp();
+      vi.stubEnv('PATH', realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-empty-'))));
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+      expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain(
+        'without a code graph',
+      );
+    });
+
+    // A launch that compiled no graph respawns into none, and indexes nothing:
+    // the compiled dir is the record of what this session was launched with.
+    it('indexes nothing when the launch compiled no config', () => {
+      fakeCodegraph();
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+      expect(cgCalls()).toEqual([]);
+      expect(console.error).not.toHaveBeenCalled();
+    });
+
+    it('carries the config through a handoff respawn too, not only a hard one', () => {
+      const mcpConfigPath = writeCompiledMcp();
+      fakeCodegraph();
+      handoffRound();
+
+      respawnSessionWithTestPaths();
+
+      expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
+    });
   });
 
   function respawnSessionWithTestPaths(): void {
