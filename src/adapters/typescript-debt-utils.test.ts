@@ -27,6 +27,21 @@ describe('findDeadExports', () => {
     expect(dead).toEqual([]);
   });
 
+  // Under NodeNext a `.tsx` module is imported as `.js` like a `.ts` one; a
+  // `.ts`-only mapping read the first `.tsx` components as unimported and
+  // flagged every one of their exports (the `pup ui` branch, 2026-09-13).
+  it('resolves a `.js` specifier to a `.tsx` source, so an imported component is not dead', () => {
+    const dead = findDeadExports(
+      {
+        'src/ui/app.component.tsx': 'export function App() {\n  return null;\n}\n',
+        'src/index.ts': "import { App } from './ui/app.component.js';\nconsole.log(App);\n",
+      },
+      new Set(['src/index.ts']),
+    );
+
+    expect(dead).toEqual([]);
+  });
+
   it('treats a namespace import as using every export of the target file', () => {
     const dead = findDeadExports(
       {
