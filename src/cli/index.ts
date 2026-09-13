@@ -1,14 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readSync,
-  realpathSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,18 +10,21 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
-  conductorName,
   conductorSocket,
   killWatcher,
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
-import { latestContextTokens } from '../claude/transcript.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
-import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
+import { startConductor, stopConductor } from '../core/conductor.service.js';
+import {
+  buildDashboardSnapshot,
+  findStalledSessions,
+  goalHeadline,
+} from '../core/dashboard.service.js';
 import {
   deleteDecisionRecord,
   getDecisionRecord,
@@ -39,16 +34,11 @@ import {
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
-import {
-  closeLedgerEntry,
-  listLedgerEntries,
-  listOverdueLedgerEntries,
-} from '../core/ledger.repository.js';
+import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
-import { getWatcherBeat, listOverlaps } from '../core/overlap.repository.js';
-import { scanOverlaps, WATCH_INTERVAL_MS, WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
+import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
@@ -66,15 +56,10 @@ import {
   listEvents,
   listSessions,
   type SessionRow,
-  type TaskRow,
   transitionSession,
   updateTaskSpec,
 } from '../core/session.repository.js';
-import {
-  classifySessionActivity,
-  formatStaleAge,
-  isSessionStalled,
-} from '../core/session-activity.utils.js';
+import { formatStaleAge } from '../core/session-activity.utils.js';
 import { dossierFileName, renderSessionDossierHtml } from '../core/session-dossier.service.js';
 import {
   awaitHandoffReady,
@@ -104,6 +89,7 @@ import {
 import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
+import type { DashboardSession, DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -278,13 +264,12 @@ const GATE_ENV_DESCRIPTION =
  */
 const GOAL_COLUMN_CHARS = 44;
 
-/** One terminal-safe line of a task's goal, fitted to the goal column. */
-function goalHeadline(spec: TaskSpec): string {
-  const line = sanitizeReason((spec.goal ?? '').split('\n')[0] ?? '');
-  const chars = [...line];
+/** A goal headline fitted to the goal column — clipped rather than wrapped. */
+function goalColumn(headline: string): string {
+  const chars = [...headline];
   return chars.length > GOAL_COLUMN_CHARS
     ? `${chars.slice(0, GOAL_COLUMN_CHARS - 1).join('')}\u2026`
-    : line.padEnd(GOAL_COLUMN_CHARS);
+    : headline.padEnd(GOAL_COLUMN_CHARS);
 }
 
 const ALLOW_OVERLAP_DESCRIPTION =
@@ -424,8 +409,8 @@ function conductorAttribution(): { origin?: 'conductor'; overlapVia?: 'conductor
  * spec an agent wrote is one the operator never typed, and the report alone
  * showing `from conductor` left `pup status` and `pup plan` silent on it.
  */
-function originMarker(row: TaskRow): string {
-  return row.origin === 'human' ? '' : `  (from ${sanitizeReason(row.origin)})`;
+function originMarker(origin: string): string {
+  return origin === 'human' ? '' : `  (from ${sanitizeReason(origin)})`;
 }
 
 /**
@@ -595,7 +580,9 @@ export function buildProgram(): Command {
           for (const row of backlog) {
             const spec = JSON.parse(row.spec) as TaskSpec;
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
-            console.log(`${row.id.padEnd(14)}${goalHeadline(spec)}  ${scope}${originMarker(row)}`);
+            console.log(
+              `${row.id.padEnd(14)}${goalColumn(goalHeadline(spec.goal))}  ${scope}${originMarker(row.origin)}`,
+            );
           }
           return;
         }
@@ -777,114 +764,86 @@ export function buildProgram(): Command {
     .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
     .action(() => {
       const { repoPath, db } = project();
-      const overdue = listOverdueLedgerEntries(db, projectId(repoPath), new Date());
-      for (const entry of overdue) {
+      const snapshot = buildDashboardSnapshot(db, repoPath, Date.now());
+      for (const entry of snapshot.overdueDebt) {
         console.log(
-          `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.review_by})`,
+          `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
         );
       }
-      if (isConductorRunning(repoPath)) {
+      if (snapshot.conductor.running) {
         // The attach line is for the operator, who is the only caller that
         // attaches: a session and the conductor are told the conductor is up
         // and nothing more, so pup is not the thing that hands a session the
         // socket its window lives on (decision 47).
-        const pid = projectId(repoPath);
         console.log(
           callingSession(db) || callingConductor()
             ? 'conductor running'
-            : `conductor running (attach: tmux -L ${conductorSocket(pid)} attach -t ${conductorName(pid)})`,
+            : `conductor running (attach: ${snapshot.conductor.attachCommand})`,
         );
       }
-      const rows = listSessions(db);
-      const backlog = listBacklogTasks(db, projectId(repoPath));
-      if (rows.length === 0 && backlog.length === 0) {
+      if (snapshot.sessions.length === 0 && snapshot.backlog.length === 0) {
         console.log('Nothing running and nothing planned.');
         return;
       }
-      const paths = projectPaths(repoPath);
-      const stalledAges = new Map(
-        findStalledSessions(db, repoPath, Date.now()).map((s) => [s.id, s.ageMs]),
-      );
-      const priorityFirst = [...rows].sort(
-        (a, b) =>
-          Number(b.state === 'blocked' || stalledAges.has(b.id)) -
-          Number(a.state === 'blocked' || stalledAges.has(a.id)),
-      );
-      for (const r of priorityFirst) {
+      for (const session of snapshot.sessions) {
         const marker =
-          r.state === 'blocked'
-            ? `  needs a human (${r.reject_count} rejections) — \`pup unblock ${r.id}\` once addressed`
+          session.state === 'blocked'
+            ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
             : '';
-        const tokens = r.transcript_path ? latestContextTokens(r.transcript_path) : undefined;
+        const tokens = session.contextTokens;
         const ctx =
-          r.state === 'running' && tokens !== undefined
-            ? `  ctx ~${Math.round(tokens / 1000)}k${tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${r.id}\`` : ''}`
-            : '';
+          tokens === undefined
+            ? ''
+            : `  ctx ~${Math.round(tokens / 1000)}k${tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${session.id}\`` : ''}`;
         console.log(
-          `${r.state.padEnd(16)} ${r.id.padEnd(28)} ${r.branch}${marker}${activityMarker(r.state, paths.eventsFile(r.id), stalledAges.get(r.id))}${ctx}`,
+          `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}${activityMarker(session)}${ctx}`,
         );
       }
       // Planned tasks share the session table's columns under `planned`, the
       // state docs/01 gives a task with no session row: what will be built
       // belongs beside what is being built, not in a separate command
       // (decision 41).
-      for (const row of backlog) {
-        const spec = JSON.parse(row.spec) as TaskSpec;
+      for (const task of snapshot.backlog) {
         console.log(
-          `${'planned'.padEnd(16)} ${row.id.padEnd(28)} ${goalHeadline(spec)}${originMarker(row)}`,
+          `${'planned'.padEnd(16)} ${task.id.padEnd(28)} ${goalColumn(task.goal)}${originMarker(task.origin)}`,
         );
       }
-      printConflictRadar(db, repoPath, rows);
+      printConflictRadar(snapshot);
     });
 
   /** The watcher's radar: same-file overlaps between live sessions (docs/08 v1.2). */
-  function printConflictRadar(db: Database, repoPath: string, rows: SessionRow[]): void {
-    const live = rows.filter((r) => r.state === 'running' || r.state === 'awaiting-review');
-    const beat = getWatcherBeat(db, projectId(repoPath));
-    const stale = !beat || Date.now() - beat.getTime() > WATCH_STALE_AFTER_MS;
-    for (const pair of listOverlaps(db)) {
+  function printConflictRadar(snapshot: DashboardSnapshot): void {
+    const live = snapshot.sessions.filter(
+      (s) => s.state === 'running' || s.state === 'awaiting-review',
+    );
+    for (const pair of snapshot.overlaps) {
       const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
       console.log(
-        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${sanitizeReason(pair.files[0] ?? '')}${extra}${stale ? '  (stale)' : ''}`,
+        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files[0] ?? ''}${extra}${snapshot.radarStale ? '  (stale)' : ''}`,
       );
     }
-    if (live.length >= 2 && stale) {
+    if (live.length >= 2 && snapshot.radarStale) {
       console.log('conflict radar off — start it with `pup watch --start`');
     }
   }
 
   /**
    * Decision 2: hook events, not pane contents, tell what a running session is
-   * doing. Decision 35: staleness wins over activity kind — a session whose
-   * events file has gone quiet too long is STALLED no matter what its last
-   * classified event was.
+   * doing — the snapshot has already read them, and a session with no activity
+   * is one there was nothing to read for. Decision 35: staleness wins over
+   * activity kind, so a session whose events file has gone quiet too long is
+   * STALLED no matter what its last classified event was.
    */
-  function activityMarker(state: string, eventsFile: string, stalledAgeMs?: number): string {
-    if (state !== 'running' || !existsSync(eventsFile)) return '';
-    if (stalledAgeMs !== undefined) return `  STALLED (${formatStaleAge(stalledAgeMs)})`;
-    const activity = classifySessionActivity(readFileSync(eventsFile, 'utf8'));
-    if (activity.kind === 'awaiting-input') {
-      return `  WAITING ON INPUT${activity.detail ? ` (${activity.detail})` : ''}`;
+  function activityMarker(session: DashboardSession): string {
+    if (!session.activity) return '';
+    if (session.stalledAgeMs !== undefined) {
+      return `  STALLED (${formatStaleAge(session.stalledAgeMs)})`;
     }
-    if (activity.kind === 'idle') return '  idle (turn ended, no done signal)';
+    if (session.activity.kind === 'awaiting-input') {
+      return `  WAITING ON INPUT${session.activity.detail ? ` (${session.activity.detail})` : ''}`;
+    }
+    if (session.activity.kind === 'idle') return '  idle (turn ended, no done signal)';
     return '';
-  }
-
-  /** Running sessions whose events file has gone quiet past STALLED_AFTER_MS (decision 35). */
-  function findStalledSessions(
-    db: Database,
-    repoPath: string,
-    now: number,
-  ): Array<{ id: string; ageMs: number }> {
-    const paths = projectPaths(repoPath);
-    const stalled: Array<{ id: string; ageMs: number }> = [];
-    for (const r of listSessions(db, ['running'])) {
-      const eventsFile = paths.eventsFile(r.id);
-      if (!existsSync(eventsFile)) continue;
-      const ageMs = now - statSync(eventsFile).mtimeMs;
-      if (isSessionStalled(ageMs)) stalled.push({ id: r.id, ageMs });
-    }
-    return stalled;
   }
 
   program
