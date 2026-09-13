@@ -22,14 +22,6 @@ export interface ProjectPaths {
   handoffFile(sessionId: string): string;
   /** The conductor's compiled profile — one per project, beside the sessions (decision 47). */
   conductorCompiledDir: string;
-  /**
-   * The conductor's private detached checkout of the merge target, and the only
-   * thing its code graph is ever built from. Never the live main working tree:
-   * that carries untracked files and a root `codegraph.json` a session can write
-   * from its own worktree, either of which would steer or feed the
-   * highest-privilege agent's graph (decision 51).
-   */
-  conductorCheckoutDir: string;
 }
 
 export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre')): ProjectPaths {
@@ -46,6 +38,5 @@ export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre'
     eventsFile: (sessionId) => join(sessionDir(sessionId), 'events.jsonl'),
     handoffFile: (sessionId) => join(sessionDir(sessionId), 'handoff.md'),
     conductorCompiledDir: join(root, 'conductor', 'compiled'),
-    conductorCheckoutDir: join(root, 'conductor', 'checkout'),
   };
 }

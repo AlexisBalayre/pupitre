@@ -32,7 +32,12 @@ import {
   killConductor,
   launchConductor,
 } from '../claude/session-runtime.service.js';
-import { isConductorRunning, startConductor, stopConductor } from './conductor.service.js';
+import {
+  conductorCheckoutDir,
+  isConductorRunning,
+  startConductor,
+  stopConductor,
+} from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectId, projectPaths } from './paths.utils.js';
 
@@ -195,7 +200,7 @@ describe('startConductor code graph', () => {
     gitIn(repo, 'commit', '-qm', 'init');
   });
 
-  const checkout = () => projectPaths(repo).conductorCheckoutDir;
+  const checkout = () => conductorCheckoutDir(repo);
 
   afterEach(() => {
     vi.unstubAllEnvs();

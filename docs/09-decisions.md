@@ -2106,7 +2106,9 @@ changes back into those docs is pending.
     the system; its graph must not be writable by the things it supervises. Fixed structurally
     rather than by blacklisting the two known levers: `pup conductor start` cuts (or refreshes) a
     private detached checkout of the merge target at `~/.pupitre/<pid>/conductor/checkout`, indexes
-    THAT, and pins `mcp.json` at it. Tracked content and nothing else, so both levers are gone at
+    THAT, and pins `mcp.json` at it. (That path is derived in `conductor.service.ts` rather than
+    added to `projectPaths` beside `conductorCompiledDir`, where the rest of the conductor's state
+    layout lives: this is its only consumer, and a second one is the moment to move it.) Tracked content and nothing else, so both levers are gone at
     the root. Detached, so the branch stays free for the main checkout and for `pup merge`.
     Refreshed at start and not after, which the context section now says in as many words — the
     conductor is told its graph is a snapshot of a pristine copy, that it is not the tree it sits

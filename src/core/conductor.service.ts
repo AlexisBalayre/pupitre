@@ -19,20 +19,6 @@ import {
 } from './profile-compiler.service.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
 
-/**
- * Compile the conductor's profile and open its window in the main checkout,
- * then type its context in as the opening prompt. One conductor per project:
- * a stale window wearing the name is replaced, as a session's would be. Not
- * a session — no task, worktree, branch or row — so nothing here touches the
- * store; the conductor's trace is the tasks it plans (`origin = conductor`)
- * and the events on the sessions it drives (decision 47). The window opens on
- * the conductor's own tmux socket, so the kickoff — the one thing that types
- * into it — goes to the pane the launch returned, on that same server.
- *
- * Its code graph is built from a PRIVATE detached checkout of the merge target,
- * never from the live main working tree (decision 51 — see
- * `refreshConductorCheckout`).
- */
 // Hooks off and the GIT_DIR family scrubbed, like every other git call pup
 // makes: `worktree add` fires post-checkout, and a hook planted by an earlier
 // session lives in the shared common dir, untracked (decision 28).
@@ -41,6 +27,20 @@ function git(cwd: string, ...args: string[]): string {
     encoding: 'utf8',
     env: scrubbedGitEnv(),
   }).trim();
+}
+
+/**
+ * The conductor's private detached checkout of the merge target — the only thing
+ * its code graph is ever built from, and never the live main working tree (see
+ * `refreshConductorCheckout`).
+ *
+ * Derived here rather than added to `projectPaths` beside `conductorCompiledDir`,
+ * which is where the rest of the conductor's state layout lives: this module is
+ * its only consumer, and `paths.utils.ts` is outside this task's scope. If a
+ * second consumer ever appears, that is the moment to move it there.
+ */
+export function conductorCheckoutDir(repoPath: string): string {
+  return join(projectPaths(repoPath).root, 'conductor', 'checkout');
 }
 
 /**
@@ -125,11 +125,25 @@ function graphForConductor(
   return prepareGraph(binary, repoPath, checkoutDir) ? join(outDir, 'mcp.json') : undefined;
 }
 
+/**
+ * Compile the conductor's profile and open its window in the main checkout,
+ * then type its context in as the opening prompt. One conductor per project:
+ * a stale window wearing the name is replaced, as a session's would be. Not
+ * a session — no task, worktree, branch or row — so nothing here touches the
+ * store; the conductor's trace is the tasks it plans (`origin = conductor`)
+ * and the events on the sessions it drives (decision 47). The window opens on
+ * the conductor's own tmux socket, so the kickoff — the one thing that types
+ * into it — goes to the pane the launch returned, on that same server.
+ *
+ * Its code graph is built from a PRIVATE detached checkout of the merge target,
+ * never from the live main working tree (decision 51 — see
+ * `refreshConductorCheckout`).
+ */
 export function startConductor(req: StartConductorRequest): ConductorHandle {
   const pid = projectId(req.repoPath);
   const name = conductorName(pid);
-  const paths = projectPaths(req.repoPath);
-  const outDir = paths.conductorCompiledDir;
+  const outDir = projectPaths(req.repoPath).conductorCompiledDir;
+  const checkoutDir = conductorCheckoutDir(req.repoPath);
   // Before the compile, because the answer shapes the compiled files and the
   // hash is recorded over them: which binary serves the graph is part of the
   // conductor's environment, not a runtime detail (decision 51).
@@ -143,13 +157,13 @@ export function startConductor(req: StartConductorRequest): ConductorHandle {
     userConfigHash: snapshotUserConfigHash(req.claudeUserDir),
     outDir,
     codegraphBinary: binary,
-    checkoutPath: paths.conductorCheckoutDir,
+    checkoutPath: checkoutDir,
   });
   mkdirSync(outDir, { recursive: true });
   writeCompiledProfile(compiled, outDir);
   // Cut and indexed before the launch, so the window opens on a graph that is
   // already there.
-  const mcpConfigPath = graphForConductor(binary, req.repoPath, paths.conductorCheckoutDir, outDir);
+  const mcpConfigPath = graphForConductor(binary, req.repoPath, checkoutDir, outDir);
   const pane = launchConductor({
     projectId: pid,
     repoPath: req.repoPath,
