@@ -40,10 +40,40 @@ exit 1.
   header (project, conductor, baseline figures), overdue debt, the live sessions with their
   activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,
   and the conflict radar. Merged and killed sessions are a count, not rows — the screen is for
-  work someone can still change, and `pup status` is where the whole history is listed. Keys:
-  `↑`/`↓` or `j`/`k` move the cursor, `r` re-reads now, `q` quits. Nothing here mutates anything.
+  work someone can still change, and `pup status` is where the whole history is listed.
   Piped or redirected, it prints what `pup status` prints, once, and exits 0. Runs in the
   terminal's alternate screen, so quitting gives the scrollback back untouched (decision 52).
+
+  The cursor moves with `↑`/`↓` over the session rows and the planned rows beneath them — one
+  list, so an action always acts on the row it is on. Every key below runs the same core
+  function the command of the same name runs, and its result lands in the status line at the
+  bottom; the reading refreshes right after, so the row shows what just happened.
+
+  | key | does | prompts |
+  | --- | --- | --- |
+  | `l` | `pup launch` on the planned row | the model, defaulting to the last one typed |
+  | `s` | `pup steer` on the session row | the message; Enter sends, Esc cancels |
+  | `i` | `pup interrupt` (Escape to the pane) | — |
+  | `k` | `pup kill` | `y`/`n` |
+  | `u` | `pup unblock`, on a blocked row only | the recorded block reason, then `y`/`n` |
+  | `R` | `pup respawn`, with its wait on screen | — |
+  | `a` | `tmux attach` on the row's window | — |
+  | `A` | `tmux attach` on the conductor's window, socket included | — |
+  | `c` | `pup conductor start`, or `stop` when one is up | both models, on a start |
+  | `m` | `pup merge <session> --pr`, on an `awaiting-review` row | `y`/`n` |
+  | `r` | re-read now | — |
+  | `q` | quit | — |
+
+  `j`/`k` no longer move the cursor: `k` is the kill. `a` and `A` leave the alternate screen for
+  as long as tmux holds it and return to the dashboard on detach. `m` runs as a child process
+  and streams its stages into a log pane as the gate produces them, so a minutes-long gate is
+  watched rather than waited on; `Enter` or `Esc` closes the pane afterwards. While an action is
+  in flight the keys are deaf, so a second merge or a kill of the session a respawn is waiting
+  on cannot be typed by accident.
+
+  Every one of those keys runs a command that is operator-only somewhere (decisions 42, 44, 47),
+  so a session or the conductor gets the dashboard read-only: the mutating keys are unbound and
+  hidden, the reason is on screen, and the cursor, `r` and `q` still work.
 - `pup conductor [start|stop] [--model <m>] [--worker-model <m>]` — open (or close) the
   project's conductor: one Claude Code window in the main checkout that plans, launches,
   steers and kills sessions and hands each finished branch to the operator. It reaches a

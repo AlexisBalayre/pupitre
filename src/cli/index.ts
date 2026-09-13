@@ -23,6 +23,7 @@ import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
 import { startConductor, stopConductor } from '../core/conductor.service.js';
 import {
+  blockedReason,
   buildDashboardSnapshot,
   findStalledSessions,
   goalHeadline,
@@ -46,7 +47,6 @@ import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { renderReportHtml } from '../core/report.service.js';
-import { parseJsonOr } from '../core/report-data.utils.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   appendEvent,
@@ -55,7 +55,6 @@ import {
   getSession,
   getTask,
   listBacklogTasks,
-  listEvents,
   listSessions,
   type SessionRow,
   transitionSession,
@@ -232,27 +231,6 @@ function resolveLiveSession(db: Database, session: string, verb: string): Sessio
     return undefined;
   }
   return row;
-}
-
-/**
- * Why the gate parked this session, read back out of the store: the `reason`
- * on the newest `gate_result` that moved it to `blocked` — the reject cap of
- * decision 7, or the re-steer refusal decision 45's addendum records. Newest
- * wins and an older block is never consulted, so a session parked twice is
- * described by the parking that is current. Undefined when the transition
- * carried no reason, which is every block older than those two reasons.
- */
-function blockedReason(db: Database, sessionId: string): string | undefined {
-  for (const event of listEvents(db, sessionId).reverse()) {
-    if (event.type !== 'gate_result') continue;
-    const payload = parseJsonOr<{ to?: unknown; reason?: unknown }>(event.payload, {});
-    if (payload.to !== 'blocked') continue;
-    // Sanitized like every other stored text this prints: the reason quotes a
-    // steer refusal, and the report that refused to land is the session's own
-    // output (decision 29).
-    return typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : undefined;
-  }
-  return undefined;
 }
 
 /**
@@ -765,12 +743,24 @@ export function buildProgram(): Command {
         printDashboard(db, read());
         return;
       }
-      const instance = render(createElement(App, { read, showAttach: showAttachCommand(db) }), {
-        // vim's and htop's buffer: the fleet is watched for a while and then
-        // left, and the scrollback the operator was reading before is theirs
-        // to get back untouched.
-        alternateScreen: true,
-      });
+      const readOnlyReason = uiReadOnlyReason(db);
+      const instance = render(
+        createElement(App, {
+          read,
+          showAttach: showAttachCommand(db),
+          // The store and repo the keys write through, and the bin the merge
+          // child is re-entered with — `process.argv[1]`, the same path a
+          // session's environment carries as `PUP_BIN`.
+          deps: { db, repoPath, pupBin: realpathSync(process.argv[1] ?? 'pup') },
+          ...(readOnlyReason ? { readOnlyReason } : {}),
+        }),
+        {
+          // vim's and htop's buffer: the fleet is watched for a while and then
+          // left, and the scrollback the operator was reading before is theirs
+          // to get back untouched.
+          alternateScreen: true,
+        },
+      );
       // Ink restores the primary screen on unmount, so every way out has to
       // reach unmount. `q` and Ctrl-C already do; a SIGINT or SIGTERM sent from
       // elsewhere would otherwise leave the operator's terminal on the
@@ -835,6 +825,26 @@ export function buildProgram(): Command {
       );
     }
     printConflictRadar(snapshot);
+  }
+
+  /**
+   * Why this caller gets the dashboard without its controls, or nothing at all
+   * for the operator. Every key `pup ui` binds runs a command that is
+   * operator-only somewhere — the merge, the respawn and the unblock are
+   * refused to the conductor as well as to sessions, and the launch, the kill
+   * and the steer are refused to sessions (decisions 42, 44, 47). A screen
+   * that offered them and refused each keystroke one at a time would be a menu
+   * of things that do not work, so the whole set goes and the reason is on
+   * screen instead. The keys that only look — the cursor, `r`, `q` — stay.
+   */
+  function uiReadOnlyReason(db: Database): string | undefined {
+    if (callingSession(db)) {
+      return 'read-only: sessions do not drive sessions (decisions 42, 44).';
+    }
+    if (callingConductor()) {
+      return "read-only: the conductor drives sessions with `pup` commands, and the merge, respawn and unblock are the operator's (decision 47).";
+    }
+    return undefined;
   }
 
   /**

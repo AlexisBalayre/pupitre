@@ -2208,6 +2208,55 @@ changes back into those docs is pending.
     scope-in does not include, so the honest options were a pane missing three of its five sections
     or no pane. The cursor it would have opened from is here and working, because part 3's actions
     need it; `Enter` and `Esc` are unbound until there is something to open.
+    *Addendum (2026-09-13, part 3): the keys, and the one rule they all obey.* The screen now
+    launches, steers, interrupts, kills, unblocks, respawns, attaches, toggles the conductor and
+    merges, so the operator's loop runs from one place. Every key goes through
+    `src/cli/ui/actions.service.ts`, and every function there calls the same core function the
+    command of that name calls — this is the corollary above, made a file rather than a habit: a
+    component imports actions, an action imports core, and there is no third path. The result of
+    a key is a line in the status bar rather than a print, because an action on a row three lines
+    up leaves nothing on that row to read; the reading refreshes right after it, so the row
+    catches up on its own.
+    *Errors become lines, not stack traces.* A CLI command that hits something unexpected should
+    die with its stack — the operator gets the shell back and can read it. A held-open screen that
+    did the same would tear down the render and leave the terminal on the alternate buffer, so
+    every action answers with a message and a failed flag. The refusals the core throws are
+    already written for a person to read; this is where they are read.
+    *`j`/`k` are gone from the cursor.* `k` is the kill. A key that sometimes moves the cursor and
+    sometimes proposes killing a session is worse than either, and half a vim pair is worse still,
+    so navigation is `↑`/`↓`. The confirmations are the operator's own: `y`/`n` on the kill and on
+    the unblock, which shows the reason the gate recorded before it asks — unblocking is a claim
+    that *that* was addressed, and the claim cannot be made about a reason nobody was shown. The
+    merge is confirmed too, which the task did not ask for: a passing gate pushes a branch and
+    opens a pull request, and `m` sits under the keys this screen is navigated with.
+    *Two actions do not fit inside a frame, and each bends in its own direction.* The respawn's
+    wait is `pup respawn`'s wait, except that the CLI's `awaitHandoffReady` sleeps the thread —
+    here that would freeze the clock, the redraw and every keystroke for up to ten minutes, which
+    is the one thing a screen held open must not do. Same poll, awaited instead of slept, with the
+    elapsed seconds on screen. The merge runs as a child process, `pup merge <session> --pr` with
+    this process's own bin: `runMergeGate` is one synchronous pipeline of clone, install, build,
+    test and audit that returns a report at the end, so called in-process it would show nothing
+    for the minutes the operator most wants to watch. The child prints a stage as it finishes and
+    the pane fills as the gate runs. It also puts the CLI's guards on the far side of a process
+    boundary — the child re-resolves the project and re-asks who is calling — so the rule below is
+    enforced twice.
+    *Attach is Ink's `suspendTerminal`, not an unmount.* Ink 7 leaves the alternate screen, hands
+    the input stream back, runs the child and forces a full redraw after it. That is exactly an
+    attach, and it costs nothing: the reading, the cursor and the status line are all still there
+    when tmux lets go. The conductor's window is on a socket of its own (decision 47), so it is
+    `A` with the `-L` on the argv rather than a row in a list it is not part of.
+    *Operator-only, as a whole rather than per key.* Every key here runs a command that is
+    operator-only somewhere — the launch, the kill and the steer are refused to sessions, and the
+    merge, the respawn and the unblock to the conductor as well (decisions 42, 44, 47). A screen
+    that offered all of them and refused each keystroke one at a time would be a menu of things
+    that do not work, so `callingSession` or `callingConductor` unbinds and hides the whole set
+    and puts the reason on screen instead. Looking, re-reading and leaving are not refused to
+    anyone.
+    *The dead exports part 2 left.* `GOAL_COLUMN_CHARS` and `SnapshotReading` were exported and
+    imported by nothing, which is what ledger #18 recorded. Neither wanted an importer: the width
+    is how `dashboard-text.utils.ts` fits a goal, and every caller that reached for it wanted the
+    fitted string, while `SnapshotReading` names half of the hook's own return type. Both are now
+    private to their file.
 
 ## Implementation notes
 

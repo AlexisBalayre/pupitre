@@ -2,11 +2,14 @@ import { cleanup, render } from 'ink-testing-library';
 import { createElement, type ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import type { ActionDeps } from './actions.service.js';
 import { App } from './app.component.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
 import { Footer } from './footer.component.js';
 import { Header } from './header.component.js';
+import { MergeLogPane } from './merge-log.component.js';
+import { Prompt } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
 
@@ -18,6 +21,12 @@ import { Sessions } from './sessions.component.js';
  * stdout is not a terminal, so chalk writes none, and a test that pinned ANSI
  * codes would be testing chalk's TTY detection rather than the dashboard.
  */
+/**
+ * The App's controls take a store to write through; every case in this file is
+ * about what is drawn, and none of them presses a key that reaches it.
+ */
+const DEPS = { db: {}, repoPath: '/repo/pupitre', pupBin: '/abs/pup.js' } as unknown as ActionDeps;
+
 function snapshotFixture(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot {
   return {
     projectId: 'ab12cd34ef56',
@@ -50,6 +59,9 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
     ...overrides,
   };
 }
+
+const DOWN = '\u001b[B';
+const UP = '\u001b[A';
 
 /** The frame a component settles on, unmounted before the next one renders. */
 function frameOf(element: ReactElement): string {
@@ -276,14 +288,89 @@ describe('dashboard components', () => {
   });
 
   describe('footer', () => {
-    it('lists the keys and says the view changes nothing', () => {
-      const frame = frameOf(createElement(Footer, { refreshedAt: '10:00:00' }));
+    it('lists every key, and what the last one did', () => {
+      const frame = frameOf(
+        createElement(Footer, {
+          refreshedAt: '10:00:00',
+          status: { message: 'Launched s-new-1.', failed: false },
+        }),
+      );
 
-      expect(frame).toContain('j/k select');
-      expect(frame).toContain('r refresh');
+      expect(frame).toContain('Launched s-new-1.');
+      expect(frame).toContain('↑/↓ select');
+      expect(frame).toContain('k kill');
+      expect(frame).toContain('m merge');
       expect(frame).toContain('q quit');
-      expect(frame).toContain('read-only');
       expect(frame).toContain('10:00:00');
+    });
+
+    // A menu of keys that answer nothing is worse than no menu: a caller that
+    // may not drive the fleet is told so and shown only what still works
+    // (decision 47).
+    it('drops the mutating keys and gives the reason when the view is read-only', () => {
+      const frame = frameOf(
+        createElement(Footer, {
+          refreshedAt: '10:00:00',
+          readOnlyReason: 'read-only: sessions do not drive sessions.',
+        }),
+      );
+
+      expect(frame).toContain('read-only: sessions do not drive sessions.');
+      expect(frame).not.toContain('k kill');
+      expect(frame).not.toContain('m merge');
+      expect(frame).toContain('↑/↓ select');
+      expect(frame).toContain('q quit');
+    });
+  });
+
+  describe('prompt', () => {
+    it('asks a confirmation with both answers on it', () => {
+      const frame = frameOf(
+        createElement(Prompt, { prompt: { kind: 'confirm', question: 'Kill s-run-1?' } }),
+      );
+
+      expect(frame).toContain('Kill s-run-1?');
+      expect(frame).toContain('(y/n, Esc cancels)');
+    });
+
+    it('shows what has been typed into a field so far', () => {
+      const frame = frameOf(
+        createElement(Prompt, { prompt: { kind: 'input', label: 'steer s-run-1', value: 'read' } }),
+      );
+
+      expect(frame).toContain('steer s-run-1: read');
+      expect(frame).toContain('Enter sends');
+    });
+  });
+
+  describe('merge log', () => {
+    it('names the command it is running and says it has nothing yet', () => {
+      const frame = frameOf(
+        createElement(MergeLogPane, {
+          log: { sessionId: 's-run-1', lines: [], firstLine: 0, running: true },
+        }),
+      );
+
+      expect(frame).toContain('pup merge s-run-1 --pr');
+      expect(frame).toContain('(running)');
+      expect(frame).toContain('waiting for the first stage');
+    });
+
+    it('draws the stages the child has printed, and how to close the pane', () => {
+      const frame = frameOf(
+        createElement(MergeLogPane, {
+          log: {
+            sessionId: 's-run-1',
+            lines: ['  tests           PASS', '  dead-code       FAIL'],
+            firstLine: 0,
+            running: false,
+          },
+        }),
+      );
+
+      expect(frame).toContain('tests           PASS');
+      expect(frame).toContain('dead-code       FAIL');
+      expect(frame).toContain('Enter or Esc closes');
     });
   });
 
@@ -303,7 +390,9 @@ describe('dashboard components', () => {
     });
 
     it('lays out every section from one reading', () => {
-      const frame = frameOf(createElement(App, { read: () => populated, showAttach: true }));
+      const frame = frameOf(
+        createElement(App, { read: () => populated, showAttach: true, deps: DEPS }),
+      );
 
       expect(frame).toContain('ab12cd34ef56');
       expect(frame).toContain('OVERDUE DEBT #8');
@@ -316,14 +405,17 @@ describe('dashboard components', () => {
       expect(frame).toContain('1 finished');
     });
 
-    // The cursor spans the session rows and the planned rows beneath them:
-    // on screen they are one list, and part 3's actions act on whichever row
-    // it sits on.
+    // The cursor spans the session rows and the planned rows beneath them: on
+    // screen they are one list, and every action acts on whichever row it sits
+    // on. Arrows only — `k` is the kill now, and a key that sometimes moves the
+    // cursor and sometimes proposes killing a session is neither.
     it('moves one cursor down from the last session onto the backlog', async () => {
-      const instance = render(createElement(App, { read: () => populated, showAttach: true }));
+      const instance = render(
+        createElement(App, { read: () => populated, showAttach: true, deps: DEPS }),
+      );
       expect(instance.lastFrame()).toMatch(/^\s*> blocked/m);
 
-      instance.stdin.write('j');
+      instance.stdin.write(DOWN);
       await Promise.resolve();
 
       expect(instance.lastFrame()).toMatch(/^\s*> planned/m);
@@ -332,14 +424,16 @@ describe('dashboard components', () => {
     });
 
     it('holds the cursor at the ends of the list', async () => {
-      const instance = render(createElement(App, { read: () => populated, showAttach: true }));
+      const instance = render(
+        createElement(App, { read: () => populated, showAttach: true, deps: DEPS }),
+      );
 
-      instance.stdin.write('k');
+      instance.stdin.write(UP);
       await Promise.resolve();
       expect(instance.lastFrame()).toMatch(/^\s*> blocked/m);
 
-      instance.stdin.write('j');
-      instance.stdin.write('j');
+      instance.stdin.write(DOWN);
+      instance.stdin.write(DOWN);
       await Promise.resolve();
       expect(instance.lastFrame()).toMatch(/^\s*> planned/m);
       instance.unmount();
@@ -349,6 +443,7 @@ describe('dashboard components', () => {
       let reads = 0;
       const instance = render(
         createElement(App, {
+          deps: DEPS,
           read: () => {
             reads += 1;
             return snapshotFixture({

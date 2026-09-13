@@ -1,10 +1,45 @@
-import { Text } from 'ink';
+import { Box, Text } from 'ink';
+import type { ControlStatus } from './use-controls.hook.js';
 
 /**
- * What the operator may press. Every key here only moves the cursor or re-reads
- * the store: `pup ui` shows the fleet and changes nothing about it, and the
- * hints say so rather than leaving the absence to be discovered (decision 52).
+ * What the last key did, and what the operator may press next. The status line
+ * is where every action's result lands — the session it launched, the PR it
+ * opened, the refusal it got — because an action taken on a row three lines up
+ * leaves nothing on that row to read, and a screen that changes silently is a
+ * screen nobody trusts.
+ *
+ * `readOnlyReason` is the caller's ruling, not this component's: a session or
+ * the conductor gets the dashboard and no controls (decision 47), and is told
+ * why rather than left to press keys that do nothing.
  */
-export function Footer({ refreshedAt }: { refreshedAt: string }) {
-  return <Text dimColor>↑/↓ or j/k select r refresh q quit · read-only · {refreshedAt}</Text>;
+export function Footer({
+  refreshedAt,
+  status,
+  readOnlyReason,
+}: {
+  refreshedAt: string;
+  status?: ControlStatus;
+  readOnlyReason?: string;
+}) {
+  return (
+    <Box flexDirection="column">
+      {status ? (
+        <Text color={status.failed ? 'red' : 'green'} wrap="truncate-end">
+          {status.message}
+        </Text>
+      ) : null}
+      {readOnlyReason ? <Text color="yellow">{readOnlyReason}</Text> : null}
+      {/* Two lines rather than one: the whole set does not fit an eighty-column
+          terminal, and a hint line that truncates hides the keys at its end. */}
+      {readOnlyReason ? null : (
+        <Text dimColor wrap="truncate-end">
+          l launch s steer i interrupt k kill u unblock R respawn m merge
+        </Text>
+      )}
+      <Text dimColor wrap="truncate-end">
+        ↑/↓ select {readOnlyReason ? '' : 'a attach A conductor window c conductor on/off '}r
+        refresh q quit · {refreshedAt}
+      </Text>
+    </Box>
+  );
 }

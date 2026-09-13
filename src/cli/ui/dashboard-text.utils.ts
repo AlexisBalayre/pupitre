@@ -16,9 +16,11 @@ import type { DashboardSession } from '../../core/types/dashboard.types.js';
  * Width of the goal column in `pup plan`, `pup status` and `pup ui`. Goals run
  * to a paragraph (decision 41's own backlog entries are 400+ chars), so the
  * column clips rather than pads: an unclipped goal pushed the scope column off
- * the row on the first real backlog this rendered.
+ * the row on the first real backlog this rendered. Private to `goalColumn`:
+ * the width is how this file fits a goal, not a number other files measure
+ * against — every caller that wanted one wanted the fitted string.
  */
-export const GOAL_COLUMN_CHARS = 44;
+const GOAL_COLUMN_CHARS = 44;
 
 /** A goal headline fitted to the goal column — clipped rather than wrapped. */
 export function goalColumn(headline: string): string {

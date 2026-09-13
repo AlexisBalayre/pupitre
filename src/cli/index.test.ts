@@ -550,10 +550,21 @@ describe('CLI commands', () => {
     }
 
     /** The props `pup ui` mounted the dashboard with. */
-    function mountedProps(): { read: () => DashboardSnapshot; showAttach: boolean } {
+    function mountedProps(): {
+      read: () => DashboardSnapshot;
+      showAttach: boolean;
+      deps: { repoPath: string; pupBin: string };
+      readOnlyReason?: string;
+    } {
       const [element] = firstCall(render);
-      return (element as ReactElement<{ read: () => DashboardSnapshot; showAttach: boolean }>)
-        .props;
+      return (
+        element as ReactElement<{
+          read: () => DashboardSnapshot;
+          showAttach: boolean;
+          deps: { repoPath: string; pupBin: string };
+          readOnlyReason?: string;
+        }>
+      ).props;
     }
 
     it('mounts the dashboard on the alternate screen, reading the live store', () => {
@@ -589,6 +600,41 @@ describe('CLI commands', () => {
       runUi(true);
 
       expect(mountedProps().showAttach).toBe(showAttach);
+    });
+
+    // Every key writes through the open store and the repo the command
+    // resolved, and the merge re-enters this same bin as a child (decision 52's
+    // addendum) — a dashboard handed another project's store would drive a
+    // fleet the operator is not looking at.
+    it('hands the controls the store, the repo and the bin to re-enter', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().deps.repoPath).toBe(repo);
+      expect(mountedProps().deps.pupBin).toBe(realpathSync(process.argv[1] ?? 'pup'));
+    });
+
+    // Every key the dashboard binds runs a command that is operator-only
+    // somewhere, so the whole set goes rather than refusing one keystroke at a
+    // time (decisions 42, 44, 47).
+    it.each([
+      ['the operator', {}, undefined],
+      ['a session', { PUP_SESSION_ID: 's1' }, 'sessions do not drive sessions'],
+      ['the conductor', { PUP_CONDUCTOR: 'pid' }, 'the conductor drives sessions'],
+    ])('gives %s a dashboard it may drive, or says why not', (_who, env, reason) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      stubRender();
+
+      runUi(true);
+
+      if (reason === undefined) expect(mountedProps().readOnlyReason).toBeUndefined();
+      else expect(mountedProps().readOnlyReason).toContain(reason);
     });
 
     // Ink restores the primary screen when it unmounts, so a signal that would

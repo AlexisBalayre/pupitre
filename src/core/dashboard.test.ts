@@ -12,7 +12,12 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { hasConductorWindow } from '../claude/session-runtime.service.js';
-import { buildDashboardSnapshot, findStalledSessions, goalHeadline } from './dashboard.service.js';
+import {
+  blockedReason,
+  buildDashboardSnapshot,
+  findStalledSessions,
+  goalHeadline,
+} from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
@@ -435,5 +440,63 @@ describe('goalHeadline', () => {
 
   it('is empty for a task with no goal', () => {
     expect(goalHeadline(undefined)).toBe('');
+  });
+});
+
+/**
+ * Not on the snapshot: it is read when someone asks to lift a block, not on
+ * every redraw. `pup unblock` and the dashboard's `u` both ask through this, so
+ * neither can describe a parking the other would describe differently.
+ */
+describe('blockedReason', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    repo = tempRepo();
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function blockSession(sessionId: string, payload: Record<string, unknown>): void {
+    seedSession(db, repo, sessionId);
+    transitionSession(db, sessionId, 'running');
+    transitionSession(db, sessionId, 'blocked', payload);
+  }
+
+  it('reads the reason off the gate result that parked the session', () => {
+    blockSession('s-parked', { reason: '3 rejections: the gate stopped steering' });
+
+    expect(blockedReason(db, 's-parked')).toBe('3 rejections: the gate stopped steering');
+  });
+
+  // A session parked twice is described by the parking that is current.
+  it('takes the newest block, never an older one', () => {
+    blockSession('s-twice', { reason: 'the first parking' });
+    transitionSession(db, 's-twice', 'running', { kind: 'operator-unblock' });
+    transitionSession(db, 's-twice', 'blocked', { reason: 'the second parking' });
+
+    expect(blockedReason(db, 's-twice')).toBe('the second parking');
+  });
+
+  // The reason quotes a steer refusal, and the report that refused to land is
+  // the session's own output (decision 29).
+  it("strips what a terminal would obey out of the session's own words", () => {
+    blockSession('s-ansi', { reason: 'refused: \u001b[31mFAIL\u001b[0m' });
+
+    expect(blockedReason(db, 's-ansi')).toBe('refused: [31mFAIL [0m');
+  });
+
+  it('is undefined for a block that carried no reason, and for no block at all', () => {
+    blockSession('s-bare', {});
+    seedSession(db, repo, 's-running');
+    transitionSession(db, 's-running', 'running');
+
+    expect(blockedReason(db, 's-bare')).toBeUndefined();
+    expect(blockedReason(db, 's-running')).toBeUndefined();
   });
 });
