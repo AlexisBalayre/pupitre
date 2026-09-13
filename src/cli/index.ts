@@ -78,6 +78,7 @@ import { dossierFileName, renderSessionDossierHtml } from '../core/session-dossi
 import {
   awaitHandoffReady,
   HANDOFF_WAIT_DEFAULT_MS,
+  HandoffMissingError,
   hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
@@ -1100,10 +1101,10 @@ export function buildProgram(): Command {
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
       try {
-        if (!isHandoffReady(db, session)) {
+        if (!isHandoffReady(db, repoPath, session)) {
           const handoffPath = requestHandoff(db, repoPath, session);
           console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
-          if (!awaitHandoffReady(db, session, Number(opts.wait) * 1000)) {
+          if (!awaitHandoffReady(db, repoPath, session, Number(opts.wait) * 1000)) {
             return refuse(
               `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
                 'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
@@ -1525,10 +1526,19 @@ export function buildProgram(): Command {
     .command('handoff-done')
     .description('Signal that the requested handoff document is written (run by the agent)')
     .action(() => {
-      const { db } = project();
+      const { repoPath, db } = project();
       const sessionId = ownSession(db, 'handoff-done');
       if (!sessionId) return;
-      markHandoffReady(db, sessionId);
+      // The signal names the document by its content (decision 49), so there
+      // has to be one: signalling for a file that is not there is the agent
+      // reporting done a step early, and says so rather than arming a respawn
+      // the next thing to write that path would ride in on.
+      try {
+        markHandoffReady(db, repoPath, sessionId);
+      } catch (error) {
+        if (!(error instanceof HandoffMissingError)) throw error;
+        return refuse(error.message);
+      }
       console.log(`Session ${sessionId} handoff recorded; Pupitre will respawn you shortly.`);
     });
 
