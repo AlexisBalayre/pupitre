@@ -11,6 +11,7 @@ import {
 import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
+  assertNoArmedGitDrivers,
   GIT_SAFE_CONFIG,
   gitDiffAddedLines,
   gitDiffNumstat,
@@ -198,6 +199,14 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (session.state !== 'awaiting-review') {
     throw new SessionNotReviewableError(req.sessionId, session.state);
   }
+  // Before the auto-rebase, which runs a smudge filter on every file it checks
+  // out and a merge driver on every conflict, with the operator's environment
+  // and ahead of the sandbox that confines the stages. Both paths, because the
+  // rebase runs in the worktree and the ff-only merge in the main checkout,
+  // and a worktree-scoped config is only visible from its own worktree
+  // (decision 50).
+  assertNoArmedGitDrivers(req.repoPath);
+  assertNoArmedGitDrivers(session.worktree_path);
   const target = git(req.repoPath, 'branch', '--show-current');
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);

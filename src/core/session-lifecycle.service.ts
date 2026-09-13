@@ -14,7 +14,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { assertNoArmedGitDrivers, GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
@@ -112,6 +112,12 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   // `scopeIn` and throw a bare TypeError, where `compileProfile` used to raise
   // a legible InvalidProfileError.
   assertPlannableSpec(task);
+  // Before `git worktree add`, which checks out every file in HEAD and runs a
+  // smudge filter on each one with the operator's environment. The shared
+  // config and `info/attributes` arm it, `.git/**` is untracked, and the
+  // driver name is chosen by whoever wrote it, so there is nothing to disarm
+  // — only a refusal (decision 50).
+  assertNoArmedGitDrivers(req.repoPath);
   // Admission control, not a report: the radar notices two sessions in one file
   // 15 seconds after both are already editing it, which is too late to be a
   // decision. Measured before the worktree exists so a refusal costs nothing,
@@ -140,11 +146,13 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
  * from the operator's side. Returns the created session id.
  */
 export function createSession(db: Database, req: NewSessionRequest): string {
-  // Asked before the row is written, not only inside `launchTask`. A refusal
-  // costs an operator nothing on `pup launch`, where the task already existed,
-  // but here it would leave the spec they just abandoned sitting in the backlog
-  // — unclaimed, attributed to them, and listed as planned work until someone
-  // notices and drops it (decision 41).
+  // Both refusals are asked before the row is written, not only inside
+  // `launchTask`, and for the same reason. A refusal costs an operator nothing
+  // on `pup launch`, where the task already existed, but here it would leave
+  // the spec they just abandoned sitting in the backlog — unclaimed,
+  // attributed to them, and listed as planned work until someone notices and
+  // drops it (decision 41).
+  assertNoArmedGitDrivers(req.repoPath);
   const conflicts = scopeConflicts(db, req.repoPath, req.task.scopeIn, req.task.scopeOut);
   if (conflicts.length > 0 && !req.allowOverlap) {
     throw new ScopeConflictError(req.task.id, conflicts);

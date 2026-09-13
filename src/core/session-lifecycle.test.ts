@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -26,6 +26,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { ArmedGitDriverError } from './git-diff.client.js';
 import { projectId } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
@@ -435,6 +436,101 @@ describe('launchTask scope-conflict guard', () => {
 function gitIn(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV }).trim();
 }
+
+// `git worktree add` checks out every file in HEAD, and a smudge filter armed
+// through the shared config runs on each one with the operator's environment
+// — before the compiled profile, the hooks, or the sandbox exist. The driver
+// name is chosen by whoever wrote it, so there is no `-c` disarm and the only
+// answer is to refuse (decision 50).
+describe('launchTask armed-driver guard', () => {
+  let db: Database;
+  let repo: string;
+  /** Written by the smudge filter if it ever runs; nothing else creates it. */
+  let fired: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-home-'))));
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-')));
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+    fired = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-fired-'))), 'fired');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** What a session can write from its worktree: both live under `.git/`. */
+  function armSmudge(): void {
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+    gitIn(repo, 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${fired}; cat'`);
+  }
+
+  const launch = () =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+    });
+
+  it('refuses, and the smudge script never runs', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    armSmudge();
+
+    expect(launch).toThrow(ArmedGitDriverError);
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  it('names both surfaces so the operator knows what to clear', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    armSmudge();
+
+    expect(launch).toThrow(/info\/attributes.*filter\.pwn\.smudge/);
+  });
+
+  // Refused before `git worktree add`, so a retry after disarming is not
+  // blocked by an orphan branch of the same name (decision 40's trap).
+  it('leaves no session, worktree or branch behind', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    armSmudge();
+
+    expect(launch).toThrow(ArmedGitDriverError);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
+  });
+
+  // A refusal inside `launchTask` alone would leave the spec the operator just
+  // abandoned in the backlog, unclaimed and attributed to them (decision 41).
+  it('writes no task row when `pup new` is refused', () => {
+    armSmudge();
+
+    expect(() =>
+      createSession(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        task: spec(),
+        claudeUserDir: join(repo, '.claude'),
+      }),
+    ).toThrow(ArmedGitDriverError);
+    expect(getTask(db, 't-1')).toBeUndefined();
+    expect(listBacklogTasks(db, projectId(repo))).toEqual([]);
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  it('launches normally once the driver is cleared', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+
+    expect(launch()).toBe('t-1');
+    expect(existsSync(fired)).toBe(false);
+  });
+});
 
 function commitIn(dir: string, file: string, content: string): void {
   mkdirSync(dirname(join(dir, file)), { recursive: true });

@@ -38,6 +38,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { ArmedGitDriverError } from './git-diff.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
@@ -331,6 +332,80 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The stale branch forces the rebase path, so pre-rebase would have fired.
     expect(outcome.status).toBe('merged');
     expect(existsSync(fired)).toBe(false);
+  });
+
+  // The auto-rebase checks out every file and runs a merge driver on every
+  // conflict, with the operator's environment and ahead of the sandbox that
+  // confines the stages. The driver name is chosen by whoever wrote it, so
+  // there is no `-c` disarm and the gate refuses instead (decision 50).
+  describe('armed filter and merge drivers', () => {
+    /** Written by the armed scripts if they ever run; nothing else creates it. */
+    let fired: string;
+
+    beforeEach(() => {
+      fired = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-gate-fired-'))), 'fired');
+    });
+
+    /** What a session can write from its worktree: both live under `.git/`. */
+    function arm(): void {
+      writeFileSync(join(repo, '.git', 'info', 'attributes'), '* filter=pwn merge=pwn\n');
+      sh(repo, 'git', 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${fired}; cat'`);
+      sh(repo, 'git', 'config', 'merge.pwn.driver', `sh -c 'echo pwned >> ${fired}' %A %O %B`);
+    }
+
+    it('refuses before the auto-rebase, and the smudge script never runs', () => {
+      const worktree = seedSession(db, repo);
+      // A stale branch, so the gate would take the rebase path.
+      commitIn(repo, 'README.md', '# hello\n');
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      arm();
+
+      expect(() => merge()).toThrow(ArmedGitDriverError);
+      expect(existsSync(fired)).toBe(false);
+      // Refused, not rejected: nothing here is the session's to fix by re-steer.
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(steerPane).not.toHaveBeenCalled();
+    });
+
+    it('names both surfaces so the operator knows what to clear', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      arm();
+
+      expect(() => merge()).toThrow(/info\/attributes.*filter\.pwn\.smudge/);
+    });
+
+    // `extensions.worktreeConfig` lives in the shared config, so a session can
+    // turn it on and then write a driver into its own worktree's config, which
+    // a read of the main checkout alone would never see — and the rebase runs
+    // in that worktree.
+    it("refuses a driver set in the session worktree's own config", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(repo, 'README.md', '# hello\n');
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      writeFileSync(join(repo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+      sh(worktree, 'git', 'config', 'extensions.worktreeConfig', 'true');
+      sh(
+        worktree,
+        'git',
+        'config',
+        '--worktree',
+        'filter.pwn.smudge',
+        `sh -c 'echo pwned >> ${fired}; cat'`,
+      );
+
+      expect(() => merge()).toThrow(ArmedGitDriverError);
+      expect(existsSync(fired)).toBe(false);
+    });
+
+    it('merges normally once the drivers are cleared', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(repo, 'README.md', '# hello\n');
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      expect(merge().status).toBe('merged');
+      expect(existsSync(fired)).toBe(false);
+    });
   });
 
   it('hard-fails changes outside the task scope', () => {
