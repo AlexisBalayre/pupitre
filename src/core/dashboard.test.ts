@@ -99,13 +99,17 @@ describe('buildDashboardSnapshot', () => {
   let repo: string;
 
   beforeEach(() => {
+    // projectPaths resolves the sessions directory under homedir() — point it
+    // at a throwaway HOME, or the run writes into the developer's real
+    // ~/.pupitre, which the merge gate's sandbox refuses outright.
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
     db = openStore(':memory:');
     repo = tempRepo();
   });
 
   afterEach(() => {
     db.close();
-    rmSync(projectPaths(repo).root, { recursive: true, force: true });
+    vi.unstubAllEnvs();
     rmSync(repo, { recursive: true, force: true });
   });
 
@@ -377,13 +381,15 @@ describe('findStalledSessions', () => {
   let repo: string;
 
   beforeEach(() => {
+    // A throwaway HOME, for the reason the suite above gives.
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
     db = openStore(':memory:');
     repo = tempRepo();
   });
 
   afterEach(() => {
     db.close();
-    rmSync(projectPaths(repo).root, { recursive: true, force: true });
+    vi.unstubAllEnvs();
     rmSync(repo, { recursive: true, force: true });
   });
 
