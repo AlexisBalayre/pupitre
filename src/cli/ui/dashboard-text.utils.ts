@@ -1,0 +1,92 @@
+import { sanitizeReason } from '../../adapters/capability.utils.js';
+import { formatStaleAge } from '../../core/session-activity.utils.js';
+import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
+import type { DashboardSession } from '../../core/types/dashboard.types.js';
+
+/**
+ * The words both dashboard renderers print. `pup status` and `pup ui` read one
+ * snapshot so they cannot disagree about what is running (decision 52); they
+ * share these so they cannot disagree about what to call it either — a session
+ * reading `STALLED (12m)` on one screen and `stalled 12 min` on the other is
+ * the same split one layer up. Nothing here decides anything: every value is
+ * already on the session the caller hands in.
+ */
+
+/**
+ * Width of the goal column in `pup plan`, `pup status` and `pup ui`. Goals run
+ * to a paragraph (decision 41's own backlog entries are 400+ chars), so the
+ * column clips rather than pads: an unclipped goal pushed the scope column off
+ * the row on the first real backlog this rendered.
+ */
+export const GOAL_COLUMN_CHARS = 44;
+
+/** A goal headline fitted to the goal column — clipped rather than wrapped. */
+export function goalColumn(headline: string): string {
+  const chars = [...headline];
+  return chars.length > GOAL_COLUMN_CHARS
+    ? `${chars.slice(0, GOAL_COLUMN_CHARS - 1).join('')}…`
+    : headline.padEnd(GOAL_COLUMN_CHARS);
+}
+
+/**
+ * Who authored a planned task, where the operator decides what to launch: a
+ * spec an agent wrote is one the operator never typed, and the report alone
+ * showing `from conductor` left `pup status` and `pup plan` silent on it.
+ */
+export function originMarker(origin: string): string {
+  return origin === 'human' ? '' : `(from ${sanitizeReason(origin)})`;
+}
+
+/**
+ * Decision 2: hook events, not pane contents, tell what a running session is
+ * doing — the snapshot has already read them, and a session with no activity is
+ * one there was nothing to read for. Decision 35: staleness wins over activity
+ * kind, so a session whose events file has gone quiet too long is STALLED no
+ * matter what its last classified event was.
+ */
+export function activityLabel(session: DashboardSession): string {
+  if (!session.activity) return '';
+  if (session.stalledAgeMs !== undefined) {
+    return `STALLED (${formatStaleAge(session.stalledAgeMs)})`;
+  }
+  if (session.activity.kind === 'awaiting-input') {
+    return `WAITING ON INPUT${session.activity.detail ? ` (${session.activity.detail})` : ''}`;
+  }
+  if (session.activity.kind === 'idle') return 'idle (turn ended, no done signal)';
+  return '';
+}
+
+/**
+ * How full the context window is, rounded to the thousand nobody reads past,
+ * and the respawn to type once it is full enough to matter (decision 18).
+ */
+export function contextLabel(session: DashboardSession): string {
+  const tokens = session.contextTokens;
+  if (tokens === undefined) return '';
+  const suggestion =
+    tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${session.id}\`` : '';
+  return `ctx ~${Math.round(tokens / 1000)}k${suggestion}`;
+}
+
+/** The last gate run that left a report: the verdict, and what failed if it did. */
+export function gateLabel(session: DashboardSession): string {
+  const gate = session.lastGate;
+  if (!gate) return '';
+  return gate.passed ? 'gate ok' : `gate fail${gate.failedStage ? `: ${gate.failedStage}` : ''}`;
+}
+
+/** The last steer the session took, and who sent it when the event named one. */
+export function steerLabel(session: DashboardSession): string {
+  const steer = session.lastSteer;
+  if (!steer) return '';
+  return `steer ${steer.kind ?? 'sent'}${steer.by ? ` (${steer.by})` : ''}`;
+}
+
+/**
+ * A trailing column on a `pup status` row, behind the two spaces every column
+ * there is separated by — or nothing at all, because an empty column that still
+ * pays for its separator leaves a row with a ragged, meaningless tail.
+ */
+export function trailing(label: string): string {
+  return label ? `  ${label}` : '';
+}

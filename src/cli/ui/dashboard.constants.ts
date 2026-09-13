@@ -1,0 +1,35 @@
+import type { SessionState } from '../../core/db.client.js';
+
+/**
+ * How often `pup ui` rebuilds the snapshot. Two seconds because of what it
+ * watches: hook events land every few seconds at most, and the operator reads
+ * this screen rather than watching it tick. It is also the idle cost — one
+ * rebuild is a handful of SELECTs plus a `statSync` and a transcript read per
+ * running session — so the number is a budget, not a taste.
+ */
+export const SNAPSHOT_REFRESH_MS = 2_000;
+
+/**
+ * The state column's colour. Red is "stopped, needs a person", yellow "a person
+ * is next in line", green "it moved"; a state the operator cannot act on keeps
+ * the terminal's own foreground rather than spending a colour on history.
+ */
+export const STATE_COLOURS: Record<SessionState, string | undefined> = {
+  queued: 'cyan',
+  running: 'green',
+  'awaiting-review': 'yellow',
+  merged: 'gray',
+  killed: 'gray',
+  rejected: 'red',
+  blocked: 'red',
+};
+
+/**
+ * The two fixed columns every row starts with, at the widths `pup status`
+ * already pads them to: wide enough for the longest state (`awaiting-review`)
+ * and for a session id, which is a 24-character task stem plus a collision
+ * suffix. Fixed rather than measured because the point of the left edge is that
+ * the eye finds the state and the id in the same place on every row.
+ */
+export const STATE_COLUMN_CHARS = 16;
+export const ID_COLUMN_CHARS = 28;

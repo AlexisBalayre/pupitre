@@ -4,6 +4,17 @@
 
 TypeScript. Claude Code is Node-based, its hooks and Agent SDK are TypeScript-first, and the v1 adapters cover TypeScript and Python targets regardless of the tool's own language. SQLite via better-sqlite3, commander for the CLI.
 
+*Amended 2026-09-13 for `pup ui` (decision 52):* Ink 7 and React 19 are runtime dependencies, and
+`ink-testing-library` a development one. The live dashboard is a multi-pane view the operator will
+keep growing, which is a component model's problem; React is also the one framework Claude Code
+itself ships, so the thing pupitre supervises and the thing that watches it are written the same
+way. The cost is stated rather than hidden: two runtime dependencies in what was a four-dependency
+app, and a **Node 22 floor** — Ink 7 declares `engines.node >= 22`, so `package.json` says `>=22`
+too. Nothing outside `src/cli/ui/` imports either package, and no component computes a value
+`buildDashboardSnapshot` does not already provide. The alternative, hand-written ANSI, was rejected:
+it is cheaper for one screen and steadily more expensive for every pane after it, and the cursor
+arithmetic it replaces the dependency with is the part nobody tests.
+
 CodeGraph is an *optional external binary*, not a package dependency: detected on PATH the way
 `gh` and `tmux` are, absent it every command still runs and sessions launch with no code graph.
 Nothing installs it, nothing bundles it, and `pup init` / `pup audit` report which of the two a

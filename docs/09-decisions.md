@@ -2151,7 +2151,66 @@ changes back into those docs is pending.
     boundaries is to decide WHAT a third party is pointed at, and the answer is never "wherever
     the thing being supervised can write".
 
+52. **`pup ui` is Ink over one snapshot, and it renders rather than decides (2026-09-13).**
+    Decision 41 put the backlog into `pup status` and decision 35 put stalled sessions there, and
+    the command has been printing a longer and longer list ever since: it is the one place the
+    operator looks to decide what to do next, and it answers by scrolling. What the operator asked
+    for is a screen that stays open. That is a different artefact from a printed list, and the
+    first thing it needs is to stop being two artefacts: `pup status` and a dashboard querying the
+    store separately is how a session reads STALLED on one and fine on the other. Part 1
+    (`buildDashboardSnapshot`) settled that — one reading, taken at one instant, for both. This is
+    the screen on top of it.
+    *Ink, and the cost said out loud.* A live dashboard is panes that come and go — a header, a
+    table, a radar, a footer, and the controls part 3 adds — and keeping them consistent while
+    one of them changes is what a component model is for. React is also the one framework Claude
+    Code itself ships, so the thing pupitre supervises and the thing that watches it are written
+    the same way, and an operator who can read one can read the other. The price: two runtime
+    dependencies in what was a four-dependency app, and a Node 22 floor, because Ink 7 declares
+    one. The alternative was ANSI by hand, and it was rejected on the second pane rather than the
+    first — cursor arithmetic is cheap once and compounding after that, and it is the part nobody
+    writes a test for. `ink-testing-library` renders each component to a string, so every pane
+    here has one.
+    *No logic in a component.* Every value on screen is a field of the snapshot; a component that
+    needed a value the snapshot does not carry could not be written against the fixtures its test
+    renders from, which is the rule made enforceable rather than aspirational. `src/cli/ui/` holds
+    the components, the hook and the words; nothing else imports Ink or React. The corollary for
+    part 3: an action will call the same core function the CLI command calls, never a private path
+    of its own — the rule the snapshot enforces for reads, kept for writes.
+    *Two departures from what `pup status` prints, both because a screen is held open.* The goal
+    moved to the end of a session row: a printed row is read once and leads with what the session
+    is for, a row here is read fifty times to answer "what needs me", and the 44-char goal column
+    pushed every marker that answers it past the end of an eighty-column terminal. And merged and
+    killed sessions are a count, not rows — pupitre's own store had 27 of them the first time this
+    rendered, which pushed the header, the radar and the footer off a 40-row screen to show work
+    nobody can act on. Both are selections and reorderings of snapshot fields, not new readings;
+    `pup status` still prints every session, and the counted line says so.
+    *What the words are, both surfaces share.* `goalColumn`, the origin marker, the activity
+    marker, the context reading, the gate and the steer moved out of `index.ts` into
+    `src/cli/ui/dashboard-text.utils.ts`, and `pup status` now calls them too. One snapshot keeps
+    the two from disagreeing about what is running; sharing these keeps them from disagreeing
+    about what to call it, which is the same split one layer down.
+    *A terminal that is not a terminal gets the text.* Piped, redirected or captured by a hook,
+    `pup ui` prints what `pup status` prints — the same function, not a second rendering — and
+    exits 0. Typing a dashboard command in a script is a reasonable thing to have done, and a
+    refusal there buys nothing. On a TTY it takes the alternate screen, vim's and htop's buffer,
+    so quitting hands the scrollback back untouched; `q`, Ctrl-C, SIGINT and SIGTERM all reach
+    `unmount`, which is what restores it.
+    *Who may see the attach command is still the reader's call.* The snapshot carries the
+    conductor's attach command with its `-L` socket for every caller; decision 47 says the operator
+    is the only one shown it. `pup ui` asks that question through the same `showAttachCommand` the
+    status printer uses and passes the answer down as a prop — a component does not get to decide
+    it, and the two surfaces cannot answer it differently.
+    *Not built here, and why.* The detail pane this task described — goal, scope, acceptance
+    criteria, the last gate's stages and the last five events behind a selected row — is not in
+    this cut. Three of those five are not in the snapshot: a session row carries no scope, no
+    acceptance list, and its `lastGate` is a verdict and a failed stage rather than the stage list,
+    and there are no events on it at all. Adding them is a change to `src/core`, which this task's
+    scope-in does not include, so the honest options were a pane missing three of its five sections
+    or no pane. The cursor it would have opened from is here and working, because part 3's actions
+    need it; `Enter` and `Esc` are unbound until there is something to open.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.
-- Node >= 20, TypeScript, commander, better-sqlite3 (per 08-roadmap stack decision).
+- Node >= 22, TypeScript, commander, better-sqlite3, and ink + react for `pup ui` (per 08-roadmap
+  stack decision, amended by decision 52; the Node floor is Ink 7's).

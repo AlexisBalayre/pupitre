@@ -36,6 +36,14 @@ exit 1.
   `--allow-overlap` for the same reason `pup launch` does.
 - `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
   overlaps between running sessions.
+- `pup ui` — the same reading as `pup status`, held open and redrawn every two seconds: the
+  header (project, conductor, baseline figures), overdue debt, the live sessions with their
+  activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,
+  and the conflict radar. Merged and killed sessions are a count, not rows — the screen is for
+  work someone can still change, and `pup status` is where the whole history is listed. Keys:
+  `↑`/`↓` or `j`/`k` move the cursor, `r` re-reads now, `q` quits. Nothing here mutates anything.
+  Piped or redirected, it prints what `pup status` prints, once, and exits 0. Runs in the
+  terminal's alternate screen, so quitting gives the scrollback back untouched (decision 52).
 - `pup conductor [start|stop] [--model <m>] [--worker-model <m>]` — open (or close) the
   project's conductor: one Claude Code window in the main checkout that plans, launches,
   steers and kills sessions and hands each finished branch to the operator. It reaches a

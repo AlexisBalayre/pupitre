@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
 import { Command, CommanderError } from 'commander';
+import { render } from 'ink';
+import { createElement } from 'react';
 import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
@@ -68,7 +70,6 @@ import {
   hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
-  RESPAWN_SUGGEST_TOKENS,
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
@@ -89,7 +90,7 @@ import {
 import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
-import type { DashboardSession, DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -100,6 +101,14 @@ import {
   type ResolvedProject,
   resolveProject,
 } from './project.utils.js';
+import { App } from './ui/app.component.js';
+import {
+  activityLabel,
+  contextLabel,
+  goalColumn,
+  originMarker,
+  trailing,
+} from './ui/dashboard-text.utils.js';
 
 /**
  * One-keystroke approval of the decision record a merge just drafted. TTY
@@ -256,22 +265,6 @@ function blockedReason(db: Database, sessionId: string): string | undefined {
 const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
-/**
- * Width of the goal column in `pup plan` and `pup status`. Goals run to a
- * paragraph (decision 41's own backlog entries are 400+ chars), so the column
- * clips rather than pads: an unclipped goal pushed the scope column off the
- * row on the first real backlog this rendered.
- */
-const GOAL_COLUMN_CHARS = 44;
-
-/** A goal headline fitted to the goal column — clipped rather than wrapped. */
-function goalColumn(headline: string): string {
-  const chars = [...headline];
-  return chars.length > GOAL_COLUMN_CHARS
-    ? `${chars.slice(0, GOAL_COLUMN_CHARS - 1).join('')}\u2026`
-    : headline.padEnd(GOAL_COLUMN_CHARS);
-}
-
 const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
@@ -402,15 +395,6 @@ function callingConductor(): string | undefined {
  */
 function conductorAttribution(): { origin?: 'conductor'; overlapVia?: 'conductor' } {
   return callingConductor() ? { origin: 'conductor', overlapVia: 'conductor' } : {};
-}
-
-/**
- * Who authored a planned task, where the operator decides what to launch: a
- * spec an agent wrote is one the operator never typed, and the report alone
- * showing `from conductor` left `pup status` and `pup plan` silent on it.
- */
-function originMarker(origin: string): string {
-  return origin === 'human' ? '' : `  (from ${sanitizeReason(origin)})`;
 }
 
 /**
@@ -764,52 +748,104 @@ export function buildProgram(): Command {
     .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
     .action(() => {
       const { repoPath, db } = project();
-      const snapshot = buildDashboardSnapshot(db, repoPath, Date.now());
-      for (const entry of snapshot.overdueDebt) {
-        console.log(
-          `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
-        );
-      }
-      if (snapshot.conductor.running) {
-        // The attach line is for the operator, who is the only caller that
-        // attaches: a session and the conductor are told the conductor is up
-        // and nothing more, so pup is not the thing that hands a session the
-        // socket its window lives on (decision 47).
-        console.log(
-          callingSession(db) || callingConductor()
-            ? 'conductor running'
-            : `conductor running (attach: ${snapshot.conductor.attachCommand})`,
-        );
-      }
-      if (snapshot.sessions.length === 0 && snapshot.backlog.length === 0) {
-        console.log('Nothing running and nothing planned.');
+      printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
+    });
+
+  program
+    .command('ui')
+    .description('Live dashboard: the status table, backlog, debt and conflict radar, in place')
+    .action(() => {
+      const { repoPath, db } = project();
+      const read = () => buildDashboardSnapshot(db, repoPath, Date.now());
+      // Piped, redirected or captured by a hook, there is no screen to hold in
+      // place and no key to press, so the dashboard degrades to the one reading
+      // `pup status` would have printed and exits 0 — a `pup ui` in a script is
+      // a reasonable thing to have typed, not an error (decision 52).
+      if (!process.stdout.isTTY) {
+        printDashboard(db, read());
         return;
       }
-      for (const session of snapshot.sessions) {
-        const marker =
-          session.state === 'blocked'
-            ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
-            : '';
-        const tokens = session.contextTokens;
-        const ctx =
-          tokens === undefined
-            ? ''
-            : `  ctx ~${Math.round(tokens / 1000)}k${tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${session.id}\`` : ''}`;
-        console.log(
-          `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}${activityMarker(session)}${ctx}`,
-        );
-      }
-      // Planned tasks share the session table's columns under `planned`, the
-      // state docs/01 gives a task with no session row: what will be built
-      // belongs beside what is being built, not in a separate command
-      // (decision 41).
-      for (const task of snapshot.backlog) {
-        console.log(
-          `${'planned'.padEnd(16)} ${task.id.padEnd(28)} ${goalColumn(task.goal)}${originMarker(task.origin)}`,
-        );
-      }
-      printConflictRadar(snapshot);
+      const instance = render(createElement(App, { read, showAttach: showAttachCommand(db) }), {
+        // vim's and htop's buffer: the fleet is watched for a while and then
+        // left, and the scrollback the operator was reading before is theirs
+        // to get back untouched.
+        alternateScreen: true,
+      });
+      // Ink restores the primary screen on unmount, so every way out has to
+      // reach unmount. `q` and Ctrl-C already do; a SIGINT or SIGTERM sent from
+      // elsewhere would otherwise leave the operator's terminal on the
+      // alternate buffer with their scrollback hidden and no prompt.
+      const restore = (): void => {
+        instance.unmount();
+      };
+      process.once('SIGINT', restore);
+      process.once('SIGTERM', restore);
+      void instance.waitUntilExit().then(() => {
+        process.off('SIGINT', restore);
+        process.off('SIGTERM', restore);
+      });
     });
+
+  /**
+   * The whole of `pup status`, printed from one snapshot — and the whole of
+   * `pup ui` when its stdout is not a terminal. A piped `pup ui` prints this
+   * rather than refusing, so a dashboard key in a script degrades to the text
+   * the operator would have read anyway; sharing the function is what keeps the
+   * two from drifting into two different accounts of the same store
+   * (decision 52).
+   */
+  function printDashboard(db: Database, snapshot: DashboardSnapshot): void {
+    for (const entry of snapshot.overdueDebt) {
+      console.log(
+        `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
+      );
+    }
+    if (snapshot.conductor.running) {
+      // The attach line is for the operator, who is the only caller that
+      // attaches: a session and the conductor are told the conductor is up
+      // and nothing more, so pup is not the thing that hands a session the
+      // socket its window lives on (decision 47).
+      console.log(
+        showAttachCommand(db)
+          ? `conductor running (attach: ${snapshot.conductor.attachCommand})`
+          : 'conductor running',
+      );
+    }
+    if (snapshot.sessions.length === 0 && snapshot.backlog.length === 0) {
+      console.log('Nothing running and nothing planned.');
+      return;
+    }
+    for (const session of snapshot.sessions) {
+      const marker =
+        session.state === 'blocked'
+          ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
+          : '';
+      console.log(
+        `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
+          `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`,
+      );
+    }
+    // Planned tasks share the session table's columns under `planned`, the
+    // state docs/01 gives a task with no session row: what will be built
+    // belongs beside what is being built, not in a separate command
+    // (decision 41).
+    for (const task of snapshot.backlog) {
+      console.log(
+        `${'planned'.padEnd(16)} ${task.id.padEnd(28)} ${goalColumn(task.goal)}${trailing(originMarker(task.origin))}`,
+      );
+    }
+    printConflictRadar(snapshot);
+  }
+
+  /**
+   * Whether this caller may be shown the socket the conductor's window lives
+   * on. The operator attaches; a session and the conductor itself are told it
+   * is up and nothing more (decision 47). Asked once here so `pup status` and
+   * `pup ui` cannot answer it differently.
+   */
+  function showAttachCommand(db: Database): boolean {
+    return !(callingSession(db) || callingConductor());
+  }
 
   /** The watcher's radar: same-file overlaps between live sessions (docs/08 v1.2). */
   function printConflictRadar(snapshot: DashboardSnapshot): void {
@@ -825,25 +861,6 @@ export function buildProgram(): Command {
     if (live.length >= 2 && snapshot.radarStale) {
       console.log('conflict radar off — start it with `pup watch --start`');
     }
-  }
-
-  /**
-   * Decision 2: hook events, not pane contents, tell what a running session is
-   * doing — the snapshot has already read them, and a session with no activity
-   * is one there was nothing to read for. Decision 35: staleness wins over
-   * activity kind, so a session whose events file has gone quiet too long is
-   * STALLED no matter what its last classified event was.
-   */
-  function activityMarker(session: DashboardSession): string {
-    if (!session.activity) return '';
-    if (session.stalledAgeMs !== undefined) {
-      return `  STALLED (${formatStaleAge(session.stalledAgeMs)})`;
-    }
-    if (session.activity.kind === 'awaiting-input') {
-      return `  WAITING ON INPUT${session.activity.detail ? ` (${session.activity.detail})` : ''}`;
-    }
-    if (session.activity.kind === 'idle') return '  idle (turn ended, no done signal)';
-    return '';
   }
 
   program
