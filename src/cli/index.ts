@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -23,6 +31,7 @@ import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
 import { startConductor, stopConductor } from '../core/conductor.service.js';
 import {
+  blockedReason,
   buildDashboardSnapshot,
   findStalledSessions,
   goalHeadline,
@@ -37,7 +46,7 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
-import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
+import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
@@ -46,7 +55,6 @@ import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { renderReportHtml } from '../core/report.service.js';
-import { parseJsonOr } from '../core/report-data.utils.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   appendEvent,
@@ -55,7 +63,6 @@ import {
   getSession,
   getTask,
   listBacklogTasks,
-  listEvents,
   listSessions,
   type SessionRow,
   transitionSession,
@@ -232,27 +239,6 @@ function resolveLiveSession(db: Database, session: string, verb: string): Sessio
     return undefined;
   }
   return row;
-}
-
-/**
- * Why the gate parked this session, read back out of the store: the `reason`
- * on the newest `gate_result` that moved it to `blocked` — the reject cap of
- * decision 7, or the re-steer refusal decision 45's addendum records. Newest
- * wins and an older block is never consulted, so a session parked twice is
- * described by the parking that is current. Undefined when the transition
- * carried no reason, which is every block older than those two reasons.
- */
-function blockedReason(db: Database, sessionId: string): string | undefined {
-  for (const event of listEvents(db, sessionId).reverse()) {
-    if (event.type !== 'gate_result') continue;
-    const payload = parseJsonOr<{ to?: unknown; reason?: unknown }>(event.payload, {});
-    if (payload.to !== 'blocked') continue;
-    // Sanitized like every other stored text this prints: the reason quotes a
-    // steer refusal, and the report that refused to land is the session's own
-    // output (decision 29).
-    return typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : undefined;
-  }
-  return undefined;
 }
 
 /**
@@ -765,12 +751,24 @@ export function buildProgram(): Command {
         printDashboard(db, read());
         return;
       }
-      const instance = render(createElement(App, { read, showAttach: showAttachCommand(db) }), {
-        // vim's and htop's buffer: the fleet is watched for a while and then
-        // left, and the scrollback the operator was reading before is theirs
-        // to get back untouched.
-        alternateScreen: true,
-      });
+      const readOnlyReason = uiReadOnlyReason(db);
+      const instance = render(
+        createElement(App, {
+          read,
+          showAttach: showAttachCommand(db),
+          // The store and repo the keys write through, and the bin the merge
+          // child is re-entered with — `process.argv[1]`, the same path a
+          // session's environment carries as `PUP_BIN`.
+          deps: { db, repoPath, pupBin: realpathSync(process.argv[1] ?? 'pup') },
+          ...(readOnlyReason ? { readOnlyReason } : {}),
+        }),
+        {
+          // vim's and htop's buffer: the fleet is watched for a while and then
+          // left, and the scrollback the operator was reading before is theirs
+          // to get back untouched.
+          alternateScreen: true,
+        },
+      );
       // Ink restores the primary screen on unmount, so every way out has to
       // reach unmount. `q` and Ctrl-C already do; a SIGINT or SIGTERM sent from
       // elsewhere would otherwise leave the operator's terminal on the
@@ -835,6 +833,26 @@ export function buildProgram(): Command {
       );
     }
     printConflictRadar(snapshot);
+  }
+
+  /**
+   * Why this caller gets the dashboard without its controls, or nothing at all
+   * for the operator. Every key `pup ui` binds runs a command that is
+   * operator-only somewhere — the merge, the respawn and the unblock are
+   * refused to the conductor as well as to sessions, and the launch, the kill
+   * and the steer are refused to sessions (decisions 42, 44, 47). A screen
+   * that offered them and refused each keystroke one at a time would be a menu
+   * of things that do not work, so the whole set goes and the reason is on
+   * screen instead. The keys that only look — the cursor, `r`, `q` — stay.
+   */
+  function uiReadOnlyReason(db: Database): string | undefined {
+    if (callingSession(db)) {
+      return 'read-only: sessions do not drive sessions (decisions 42, 44).';
+    }
+    if (callingConductor()) {
+      return "read-only: the conductor drives sessions with `pup` commands, and the merge, respawn and unblock are the operator's (decision 47).";
+    }
+    return undefined;
   }
 
   /**
@@ -1211,6 +1229,21 @@ export function buildProgram(): Command {
           );
         }
         let outcome: MergeOutcome;
+        // The gate holds a lock directory it removes in a `finally`, which a
+        // process killed by a signal never reaches — and the next merge then
+        // refuses against a lock nobody holds. Ctrl-C at the terminal and the
+        // SIGTERM `pup ui`'s `q` sends to this child are both that case, so the
+        // lock goes on the way out. Only if this run took it: a lock that was
+        // already there when the command started belongs to another merge, and
+        // is not this one's to remove.
+        const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
+        const heldOnEntry = existsSync(lockPath);
+        const releaseLock = (signal: NodeJS.Signals): void => {
+          if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
+          process.exit(signal === 'SIGTERM' ? 143 : 130);
+        };
+        process.once('SIGINT', releaseLock);
+        process.once('SIGTERM', releaseLock);
         try {
           outcome = runMergeGate(db, {
             repoPath,
@@ -1232,6 +1265,11 @@ export function buildProgram(): Command {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
           return refuse(error instanceof Error ? error.message : String(error));
+        } finally {
+          // The gate has released its own lock by now, so a later signal must
+          // not reach a handler that would delete the next run's.
+          process.off('SIGINT', releaseLock);
+          process.off('SIGTERM', releaseLock);
         }
         printGateReport(outcome.report);
         switch (outcome.status) {

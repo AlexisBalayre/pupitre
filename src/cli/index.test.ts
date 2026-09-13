@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -89,6 +90,7 @@ import { isConductorRunning, startConductor, stopConductor } from '../core/condu
 import type { SessionState } from '../core/db.client.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
+import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import {
@@ -550,10 +552,21 @@ describe('CLI commands', () => {
     }
 
     /** The props `pup ui` mounted the dashboard with. */
-    function mountedProps(): { read: () => DashboardSnapshot; showAttach: boolean } {
+    function mountedProps(): {
+      read: () => DashboardSnapshot;
+      showAttach: boolean;
+      deps: { repoPath: string; pupBin: string };
+      readOnlyReason?: string;
+    } {
       const [element] = firstCall(render);
-      return (element as ReactElement<{ read: () => DashboardSnapshot; showAttach: boolean }>)
-        .props;
+      return (
+        element as ReactElement<{
+          read: () => DashboardSnapshot;
+          showAttach: boolean;
+          deps: { repoPath: string; pupBin: string };
+          readOnlyReason?: string;
+        }>
+      ).props;
     }
 
     it('mounts the dashboard on the alternate screen, reading the live store', () => {
@@ -589,6 +602,41 @@ describe('CLI commands', () => {
       runUi(true);
 
       expect(mountedProps().showAttach).toBe(showAttach);
+    });
+
+    // Every key writes through the open store and the repo the command
+    // resolved, and the merge re-enters this same bin as a child (decision 52's
+    // addendum) — a dashboard handed another project's store would drive a
+    // fleet the operator is not looking at.
+    it('hands the controls the store, the repo and the bin to re-enter', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().deps.repoPath).toBe(repo);
+      expect(mountedProps().deps.pupBin).toBe(realpathSync(process.argv[1] ?? 'pup'));
+    });
+
+    // Every key the dashboard binds runs a command that is operator-only
+    // somewhere, so the whole set goes rather than refusing one keystroke at a
+    // time (decisions 42, 44, 47).
+    it.each([
+      ['the operator', {}, undefined],
+      ['a session', { PUP_SESSION_ID: 's1' }, 'sessions do not drive sessions'],
+      ['the conductor', { PUP_CONDUCTOR: 'pid' }, 'the conductor drives sessions'],
+    ])('gives %s a dashboard it may drive, or says why not', (_who, env, reason) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      stubRender();
+
+      runUi(true);
+
+      if (reason === undefined) expect(mountedProps().readOnlyReason).toBeUndefined();
+      else expect(mountedProps().readOnlyReason).toContain(reason);
     });
 
     // Ink restores the primary screen when it unmounts, so a signal that would
@@ -2526,6 +2574,73 @@ describe('CLI commands', () => {
         ...overrides,
       };
     }
+
+    /**
+     * The gate's lock is a directory released in a `finally`, which a process
+     * killed by a signal never reaches — Ctrl-C at the terminal, or the SIGTERM
+     * `pup ui`'s `q` sends this child. Left behind, it refuses every later
+     * merge on behalf of a run that is long gone.
+     */
+    describe('the lock a signal would otherwise strand', () => {
+      /** The signal listeners `merge` added, and the lock path it guards. */
+      function runMergeUnderSignals(repo: string): {
+        handlers: NodeJS.SignalsListener[];
+        lockPath: string;
+      } {
+        const before = process.listeners('SIGINT');
+        vi.mocked(runMergeGate).mockImplementation(() => {
+          // Inside the gate: the listeners are live and the lock is held.
+          mkdirSync(join(repo, '.git', MERGE_LOCK_DIRNAME), { recursive: true });
+          handlers = process
+            .listeners('SIGINT')
+            .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
+          throw new Error('interrupted');
+        });
+        let handlers: NodeJS.SignalsListener[] = [];
+        buildProgram().parse(['merge', 's1'], { from: 'user' });
+        return { handlers, lockPath: join(repo, '.git', MERGE_LOCK_DIRNAME) };
+      }
+
+      it('removes the lock this run took, and exits', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        const { handlers, lockPath } = runMergeUnderSignals(repo);
+        expect(handlers).toHaveLength(1);
+        handlers[0]?.('SIGINT');
+
+        expect(existsSync(lockPath)).toBe(false);
+        expect(exit).toHaveBeenCalledWith(130);
+      });
+
+      // A lock that was already there belongs to another merge, and removing it
+      // would hand that run's exclusion to whoever interrupted this one.
+      it('leaves a lock it found already held', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        mkdirSync(join(repo, '.git', MERGE_LOCK_DIRNAME), { recursive: true });
+        vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        const { handlers, lockPath } = runMergeUnderSignals(repo);
+        handlers[0]?.('SIGTERM');
+
+        expect(existsSync(lockPath)).toBe(true);
+      });
+
+      // Once the gate has returned it has released its own lock, so a later
+      // signal must not reach a handler that would delete the next run's.
+      it('takes its handlers off again when the gate returns', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        const before = process.listeners('SIGINT').length;
+
+        vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+        buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+        expect(process.listeners('SIGINT')).toHaveLength(before);
+      });
+    });
 
     it('rejects --accept-debt without --review-by', () => {
       useCwd(initRepo());

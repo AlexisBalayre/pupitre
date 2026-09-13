@@ -230,3 +230,29 @@ function baselineOf(db: Database, pid: string): DashboardBaseline | undefined {
     ...(Array.isArray(debt.deadExports) ? { deadExports: debt.deadExports.length } : {}),
   };
 }
+
+/**
+ * Why the gate parked this session, read back out of the store: the `reason` on
+ * the newest `gate_result` that moved it to `blocked` — the reject cap of
+ * decision 7, or the re-steer refusal decision 45's addendum records. Newest
+ * wins and an older block is never consulted, so a session parked twice is
+ * described by the parking that is current. Undefined when the transition
+ * carried no reason, which is every block older than those two reasons.
+ *
+ * Not on the snapshot, and deliberately: it is read when an operator asks to
+ * lift a block, not on every two-second redraw of every row. Both surfaces that
+ * ask — `pup unblock` and the dashboard's `u` — ask through this, so neither
+ * can describe a parking the other would describe differently.
+ */
+export function blockedReason(db: Database, sessionId: string): string | undefined {
+  for (const event of listEvents(db, sessionId).reverse()) {
+    if (event.type !== 'gate_result') continue;
+    const payload = parseJsonOr<{ to?: unknown; reason?: unknown }>(event.payload, {});
+    if (payload.to !== 'blocked') continue;
+    // Sanitized like every other stored text a reader prints: the reason quotes
+    // a steer refusal, and the report that refused to land is the session's own
+    // output (decision 29).
+    return typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : undefined;
+  }
+  return undefined;
+}

@@ -33,3 +33,19 @@ export const STATE_COLOURS: Record<SessionState, string | undefined> = {
  */
 export const STATE_COLUMN_CHARS = 16;
 export const ID_COLUMN_CHARS = 28;
+
+/**
+ * How often `R` asks whether the session has written its handoff yet. The same
+ * cadence `pup respawn` polls at, for the same reason: the answer is a file the
+ * session writes at the end of a turn, and a turn is minutes long. The
+ * dashboard's own poll exists because the CLI's sleeps the thread, which on a
+ * screen would stop the clock and swallow every key for as long as the wait.
+ */
+export const HANDOFF_POLL_MS = 5_000;
+
+/**
+ * How many lines of a merge child's output the log pane keeps. The gate prints
+ * roughly a line per stage and this pane shares a screen with the fleet it was
+ * opened from; the tail is the part that says where the gate stopped.
+ */
+export const MERGE_LOG_LINES = 12;

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
 
-export interface SnapshotReading {
+/**
+ * One reading and when it was taken. Private to the hook: what a caller gets is
+ * the hook's return type, and naming the half of it that comes from the store
+ * separately only invites a second reader to build one of these by hand.
+ */
+interface SnapshotReading {
   snapshot: DashboardSnapshot;
   /**
    * When the reading was taken. On screen so a dashboard that has stopped
