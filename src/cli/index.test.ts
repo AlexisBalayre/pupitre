@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CommanderError } from 'commander';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
@@ -38,6 +39,13 @@ vi.mock('../claude/session-runtime.service.js', () => ({
   conductorSocket: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
+}));
+// `render` takes over the terminal and never returns until the operator quits,
+// which is the one boundary `pup ui` has; the dashboard it would draw is tested
+// against its own fixtures in src/cli/ui.
+vi.mock('ink', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ink')>()),
+  render: vi.fn(),
 }));
 vi.mock('../core/conductor.service.js', () => ({
   isConductorRunning: vi.fn(() => false),
@@ -72,6 +80,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
+import { render } from 'ink';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -113,6 +122,7 @@ import {
   planTask,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
@@ -514,6 +524,108 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.some((line) => line.includes('STALLED'))).toBe(false);
+    });
+  });
+
+  describe('ui', () => {
+    /** What Ink's `render` hands back, reduced to the two bits `pup ui` uses. */
+    function stubRender(): { unmount: ReturnType<typeof vi.fn> } {
+      const unmount = vi.fn();
+      vi.mocked(render).mockReturnValue({
+        unmount,
+        waitUntilExit: () => Promise.resolve(),
+      } as unknown as ReturnType<typeof render>);
+      return { unmount };
+    }
+
+    /** `pup ui` with stdout claiming to be, or not to be, a terminal. */
+    function runUi(isTty: boolean): void {
+      const wasTty = process.stdout.isTTY;
+      process.stdout.isTTY = isTty;
+      try {
+        buildProgram().parse(['ui'], { from: 'user' });
+      } finally {
+        process.stdout.isTTY = wasTty;
+      }
+    }
+
+    /** The props `pup ui` mounted the dashboard with. */
+    function mountedProps(): { read: () => DashboardSnapshot; showAttach: boolean } {
+      const [element] = firstCall(render);
+      return (element as ReactElement<{ read: () => DashboardSnapshot; showAttach: boolean }>)
+        .props;
+    }
+
+    it('mounts the dashboard on the alternate screen, reading the live store', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBacklogTask(repo, 't-plan', 'the only intent there is');
+      stubRender();
+
+      runUi(true);
+
+      const [, options] = firstCall(render);
+      expect(options).toMatchObject({ alternateScreen: true });
+      // The dashboard is handed the reading function, not a reading: every
+      // frame it draws is a fresh `buildDashboardSnapshot` (decision 52).
+      expect(mountedProps().read().backlog).toEqual([
+        { id: 't-plan', goal: 'the only intent there is', scope: ['src/**'], origin: 'human' },
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    // Decision 47: the operator attaches, and is the only caller that may be
+    // shown the socket the conductor's window is on.
+    it.each([
+      ['the operator', '', true],
+      ['a session', 's1', false],
+    ])('tells %s whether it may see the attach command', (_who, declared, showAttach) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', declared);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().showAttach).toBe(showAttach);
+    });
+
+    // Ink restores the primary screen when it unmounts, so a signal that would
+    // otherwise end the process has to reach unmount first — else the operator
+    // is left on the alternate buffer with their scrollback hidden.
+    it('unmounts on SIGINT, so the terminal comes back', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { unmount } = stubRender();
+      const before = process.listeners('SIGINT');
+
+      runUi(true);
+
+      const [added] = process.listeners('SIGINT').filter((fn) => !before.includes(fn));
+      expect(added).toBeDefined();
+      added?.('SIGINT');
+      expect(unmount).toHaveBeenCalledTimes(1);
+    });
+
+    it('prints the snapshot once and exits 0 when stdout is not a terminal', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedBacklogTask(repo, 't-plan', 'the only intent there is');
+
+      runUi(false);
+
+      expect(render).not.toHaveBeenCalled();
+      expect(logs.join('\n')).toMatch(/planned\s+t-plan\s+the only intent there is/);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('says the project is empty when piped, exactly as `pup status` does', () => {
+      useCwd(initRepo());
+
+      runUi(false);
+
+      expect(logs).toContain('Nothing running and nothing planned.');
     });
   });
 
