@@ -20,7 +20,7 @@ export interface DashboardBaseline {
   deadExports?: number;
 }
 
-export interface DashboardConductor {
+interface DashboardConductor {
   running: boolean;
   /** The conductor window's tmux name, up or not. */
   name: string;
@@ -80,7 +80,7 @@ export interface DashboardSession {
   needsHuman: boolean;
 }
 
-export interface DashboardBacklogTask {
+interface DashboardBacklogTask {
   id: string;
   /** First line of the goal, as on a session row. */
   goal: string;
@@ -90,7 +90,7 @@ export interface DashboardBacklogTask {
 }
 
 /** One open ledger entry whose review-by date has passed (docs/04). */
-export interface DashboardDebt {
+interface DashboardDebt {
   id: number;
   description: string;
   reviewBy: string;
