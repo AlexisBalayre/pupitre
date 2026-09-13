@@ -235,9 +235,10 @@ export function compileProfile(input: CompileInput): CompiledProfile {
   const files: Record<string, string> = {
     'context.md': contextMarkdown,
     'settings.json': `${JSON.stringify(settings, null, 2)}\n`,
-    // Compiled, so which binary serves the graph is inside the profile hash —
-    // as much of the session's environment as its hooks are. Absent when the
-    // operator has no codegraph, and the launch then passes no flag at all.
+    // Compiled, so which binary serves the graph is recorded in the profile
+    // hash — as much of the session's environment as its hooks are. Attribution,
+    // not detection: nothing re-reads the compiled dir to verify it. Absent when
+    // the operator has no codegraph, and the launch passes no flag at all.
     ...(input.codegraphBinary
       ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.worktreePath) }
       : {}),

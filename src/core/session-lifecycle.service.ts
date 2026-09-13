@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
+import { failureSummary } from '../adapters/capability.utils.js';
 import {
   interruptPane,
   kickoff,
@@ -208,7 +209,7 @@ function graphForWorktree(
   compiledDir: string,
 ): string | undefined {
   if (!binary) {
-    console.error('No `codegraph` on PATH: launching without a code graph.');
+    console.error('No `codegraph` outside the repo on PATH: launching without a code graph.');
     return undefined;
   }
   try {
@@ -218,8 +219,12 @@ function graphForWorktree(
     indexDirectory(binary, worktreePath);
     return join(compiledDir, 'mcp.json');
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    console.error(`Could not index ${worktreePath}: launching without a code graph. ${detail}`);
+    // Through `failureSummary` like every other shell-out (decision 29): this is
+    // a third-party CLI's stderr on its way to the operator's terminal, and raw
+    // ANSI there can repaint the line they are reading.
+    console.error(
+      `Could not index ${worktreePath}: launching without a code graph. ${failureSummary(error)}`,
+    );
     return undefined;
   }
 }
@@ -244,9 +249,9 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
   const userConfigHash = snapshotUserConfigHash(req.claudeUserDir);
   mkdirSync(compiledDir, { recursive: true });
   // Before the compile, because the answer shapes the compiled files and the
-  // hash is taken over them: which binary serves the graph is part of the
+  // hash is recorded over them: which binary serves the graph is part of the
   // session's environment, not a runtime detail (decision 51).
-  const binary = codegraphBinary();
+  const binary = codegraphBinary(req.repoPath);
   const compiled = compileProfile({
     base: req.base,
     role: req.role,

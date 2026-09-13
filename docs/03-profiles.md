@@ -38,7 +38,9 @@ Present only when `codegraph` is on pup's PATH; absent, a session launches norma
 - `mcp.json` is compiled beside `settings.json` — one stdio server `--path`-pinned to the
   session's worktree — and launched as `claude --mcp-config <compiled>/mcp.json`. No
   `--strict-mcp-config`: added to the operator's MCP servers, not swapped for them (decision 9).
-- Compiled, not written beside the profile, so the binary serving the graph is inside the hash.
+- Compiled, not written beside the profile, so the binary serving the graph is recorded in the
+  profile hash at compile time. That is attribution, not detection: nothing re-reads the compiled
+  dir to verify it (decision 46's ceiling).
 - A short `## Code graph` context section points the session at `codegraph_explore` before it
   reads files; the server sends its own usage instructions on connect.
 - **One graph per worktree**: the index lives in `.worktrees/<id>/.codegraph`, built from that

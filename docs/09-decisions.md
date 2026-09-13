@@ -1954,7 +1954,9 @@ changes back into those docs is pending.
     its own usage instructions on connect, so the `## Code graph` section carries only the thing
     just pup knows — that the graph is *this worktree's*. `mcp.json` is compiled with the
     settings and hooks rather than written beside them, so which binary serves a session's graph
-    is inside the profile hash. No `--strict-mcp-config`: it would drop the operator's own MCP
+    is recorded in the profile hash at compile time — attribution, not detection: nothing
+    re-reads the compiled dir to verify it, which is decision 46's ceiling. No
+    `--strict-mcp-config`: it would drop the operator's own MCP
     servers, which decision 9 refuses — sessions inherit user config and pup adds to it.
     *One graph per worktree, which is the design and not a detail.* codegraph resolves a project
     by walking PARENT directories for a `.codegraph/`. A worktree sits at
@@ -1991,6 +1993,42 @@ changes back into those docs is pending.
     nothing about the capability, so an operator learns it from a line at launch. And the slice is
     still the regex map: now that a real graph exists at launch it could be cut from one, which is
     why this keeps both rather than replacing either.
+    *Addendum, from the security review of the branch (2026-09-13).* Five findings, all of them
+    the same mistake in five places — treating a third-party binary and its server as part of
+    pup rather than as something pup hands work to.
+    1. `which codegraph` echoed the PATH ENTRY it matched, and pnpm prepends the relative
+    `./node_modules/.bin`, so under `pnpm dev` the answer was `./node_modules/.bin/codegraph`: a
+    gitignored path inside the repo that a session can plant a script at, executed by pup at the
+    next launch, and written into `mcp.json` as a relative command every later session
+    re-resolves against its own worktree. Now `which -a`, taking the first candidate that is
+    both absolute and outside the repository — a repo-local shim is refused, not ranked last,
+    so an operator who has only that one has no codegraph.
+    2. The exclude line was unanchored, so `.codegraph/` matched at every depth in every
+    worktree forever and `src/.codegraph/setup.ts` was invisible to the worktree-clean stage:
+    uncommitted code the gate cannot see and a test run can read. Anchored to `/.codegraph/`,
+    which hides the one directory codegraph creates and nothing else.
+    3. Indexing ran with `{...process.env}`, handing a `#!/usr/bin/env node` shim every secret
+    in the operator's environment, `NODE_OPTIONS` (whose `--require` executes inside it), and
+    the `CODEGRAPH_DOWNLOAD_BASE` / `CODEGRAPH_INSTALL_DIR` pair its cold path uses to fetch and
+    exec a bundle. Now built UP from an allowlist — PATH, HOME, LANG, LC_ALL, TMPDIR, USER —
+    plus `CODEGRAPH_TELEMETRY=0` and `CODEGRAPH_NO_DOWNLOAD=1`. An allowlist and not a denylist
+    because the variables to fear are the ones nobody has thought of yet.
+    4. Claude Code spawns a stdio MCP server as its own child, so the server inherited
+    `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` — the peer credentials that
+    address other sessions and the conductor, which decision 47 keeps off the tmux server for
+    exactly this reason. The served `env` block blanks both; a code indexer has no business
+    holding the means to speak as the session.
+    5. The index failure printed the CLI's `error.message` raw, ANSI and paths included, onto the
+    terminal the operator reads a decision from. Through `failureSummary` now, like every other
+    shell-out (decision 29).
+    *And one left open by name:* `relaunchWindow` in `session-handoff.service.ts` respawns a
+    session with the code-graph context section but without `--mcp-config`, so a respawned
+    session is told to use a tool it does not have. It is out of this task's scope and the next
+    task fixes it. Worth stating why it is a gap and not a vulnerability: the failure is a wasted
+    tool call, and a respawn withholding the config is the same safe direction as a failed index.
+    The lesson the five findings share is the one that generalises — every launch flag, env block
+    and exclude pattern pup hands to a third party is part of the trust boundary, and the
+    interesting half is always what it inherits rather than what it is passed.
 
 ## Implementation notes
 
