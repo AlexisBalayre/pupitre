@@ -85,6 +85,40 @@ describe('compileProfile', () => {
   });
 });
 
+describe('compileProfile with a code graph (decision 51)', () => {
+  const withGraph = makeInput({ codegraphBinary: '/opt/node/bin/codegraph' });
+
+  it('compiles an mcp.json naming the binary and pinned to the session worktree', () => {
+    const compiled = ProfileCompiler.compileProfile(withGraph);
+
+    const config = JSON.parse(compiled.files['mcp.json'] as string);
+    expect(config.mcpServers.codegraph.command).toBe('/opt/node/bin/codegraph');
+    expect(config.mcpServers.codegraph.args).toContain('/repo/.worktrees/s-1');
+  });
+
+  it('tells the session what the graph answers and to reach for it before reading files', () => {
+    const compiled = ProfileCompiler.compileProfile(withGraph);
+
+    expect(compiled.contextMarkdown).toContain('## Code graph');
+    expect(compiled.contextMarkdown).toContain('codegraph_explore');
+  });
+
+  it('compiles neither the file nor the section when the operator has no binary', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+
+    expect(compiled.files['mcp.json']).toBeUndefined();
+    expect(compiled.contextMarkdown).not.toContain('## Code graph');
+  });
+
+  // Which binary serves the graph is as much of the session's environment as
+  // its hooks are, so it belongs inside the hash the session records.
+  it('changes the profile hash, because the graph is part of the profile', () => {
+    expect(ProfileCompiler.compileProfile(withGraph).hash).not.toBe(
+      ProfileCompiler.compileProfile(makeInput()).hash,
+    );
+  });
+});
+
 describe('generated scope hook', () => {
   const worktree = '/repo/.worktrees/s-1';
 

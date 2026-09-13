@@ -16,6 +16,12 @@ export interface LaunchOptions {
   /** Compiled settings.json path, passed to `claude --settings`. */
   settingsPath: string;
   model?: string;
+  /**
+   * Compiled mcp.json path, passed to `claude --mcp-config`. Absent when the
+   * session gets no code graph — either the operator has no codegraph binary,
+   * or indexing this worktree failed (decision 51).
+   */
+  mcpConfigPath?: string;
 }
 
 export interface ConductorLaunchOptions {
@@ -337,9 +343,14 @@ function mainRepoRoot(worktreePath: string): string[] {
  * The display name is the tmux name: it is what a peer session sees in
  * ListAgents and addresses with SendMessage, so the conductor reaches a
  * session by the same `pup-<id>` the operator attaches to (decision 47).
+ *
+ * `--mcp-config` adds the code graph without `--strict-mcp-config`: strict mode
+ * would drop the operator's own MCP servers, and sessions inherit user config
+ * (decision 9). The flag is only passed when there is a graph to serve
+ * (decision 51).
  */
 export function launchArgs(
-  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'model'>,
+  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'model' | 'mcpConfigPath'>,
 ): string[] {
   return [
     ...(opts.model ? ['--model', opts.model] : []),
@@ -348,6 +359,7 @@ export function launchArgs(
     '--dangerously-skip-permissions',
     '--settings',
     opts.settingsPath,
+    ...(opts.mcpConfigPath ? ['--mcp-config', opts.mcpConfigPath] : []),
     '--setting-sources',
     'user',
   ];
@@ -359,6 +371,7 @@ interface ClaudeWindowOptions {
   cwd: string;
   settingsPath: string;
   model?: string;
+  mcpConfigPath?: string;
   /**
    * The one variable that names the caller — `PUP_SESSION_ID` or
    * `PUP_CONDUCTOR` — which is all that separates a session's window from the
@@ -405,6 +418,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     cwd: opts.worktreePath,
     settingsPath: opts.settingsPath,
     model: opts.model,
+    mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_SESSION_ID: opts.sessionId },
   });
 }

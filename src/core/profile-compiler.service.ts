@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
+import { codegraphMcpConfig } from './codegraph.client.js';
 import { globsToGrepFile } from './glob.utils.js';
 import {
   CHARS_PER_TOKEN,
@@ -84,6 +85,19 @@ function mergeLayers(base: ProfileLayer, role?: ProfileLayer): ProfileLayer {
   };
 }
 
+/**
+ * Short on purpose: the MCP server sends its own usage instructions on connect,
+ * so all this adds is the part only pup knows — the graph is THIS worktree's, so
+ * what it answers is this branch and not main (decision 51).
+ */
+const CODE_GRAPH_SECTION =
+  '## Code graph\n' +
+  'This worktree is indexed in a code graph of its own, built at launch and kept current as ' +
+  'you edit. The `codegraph_explore` MCP tool answers from it: how does X work, how does X ' +
+  'reach Y, what breaks if I change Z. Reach for it BEFORE reading files — one call returns ' +
+  'the verbatim source of the symbols that matter plus their callers and blast radius, which ' +
+  'is what makes docs/05\'s "this already exists, reuse it" answerable rather than aspirational.';
+
 function buildContextMarkdown(merged: ProfileLayer, input: CompileInput): string {
   const { task, sessionId } = input;
   const scopeOut = task.scopeOut?.length ? task.scopeOut.join(', ') : 'none declared';
@@ -95,6 +109,7 @@ function buildContextMarkdown(merged: ProfileLayer, input: CompileInput): string
     `## Acceptance criteria\n${task.acceptance.map((a) => `- ${a}`).join('\n')}`,
     merged.conventions ? `## Conventions\n${merged.conventions}` : undefined,
     task.knowledgeSlice ? `## Codebase knowledge\n${task.knowledgeSlice}` : undefined,
+    input.codegraphBinary ? CODE_GRAPH_SECTION : undefined,
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
@@ -220,6 +235,13 @@ export function compileProfile(input: CompileInput): CompiledProfile {
   const files: Record<string, string> = {
     'context.md': contextMarkdown,
     'settings.json': `${JSON.stringify(settings, null, 2)}\n`,
+    // Compiled, so which binary serves the graph is recorded in the profile
+    // hash — as much of the session's environment as its hooks are. Attribution,
+    // not detection: nothing re-reads the compiled dir to verify it. Absent when
+    // the operator has no codegraph, and the launch passes no flag at all.
+    ...(input.codegraphBinary
+      ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.worktreePath) }
+      : {}),
     'hooks/scope-enforce.sh': buildScopeHookScript(input),
     'hooks/bash-guard.sh': buildBashGuardScript(),
     'hooks/event-log.sh': buildEventHookScript(input),

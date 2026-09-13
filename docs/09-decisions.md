@@ -1931,6 +1931,105 @@ changes back into those docs is pending.
     here is the specific path from that write to code running with the operator's environment
     on pup's own git calls.
 
+51. **A session's code graph is an external index served over MCP, one per worktree
+    (2026-09-13).** docs/05 asks a session to reuse what already exists, and the only instrument
+    for it was the knowledge slice: a regex code map of files per module, churn, debt, "depends
+    on / used by" at directory granularity. It answers *where roughly to look*, which is not the
+    question a session has. "How does X work", "how does X reach Y" and "what breaks if I change
+    Z" are about symbols and edges, so every session answered them the expensive way — grep,
+    read, read again, and rebuild in context a call graph the parser had already built and thrown
+    away. CodeGraph (github.com/colbymchenry/codegraph, npm `@colbymchenry/codegraph` 1.6.0, MIT)
+    is that parser kept: a local SQLite graph of every symbol, edge and file, 130 files and 1,473
+    nodes of this repo in 2.4s, no network, nothing tracked. The slice stays — it answers shape
+    and debt at launch, the graph answers code on demand.
+    *An external graph over growing our own.* A symbol-level indexer for 30+ languages is not
+    adjacent to pup's job, and a regex over paths is not a foundation to build one on. The
+    dependency is the cheap kind: one binary, MIT, local, invoked by argv, nothing to migrate if
+    it goes.
+    *MCP over injecting explore output,* which is what the slice does. Wrong shape twice: the
+    questions are the session's, asked while it works and not guessable at launch, and the
+    answers are large — the context budget (docs/03) exists because a profile that pastes
+    everything useful arrives useless. A tool costs nothing until asked and returns source
+    verbatim, line-numbered, ready to Edit. It also keeps pup out of the middle: the server sends
+    its own usage instructions on connect, so the `## Code graph` section carries only the thing
+    just pup knows — that the graph is *this worktree's*. `mcp.json` is compiled with the
+    settings and hooks rather than written beside them, so which binary serves a session's graph
+    is recorded in the profile hash at compile time — attribution, not detection: nothing
+    re-reads the compiled dir to verify it, which is decision 46's ceiling. No
+    `--strict-mcp-config`: it would drop the operator's own MCP
+    servers, which decision 9 refuses — sessions inherit user config and pup adds to it.
+    *One graph per worktree, which is the design and not a detail.* codegraph resolves a project
+    by walking PARENT directories for a `.codegraph/`. A worktree sits at
+    `<repo>/.worktrees/<id>`, so one with no index of its own resolves *up* into the main
+    checkout and the session is answered out of main's graph while believing it reads its own
+    branch — every answer plausible, subtly wrong, unfalsifiable from inside. Hence `--path
+    <worktreePath>` pinned explicitly rather than left to the client's root, an index built from
+    the worktree right after `worktree add`, and codegraph's watcher keeping it current.
+    *So a failed index withholds the config rather than degrading into it.* The launch survives a
+    machine with no codegraph and a worktree that will not index: both print one line and launch a
+    normal session. But "degrade to no graph" has to mean no graph — launching with the config
+    anyway is what hands the session main's index by the walk above. No graph is a poorer session;
+    the wrong graph is a lying one. The residual, stated: the compile precedes `worktree add`
+    (decision 40 — a throw after it orphans a worktree and branch), so on that path the context
+    still carries the section and the session may call a missing tool once, which beats a
+    silently wrong branch.
+    *The exclude line over editing `.gitignore`.* codegraph's own `.codegraph/.gitignore` hides
+    the database but leaves the directory untracked — `?? .codegraph/` in porcelain, which the
+    gate and the overlap radar both read. One `.codegraph/` line in `info/exclude`, found through
+    `git rev-parse --git-path`, lands in the COMMON dir and so covers the main checkout and every
+    worktree including ones that do not exist yet. Not a tracked `.gitignore`: the exclusion is
+    the operator's local tooling, not a fact about the project, so pup would be committing to
+    every contributor's repo on its own account. Writing it needs the *resolved* path — git
+    answers relative from a main checkout and absolute from a worktree, and appending to the
+    relative one writes wherever pup's process is standing. Found by the test, not by review.
+    *The daemon and the telemetry env.* `CODEGRAPH_TELEMETRY=0` on indexing and on the served
+    server alike — the repositories it indexes are not ours to report on. The daemon is
+    codegraph's to run and pup starts none: `serve --mcp` brings up one per project path and its
+    watcher keeps that path's index current, which is why the graph lags a write by about a
+    second, why nothing here polls or re-indexes mid-session, and why "one per worktree" is
+    enough to keep two sessions' daemons off each other's index.
+    *What stays open.* The conductor gets no graph — whether it should read main's index is a
+    separate question with a separate answer (the next task). `pup init` and `pup audit` report
+    nothing about the capability, so an operator learns it from a line at launch. And the slice is
+    still the regex map: now that a real graph exists at launch it could be cut from one, which is
+    why this keeps both rather than replacing either.
+    *Addendum, from the security review of the branch (2026-09-13).* Five findings, all of them
+    the same mistake in five places — treating a third-party binary and its server as part of
+    pup rather than as something pup hands work to.
+    1. `which codegraph` echoed the PATH ENTRY it matched, and pnpm prepends the relative
+    `./node_modules/.bin`, so under `pnpm dev` the answer was `./node_modules/.bin/codegraph`: a
+    gitignored path inside the repo that a session can plant a script at, executed by pup at the
+    next launch, and written into `mcp.json` as a relative command every later session
+    re-resolves against its own worktree. Now `which -a`, taking the first candidate that is
+    both absolute and outside the repository — a repo-local shim is refused, not ranked last,
+    so an operator who has only that one has no codegraph.
+    2. The exclude line was unanchored, so `.codegraph/` matched at every depth in every
+    worktree forever and `src/.codegraph/setup.ts` was invisible to the worktree-clean stage:
+    uncommitted code the gate cannot see and a test run can read. Anchored to `/.codegraph/`,
+    which hides the one directory codegraph creates and nothing else.
+    3. Indexing ran with `{...process.env}`, handing a `#!/usr/bin/env node` shim every secret
+    in the operator's environment, `NODE_OPTIONS` (whose `--require` executes inside it), and
+    the `CODEGRAPH_DOWNLOAD_BASE` / `CODEGRAPH_INSTALL_DIR` pair its cold path uses to fetch and
+    exec a bundle. Now built UP from an allowlist — PATH, HOME, LANG, LC_ALL, TMPDIR, USER —
+    plus `CODEGRAPH_TELEMETRY=0` and `CODEGRAPH_NO_DOWNLOAD=1`. An allowlist and not a denylist
+    because the variables to fear are the ones nobody has thought of yet.
+    4. Claude Code spawns a stdio MCP server as its own child, so the server inherited
+    `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` — the peer credentials that
+    address other sessions and the conductor, which decision 47 keeps off the tmux server for
+    exactly this reason. The served `env` block blanks both; a code indexer has no business
+    holding the means to speak as the session.
+    5. The index failure printed the CLI's `error.message` raw, ANSI and paths included, onto the
+    terminal the operator reads a decision from. Through `failureSummary` now, like every other
+    shell-out (decision 29).
+    *And one left open by name:* `relaunchWindow` in `session-handoff.service.ts` respawns a
+    session with the code-graph context section but without `--mcp-config`, so a respawned
+    session is told to use a tool it does not have. It is out of this task's scope and the next
+    task fixes it. Worth stating why it is a gap and not a vulnerability: the failure is a wasted
+    tool call, and a respawn withholding the config is the same safe direction as a failed index.
+    The lesson the five findings share is the one that generalises — every launch flag, env block
+    and exclude pattern pup hands to a third party is part of the trust boundary, and the
+    interesting half is always what it inherits rather than what it is passed.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.
