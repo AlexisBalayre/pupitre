@@ -5,6 +5,8 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -186,6 +188,80 @@ describe('indexDirectory', () => {
     indexDirectory(join(fake.dir, 'codegraph'), tempDir('pup-cg-dir-'));
 
     expect(fake.calls()).toEqual(['node_options=[] secret=[] download=[] nodl=[1]']);
+  });
+
+  /**
+   * The index is addressed by PATH, and the directory handed over is one an
+   * agent can write inside. A session that points its worktree's `.codegraph`
+   * at the conductor's gets `existsSync` to follow the link, which picks the
+   * `index` branch, and `codegraph index <worktree>` then rebuilds the
+   * CONDUCTOR's database from the session's files: the victim's own files drop
+   * out of its graph and its agent is answered verbatim out of the attacker's
+   * tree. Refused before anything runs, so the caller's catch turns it into one
+   * printed line and no config.
+   */
+  describe('refuses to index through an index that is not its own', () => {
+    function plantedLink(name: string): { repo: string; victim: string } {
+      const repo = makeRepo();
+      const victim = tempDir('pup-cg-victim-');
+      fakeIndexDir(victim);
+      const link = join(repo, '.codegraph');
+      if (name === 'codegraph.db') {
+        mkdirSync(link, { recursive: true });
+        symlinkSync(join(victim, '.codegraph', 'codegraph.db'), join(link, 'codegraph.db'));
+      } else {
+        symlinkSync(join(victim, '.codegraph'), link);
+      }
+      return { repo, victim };
+    }
+
+    it('refuses a .codegraph symlinked at another checkout', () => {
+      const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+      const { repo } = plantedLink('.codegraph');
+
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow(
+        /refusing to index through it/,
+      );
+      // The point of the guard: the binary never ran, so the victim's database
+      // was never rebuilt from this tree.
+      expect(fake.calls()).toEqual([]);
+    });
+
+    // The directory can be real and only the database linked away — `index`
+    // writes the db, so that is the same rebuild by a narrower path.
+    it('refuses a codegraph.db symlinked at another checkout', () => {
+      const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+      const { repo } = plantedLink('codegraph.db');
+
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow(
+        /refusing to index through it/,
+      );
+      expect(fake.calls()).toEqual([]);
+    });
+
+    // The whole guard must not cost the normal paths: a real index of its own
+    // still re-indexes, and no index at all still initializes.
+    it('indexes normally when the directory owns its own .codegraph', () => {
+      const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+      const repo = makeRepo();
+      fakeIndexDir(repo);
+
+      indexDirectory(join(fake.dir, 'codegraph'), repo);
+
+      expect(fake.calls()).toEqual([`index ${repo} --quiet telemetry=0`]);
+    });
+
+    // A dangling link is still a link, and still names somewhere else.
+    it('refuses a dangling symlink rather than initializing through it', () => {
+      const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+      const { repo, victim } = plantedLink('.codegraph');
+      rmSync(victim, { recursive: true, force: true });
+
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow(
+        /refusing to index through it/,
+      );
+      expect(fake.calls()).toEqual([]);
+    });
   });
 
   it('throws when the binary fails, so the caller can decide what a missing graph costs', () => {

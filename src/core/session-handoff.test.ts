@@ -311,6 +311,10 @@ describe('session handoff', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       writeCompiled();
       gitInit();
+      // A respawn always has a real worktree to re-index; without one the
+      // client refuses before it reaches the binary, which is the right answer
+      // to a path that is not there and the wrong fixture for this test.
+      mkdirSync(join(repoPath, '.worktrees', 's1'), { recursive: true });
     });
 
     afterEach(() => {

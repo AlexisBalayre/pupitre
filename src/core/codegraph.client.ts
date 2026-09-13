@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
@@ -136,6 +136,42 @@ export function ensureCodegraphExcluded(cwd: string): void {
 }
 
 /**
+ * Refuse to index a directory whose `.codegraph/` is not actually in it.
+ *
+ * The index is addressed by PATH, and every caller here hands codegraph a path
+ * an agent can write inside. A session that replaces its worktree's
+ * `.codegraph` with a symlink to another checkout's — the conductor's, say —
+ * gets `existsSync` to follow it, which picks the `index` branch below, and
+ * `codegraph index <worktree>` then rebuilds THAT database from the worktree's
+ * files. The victim's own files drop out of its graph and its agent is answered
+ * out of the attacker's tree: a write through a path the attacker chose, with
+ * the whole point of the feature — "this is the verbatim source" — carrying the
+ * lie.
+ *
+ * So both the directory and the database are `lstat`ed before anything runs: a
+ * symlink is refused outright, and anything whose real path lands outside
+ * `directory` is refused too (a symlinked parent, a bind mount). Absent is
+ * fine — that is the `init` path. Throwing is the whole contract: the caller's
+ * catch turns this into one printed line and no config, which is the same safe
+ * direction a failed index takes.
+ */
+function assertIndexIsOwnedBy(directory: string): void {
+  const inside = `${realpathSync(directory)}/`;
+  const root = join(directory, '.codegraph');
+  for (const path of [root, join(root, 'codegraph.db')]) {
+    let link: ReturnType<typeof lstatSync>;
+    try {
+      link = lstatSync(path);
+    } catch {
+      continue; // absent: nothing to index through
+    }
+    if (link.isSymbolicLink() || !realpathSync(path).startsWith(inside)) {
+      throw new Error(`${path} is not inside ${directory}: refusing to index through it`);
+    }
+  }
+}
+
+/**
  * Build or refresh one directory's graph, and throw if it cannot be built — the
  * caller decides what a missing graph costs. `init` creates `.codegraph/` and
  * indexes as it goes; `index` refuses to run before it ("CodeGraph not
@@ -143,6 +179,9 @@ export function ensureCodegraphExcluded(cwd: string): void {
  * path, and neither indexes twice.
  */
 export function indexDirectory(binary: string, directory: string): void {
+  // Before the existsSync below, which is the call an escaping symlink turns
+  // into someone else's `index`.
+  assertIndexIsOwnedBy(directory);
   const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
   execFileSync(
     binary,

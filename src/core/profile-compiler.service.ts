@@ -107,14 +107,17 @@ const SESSION_GRAPH =
   'you edit.';
 
 /**
- * The conductor's is the main checkout's graph, indexed when its window opened.
- * It plans and reviews from what has already merged, so that is the right index
- * for it — and saying which one it is stops it reporting main's shape as a
- * session's branch.
+ * The conductor's graph is a pristine detached copy of the merge target, cut and
+ * indexed when its window opened — NOT the checkout it sits in, which carries
+ * untracked files a session can write. Saying so is load-bearing twice: it stops
+ * the conductor reporting main's shape as a session's branch, and it tells it
+ * the graph is a snapshot rather than something live.
  */
 const CONDUCTOR_GRAPH =
-  'The main checkout is indexed in a code graph of its own, built when your window opened and ' +
-  'kept current as merges land in it — not any session worktree, which each carry their own.';
+  'A pristine copy of the merge target — tracked files only, cut fresh and indexed when your ' +
+  'window opened — is in a code graph of its own. It is a snapshot of that moment, not the ' +
+  'working tree you sit in and not any session worktree. Paths in its answers are repo-relative, ' +
+  'so read the real file in the checkout you are in.';
 
 function buildContextMarkdown(merged: ProfileLayer, input: CompileInput): string {
   const { task, sessionId } = input;
@@ -395,11 +398,11 @@ export function compileConductorProfile(input: ConductorCompileInput): CompiledP
   const files: Record<string, string> = {
     'context.md': contextMarkdown,
     'settings.json': `${JSON.stringify(settings, null, 2)}\n`,
-    // Pinned to the main checkout, the way a session's is pinned to its
-    // worktree, and compiled for the same reason: which binary serves the
-    // conductor's graph is recorded in its profile hash (decision 51).
+    // Pinned to the private checkout, never to `repoPath`, and compiled for the
+    // same reason a session's is: which binary serves the conductor's graph is
+    // recorded in its profile hash (decision 51).
     ...(input.codegraphBinary
-      ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.repoPath) }
+      ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.checkoutPath) }
       : {}),
     'hooks/edit-block.sh': buildEditBlockScript(),
     'hooks/bash-guard.sh': buildBashGuardScript(),

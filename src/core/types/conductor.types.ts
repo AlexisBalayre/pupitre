@@ -23,11 +23,17 @@ export interface ConductorCompileInput {
   outDir: string;
   /**
    * Absolute path of the `codegraph` binary when the operator has one. Present
-   * compiles `mcp.json` and the context's code-graph section, both pinned to the
-   * main checkout the conductor works from; absent compiles neither, and the
-   * window opens with no graph (decision 51).
+   * compiles `mcp.json` and the context's code-graph section; absent compiles
+   * neither, and the window opens with no graph (decision 51).
    */
   codegraphBinary?: string;
+  /**
+   * The conductor's private detached checkout of the merge target — what
+   * `mcp.json` pins the served graph to. Never `repoPath`: a live working tree
+   * carries untracked files and a session-writable `codegraph.json`, and the
+   * conductor is the last reader that should be fed either (decision 51).
+   */
+  checkoutPath: string;
 }
 
 export interface ConductorHandle {

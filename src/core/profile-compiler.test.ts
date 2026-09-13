@@ -278,6 +278,7 @@ describe('compileConductorProfile', () => {
     workerModel: 'opus',
     userConfigHash: 'user-hash-a',
     outDir: '/state/conductor/compiled',
+    checkoutPath: '/state/conductor/checkout',
   };
 
   function runConductorHook(script: string, payload: object): number | null {
@@ -338,20 +339,28 @@ describe('compileConductorProfile', () => {
   describe('with a code graph', () => {
     const withGraph = { ...conductorInput, codegraphBinary: '/opt/node/bin/codegraph' };
 
-    it('compiles an mcp.json naming the binary and pinned to the main checkout', () => {
+    // The private checkout, never `repoPath`: a live working tree carries
+    // untracked files and a session-writable `codegraph.json`, and the conductor
+    // is the last reader that should be fed either.
+    it('pins the served graph at the private checkout and never at the live repo', () => {
       const compiled = ProfileCompiler.compileConductorProfile(withGraph);
 
       const config = JSON.parse(compiled.files['mcp.json'] as string);
       expect(config.mcpServers.codegraph.command).toBe('/opt/node/bin/codegraph');
-      expect(config.mcpServers.codegraph.args).toContain('/repo');
+      expect(config.mcpServers.codegraph.args).toContain('/state/conductor/checkout');
+      expect(config.mcpServers.codegraph.args).not.toContain('/repo');
     });
 
-    it("names the main checkout, so no answer of main's is read as a session branch", () => {
+    // It is told the graph is a snapshot of a pristine copy, not the tree it
+    // sits in: an answer out of one checkout believed to be about another is
+    // the failure this whole decision is shaped around.
+    it('tells the conductor its graph is a pristine snapshot of the merge target', () => {
       const compiled = ProfileCompiler.compileConductorProfile(withGraph);
 
       expect(compiled.contextMarkdown).toContain('## Code graph');
       expect(compiled.contextMarkdown).toContain('codegraph_explore');
-      expect(compiled.contextMarkdown).toContain('The main checkout is indexed');
+      expect(compiled.contextMarkdown).toContain('A pristine copy of the merge target');
+      expect(compiled.contextMarkdown).toContain('not the working tree you sit in');
       expect(compiled.contextMarkdown).not.toContain('This worktree is indexed');
     });
 

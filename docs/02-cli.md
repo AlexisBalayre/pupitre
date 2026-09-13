@@ -42,9 +42,11 @@ exit 1.
   session by its peer name `pup-<id>` over Claude Code's cross-session messaging, edits
   nothing (a hook refuses every Edit and Write), and is refused `pup merge`, `pup respawn`,
   `pup unblock` and `--project`. Tasks it plans are recorded `origin = conductor`.
-  `start` indexes the main checkout and launches with `codegraph_explore` over it, so the
-  conductor plans and reviews against what has merged rather than any session's branch — one
-  graph per checkout, the same rule its sessions get (decision 51). Operator-only (decision 47).
+  `start` cuts a private detached checkout of the merge target under
+  `~/.pupitre/<id>/conductor/checkout`, indexes it, and launches with `codegraph_explore` over
+  that — so the conductor plans and reviews against tracked content of what has merged, never a
+  working tree the sessions it supervises can write into. `stop` leaves the checkout in place.
+  Operator-only (decision 47).
 - `pup steer <session> "<message>"` — inject a correction into a running session. `--sent`
   records a steer already delivered by cross-session message and types nothing (decision 47).
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).

@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -180,26 +188,106 @@ describe('startConductor code graph', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-cond-')));
     gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    writeFileSync(join(repo, 'tracked.ts'), 'export const tracked = 1;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'init');
   });
+
+  const checkout = () => projectPaths(repo).conductorCheckoutDir;
 
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.mocked(console.error).mockRestore();
   });
 
-  // The main checkout, never a session worktree: the conductor plans and reviews
-  // from what has merged, and the index it leaves behind is excluded because the
-  // gate and the overlap radar read a clean tree.
-  it('indexes the main checkout and leaves it clean', () => {
+  // A detached checkout of the merge target, cut under the project's own state
+  // dir — tracked content and nothing else.
+  it('cuts a private detached checkout of the merge target', () => {
     fakeCodegraph(INDEXES);
 
     start();
 
-    expect(cgCalls()).toEqual([`init ${repo} --yes`]);
-    expect(gitIn(repo, 'status', '--porcelain')).toBe('');
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(true);
+    expect(gitIn(checkout(), 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('HEAD');
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
   });
 
-  it('launches claude against a compiled mcp.json pinned to the main checkout', () => {
+  // The finding, in one test: a session's Bash is only guarded against
+  // `.claude/`, so it can write into the repo root from its own worktree. An
+  // untracked source file is returned VERBATIM into the context of the agent
+  // that plans, launches and steers every other one, and an untracked
+  // `codegraph.json` steers the indexer itself — `{"include":[".worktrees/**"]}`
+  // pulls every session's tree in, an `exclude` blinds it. Neither can reach a
+  // checkout made of tracked content.
+  it('leaves a session-planted root file and codegraph.json out of the checkout', () => {
+    fakeCodegraph(INDEXES);
+    writeFileSync(join(repo, 'codegraph.json'), '{"include":[".worktrees/**"]}\n');
+    writeFileSync(join(repo, 'planted.ts'), 'export const readMe = 1;\n');
+
+    start();
+
+    expect(existsSync(join(checkout(), 'codegraph.json'))).toBe(false);
+    expect(existsSync(join(checkout(), 'planted.ts'))).toBe(false);
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(true);
+  });
+
+  // And the same property is what keeps session worktrees out in a repo whose
+  // `.gitignore` does not list `.worktrees/` — without adding a `/.worktrees/`
+  // exclude line, which would hide a session-created `<worktree>/.worktrees/`
+  // from the gate's clean stage.
+  it('leaves session worktrees out even when .gitignore does not list them', () => {
+    fakeCodegraph(INDEXES);
+    mkdirSync(join(repo, '.worktrees', 's-1'), { recursive: true });
+    writeFileSync(join(repo, '.worktrees', 's-1', 'secret.ts'), 'export const s = 1;\n');
+
+    start();
+
+    expect(existsSync(join(checkout(), '.worktrees'))).toBe(false);
+  });
+
+  // Refreshed, not re-cut: a second start moves the existing checkout to the
+  // target's current tip.
+  it('refreshes the checkout on a later start instead of failing on it', () => {
+    fakeCodegraph(INDEXES);
+    start();
+    writeFileSync(join(repo, 'second.ts'), 'export const second = 2;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'second');
+
+    start();
+
+    expect(existsSync(join(checkout(), 'second.ts'))).toBe(true);
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
+  });
+
+  // Clearing `~/.pupitre` leaves the worktree registration behind, and
+  // `worktree add` refuses the path forever once it does. Without the prune the
+  // conductor silently never gets a graph again.
+  it('re-cuts the checkout after its directory is deleted out from under it', () => {
+    fakeCodegraph(INDEXES);
+    start();
+    rmSync(checkout(), { recursive: true, force: true });
+
+    start();
+
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(true);
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
+  });
+
+  it('indexes the checkout and never the live repo, and leaves both clean', () => {
+    fakeCodegraph(INDEXES);
+
+    start();
+
+    expect(cgCalls()).toEqual([`init ${checkout()} --yes`]);
+    expect(cgCalls().some((call) => call.includes(` ${repo} `))).toBe(false);
+    expect(gitIn(repo, 'status', '--porcelain')).toBe('');
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+  });
+
+  it('launches claude against a compiled mcp.json pinned to the checkout', () => {
     const binary = fakeCodegraph(INDEXES);
 
     start();
@@ -208,19 +296,21 @@ describe('startConductor code graph', () => {
     expect(mcpConfigPath).toBe(join(projectPaths(repo).conductorCompiledDir, 'mcp.json'));
     const config = JSON.parse(readFileSync(mcpConfigPath, 'utf8'));
     expect(config.mcpServers.codegraph.command).toBe(binary);
-    expect(config.mcpServers.codegraph.args).toContain(repo);
+    expect(config.mcpServers.codegraph.args).toContain(checkout());
+    expect(config.mcpServers.codegraph.args).not.toContain(repo);
   });
 
-  // And it is told which checkout it is reading: an answer out of main reported
-  // as a session's branch is the failure mode decision 51 pins the path against.
-  it("names the main checkout in the conductor's code-graph section", () => {
+  // And it is told what it is reading: a snapshot of a pristine copy, not the
+  // tree it sits in. An answer out of one checkout believed to be about another
+  // is the failure this decision is shaped around.
+  it("names the pristine snapshot in the conductor's code-graph section", () => {
     fakeCodegraph(INDEXES);
 
     start();
 
     expect(kickoffContext()).toContain('## Code graph');
     expect(kickoffContext()).toContain('codegraph_explore');
-    expect(kickoffContext()).toContain('The main checkout is indexed');
+    expect(kickoffContext()).toContain('A pristine copy of the merge target');
   });
 
   // No graph, never the wrong one — and never at the cost of the window.

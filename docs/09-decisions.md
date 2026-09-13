@@ -2031,16 +2031,18 @@ changes back into those docs is pending.
     interesting half is always what it inherits rather than what it is passed.
     *Second addendum: the conductor's graph, the capability line, and the respawn gap closed
     (2026-09-13).*
-    *The conductor gets main's graph, on the same terms a session gets its worktree's.* It plans
-    and reviews from what has merged and edits nothing, so the main checkout is the right index
-    for it — and it is the only checkout it ever reads. Same client, same anchored exclude line,
-    same compiled `mcp.json` recorded in its profile hash, same `--mcp-config` on its argv, same
-    withholding when the index fails. The one thing that differs is the first sentence of the
-    context section, which names WHICH checkout the graph is of. That is not decoration: the
-    failure this whole decision is shaped around is an answer out of one checkout believed to be
-    about another, and the conductor reading main while believing it reads a session's branch is
-    the same lie pointed the other way. So the section is one function with a parameterised
-    opening rather than one constant used twice.
+    *The conductor gets a graph of the merge target, on the same terms a session gets its
+    worktree's.* It plans and reviews from what has merged and edits nothing, so the merge target
+    is the right index for it. Same client, same anchored exclude line, same compiled `mcp.json`
+    recorded in its profile hash, same `--mcp-config` on its argv, same withholding when the index
+    fails. The one thing that differs is the first sentence of the context section, which names
+    WHAT the graph is of. That is not decoration: the failure this whole decision is shaped
+    around is an answer out of one checkout believed to be about another, and the conductor
+    reading one tree while believing it reads another is the same lie pointed the other way. So
+    the section is one function with a parameterised opening rather than one constant used twice.
+    (This paragraph first said the graph was built from the MAIN CHECKOUT and that main's tree is
+    "what has merged". The third addendum below corrects both: a working tree is not what has
+    merged, and the graph is now cut from a private detached checkout.)
     *`pup init` and `pup audit` print `codegraph: <version>` or `codegraph: not installed`,*
     beside the sandbox line and for decision 36's reason: an operator who never sees it cannot
     tell a fleet whose sessions query a graph from one whose sessions grep, and "my sessions got
@@ -2077,6 +2079,57 @@ changes back into those docs is pending.
     is now the same code as `prepareGraph` in the client, which the conductor and the respawn both
     call. Folding it in was outside this task's scope-in list; it is a three-line change and the
     next thing to touch that file should make it.
+    *Third addendum, from the operator's security review of the branch (2026-09-13).* Three
+    findings, all reproduced against the real binary. Two of them are the same mistake the first
+    addendum's five were: the graph is addressed by PATH, and a path is not a capability — whoever
+    can write at that path decides what the index says.
+    1. **Indexing through someone else's index (HIGH).** A session could replace its worktree's
+    `.codegraph` with a symlink at another checkout's — the conductor's, created by `pup conductor
+    start`. `existsSync` follows a symlink, so the "is it initialized" probe answered yes, the
+    `index` branch was taken, and `codegraph index <worktree>` rebuilt the VICTIM's database from
+    the attacker's files. Verified: main's own files vanished from the db. The result is a write
+    through a path the attacker chose, and worse than a corrupted graph — the victim's agent is
+    answered verbatim out of the attacker's tree, with the feature's whole promise ("this is the
+    real source") carrying the lie. Fixed in `indexDirectory`, the one path every caller shares:
+    both `.codegraph` and `.codegraph/codegraph.db` are `lstat`ed before anything runs, a symlink
+    is refused outright, and anything whose real path lands outside the directory is refused too
+    (a symlinked parent, a bind mount). Absent stays fine — that is the `init` path. It throws,
+    which the callers' catch already turns into one printed line and no config.
+    2. **A live working tree is not "what has merged" (MEDIUM).** The conductor's graph was built
+    from the live main working tree, which carries untracked files — and a session's Bash is
+    guarded only against `.claude/`, so a session can write into the repo root from its own
+    worktree. Two levers, neither needing a privilege the session lacked. A root `codegraph.json`
+    steers the indexer: `{"include":[".worktrees/**"]}` pulls every session's worktree into the
+    conductor's graph, and an `exclude` blinds it to whatever the session would rather it not see.
+    And an untracked source file is returned verbatim into the context of the one agent that
+    plans, launches and steers every other one. The conductor is the highest-privilege reader in
+    the system; its graph must not be writable by the things it supervises. Fixed structurally
+    rather than by blacklisting the two known levers: `pup conductor start` cuts (or refreshes) a
+    private detached checkout of the merge target at `~/.pupitre/<pid>/conductor/checkout`, indexes
+    THAT, and pins `mcp.json` at it. Tracked content and nothing else, so both levers are gone at
+    the root. Detached, so the branch stays free for the main checkout and for `pup merge`.
+    Refreshed at start and not after, which the context section now says in as many words — the
+    conductor is told its graph is a snapshot of a pristine copy, that it is not the tree it sits
+    in, and that answers carry repo-relative paths to read where it stands. `pup conductor stop`
+    leaves the checkout in place: it is a cache, and re-cutting it every start is the expensive
+    half. The target branch is read the way `runMergeGate` reads it (`git branch --show-current`
+    in the main checkout), so the conductor's graph and the gate's destination cannot disagree
+    about which branch that is; a detached main checkout has no merge target and gets no graph,
+    with the usual one line. One robustness note found while building it: clearing
+    `~/.pupitre` leaves the worktree registration behind and `worktree add` then refuses that path
+    forever, so the add is preceded by a `worktree prune` — which drops only registrations whose
+    directory is already gone, and heals what would otherwise be a conductor that silently never
+    gets a graph again.
+    3. **Session worktrees swallowed whole (MEDIUM).** In a repo whose `.gitignore` does not list
+    `.worktrees/`, the live-root index pulled every session worktree into the conductor's graph on
+    its own, without anyone planting anything. Finding 2's private checkout removes this for the
+    same reason it removes the other two: `.worktrees/` is not tracked content. Explicitly NOT
+    fixed by adding `/.worktrees/` to the shared `info/exclude` — that line lands in the common
+    dir and so would also hide a session-created `<worktree>/.worktrees/` from the gate's
+    worktree-clean stage, which is the first addendum's finding 2 reintroduced one directory over.
+    The through-line of all eight findings across the two reviews: pup's job at every one of these
+    boundaries is to decide WHAT a third party is pointed at, and the answer is never "wherever
+    the thing being supervised can write".
 
 ## Implementation notes
 

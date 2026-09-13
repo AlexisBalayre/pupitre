@@ -8,10 +8,13 @@ Structure reaches an agent two ways, and they answer different halves of "does t
 
 - **CodeGraph, where installed.** An external binary detected like `gh` and `tmux`, never a
   dependency: a local SQLite graph of every symbol and edge, served over MCP as
-  `codegraph_explore` and queried live by the agent. One graph per checkout — a session's
-  worktree, the conductor's main checkout — built at launch and kept current by codegraph's own
-  watcher. It answers at symbol granularity, with verbatim source and blast radius, which is
-  what makes "reuse this" answerable rather than aspirational.
+  `codegraph_explore` and queried live by the agent. One graph per checkout: a session's own
+  worktree, kept current by codegraph's watcher as it edits; the conductor's a private detached
+  checkout of the merge target, cut fresh at `pup conductor start` and a snapshot of that moment.
+  Never a live working tree it does not own — an untracked file there is writable by the sessions
+  it supervises, and would come back as verbatim source (decision 51's third addendum). It
+  answers at symbol granularity, with verbatim source and blast radius, which is what makes
+  "reuse this" answerable rather than aspirational.
 - **The adapter import scan, always.** Module granularity, computed by pup itself
   (`ts.preProcessFile` for TypeScript, an import scan for Python), and the source of both the
   compiled knowledge slice and `pup map`. It runs on every machine, needs nothing installed, and
