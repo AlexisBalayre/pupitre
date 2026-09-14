@@ -157,6 +157,55 @@ describe('dashboard components', () => {
       expect(frame).toContain('STALLED (12m)');
     });
 
+    // The same sentence `pup status` prints, off the same snapshot field: the
+    // always-visible row must not differ between the two surfaces (decision 52,
+    // addendum to decision 35).
+    it("reads the watchdog's dead turn in place of the STALLED age", () => {
+      const frame = frameOf(
+        createElement(Sessions, {
+          finishedCount: 0,
+          sessions: [
+            sessionFixture({
+              activity: { kind: 'working' },
+              stalledAgeMs: 12 * 60 * 1000,
+              needsHuman: true,
+              deadTurn: { reason: '⏺ API Error: Connection lost', at: '2026-09-13T10:02:00.000Z' },
+            }),
+          ],
+          selectedIndex: 0,
+        }),
+      );
+
+      expect(frame).toMatch(/TURN DIED \(API error\) — resumed by watch at \d{2}:\d{2}/);
+      expect(frame).not.toContain('STALLED');
+    });
+
+    it('says a refused resume needs a human', () => {
+      const frame = frameOf(
+        createElement(Sessions, {
+          finishedCount: 0,
+          sessions: [
+            sessionFixture({
+              activity: { kind: 'working' },
+              stalledAgeMs: 12 * 60 * 1000,
+              needsHuman: true,
+              deadTurn: {
+                reason: '⏺ API Error: Connection lost',
+                at: '2026-09-13T10:02:00.000Z',
+                refusal: 'did not land',
+              },
+            }),
+          ],
+          selectedIndex: 0,
+        }),
+      );
+
+      // The `needs a human` tail falls off the 100-column frame behind the id
+      // column, as it does on a narrow terminal: `refused` is the word the row
+      // has to carry, and the red, bold row is what draws the eye to it.
+      expect(frame).toMatch(/TURN DIED \(API error\) — resume refused at \d{2}:\d{2}/);
+    });
+
     it('marks a session waiting on input with what it is waiting for', () => {
       const frame = frameOf(
         createElement(Sessions, {

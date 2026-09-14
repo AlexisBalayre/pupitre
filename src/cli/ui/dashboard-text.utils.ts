@@ -44,18 +44,41 @@ export function originMarker(origin: string): string {
  * doing — the snapshot has already read them, and a session with no activity is
  * one there was nothing to read for. Decision 35: staleness wins over activity
  * kind, so a session whose events file has gone quiet too long is STALLED no
- * matter what its last classified event was.
+ * matter what its last classified event was — and a stall the watchdog has
+ * already answered says so in place of its age.
  */
 export function activityLabel(session: DashboardSession): string {
   if (!session.activity) return '';
   if (session.stalledAgeMs !== undefined) {
-    return `STALLED (${formatStaleAge(session.stalledAgeMs)})`;
+    return deadTurnLabel(session) || `STALLED (${formatStaleAge(session.stalledAgeMs)})`;
   }
   if (session.activity.kind === 'awaiting-input') {
     return `WAITING ON INPUT${session.activity.detail ? ` (${session.activity.detail})` : ''}`;
   }
   if (session.activity.kind === 'idle') return 'idle (turn ended, no done signal)';
   return '';
+}
+
+/**
+ * What the watchdog found on this stalled session's pane, in place of the bare
+ * age: a turn that died on an API error and the resume that was typed into it,
+ * or the refusal that left it for a human (addendum to decision 35). Empty for
+ * a session stalled for some other reason, which is still the age and nothing
+ * more.
+ *
+ * Inside `activityLabel` rather than beside it, because the two are one
+ * decision — which sentence that column carries — and a surface that had to
+ * remember to ask for both would be the split decision 52 exists to prevent.
+ * The error line itself stays off the row: it is the same sentence every time,
+ * and `pup watch` prints it.
+ */
+function deadTurnLabel(session: DashboardSession): string {
+  const died = session.deadTurn;
+  if (!died) return '';
+  const at = new Date(died.at).toTimeString().slice(0, 5);
+  return died.refusal
+    ? `TURN DIED (API error) — resume refused at ${at}, needs a human`
+    : `TURN DIED (API error) — resumed by watch at ${at}`;
 }
 
 /**

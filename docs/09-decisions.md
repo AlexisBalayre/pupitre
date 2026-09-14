@@ -137,6 +137,35 @@ changes back into those docs is pending.
     it can make the operator read, and the age bound above puts a ten-minute ceiling on what
     the forgery suppresses.
 
+    *Addendum, 2026-09-14: the line is on the snapshot, and the `deadTurn` field the addendum
+    above rejected is now the right one.* The addendum shipped the line in `pup status` only:
+    `deadTurnLabel` lived in `src/cli/index.ts` and called `lastDeadTurn` itself, so `pup ui`,
+    which draws every column off `DashboardSnapshot`, still showed the bare STALLED age for a
+    session the watchdog had already resumed. Two surfaces telling the operator different
+    things about the same always-visible row is exactly the split decision 52 exists to
+    prevent, so the sub-decision above — *no `deadTurn` field on the snapshot* — is reversed.
+    Its reasoning does not survive the second surface: it read the field as making the pane a
+    second reader of session activity, but nothing on the snapshot reads a pane. The watchdog
+    captures the pane, keeps nothing of it, and writes a `turn_died` event; the snapshot
+    matches that **stored** event against the stall stamp, which it takes from the same
+    events-file mtime this decision ages every stall by. That is the store answering, like
+    every other field on a row — the reading moved, not its source. Decision 2 is untouched:
+    the pane is still read for recovery only, still by the watchdog, still once per sweep.
+    Three details follow from where the code now sits. `findStalledSessions` returns
+    `stalledAt` beside the age — it stats the events file already, and the stall's name and
+    the stall's age are one reading — which also deletes the watchdog's private copy of that
+    stat and, with `lastDeadTurn` now unused, the function itself. The direction of the
+    import is why the match is written out again in `dashboard.service.ts` rather than called
+    from the watchdog: `turn-watchdog.service.ts` imports `findStalledSessions` from the
+    snapshot service, so the snapshot service reaching back for `lastDeadTurn` would be a
+    cycle. And the sentence itself is one helper, folded into `activityLabel`
+    (`cli/ui/dashboard-text.utils.ts`) rather than set beside it — which sentence that column
+    carries is one decision, and a surface that had to remember to ask for the dead turn *and*
+    the age would be the same drift one layer down. The `reason` — the pane's own error line —
+    rides on the field but stays off both rows: it is the same sentence every time, `pup watch`
+    prints it, and the row is already at the width where the `needs a human` tail truncates on
+    an eighty-column terminal.
+
 37. **Force-interrupt is its own command, and every tmux lookup is pinned to exact match
     (2026-08-03).** `pup interrupt <session> ["<message>"]` sends Escape to the session's
     pane, aborting the in-flight tool call, then optionally steers — the recovery decision 35

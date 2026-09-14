@@ -49,6 +49,21 @@ export interface DashboardGate {
   at: string;
 }
 
+/**
+ * What the turn watchdog recorded against the stall a session is in right now
+ * (addendum to decision 35). Store-derived like every other field here — the
+ * persisted `turn_died` event matched against the stall stamp — so a second
+ * surface showing the line is not a second reader of the pane.
+ */
+export interface DashboardDeadTurn {
+  /** The pane's own error line, as the watcher sanitized it. */
+  reason: string;
+  /** When the watcher recorded the death, ISO. */
+  at: string;
+  /** Why nothing was typed, when the resume steer was refused; then it needs a human. */
+  refusal?: string;
+}
+
 export interface DashboardSession {
   id: string;
   state: SessionState;
@@ -67,6 +82,11 @@ export interface DashboardSession {
   activity?: SessionActivity;
   /** How long the events file has been quiet, once past the stall bar (decision 35). */
   stalledAgeMs?: number;
+  /**
+   * The dead turn the watchdog recorded for the stall this session is in, when
+   * that is why it went quiet. Only ever set alongside `stalledAgeMs`.
+   */
+  deadTurn?: DashboardDeadTurn;
   /** Tokens the last turn carried, for running sessions with a transcript. */
   contextTokens?: number;
   lastSteer?: DashboardSteer;

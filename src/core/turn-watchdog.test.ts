@@ -32,7 +32,6 @@ import {
 import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
-  appendEvent,
   ensureProject,
   insertSession,
   insertTask,
@@ -43,7 +42,6 @@ import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import {
   CONDUCTOR_NUDGE,
   CONDUCTOR_TARGET,
-  lastDeadTurn,
   RESUME_MESSAGE,
   sweepDeadTurns,
 } from './turn-watchdog.service.js';
@@ -349,81 +347,5 @@ describe('sweepDeadTurns', () => {
         refusal: expect.stringContaining('did not land'),
       });
     });
-  });
-});
-
-describe('lastDeadTurn', () => {
-  let db: Database;
-  let repo: string;
-  let home: string;
-
-  beforeEach(() => {
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-home-')));
-    vi.stubEnv('HOME', home);
-    db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-')));
-    seedRunningSession(db, repo, 's1');
-    seedEventsFile(repo, 's1', STALL_AGE_MS);
-  });
-
-  afterEach(() => {
-    db.close();
-    vi.unstubAllEnvs();
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
-  });
-
-  it('is the dead turn recorded for the stall the session is in now', () => {
-    appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') });
-
-    const died = lastDeadTurn(db, repo, 's1');
-
-    expect(died).toMatchObject({ reason: API_ERROR });
-    expect(died?.refusal).toBeUndefined();
-    expect(Math.abs(now() - (died?.at.getTime() ?? 0))).toBeLessThan(5_000);
-  });
-
-  it('carries the refusal when the resume was refused', () => {
-    appendEvent(db, 's1', 'turn_died', {
-      reason: API_ERROR,
-      stalledAt: stallStampOf(repo, 's1'),
-      refusal: 'did not land',
-    });
-
-    expect(lastDeadTurn(db, repo, 's1')).toMatchObject({
-      reason: API_ERROR,
-      refusal: 'did not land',
-    });
-  });
-
-  // An hour-old resume stays off the row of a session that has since worked
-  // and stalled again for some other reason.
-  it('is undefined when the recorded dead turn belongs to an earlier stall', () => {
-    appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') });
-    seedEventsFile(repo, 's1', STALL_AGE_MS - 30_000);
-
-    expect(lastDeadTurn(db, repo, 's1')).toBeUndefined();
-  });
-
-  it('is the newest of several resumes of the same stall', () => {
-    const stalledAt = stallStampOf(repo, 's1');
-    appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt, refusal: 'did not land' });
-    appendEvent(db, 's1', 'turn_died', { reason: '⏺ API Error: ENOTFOUND', stalledAt });
-
-    const died = lastDeadTurn(db, repo, 's1');
-
-    expect(died?.reason).toBe('⏺ API Error: ENOTFOUND');
-    expect(died?.refusal).toBeUndefined();
-  });
-
-  it('is undefined when nothing was recorded', () => {
-    expect(lastDeadTurn(db, repo, 's1')).toBeUndefined();
-  });
-
-  it('is undefined when the events file is gone', () => {
-    appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') });
-    rmSync(projectPaths(repo).eventsFile('s1'));
-
-    expect(lastDeadTurn(db, repo, 's1')).toBeUndefined();
   });
 });
