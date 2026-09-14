@@ -1,4 +1,3 @@
-import { existsSync, statSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
@@ -10,7 +9,7 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { findStalledSessions } from './dashboard.service.js';
-import { projectId, projectPaths } from './paths.utils.js';
+import { projectId } from './paths.utils.js';
 import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import { appendEvent, getSession, listEvents, type SessionRow } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
@@ -63,14 +62,6 @@ interface ResumedTurn {
   refusal?: string;
 }
 
-/** A `turn_died` event as its readers want it. */
-interface DeadTurn {
-  reason: string;
-  /** When the watcher recorded it. */
-  at: Date;
-  refusal?: string;
-}
-
 /**
  * One watchdog pass over the fleet: every running session the stall rule
  * (decision 35) has flagged is checked against its launch pane, and each one
@@ -83,7 +74,7 @@ interface DeadTurn {
 export function sweepDeadTurns(db: Database, repoPath: string, now: number): ResumedTurn[] {
   const resumed: ResumedTurn[] = [];
   for (const stalled of findStalledSessions(db, repoPath, now)) {
-    const entry = resumeSession(db, repoPath, stalled.id, now);
+    const entry = resumeSession(db, stalled.id, stalled.stalledAt, now);
     if (entry) resumed.push(entry);
   }
   const nudged = nudgeConductor(db, repoPath, now);
@@ -92,46 +83,21 @@ export function sweepDeadTurns(db: Database, repoPath: string, now: number): Res
 }
 
 /**
- * The newest dead turn recorded for the stall a session is in right now, or
- * undefined — no stall, or a stall nothing has been recorded against. What
- * `pup status` prints its row from: the stamp is what keeps an hour-old
- * resume off the row of a session that has stalled again since, and newest
- * because one stall can be resumed more than once through an outage.
- */
-export function lastDeadTurn(
-  db: Database,
-  repoPath: string,
-  sessionId: string,
-): DeadTurn | undefined {
-  const stalledAt = stallStamp(projectPaths(repoPath).eventsFile(sessionId));
-  if (stalledAt === undefined) return undefined;
-  // Newest first, so the first match is the latest resume of this stall.
-  const event = deadTurnEvents(db, sessionId).find((recorded) => recorded.stalledAt === stalledAt);
-  return (
-    event && {
-      reason: event.reason,
-      at: event.at,
-      ...(event.refusal ? { refusal: event.refusal } : {}),
-    }
-  );
-}
-
-/**
  * Resume one stalled session, or leave it alone. Everything this reads from
  * the pane is a question about recovery: is there a pane to read, is the turn
- * dead, has this stall already been answered.
+ * dead, has this stall already been answered. `stalledAt` is the stall's name,
+ * handed over by the sweep that found it.
  */
 function resumeSession(
   db: Database,
-  repoPath: string,
   sessionId: string,
+  stalledAt: string,
   now: number,
 ): ResumedTurn | undefined {
   const row = getSession(db, sessionId);
-  const stalledAt = stallStamp(projectPaths(repoPath).eventsFile(sessionId));
-  // The stall was read off that same file a moment ago, so both are here
-  // unless the session was killed or cleaned up mid-sweep.
-  if (!row || stalledAt === undefined) return undefined;
+  // The sweep listed this session a moment ago, so the row is here unless it
+  // was killed or cleaned up mid-sweep.
+  if (!row) return undefined;
   // Stamp AND age: a resume answers this stall for one stall window, not for
   // good. Through an outage the resumed turn dies again at once, no hook
   // fires and the stamp never moves — a stamp alone would leave the session
@@ -226,18 +192,6 @@ function readDeadTurn(row: SessionRow): string | undefined {
     if (error instanceof SessionPaneMissingError) return undefined;
     throw error;
   }
-}
-
-/**
- * The stall a session is in, named by the mtime of the events file decision 35
- * ages it by: a clock that stands still for exactly as long as the session
- * does. So one dead turn is resumed once however many sweeps see it, while a
- * session that recovers, works and dies again is a new stall with a new stamp
- * and gets its own resume. Undefined when the file is gone.
- */
-function stallStamp(eventsFile: string): string | undefined {
-  if (!existsSync(eventsFile)) return undefined;
-  return new Date(statSync(eventsFile).mtimeMs).toISOString();
 }
 
 /** Every `turn_died` recorded for a session, newest first. */

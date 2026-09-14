@@ -97,9 +97,9 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
-import { lastDeadTurn, sweepDeadTurns } from '../core/turn-watchdog.service.js';
+import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
-import type { DashboardSession, DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -837,8 +837,7 @@ export function buildProgram(): Command {
           : '';
       console.log(
         `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
-          `${trailing(deadTurnLabel(db, snapshot.repoPath, session) || activityLabel(session))}` +
-          `${trailing(contextLabel(session))}`,
+          `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`,
       );
     }
     // Planned tasks share the session table's columns under `planned`, the
@@ -881,27 +880,6 @@ export function buildProgram(): Command {
    */
   function showAttachCommand(db: Database): boolean {
     return !(callingSession(db) || callingConductor());
-  }
-
-  /**
-   * What the watcher found on a stalled session's pane, in place of the bare
-   * STALLED age: a turn that died on an API error and the resume that was
-   * typed into it, or the refusal that left it for a human (addendum to
-   * decision 35). Empty for every other row — including a session stalled for
-   * some other reason, which is still the age and nothing more.
-   *
-   * Read here rather than off the snapshot because it is not a reading of the
-   * session: the snapshot is hooks and transcripts (decision 2), and this is
-   * the store's record of what recovery did.
-   */
-  function deadTurnLabel(db: Database, repoPath: string, session: DashboardSession): string {
-    if (session.stalledAgeMs === undefined) return '';
-    const died = lastDeadTurn(db, repoPath, session.id);
-    if (!died) return '';
-    const at = died.at.toTimeString().slice(0, 5);
-    return died.refusal
-      ? `TURN DIED (API error) — resume refused at ${at}, needs a human`
-      : `TURN DIED (API error) — resumed by watch at ${at}`;
   }
 
   /** The watcher's radar: same-file overlaps between live sessions (docs/08 v1.2). */

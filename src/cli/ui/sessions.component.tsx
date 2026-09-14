@@ -61,7 +61,8 @@ function SessionRow({ session, selected }: { session: DashboardSession; selected
       </Text>
       <Text>{session.id.padEnd(ID_COLUMN_CHARS)}</Text>
       {/* Decision 35: a stalled session reads STALLED whatever its last event
-          was, and it is the one marker that must not be dimmed away. */}
+          was — or, once the watchdog has answered that stall, what it found
+          there — and it is the one marker that must not be dimmed away. */}
       <Text color={session.stalledAgeMs === undefined ? 'yellow' : 'red'}>
         {activityLabel(session)}
       </Text>

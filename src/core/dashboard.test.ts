@@ -36,6 +36,7 @@ import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import type { ProjectBaseline } from './types/init.types.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
+const API_ERROR = '⏺ API Error: Connection lost while your computer was asleep';
 
 /**
  * A repo path and nothing more: the snapshot reads the store and the events
@@ -242,6 +243,99 @@ describe('buildDashboardSnapshot', () => {
       expect(session?.needsHuman).toBe(true);
     });
 
+    // The watchdog's record, read back off the store — not off the pane it
+    // captured, which it deliberately did not keep (addendum to decision 35).
+    describe('dead turn', () => {
+      /** A running session gone quiet past the stall bar, and the stall's name. */
+      function seedStalled(sessionId: string, ageMs = STALLED_AFTER_MS + 60_000): string {
+        seedSession(db, repo, sessionId);
+        transitionSession(db, sessionId, 'running');
+        seedEventsFile(repo, sessionId, { hook_event_name: 'PostToolUse' }, ageMs);
+        return new Date(NOW - ageMs).toISOString();
+      }
+
+      it('carries what the watchdog recorded against the stall the session is in', () => {
+        const stalledAt = seedStalled('s1');
+        appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt });
+
+        const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+        expect(session?.deadTurn).toMatchObject({ reason: API_ERROR });
+        expect(session?.deadTurn?.refusal).toBeUndefined();
+        expect(Date.parse(session?.deadTurn?.at ?? '')).toBeGreaterThan(0);
+      });
+
+      it('carries the refusal that left the resume for a human', () => {
+        const stalledAt = seedStalled('s1');
+        appendEvent(db, 's1', 'turn_died', {
+          reason: API_ERROR,
+          stalledAt,
+          refusal: 'did not land',
+        });
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.deadTurn).toMatchObject({
+          refusal: 'did not land',
+        });
+      });
+
+      it('is the newest of several resumes of the same stall', () => {
+        const stalledAt = seedStalled('s1');
+        appendEvent(db, 's1', 'turn_died', {
+          reason: API_ERROR,
+          stalledAt,
+          refusal: 'did not land',
+        });
+        appendEvent(db, 's1', 'turn_died', { reason: '⏺ API Error: ENOTFOUND', stalledAt });
+
+        const { deadTurn } = buildDashboardSnapshot(db, repo, NOW).sessions[0] ?? {};
+
+        expect(deadTurn?.reason).toBe('⏺ API Error: ENOTFOUND');
+        expect(deadTurn?.refusal).toBeUndefined();
+      });
+
+      // An hour-old resume stays off the row of a session that has since
+      // worked and stalled again for some other reason.
+      it('is absent when the record belongs to an earlier stall', () => {
+        seedStalled('s1');
+        appendEvent(db, 's1', 'turn_died', {
+          reason: API_ERROR,
+          stalledAt: new Date(NOW - STALLED_AFTER_MS * 5).toISOString(),
+        });
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.deadTurn).toBeUndefined();
+      });
+
+      it('is absent for a session that is stalled with nothing recorded, and for a fresh one', () => {
+        seedStalled('s-stalled');
+        seedSession(db, repo, 's-fresh');
+        transitionSession(db, 's-fresh', 'running');
+        seedEventsFile(repo, 's-fresh', { hook_event_name: 'PostToolUse' });
+        appendEvent(db, 's-fresh', 'turn_died', {
+          reason: API_ERROR,
+          stalledAt: new Date(NOW).toISOString(),
+        });
+
+        const sessions = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+        expect(sessions.find((s) => s.id === 's-stalled')?.deadTurn).toBeUndefined();
+        expect(sessions.find((s) => s.id === 's-fresh')?.deadTurn).toBeUndefined();
+      });
+
+      it("strips what a terminal would obey out of the pane's own error line", () => {
+        const stalledAt = seedStalled('s1');
+        appendEvent(db, 's1', 'turn_died', {
+          reason: '\u001b[2JAPI Error',
+          stalledAt,
+          refusal: '\u001b[2Jdid not land',
+        });
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.deadTurn).toMatchObject({
+          reason: '[2JAPI Error',
+          refusal: '[2Jdid not land',
+        });
+      });
+    });
+
     it('reads the context a running session carried into its last turn', () => {
       seedSession(db, repo, 's1', { transcriptPath: seedTranscript(90_000) });
       transitionSession(db, 's1', 'running');
@@ -404,7 +498,12 @@ describe('findStalledSessions', () => {
     seedEventsFile(repo, 's-stalled', { hook_event_name: 'Stop' }, STALLED_AFTER_MS + 5_000);
 
     expect(findStalledSessions(db, repo, NOW)).toEqual([
-      { id: 's-stalled', ageMs: STALLED_AFTER_MS + 5_000 },
+      {
+        id: 's-stalled',
+        ageMs: STALLED_AFTER_MS + 5_000,
+        // The stall's name: the mtime the age was measured from.
+        stalledAt: new Date(NOW - STALLED_AFTER_MS - 5_000).toISOString(),
+      },
     ]);
   });
 

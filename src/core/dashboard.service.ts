@@ -23,6 +23,7 @@ import {
 import { classifySessionActivity, isSessionStalled } from './session-activity.utils.js';
 import type {
   DashboardBaseline,
+  DashboardDeadTurn,
   DashboardGate,
   DashboardSession,
   DashboardSnapshot,
@@ -50,11 +51,9 @@ export function buildDashboardSnapshot(
   const pid = projectId(repoPath);
   const paths = projectPaths(repoPath);
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
-  const stalledAges = new Map(
-    findStalledSessions(db, repoPath, now).map((session) => [session.id, session.ageMs]),
-  );
+  const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
   const sessions = listSessions(db).map((row) =>
-    dashboardSession(db, row, tasks.get(row.task_id), paths.eventsFile(row.id), stalledAges),
+    dashboardSession(db, row, tasks.get(row.task_id), paths.eventsFile(row.id), stalls.get(row.id)),
   );
   const beat = getWatcherBeat(db, pid);
   const baseline = baselineOf(db, pid);
@@ -95,22 +94,33 @@ export function buildDashboardSnapshot(
 }
 
 /**
+ * One stall: how long the session has been quiet, and the name of the stall
+ * itself. `stalledAt` is the events file's mtime — the clock decision 35 ages a
+ * stall by, which stands still for exactly as long as the session does, so it
+ * names *this* quiet spell and no other. The turn watchdog stamps its
+ * `turn_died` events with it; both readers match against it.
+ */
+export interface StalledSession {
+  id: string;
+  ageMs: number;
+  stalledAt: string;
+}
+
+/**
  * Running sessions whose events file has gone quiet past `STALLED_AFTER_MS`
  * (decision 35). Lives beside the snapshot that reports it because `pup watch`
  * asks the same question on its own sweep, where there is no snapshot to build.
  */
-export function findStalledSessions(
-  db: Database,
-  repoPath: string,
-  now: number,
-): Array<{ id: string; ageMs: number }> {
+export function findStalledSessions(db: Database, repoPath: string, now: number): StalledSession[] {
   const paths = projectPaths(repoPath);
-  const stalled: Array<{ id: string; ageMs: number }> = [];
+  const stalled: StalledSession[] = [];
   for (const row of listSessions(db, ['running'])) {
     const eventsFile = paths.eventsFile(row.id);
     if (!existsSync(eventsFile)) continue;
-    const ageMs = now - statSync(eventsFile).mtimeMs;
-    if (isSessionStalled(ageMs)) stalled.push({ id: row.id, ageMs });
+    const mtimeMs = statSync(eventsFile).mtimeMs;
+    const ageMs = now - mtimeMs;
+    if (isSessionStalled(ageMs))
+      stalled.push({ id: row.id, ageMs, stalledAt: new Date(mtimeMs).toISOString() });
   }
   return stalled;
 }
@@ -140,7 +150,7 @@ function dashboardSession(
   row: SessionRow,
   task: TaskRow | undefined,
   eventsFile: string,
-  stalledAges: Map<string, number>,
+  stall: StalledSession | undefined,
 ): DashboardSession {
   const spec = task ? parseJsonOr<Partial<TaskSpec>>(task.spec, {}) : {};
   // Decision 2: hook events, never pane contents. Nothing to classify for a
@@ -149,7 +159,7 @@ function dashboardSession(
     row.state === 'running' && existsSync(eventsFile)
       ? classifySessionActivity(readFileSync(eventsFile, 'utf8'))
       : undefined;
-  const stalledAgeMs = stalledAges.get(row.id);
+  const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
   // transcript is history, and reading it is I/O per row for nothing.
   const contextTokens =
@@ -160,6 +170,9 @@ function dashboardSession(
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);
   const lastGate = newestGate(events);
+  // Only for the stall the session is in now: an hour-old resume belongs to a
+  // stall the session has worked its way out of since.
+  const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   return {
     id: row.id,
     state: row.state,
@@ -173,12 +186,42 @@ function dashboardSession(
     rejectCount: row.reject_count,
     ...(activity ? { activity } : {}),
     ...(stalledAgeMs === undefined ? {} : { stalledAgeMs }),
+    ...(deadTurn ? { deadTurn } : {}),
     ...(contextTokens === undefined ? {} : { contextTokens }),
     ...(lastSteer ? { lastSteer } : {}),
     ...(lastGate ? { lastGate } : {}),
     needsHuman:
       row.state === 'blocked' || stalledAgeMs !== undefined || activity?.kind === 'awaiting-input',
   };
+}
+
+/**
+ * The newest dead turn the watchdog recorded against this stall, or nothing —
+ * no record, or a record from a stall the session has since worked out of
+ * (addendum to decision 35). Read here, off events the store already holds,
+ * rather than from the watchdog: the pane the watcher captured is evidence it
+ * did not keep, so this is the store telling both surfaces what recovery did,
+ * not a second reading of the session. Newest wins, because one stall can be
+ * resumed more than once through an outage.
+ */
+function newestDeadTurn(newestFirst: EventRow[], stalledAt: string): DashboardDeadTurn | undefined {
+  for (const event of newestFirst) {
+    if (event.type !== 'turn_died') continue;
+    const payload = parseJsonOr<{ reason?: unknown; stalledAt?: unknown; refusal?: unknown }>(
+      event.payload,
+      {},
+    );
+    if (payload.stalledAt !== stalledAt) continue;
+    return {
+      // Sanitized again on the way out, like every other stored text on a row:
+      // the error line is the session's own pane (decision 29), and a torn
+      // payload must render as a row rather than end the snapshot.
+      reason: typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : '',
+      at: toIsoUtc(event.created_at),
+      ...(typeof payload.refusal === 'string' ? { refusal: sanitizeReason(payload.refusal) } : {}),
+    };
+  }
+  return undefined;
 }
 
 function newestSteer(newestFirst: EventRow[]): DashboardSteer | undefined {
