@@ -103,6 +103,24 @@ const WINDOW_SIZE = { x: 220, y: 50 };
 const PANE_GONE = /can't find pane|error connecting to|no server running/;
 
 /**
+ * Claude Code's own line for a turn that died on the network — a machine that
+ * slept through one, a DNS outage — printed where the next tool call would
+ * have gone. Nothing else marks it: no Stop hook fires, so the events file
+ * stops dead and the session sits at an empty prompt (addendum to decision 35).
+ */
+const TURN_DIED_LINE = /^⏺ API Error:/;
+
+/**
+ * The glyph the input box's prompt opens with, at column 0. `pane.utils.ts`
+ * owns what is IN the box; this file only needs where the box starts, so the
+ * transcript above it can be read.
+ */
+const BOX_PROMPT = '❯';
+
+/** Rows the box draws itself out of: its borders, and the blank filler around them. */
+const BOX_CHROME = /^[\s─│╭╮╯╰]*$/;
+
+/**
  * tmux's argv with the server it means in front. tmux reads `-L` first and
  * only then `$TMUX`, so the flag is the whole isolation: a client on one
  * socket cannot address, read or even connect to a window on another.
@@ -158,6 +176,29 @@ function tmuxEnv(): NodeJS.ProcessEnv {
 
 function tmux(socket: string | undefined, args: string[]): string {
   return execFileSync('tmux', onSocket(socket, args), { encoding: 'utf8', env: tmuxEnv() });
+}
+
+/**
+ * A tmux command whose failure is an answer rather than an error: `undefined`
+ * when tmux refused it — no window by that name, no server on that socket —
+ * with stderr piped, so a probe never leaves tmux's own line on the operator's
+ * terminal.
+ */
+function tmuxProbe(socket: string | undefined, args: string[]): string | undefined {
+  try {
+    return execFileSync('tmux', onSocket(socket, args), {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: tmuxEnv(),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a window wearing `name` is up on `socket` — the default server when unset. */
+function hasWindow(name: string, socket?: string): boolean {
+  return tmuxProbe(socket, ['has-session', '-t', pinned(name)]) !== undefined;
 }
 
 /** Block the current thread without spawning a process (CLI-only, short waits). */
@@ -507,20 +548,40 @@ export function killConductor(repoProjectId: string): void {
  * any session make `pup status` report a conductor that is not running.
  */
 export function hasConductorWindow(repoProjectId: string): boolean {
-  try {
-    execFileSync(
-      'tmux',
-      onSocket(conductorSocket(repoProjectId), [
-        'has-session',
-        '-t',
-        pinned(conductorName(repoProjectId)),
-      ]),
-      { stdio: ['ignore', 'ignore', 'pipe'], env: tmuxEnv() },
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return hasWindow(conductorName(repoProjectId), conductorSocket(repoProjectId));
+}
+
+/**
+ * The pane the conductor's window runs in, or undefined when no conductor is
+ * up. Nothing typed into it after its kickoff until the turn watchdog did, so
+ * no pane id was ever recorded for it the way a session's launch records one;
+ * it is resolved here instead — by the window's pinned name, and then
+ * addressed as a PANE, never as a session, because a session target resolves
+ * to whichever pane is active and a split from inside moves that (decision 46).
+ *
+ * A split window has more than one pane, and the conductor's own is the lowest
+ * id on the socket: `launchConductor` kills the whole server before it opens
+ * the window, and tmux never reissues a pane id within a server, so the first
+ * one minted there is the pane Claude Code runs in.
+ */
+export function conductorPane(repoProjectId: string): SessionPane | undefined {
+  const socket = conductorSocket(repoProjectId);
+  const printed = tmuxProbe(socket, [
+    'list-panes',
+    '-t',
+    pinned(conductorName(repoProjectId)),
+    '-F',
+    '#{pane_id}',
+  ]);
+  if (printed === undefined) return undefined;
+  const paneId = printed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(isPaneId)
+    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))[0];
+  return paneId === undefined
+    ? undefined
+    : { sessionId: conductorId(repoProjectId), paneId, socket };
 }
 
 /**
@@ -659,6 +720,45 @@ function captureInputBox(pane: SessionPane): string {
 }
 
 /**
+ * The error a dead turn left on a pane, or undefined when there is nothing to
+ * recover. Both halves have to hold: the transcript's last line is Claude
+ * Code's API-error line, AND the input box is empty. A turn that is still
+ * running has its tool calls under the error; a box with a draft in it is
+ * someone typing, and a resume would be pasted onto their sentence.
+ *
+ * The pane is read for recovery only, and nothing about it is stored: session
+ * state is hooks and transcripts (decision 2), and this answers the narrower
+ * question of whether there is a turn to restart. What gets recorded is the
+ * event and the steer; the pane is the evidence, not the state.
+ */
+export function deadTurnError(pane: SessionPane): string | undefined {
+  // Styled, like every other look at the box: what Claude Code suggests once a
+  // turn ends is dim, and reading a suggestion as a draft would hide every
+  // dead turn there is (addendum to decision 45).
+  if (hasUnsubmittedInput(captureInputBox(pane))) return undefined;
+  const line = lastTranscriptLine(capturePane(pane));
+  return line !== undefined && TURN_DIED_LINE.test(line) ? line : undefined;
+}
+
+/**
+ * The last line the transcript printed above the input box. Undefined when the
+ * pane shows no box — a dialog, a window that died — or nothing above it.
+ */
+function lastTranscriptLine(pane: string): string | undefined {
+  const lines = pane.split('\n');
+  let boxIndex = -1;
+  lines.forEach((line, index) => {
+    if (line.startsWith(BOX_PROMPT)) boxIndex = index;
+  });
+  if (boxIndex === -1) return undefined;
+  for (let index = boxIndex - 1; index >= 0; index--) {
+    const line = (lines[index] as string).trimEnd();
+    if (!BOX_CHROME.test(line)) return line;
+  }
+  return undefined;
+}
+
+/**
  * Kill the session's window: the session holding its launch pane, wherever a
  * rename moved it (kill-session resolves a pane id to the session it is in),
  * then any session still wearing the name, for a row whose pane was never
@@ -735,4 +835,14 @@ export function launchWatcher(repoProjectId: string, repoPath: string): { target
 
 export function killWatcher(repoProjectId: string): void {
   killIfExists(watcherTarget(repoProjectId));
+}
+
+/**
+ * Whether the conflict radar is up. Asked by `pup conductor start`, which
+ * starts one that is not: the radar's sweep is where the turn watchdog runs,
+ * so a fleet with a conductor and no radar is one nobody resumes (addendum to
+ * decision 35).
+ */
+export function hasWatcherWindow(repoProjectId: string): boolean {
+  return hasWindow(watcherTarget(repoProjectId));
 }

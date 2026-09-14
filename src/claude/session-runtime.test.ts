@@ -51,7 +51,9 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import {
   conductorName,
+  conductorPane,
   conductorSocket,
+  deadTurnError,
   hasConductorWindow,
   interruptPane,
   kickoff,
@@ -459,6 +461,11 @@ describe('launchWatcher', () => {
  * `FAKE_TMUX_STUCK` is set. Every capture's box line is logged too, so a test
  * can read what the runtime saw before it pressed a key.
  *
+ * `FAKE_TMUX_TRANSCRIPT` is the line the transcript ends on, rendered where
+ * Claude Code puts it: directly above the box. A dead turn's `⏺ API Error:`
+ * line is one of those, and it is all a pane says about a turn that ended
+ * without a Stop hook.
+ *
  * With `FAKE_TMUX_SUGGESTION` set, an empty box offers that prompt, the way
  * Claude Code does once a turn ends: dim under `-e`, and — as real tmux
  * strips the styling — bare text without it, which is how a capture that
@@ -505,6 +512,7 @@ typed="$server/typed-$pane"
 case "$1" in
   load-buffer) cat > "$server/buffer" ;;
   paste-buffer) cp "$server/buffer" "$box"; cat "$box" >> "$typed"; echo >> "$typed" ;;
+  list-panes) sed 's/^/%/' "$server/panes" ;;
   send-keys)
     echo "$4" >> "$typed"
     [ "$4" = Enter ] && rm -f "$box"
@@ -527,7 +535,7 @@ case "$1" in
       else line='❯ [Pasted text #1]'; fi
     fi
     printf 'capture => %s\\n' "$line" >> "$FAKE_TMUX_LOG"
-    printf '  ? for shortcuts\\n────\\n%s\\n────\\n' "$line" ;;
+    printf '  ? for shortcuts\\n%s\\n────\\n%s\\n────\\n' "$FAKE_TMUX_TRANSCRIPT" "$line" ;;
 esac
 `;
 
@@ -544,6 +552,7 @@ describe('steerPane with a fake tmux on PATH', () => {
   let stuck: boolean;
   let down: boolean;
   let suggestion: string;
+  let transcript: string;
   let stripStyling: boolean;
   let wait: ReturnType<typeof vi.spyOn>;
 
@@ -562,6 +571,7 @@ describe('steerPane with a fake tmux on PATH', () => {
     stuck = false;
     down = false;
     suggestion = '';
+    transcript = '';
     stripStyling = false;
     // Every settle is skipped: what is under test is what the runtime does
     // between settles, and the fake's clock is the capture count.
@@ -581,6 +591,7 @@ describe('steerPane with a fake tmux on PATH', () => {
                 FAKE_TMUX_STATE: state,
                 FAKE_TMUX_LANDS_AFTER: String(landsAfter),
                 FAKE_TMUX_SUGGESTION: suggestion,
+                FAKE_TMUX_TRANSCRIPT: transcript,
                 ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
                 ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
               },
@@ -881,6 +892,87 @@ describe('steerPane with a fake tmux on PATH', () => {
       // can't-find-pane the steer does.
       expect(() => kickoff(conductorOnDefault, 'anything')).toThrow(SessionPaneMissingError);
       expect(typedInto(5, socket)).toBeUndefined();
+    });
+  });
+
+  /**
+   * The recovery read (addendum to decision 35). The pane is asked one
+   * question — did this turn die on an API error — and nothing it answers is
+   * stored: what the watchdog records is the event and the steer (decision 2).
+   */
+  describe('deadTurnError', () => {
+    const ASLEEP = '⏺ API Error: Connection lost while your computer was asleep';
+
+    it('reads the error line a dead turn left above an empty box', () => {
+      transcript = ASLEEP;
+
+      expect(deadTurnError(LAUNCH_PANE)).toBe(ASLEEP);
+    });
+
+    it('reads nothing when the turn ended some other way', () => {
+      transcript = '⏺ Ran 41 tests, all green';
+
+      expect(deadTurnError(LAUNCH_PANE)).toBeUndefined();
+    });
+
+    it('reads nothing while the box holds a draft, and does not look past it', () => {
+      // Someone is typing into the session: a resume would be pasted onto the
+      // end of their sentence, so the error above it is not the watchdog's.
+      writeFileSync(join(state, 'box-3'), 'wait, check the\n');
+      transcript = ASLEEP;
+
+      expect(deadTurnError(LAUNCH_PANE)).toBeUndefined();
+      expect(argvLog().filter((line) => line.startsWith('capture-pane'))).toEqual([
+        'capture-pane -p -e -t %3',
+      ]);
+    });
+
+    it('reads the prompt Claude Code suggests after a turn as an empty box', () => {
+      // The box's own ghost text is dim, not a draft; reading it as one would
+      // hide every dead turn there is (addendum to decision 45).
+      suggestion = 'Try "fix the failing test"';
+      transcript = ASLEEP;
+
+      expect(deadTurnError(LAUNCH_PANE)).toBe(ASLEEP);
+    });
+
+    it('refuses a pane that is gone rather than answering for it', () => {
+      expect(() => deadTurnError({ sessionId: 's-1', paneId: '%9' })).toThrow(
+        SessionPaneMissingError,
+      );
+    });
+  });
+
+  /**
+   * The conductor's window is typed into like a session's — by pane id, on its
+   * own socket (decisions 46, 47) — but nothing recorded an id for it, so the
+   * watchdog resolves one from the window first.
+   */
+  describe('conductorPane', () => {
+    const SOCKET = 'pup-conductor-proj-1';
+
+    it("resolves the conductor's pane on its own socket", () => {
+      serverWithPane(SOCKET, 5);
+
+      expect(conductorPane('proj-1')).toEqual({
+        sessionId: 'conductor-proj-1',
+        paneId: '%5',
+        socket: SOCKET,
+      });
+    });
+
+    it('takes the pane the window opened in when a split added others', () => {
+      // tmux never reissues a pane id within a server, and `launchConductor`
+      // kills the whole server before opening the window, so the lowest id
+      // there is the pane Claude Code runs in — not whichever is active.
+      serverWithPane(SOCKET, 5);
+      writeFileSync(join(state, SOCKET, 'panes'), '5\n12\n');
+
+      expect(conductorPane('proj-1')?.paneId).toBe('%5');
+    });
+
+    it('answers undefined when no conductor is up', () => {
+      expect(conductorPane('proj-1')).toBeUndefined();
     });
   });
 });

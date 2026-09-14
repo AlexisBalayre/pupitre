@@ -35,7 +35,20 @@ exit 1.
 - `pup new "<goal>" --scope <glob>...` — plan and launch in one step; the daily path. Takes
   `--allow-overlap` for the same reason `pup launch` does.
 - `pup status` — all sessions by state, the backlog under `planned`, pending reviews, live scope
-  overlaps between running sessions.
+  overlaps between running sessions. A running session whose events file has gone quiet for
+  ten minutes reads `STALLED (Nm)` (decision 35); when the radar's turn watchdog found an API
+  error on its pane and typed the resume, the row reads
+  `TURN DIED (API error) — resumed by watch at hh:mm` instead of the bare age, or
+  `… resume refused at hh:mm, needs a human` when the paste could not land.
+- `pup watch [--once|--start|--stop] [--interval <seconds>]` — the conflict radar: every fifteen
+  seconds, scan the live sessions' diffs for same-file overlaps and print each `STALLED`
+  session, then run the turn watchdog over the stalled ones — read each one's launch pane and,
+  when the last transcript line is an `API Error` above an empty input box, record a `turn_died`
+  event and steer the session back to work with a fixed resume message, once per stall. The
+  conductor's window on its own socket gets the same reading and a one-line nudge. Prints one
+  `TURN DIED` line per resume, with the refusal when the steer did not land. `--once` runs a
+  single sweep and exits; `--start` runs it in a detached tmux session and `--stop` ends that;
+  `--interval` changes the cadence (addendum to decision 35).
 - `pup ui` — the same reading as `pup status`, held open and redrawn every two seconds: the
   header (project, conductor, baseline figures), overdue debt, the live sessions with their
   activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,
@@ -83,8 +96,10 @@ exit 1.
   `start` cuts a private detached checkout of the merge target under
   `~/.pupitre/<id>/conductor/checkout`, indexes it, and launches with `codegraph_explore` over
   that — so the conductor plans and reviews against tracked content of what has merged, never a
-  working tree the sessions it supervises can write into. `stop` leaves the checkout in place.
-  Operator-only (decision 47).
+  working tree the sessions it supervises can write into. `start` also brings the conflict radar
+  up when none is running, and says so: the radar hosts the turn watchdog, and the conductor's
+  own waiting turn is what the watchdog nudges back after a sleep or an outage (addendum to
+  decision 35). `stop` leaves the checkout and the radar in place. Operator-only (decision 47).
 - `pup steer <session> "<message>"` — inject a correction into a running session. `--sent`
   records a steer already delivered by cross-session message and types nothing (decision 47).
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
