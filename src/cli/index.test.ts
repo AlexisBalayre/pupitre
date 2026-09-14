@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -38,8 +39,13 @@ vi.mock('../claude/session-runtime.service.js', () => ({
   // Spelled like the window name, as the runtime spells it: a separate tmux
   // server is what keeps a session from reaching the conductor (decision 47).
   conductorSocket: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
+  // The turn watchdog's reads: a conductor window to find, a pane to read for
+  // a dead turn, a nudge to type (addendum to decision 35).
+  conductorPane: vi.fn(),
+  deadTurnError: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
+  steerPane: vi.fn(),
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -63,6 +69,7 @@ vi.mock('../core/session-lifecycle.service.js', () => ({
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   planTask: vi.fn(),
+  sessionPane: vi.fn(),
   steerSession: vi.fn(),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
@@ -83,6 +90,8 @@ vi.mock('../core/session-handoff.service.js', () => ({
 
 import { render } from 'ink';
 import {
+  deadTurnError,
+  launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
@@ -92,8 +101,11 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
+import { recordWatcherBeat } from '../core/overlap.repository.js';
+import { WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import {
+  appendEvent,
   ensureProject,
   getSession,
   getTask,
@@ -122,8 +134,10 @@ import {
   launchTask,
   markSessionDone,
   planTask,
+  sessionPane,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { buildProgram, fatalExitCode } from './index.js';
@@ -260,6 +274,41 @@ function seedEventsFile(repoPath: string, sessionId: string, ageMs: number): voi
   utimesSync(eventsFile, time, time);
 }
 
+/**
+ * A stalled running session with a pane, as the watchdog finds it: the events
+ * file is older than the stall window and the pane was recorded at launch.
+ */
+function seedStalledSession(repoPath: string, sessionId: string): void {
+  seedSession(repoPath, sessionId);
+  const { db } = resolveProject(repoPath);
+  db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run('%7', sessionId);
+  transitionSession(db, sessionId, 'running');
+  db.close();
+  seedEventsFile(repoPath, sessionId, STALLED_AFTER_MS + 60_000);
+}
+
+/** The watcher's record of a dead turn for the stall the session is in now. */
+function seedDeadTurn(repoPath: string, sessionId: string, refusal?: string): void {
+  const stalledAt = new Date(
+    statSync(projectPaths(repoPath).eventsFile(sessionId)).mtimeMs,
+  ).toISOString();
+  const { db } = resolveProject(repoPath);
+  appendEvent(db, sessionId, 'turn_died', {
+    reason: '⏺ API Error: Connection lost while your computer was asleep',
+    stalledAt,
+    ...(refusal ? { refusal } : {}),
+  });
+  db.close();
+}
+
+/** The radar's last beat, as a sweep records it (real, unmocked repository). */
+function seedWatcherBeat(repoPath: string, ageMs: number): void {
+  const { db } = resolveProject(repoPath);
+  ensureProject(db, projectId(repoPath), repoPath);
+  recordWatcherBeat(db, projectId(repoPath), new Date(Date.now() - ageMs));
+  db.close();
+}
+
 /** Inserts one open ledger entry (real, unmocked repository) and returns its id. */
 function seedLedgerEntry(repoPath: string): number {
   const { db } = resolveProject(repoPath);
@@ -284,6 +333,7 @@ describe('CLI commands', () => {
   let originalConsoleLog: typeof console.log;
   let originalConsoleError: typeof console.error;
   let savedGitEnv: Record<string, string | undefined>;
+  let home: string;
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -296,7 +346,8 @@ describe('CLI commands', () => {
     console.error = (message: string) => errors.push(message);
     // resolveProject() always resolves state under homedir() — point it at a
     // throwaway HOME so a test run never touches the developer's real ~/.pupitre.
-    vi.stubEnv('HOME', tempDir('pup-cli-home-'));
+    home = tempDir('pup-cli-home-');
+    vi.stubEnv('HOME', home);
     // Reaching another project refuses on PUP_SESSION_ID or PUP_CONDUCTOR
     // alone, and this suite runs inside a pup session during dogfooding —
     // under the conductor, inside its tmux, both variables are exported.
@@ -331,6 +382,7 @@ describe('CLI commands', () => {
     // process.cwd(), read fresh on every call).
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
     process.exitCode = originalExitCode;
   });
 
@@ -527,6 +579,51 @@ describe('CLI commands', () => {
 
       expect(logs.some((line) => line.includes('STALLED'))).toBe(false);
     });
+
+    // The watcher's record replaces the bare age: what the operator needs to
+    // know about that row is that recovery already happened, or that it did
+    // not (addendum to decision 35).
+    it('prints the dead turn the watcher resumed in place of the STALLED age', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      seedDeadTurn(repo, 's-dead');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const line = logs.find((entry) => entry.includes('s-dead'));
+      expect(line).toMatch(/TURN DIED \(API error\) — resumed by watch at \d{2}:\d{2}/);
+      expect(line).not.toContain('STALLED');
+    });
+
+    it('says the resume was refused and needs a human', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      seedDeadTurn(repo, 's-dead', 'did not land');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.find((entry) => entry.includes('s-dead'))).toMatch(
+        /TURN DIED \(API error\) — resume refused at \d{2}:\d{2}, needs a human/,
+      );
+    });
+
+    // A record from an earlier stall is history: the session worked since,
+    // and whatever it is stalled on now is a plain STALLED age again.
+    it('keeps the STALLED age when the recorded dead turn is from an earlier stall', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      seedDeadTurn(repo, 's-dead');
+      seedEventsFile(repo, 's-dead', STALLED_AFTER_MS + 30_000);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const line = logs.find((entry) => entry.includes('s-dead'));
+      expect(line).toMatch(/STALLED \(\d+m\)/);
+      expect(line).not.toContain('TURN DIED');
+    });
   });
 
   describe('ui', () => {
@@ -692,6 +789,93 @@ describe('CLI commands', () => {
       expect(logs.some((line) => line.includes('STALLED') && line.includes('s-stalled'))).toBe(
         true,
       );
+    });
+
+    it('resumes a stalled session whose pane shows a dead turn, and prints one line for it', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      vi.mocked(sessionPane).mockReturnValue({ sessionId: 's-dead', paneId: '%7' });
+      vi.mocked(deadTurnError).mockReturnValue('⏺ API Error: Connection lost');
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(steerSession).toHaveBeenCalledTimes(1);
+      expect(firstCall(steerSession).slice(1)).toEqual(['s-dead', RESUME_MESSAGE]);
+      const resumeLines = logs.filter((line) => line.includes('TURN DIED'));
+      expect(resumeLines).toHaveLength(1);
+      expect(resumeLines[0]).toMatch(
+        /TURN DIED {2}s-dead {2}resumed {2}⏺ API Error: Connection lost$/,
+      );
+      // Still stalled on this sweep: the events file only moves once the
+      // resumed turn fires a hook.
+      expect(logs.some((line) => line.includes('STALLED') && line.includes('s-dead'))).toBe(true);
+      const { db } = resolveProject(repo);
+      const types = listEvents(db, 's-dead').map((event) => event.type);
+      db.close();
+      expect(types).toEqual(expect.arrayContaining(['turn_died', 'steer']));
+    });
+
+    // The sweep types into panes and records resumes in the watcher's name:
+    // a session or the conductor running it could forge one against another
+    // session. The detached radar runs from the main checkout with both
+    // variables stripped, so it passes.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s running the radar', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's1');
+      vi.mocked(sessionPane).mockReturnValue({ sessionId: 's1', paneId: '%7' });
+      vi.mocked(deadTurnError).mockReturnValue('⏺ API Error: Connection lost');
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(errors).toEqual(['`pup watch` is operator-only; the radar resumes sessions.']);
+      expect(logs).toEqual([]);
+      expect(steerSession).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The overlap scan has already recorded this sweep's beat, so a sweep
+    // that killed the process would be a radar `pup status` reads as running
+    // while nothing sweeps.
+    it('reports a sweep that throws and goes on with the scan', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      vi.mocked(sessionPane).mockImplementation(() => {
+        throw new Error('SQLITE_BUSY: database is locked');
+      });
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\S+ {2}watchdog sweep failed {2}SQLITE_BUSY: database is locked$/,
+      );
+      expect(logs.some((line) => line.includes('STALLED') && line.includes('s-dead'))).toBe(true);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('prints the refusal when the resume could not be typed', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      vi.mocked(sessionPane).mockReturnValue({ sessionId: 's-dead', paneId: '%7' });
+      vi.mocked(deadTurnError).mockReturnValue('⏺ API Error: Connection lost');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw new SteerNotDeliveredError('s-dead', RESUME_MESSAGE.length);
+      });
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(logs.find((line) => line.includes('TURN DIED'))).toMatch(
+        /TURN DIED {2}s-dead {2}resume REFUSED \(Steer to session s-dead did not land: \d+ chars\) {2}⏺ API Error/,
+      );
+      expect(process.exitCode).toBeUndefined();
     });
   });
 
@@ -1140,12 +1324,14 @@ describe('CLI commands', () => {
 
   describe('conductor', () => {
     it('starts the conductor with its own model and the model its sessions get', () => {
-      useCwd(initRepo());
+      const repo = initRepo();
+      useCwd(repo);
       vi.mocked(startConductor).mockReturnValue({
         name: 'pup-conductor-p1',
         paneId: '%3',
         delivered: true,
       });
+      seedWatcherBeat(repo, 0);
 
       buildProgram().parse(['conductor', '--model', 'fable', '--worker-model', 'opus'], {
         from: 'user',
@@ -1163,7 +1349,35 @@ describe('CLI commands', () => {
         /^Attach with: tmux -L pup-conductor-[0-9a-f]{12} attach -t pup-conductor-p1$/,
       );
       expect(logs).toHaveLength(2);
+      expect(launchWatcher).not.toHaveBeenCalled();
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // The radar hosts the turn watchdog, and the conductor's waiting turn is
+    // what the watchdog exists to bring back (addendum to decision 35).
+    // Whether one is up is the store's beat, not a window name a session
+    // could mint.
+    it.each([
+      ['none has ever swept', undefined],
+      ['the last beat is stale', WATCH_STALE_AFTER_MS + 1_000],
+    ])('starts the conflict radar with it when %s, and says so', (_when, beatAgeMs) => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(startConductor).mockReturnValue({
+        name: 'pup-conductor-p1',
+        paneId: '%3',
+        delivered: true,
+      });
+      if (beatAgeMs !== undefined) seedWatcherBeat(repo, beatAgeMs);
+      vi.mocked(launchWatcher).mockReturnValue({ target: 'pup-watch-p1' });
+
+      buildProgram().parse(['conductor', 'start'], { from: 'user' });
+
+      expect(firstCall(launchWatcher)).toEqual([projectId(repo), repo]);
+      expect(logs[2]).toBe(
+        'Conflict radar started with it (tmux: pup-watch-p1) — it runs the turn watchdog.',
+      );
+      expect(logs).toHaveLength(3);
     });
 
     it('stops the conductor', () => {

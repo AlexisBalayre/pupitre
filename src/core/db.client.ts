@@ -23,7 +23,8 @@ export type EventType =
   | 'handoff_ready'
   | 'respawn'
   | 'scope_overlap'
-  | 'utility_call';
+  | 'utility_call'
+  | 'turn_died';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (

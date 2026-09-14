@@ -60,6 +60,83 @@ changes back into those docs is pending.
     it counts awaiting-input, which the sort does not, because a five-second permission ask
     flagged at the top would bury the blocked session the operator actually has to act on.
 
+    *Addendum, 2026-09-14: the radar resumes a turn that died on an API error, and the pane
+    is evidence, not state.* Observed twice on 2026-09-13: a machine asleep at 01:16 and a DNS
+    outage at 13:00 each ended a running session's turn with `API Error: Connection lost while
+    your computer was asleep` / `Can't reach the API server (ENOTFOUND)`. That is not a turn
+    end — no Stop hook fires, so the events file stops dead, `pup status` read STALLED for
+    hours, and the session sat at an empty prompt with its edits in the worktree. Both times
+    the conductor's own waiting turn died the same way, so nobody resumed the worker until the
+    operator typed into its window by hand. The stall rule had found the session; what was
+    missing was the one further question the operator was answering by eye: is this pane
+    showing a dead turn?
+    So `pup watch`'s sweep now runs a turn watchdog (`core/turn-watchdog.service.ts`) over the
+    sessions `findStalledSessions` flags: it captures each one's launch pane (by the pane id
+    recorded at launch, decision 46) and, when the last transcript line above an *empty* input
+    box matches `^⏺ API Error:`, appends a `turn_died` event with the error line (sanitized,
+    decision 29) and steers the session with a fixed resume message, recorded as a `steer
+    {kind: 'resume', by: 'watch'}`. A refused steer — the paste never landed, or the pane is
+    gone — is recorded on the same `turn_died` event as its `refusal` and left for a human;
+    `pup status` prints `TURN DIED (API error) — resumed by watch at hh:mm` (or `resume
+    refused …, needs a human`) on that row instead of the bare age, and `pup watch --once`
+    prints one line per resume. Four things were chosen deliberately:
+    - **Decision 2 holds: the pane is read for recovery only.** The store keeps the event and
+      the steer; nothing about the session's state is derived from the capture, and the
+      capture is not kept. The alternative — a `deadTurn` field on the dashboard snapshot —
+      would have made the pane a second reader of session activity, the exact split the
+      previous addendum closed.
+    - **Idempotence is a stall stamp AND an age, not "the newest event".** The spec's rule
+      (skip when the newest event since the last steer is already `turn_died`) re-fires every
+      sweep, because after a resume the newest event *is* the resume steer. The `turn_died`
+      event instead carries `stalledAt`, the events file's mtime — the very clock this decision
+      ages a stall by, which stands still for exactly as long as the session does — and a
+      recorded dead turn blocks a new resume only while it is younger than `STALLED_AFTER_MS`.
+      Both halves are needed. The stamp is what keeps one dead turn from being resumed every
+      sweep, and gives a session that recovers, works and dies again a new stamp and its own
+      resume. The age is the DNS-outage case the watchdog was written for: the resumed turn
+      dies again at once, no hook fires, the stamp never moves, and a stamp alone would have
+      left that session dead after the network came back. Past the window, the same error
+      over the same empty box is the next dead turn of the same stall — a new `turn_died` with
+      the same `stalledAt`, and `pup status` reads the newest. The cost is one resume message
+      every ten minutes for as long as an outage lasts, into a box that is empty each time.
+    - **One event carries the outcome.** The event is written after the steer attempt so a
+      refusal sits beside its cause rather than in a second event. The window that leaves — a
+      watcher killed between the steer and the write — costs one duplicate resume message,
+      which lands in an empty box behind the first and reads as a follow-up. The other order
+      would leave a refusal unrecorded and steer every fifteen seconds for the length of the
+      outage.
+    - **The conductor is nudged on its own socket, with a null-session event as its
+      cooldown.** Its window lives on `conductorSocket` (decision 47) and records no pane id,
+      so the watchdog resolves the pane with `list-panes` there — the lowest id, since the
+      launch kills the server first and tmux never reissues an id within one — and types a
+      one-line nudge (`Operator watchdog: your turn died with an API error; read pup status and
+      resume any session that needs it`), last in the sweep so the sessions it will be asked
+      about are already resumed. The nudge itself moves the pane past the error line; for an
+      outage long enough to kill the nudged turn too, the nudge is recorded as a `turn_died`
+      event with `session_id = NULL` (the conductor has no row; every other `events` query is
+      keyed on a session id, so the row is inert for them) and not repeated inside
+      `STALLED_AFTER_MS`.
+    The radar is the watchdog's host, so `pup conductor start` brings it up when none is
+    running — the store's watcher beat missing or stale, not a window name a session could
+    mint — and says so: a conductor without a radar is the fleet that needed the operator
+    twice. `pup watch` itself is operator-only, like `pup audit`: it types into panes and
+    records resumes in the watcher's name, so a session or the conductor running it could forge
+    a resume against another session; the detached radar passes because `launchWatcher` runs
+    it from the main checkout with both tier variables stripped. Two more readings of the pane
+    are refused on purpose: a line that carries `Retrying` is a turn still alive and backing
+    off, not a dead one, however long the series outlasts the stall window; and a sweep that
+    throws is printed to the radar's stderr and skipped, never allowed to kill a process whose
+    beat the overlap scan has already recorded. Rejected: a Stop hook that would fire on an API
+    error (Claude Code fires none), a retry inside the session (the turn is over; only a new
+    prompt starts one), and a watchdog on the conductor's `pup status` reading (its turn is the
+    one that dies).
+    Accepted, not fixed in code: a forged `turn_died` row in the store — decision 46 takes store
+    access as the root of trust — now turns a wrong STALLED age into a reassuring `resumed by
+    watch` sentence on the row and, for one stall window, suppresses the real resume. A session
+    with write access to the store could always mark itself done; this adds one more sentence
+    it can make the operator read, and the age bound above puts a ten-minute ceiling on what
+    the forgery suppresses.
+
 37. **Force-interrupt is its own command, and every tmux lookup is pinned to exact match
     (2026-08-03).** `pup interrupt <session> ["<message>"]` sends Escape to the session's
     pane, aborting the in-flight tool call, then optionally steers — the recovery decision 35
