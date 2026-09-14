@@ -43,7 +43,6 @@ vi.mock('../claude/session-runtime.service.js', () => ({
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
   deadTurnError: vi.fn(),
-  hasWatcherWindow: vi.fn(),
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
   steerPane: vi.fn(),
@@ -92,7 +91,6 @@ vi.mock('../core/session-handoff.service.js', () => ({
 import { render } from 'ink';
 import {
   deadTurnError,
-  hasWatcherWindow,
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -103,6 +101,8 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
+import { recordWatcherBeat } from '../core/overlap.repository.js';
+import { WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import {
   appendEvent,
@@ -301,6 +301,14 @@ function seedDeadTurn(repoPath: string, sessionId: string, refusal?: string): vo
   db.close();
 }
 
+/** The radar's last beat, as a sweep records it (real, unmocked repository). */
+function seedWatcherBeat(repoPath: string, ageMs: number): void {
+  const { db } = resolveProject(repoPath);
+  ensureProject(db, projectId(repoPath), repoPath);
+  recordWatcherBeat(db, projectId(repoPath), new Date(Date.now() - ageMs));
+  db.close();
+}
+
 /** Inserts one open ledger entry (real, unmocked repository) and returns its id. */
 function seedLedgerEntry(repoPath: string): number {
   const { db } = resolveProject(repoPath);
@@ -325,6 +333,7 @@ describe('CLI commands', () => {
   let originalConsoleLog: typeof console.log;
   let originalConsoleError: typeof console.error;
   let savedGitEnv: Record<string, string | undefined>;
+  let home: string;
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -337,7 +346,8 @@ describe('CLI commands', () => {
     console.error = (message: string) => errors.push(message);
     // resolveProject() always resolves state under homedir() — point it at a
     // throwaway HOME so a test run never touches the developer's real ~/.pupitre.
-    vi.stubEnv('HOME', tempDir('pup-cli-home-'));
+    home = tempDir('pup-cli-home-');
+    vi.stubEnv('HOME', home);
     // Reaching another project refuses on PUP_SESSION_ID or PUP_CONDUCTOR
     // alone, and this suite runs inside a pup session during dogfooding —
     // under the conductor, inside its tmux, both variables are exported.
@@ -372,6 +382,7 @@ describe('CLI commands', () => {
     // process.cwd(), read fresh on every call).
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
     process.exitCode = originalExitCode;
   });
 
@@ -803,6 +814,50 @@ describe('CLI commands', () => {
       const types = listEvents(db, 's-dead').map((event) => event.type);
       db.close();
       expect(types).toEqual(expect.arrayContaining(['turn_died', 'steer']));
+    });
+
+    // The sweep types into panes and records resumes in the watcher's name:
+    // a session or the conductor running it could forge one against another
+    // session. The detached radar runs from the main checkout with both
+    // variables stripped, so it passes.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s running the radar', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's1');
+      vi.mocked(sessionPane).mockReturnValue({ sessionId: 's1', paneId: '%7' });
+      vi.mocked(deadTurnError).mockReturnValue('⏺ API Error: Connection lost');
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(errors).toEqual(['`pup watch` is operator-only; the radar resumes sessions.']);
+      expect(logs).toEqual([]);
+      expect(steerSession).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The overlap scan has already recorded this sweep's beat, so a sweep
+    // that killed the process would be a radar `pup status` reads as running
+    // while nothing sweeps.
+    it('reports a sweep that throws and goes on with the scan', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's-dead');
+      vi.mocked(sessionPane).mockImplementation(() => {
+        throw new Error('SQLITE_BUSY: database is locked');
+      });
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\S+ {2}watchdog sweep failed {2}SQLITE_BUSY: database is locked$/,
+      );
+      expect(logs.some((line) => line.includes('STALLED') && line.includes('s-dead'))).toBe(true);
+      expect(process.exitCode).toBeUndefined();
     });
 
     it('prints the refusal when the resume could not be typed', () => {
@@ -1269,14 +1324,14 @@ describe('CLI commands', () => {
 
   describe('conductor', () => {
     it('starts the conductor with its own model and the model its sessions get', () => {
-      useCwd(initRepo());
+      const repo = initRepo();
+      useCwd(repo);
       vi.mocked(startConductor).mockReturnValue({
         name: 'pup-conductor-p1',
         paneId: '%3',
         delivered: true,
       });
-
-      vi.mocked(hasWatcherWindow).mockReturnValue(true);
+      seedWatcherBeat(repo, 0);
 
       buildProgram().parse(['conductor', '--model', 'fable', '--worker-model', 'opus'], {
         from: 'user',
@@ -1300,7 +1355,12 @@ describe('CLI commands', () => {
 
     // The radar hosts the turn watchdog, and the conductor's waiting turn is
     // what the watchdog exists to bring back (addendum to decision 35).
-    it('starts the conflict radar with it when none is running, and says so', () => {
+    // Whether one is up is the store's beat, not a window name a session
+    // could mint.
+    it.each([
+      ['none has ever swept', undefined],
+      ['the last beat is stale', WATCH_STALE_AFTER_MS + 1_000],
+    ])('starts the conflict radar with it when %s, and says so', (_when, beatAgeMs) => {
       const repo = initRepo();
       useCwd(repo);
       vi.mocked(startConductor).mockReturnValue({
@@ -1308,12 +1368,11 @@ describe('CLI commands', () => {
         paneId: '%3',
         delivered: true,
       });
-      vi.mocked(hasWatcherWindow).mockReturnValue(false);
+      if (beatAgeMs !== undefined) seedWatcherBeat(repo, beatAgeMs);
       vi.mocked(launchWatcher).mockReturnValue({ target: 'pup-watch-p1' });
 
       buildProgram().parse(['conductor', 'start'], { from: 'user' });
 
-      expect(firstCall(hasWatcherWindow)).toEqual([projectId(repo)]);
       expect(firstCall(launchWatcher)).toEqual([projectId(repo), repo]);
       expect(logs[2]).toBe(
         'Conflict radar started with it (tmux: pup-watch-p1) — it runs the turn watchdog.',

@@ -18,10 +18,9 @@ import { render } from 'ink';
 import { createElement } from 'react';
 import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
-import { sanitizeReason } from '../adapters/capability.utils.js';
+import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import {
   conductorSocket,
-  hasWatcherWindow,
   killWatcher,
   launchWatcher,
   SessionPaneMissingError,
@@ -50,7 +49,8 @@ import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.j
 import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
-import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
+import { getWatcherBeat } from '../core/overlap.repository.js';
+import { scanOverlaps, WATCH_INTERVAL_MS, WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
@@ -734,7 +734,11 @@ export function buildProgram(): Command {
       // worker's, and then nobody resumes either (addendum to decision 35). So
       // a conductor without a radar is started with one, and told so — the
       // operator asked for a fleet that runs itself, not for two commands.
-      if (!hasWatcherWindow(projectId(repoPath))) {
+      // Whether one is up is the store's word, not a window name a session
+      // could mint: a radar that sweeps records its beat every sweep, and
+      // `launchWatcher` replaces whatever stale window wears the name.
+      const beat = getWatcherBeat(db, projectId(repoPath));
+      if (beat === undefined || Date.now() - beat.getTime() > WATCH_STALE_AFTER_MS) {
         const { target } = launchWatcher(projectId(repoPath), repoPath);
         console.log(
           `Conflict radar started with it (tmux: ${target}) — it runs the turn watchdog.`,
@@ -926,6 +930,13 @@ export function buildProgram(): Command {
     .action((opts: { once?: boolean; start?: boolean; stop?: boolean; interval: string }) => {
       const { repoPath, db } = project();
       const pid = projectId(repoPath);
+      // The sweep types into panes and records resumes in the watcher's name,
+      // so a session or the conductor running it could forge a resume against
+      // another session. The detached radar passes: `launchWatcher` runs it
+      // from the main checkout, and `tmuxEnv` strips both variables.
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup watch` is operator-only; the radar resumes sessions.');
+      }
       if (opts.stop) {
         killWatcher(pid);
         console.log('Conflict radar stopped.');
@@ -944,10 +955,20 @@ export function buildProgram(): Command {
         // Printed outside the dedup below: a resume happens once, and the
         // STALLED line that follows it on this sweep is still true — the
         // events file only moves when the resumed session fires its next hook.
-        for (const turn of sweepDeadTurns(db, repoPath, Date.now())) {
-          const outcome = turn.refusal ? `resume REFUSED (${turn.refusal})` : 'resumed';
-          console.log(
-            `${new Date().toISOString()}  TURN DIED  ${turn.id}  ${outcome}  ${turn.reason}`,
+        // A sweep that throws — tmux failing some new way, a locked store —
+        // is reported and the loop goes on: the overlap scan above has
+        // already recorded this sweep's beat, so a death here would be a
+        // radar `pup status` reads as running while nothing sweeps.
+        try {
+          for (const turn of sweepDeadTurns(db, repoPath, Date.now())) {
+            const outcome = turn.refusal ? `resume REFUSED (${turn.refusal})` : 'resumed';
+            console.log(
+              `${new Date().toISOString()}  TURN DIED  ${turn.id}  ${outcome}  ${turn.reason}`,
+            );
+          }
+        } catch (error) {
+          console.error(
+            `${new Date().toISOString()}  watchdog sweep failed  ${failureSummary(error)}`,
           );
         }
         const stalled = findStalledSessions(db, repoPath, Date.now());

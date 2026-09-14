@@ -478,6 +478,10 @@ describe('launchWatcher', () => {
  * Each pane has its own box, and what was pasted or keyed into it is kept in
  * `typed-<pane>`, so a test can tell which pane a steer reached. With
  * `FAKE_TMUX_DOWN` set every command fails the way a dead server does.
+ * Windows are modelled only as far as `list-panes` shows them: a `window`
+ * file names the current window's panes, which is all a plain `list-panes -t
+ * <session>` lists (verified on tmux 3.7b), and `-s` lists `panes`, every
+ * pane in the session, whichever window is current.
  *
  * Servers are modelled too, because that is what the conductor's isolation is:
  * a leading `-L <socket>` selects the state directory `<socket>/`, everything
@@ -497,9 +501,11 @@ if [ ! -d "$server" ]; then echo "no server running on $server" >&2; exit 1; fi
 target=''
 styled=''
 prev=''
+all=''
 for arg in "$@"; do
   [ "$prev" = -t ] && target="$arg"
   [ "$arg" = -e ] && styled=1
+  [ "$arg" = -s ] && all=1
   prev="$arg"
 done
 case "$target" in
@@ -512,7 +518,9 @@ typed="$server/typed-$pane"
 case "$1" in
   load-buffer) cat > "$server/buffer" ;;
   paste-buffer) cp "$server/buffer" "$box"; cat "$box" >> "$typed"; echo >> "$typed" ;;
-  list-panes) sed 's/^/%/' "$server/panes" ;;
+  list-panes)
+    if [ -n "$all" ] || [ ! -f "$server/window" ]; then sed 's/^/%/' "$server/panes"
+    else sed 's/^/%/' "$server/window"; fi ;;
   send-keys)
     echo "$4" >> "$typed"
     [ "$4" = Enter ] && rm -f "$box"
@@ -941,6 +949,14 @@ describe('steerPane with a fake tmux on PATH', () => {
         SessionPaneMissingError,
       );
     });
+
+    it('reads nothing while the turn is backing off and retrying on its own', () => {
+      // The same line with a retry suffix is a turn still alive; a resume
+      // pasted under it would queue behind the turn about to come back.
+      transcript = '⏺ API Error: Connection error · Retrying in 4 seconds… (attempt 1/10)';
+
+      expect(deadTurnError(LAUNCH_PANE)).toBeUndefined();
+    });
   });
 
   /**
@@ -969,6 +985,19 @@ describe('steerPane with a fake tmux on PATH', () => {
       writeFileSync(join(state, SOCKET, 'panes'), '5\n12\n');
 
       expect(conductorPane('proj-1')?.paneId).toBe('%5');
+    });
+
+    it('finds the launch pane when a new window from inside has become current', () => {
+      // `tmux new-window` from the conductor's own Bash makes that window the
+      // current one, and a plain list-panes shows only the current window's
+      // panes — the launch pane would not be in the list at all. `-s` lists
+      // every pane in the session, and the lowest id is still the launch.
+      serverWithPane(SOCKET, 5);
+      writeFileSync(join(state, SOCKET, 'panes'), '5\n12\n');
+      writeFileSync(join(state, SOCKET, 'window'), '12\n');
+
+      expect(conductorPane('proj-1')?.paneId).toBe('%5');
+      expect(argvLog()).toContain(`-L ${SOCKET} list-panes -s -t =${SOCKET}: -F #{pane_id}`);
     });
 
     it('answers undefined when no conductor is up', () => {

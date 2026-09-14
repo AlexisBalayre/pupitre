@@ -108,12 +108,14 @@ function eventsOfType(db: Database, sessionId: string, type: string) {
 describe('sweepDeadTurns', () => {
   let db: Database;
   let repo: string;
+  let home: string;
 
   beforeEach(() => {
     // projectPaths resolves the sessions directory under homedir() — point it
     // at a throwaway HOME, or the run writes into the developer's real
     // ~/.pupitre, which the merge gate's sandbox refuses outright.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-home-'))));
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-home-')));
+    vi.stubEnv('HOME', home);
     db = openStore(':memory:');
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-')));
     vi.clearAllMocks();
@@ -126,6 +128,7 @@ describe('sweepDeadTurns', () => {
     db.close();
     vi.unstubAllEnvs();
     rmSync(repo, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   describe('a session whose turn died', () => {
@@ -157,6 +160,24 @@ describe('sweepDeadTurns', () => {
       expect(steerPane).toHaveBeenCalledTimes(1);
       expect(eventsOfType(db, 's1', 'turn_died')).toHaveLength(1);
       expect(eventsOfType(db, 's1', 'steer')).toHaveLength(1);
+    });
+
+    // The DNS-outage case: the resumed turn dies again at once, no hook fires
+    // and the stamp never moves. A stamp alone would leave the session dead
+    // after the network came back, so the skip is bounded by the stall
+    // window — past it, the same error over the same empty box is the next
+    // dead turn of the same stall.
+    it('is resumed again past the stall window while the pane still shows the error', () => {
+      sweepDeadTurns(db, repo, now());
+      expect(sweepDeadTurns(db, repo, now() + STALLED_AFTER_MS - 60_000)).toEqual([]);
+
+      const resumed = sweepDeadTurns(db, repo, now() + STALLED_AFTER_MS + 5_000);
+
+      expect(resumed).toEqual([{ id: 's1', reason: API_ERROR }]);
+      expect(steerPane).toHaveBeenCalledTimes(2);
+      const stamps = eventsOfType(db, 's1', 'turn_died').map((event) => event.stalledAt);
+      expect(stamps).toEqual([stallStampOf(repo, 's1'), stallStampOf(repo, 's1')]);
+      expect(eventsOfType(db, 's1', 'steer')).toHaveLength(2);
     });
 
     // A session that recovered, worked and died again is a new stall: its
@@ -334,9 +355,11 @@ describe('sweepDeadTurns', () => {
 describe('lastDeadTurn', () => {
   let db: Database;
   let repo: string;
+  let home: string;
 
   beforeEach(() => {
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-home-'))));
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-home-')));
+    vi.stubEnv('HOME', home);
     db = openStore(':memory:');
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-')));
     seedRunningSession(db, repo, 's1');
@@ -347,6 +370,7 @@ describe('lastDeadTurn', () => {
     db.close();
     vi.unstubAllEnvs();
     rmSync(repo, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   it('is the dead turn recorded for the stall the session is in now', () => {
@@ -379,6 +403,17 @@ describe('lastDeadTurn', () => {
     seedEventsFile(repo, 's1', STALL_AGE_MS - 30_000);
 
     expect(lastDeadTurn(db, repo, 's1')).toBeUndefined();
+  });
+
+  it('is the newest of several resumes of the same stall', () => {
+    const stalledAt = stallStampOf(repo, 's1');
+    appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt, refusal: 'did not land' });
+    appendEvent(db, 's1', 'turn_died', { reason: '⏺ API Error: ENOTFOUND', stalledAt });
+
+    const died = lastDeadTurn(db, repo, 's1');
+
+    expect(died?.reason).toBe('⏺ API Error: ENOTFOUND');
+    expect(died?.refusal).toBeUndefined();
   });
 
   it('is undefined when nothing was recorded', () => {

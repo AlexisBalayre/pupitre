@@ -46,9 +46,11 @@ exit 1.
   when the last transcript line is an `API Error` above an empty input box, record a `turn_died`
   event and steer the session back to work with a fixed resume message, once per stall. The
   conductor's window on its own socket gets the same reading and a one-line nudge. Prints one
-  `TURN DIED` line per resume, with the refusal when the steer did not land. `--once` runs a
-  single sweep and exits; `--start` runs it in a detached tmux session and `--stop` ends that;
-  `--interval` changes the cadence (addendum to decision 35).
+  `TURN DIED` line per resume, with the refusal when the steer did not land; a line still
+  `Retrying` is a live turn and is left alone. `--once` runs a single sweep and exits; `--start`
+  runs it in a detached tmux session and `--stop` ends that; `--interval` changes the cadence.
+  Operator-only, like `pup audit`: the sweep types into panes and records resumes in the
+  watcher's name (addendum to decision 35).
 - `pup ui` — the same reading as `pup status`, held open and redrawn every two seconds: the
   header (project, conductor, baseline figures), overdue debt, the live sessions with their
   activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,

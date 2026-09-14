@@ -54,7 +54,7 @@ export const CONDUCTOR_NUDGE =
 export const CONDUCTOR_TARGET = 'conductor';
 
 /** One dead turn the sweep acted on. */
-export interface ResumedTurn {
+interface ResumedTurn {
   /** The session resumed, or `conductor` for the operator's delegate. */
   id: string;
   /** The pane's own error line, sanitized for the terminal (decision 29). */
@@ -64,7 +64,7 @@ export interface ResumedTurn {
 }
 
 /** A `turn_died` event as its readers want it. */
-export interface DeadTurn {
+interface DeadTurn {
   reason: string;
   /** When the watcher recorded it. */
   at: Date;
@@ -83,7 +83,7 @@ export interface DeadTurn {
 export function sweepDeadTurns(db: Database, repoPath: string, now: number): ResumedTurn[] {
   const resumed: ResumedTurn[] = [];
   for (const stalled of findStalledSessions(db, repoPath, now)) {
-    const entry = resumeSession(db, repoPath, stalled.id);
+    const entry = resumeSession(db, repoPath, stalled.id, now);
     if (entry) resumed.push(entry);
   }
   const nudged = nudgeConductor(db, repoPath, now);
@@ -92,10 +92,11 @@ export function sweepDeadTurns(db: Database, repoPath: string, now: number): Res
 }
 
 /**
- * The dead turn recorded for the stall a session is in right now, or
+ * The newest dead turn recorded for the stall a session is in right now, or
  * undefined — no stall, or a stall nothing has been recorded against. What
  * `pup status` prints its row from: the stamp is what keeps an hour-old
- * resume off the row of a session that has stalled again since.
+ * resume off the row of a session that has stalled again since, and newest
+ * because one stall can be resumed more than once through an outage.
  */
 export function lastDeadTurn(
   db: Database,
@@ -104,6 +105,7 @@ export function lastDeadTurn(
 ): DeadTurn | undefined {
   const stalledAt = stallStamp(projectPaths(repoPath).eventsFile(sessionId));
   if (stalledAt === undefined) return undefined;
+  // Newest first, so the first match is the latest resume of this stall.
   const event = deadTurnEvents(db, sessionId).find((recorded) => recorded.stalledAt === stalledAt);
   return (
     event && {
@@ -119,13 +121,27 @@ export function lastDeadTurn(
  * the pane is a question about recovery: is there a pane to read, is the turn
  * dead, has this stall already been answered.
  */
-function resumeSession(db: Database, repoPath: string, sessionId: string): ResumedTurn | undefined {
+function resumeSession(
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  now: number,
+): ResumedTurn | undefined {
   const row = getSession(db, sessionId);
   const stalledAt = stallStamp(projectPaths(repoPath).eventsFile(sessionId));
   // The stall was read off that same file a moment ago, so both are here
   // unless the session was killed or cleaned up mid-sweep.
   if (!row || stalledAt === undefined) return undefined;
-  if (deadTurnEvents(db, sessionId).some((event) => event.stalledAt === stalledAt))
+  // Stamp AND age: a resume answers this stall for one stall window, not for
+  // good. Through an outage the resumed turn dies again at once, no hook
+  // fires and the stamp never moves — a stamp alone would leave the session
+  // dead after the network came back. Older than the window, a pane still
+  // showing the error is read as the next dead turn of the same stall.
+  if (
+    deadTurnEvents(db, sessionId).some(
+      (event) => event.stalledAt === stalledAt && now - event.at.getTime() < STALLED_AFTER_MS,
+    )
+  )
     return undefined;
   const reason = readDeadTurn(row);
   if (reason === undefined) return undefined;

@@ -111,6 +111,15 @@ const PANE_GONE = /can't find pane|error connecting to|no server running/;
 const TURN_DIED_LINE = /^⏺ API Error:/;
 
 /**
+ * The same line while the turn is still alive: Claude Code backs off and
+ * retries, and says so on the line itself (`… · Retrying in 4 seconds…
+ * (attempt 1/10)`). A backoff series can outlast the stall window over an
+ * empty box, and a resume pasted into it would queue behind a turn that is
+ * about to come back on its own.
+ */
+const TURN_RETRYING = /Retrying/;
+
+/**
  * The glyph the input box's prompt opens with, at column 0. `pane.utils.ts`
  * owns what is IN the box; this file only needs where the box starts, so the
  * transcript above it can be read.
@@ -559,15 +568,19 @@ export function hasConductorWindow(repoProjectId: string): boolean {
  * addressed as a PANE, never as a session, because a session target resolves
  * to whichever pane is active and a split from inside moves that (decision 46).
  *
- * A split window has more than one pane, and the conductor's own is the lowest
- * id on the socket: `launchConductor` kills the whole server before it opens
- * the window, and tmux never reissues a pane id within a server, so the first
- * one minted there is the pane Claude Code runs in.
+ * Listed with `-s`, every pane in the tmux session and not only the current
+ * window's: a `tmux new-window` from the conductor's own Bash makes that new
+ * window current, and a plain `list-panes -t =name:` would then not show the
+ * launch pane at all. Among them the conductor's own is the lowest id on the
+ * socket: `launchConductor` kills the whole server before it opens the
+ * window, and tmux never reissues a pane id within a server, so the first one
+ * minted there is the pane Claude Code runs in.
  */
 export function conductorPane(repoProjectId: string): SessionPane | undefined {
   const socket = conductorSocket(repoProjectId);
   const printed = tmuxProbe(socket, [
     'list-panes',
+    '-s',
     '-t',
     pinned(conductorName(repoProjectId)),
     '-F',
@@ -737,7 +750,9 @@ export function deadTurnError(pane: SessionPane): string | undefined {
   // dead turn there is (addendum to decision 45).
   if (hasUnsubmittedInput(captureInputBox(pane))) return undefined;
   const line = lastTranscriptLine(capturePane(pane));
-  return line !== undefined && TURN_DIED_LINE.test(line) ? line : undefined;
+  return line !== undefined && TURN_DIED_LINE.test(line) && !TURN_RETRYING.test(line)
+    ? line
+    : undefined;
 }
 
 /**
@@ -835,14 +850,4 @@ export function launchWatcher(repoProjectId: string, repoPath: string): { target
 
 export function killWatcher(repoProjectId: string): void {
   killIfExists(watcherTarget(repoProjectId));
-}
-
-/**
- * Whether the conflict radar is up. Asked by `pup conductor start`, which
- * starts one that is not: the radar's sweep is where the turn watchdog runs,
- * so a fleet with a conductor and no radar is one nobody resumes (addendum to
- * decision 35).
- */
-export function hasWatcherWindow(repoProjectId: string): boolean {
-  return hasWindow(watcherTarget(repoProjectId));
 }
