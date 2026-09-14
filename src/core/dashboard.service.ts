@@ -100,7 +100,7 @@ export function buildDashboardSnapshot(
  * names *this* quiet spell and no other. The turn watchdog stamps its
  * `turn_died` events with it; both readers match against it.
  */
-export interface StalledSession {
+interface StalledSession {
   id: string;
   ageMs: number;
   stalledAt: string;
