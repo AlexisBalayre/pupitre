@@ -14,6 +14,7 @@ import {
   assertNoArmedGitDrivers,
   GIT_SAFE_CONFIG,
   gitDiffAddedLines,
+  gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
   scrubbedGitEnv,
@@ -139,16 +140,32 @@ function commandFailureDetail(error: unknown): string {
   );
 }
 
-/** Adds + deletes across the branch diff, excluding lockfiles and binary files. */
-export function countChangedLines(repoPath: string, target: string, branch: string): number {
-  let changed = 0;
+/**
+ * Adds + deletes across the branch diff, excluding lockfiles and binary files.
+ * A null numstat is a measurement, not a skip: a file git reports as binary
+ * whose content is text is recounted from its patch and named in `forged`,
+ * because git was told to call it binary by something no diff shows
+ * (decision 53).
+ */
+export function countChangedLines(
+  repoPath: string,
+  target: string,
+  branch: string,
+): { lines: number; forged: string[] } {
+  let lines = 0;
+  const forged: string[] = [];
   for (const stat of gitDiffNumstat(repoPath, target, branch)) {
-    if (stat.added === null || stat.deleted === null || LOCKFILE_NAMES.includes(stat.path)) {
+    if (LOCKFILE_NAMES.includes(stat.path)) continue;
+    if (stat.added !== null && stat.deleted !== null) {
+      lines += stat.added + stat.deleted;
       continue;
     }
-    changed += stat.added + stat.deleted;
+    const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
+    if (!recount) continue;
+    lines += recount.added + recount.deleted;
+    forged.push(stat.path);
   }
-  return changed;
+  return { lines, forged };
 }
 
 function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
@@ -366,21 +383,38 @@ function gateAndMerge(
       ? `${summary} — accepted as debt: ${req.acceptDebt.reason}`
       : `${summary}. ${acceptHint}`;
 
-  const changedLines = countChangedLines(req.repoPath, target, session.branch);
-  if (changedLines > DIFF_SIZE_FLAG_LINES) {
+  const changed = countChangedLines(req.repoPath, target, session.branch);
+  const sizeFindings: string[] = [];
+  if (changed.lines > DIFF_SIZE_FLAG_LINES) {
     flaggedDebt.push({
-      description: `Oversize diff (${changedLines} lines) merged from session ${session.id}`,
+      description: `Oversize diff (${changed.lines} lines) merged from session ${session.id}`,
       files: changedPaths,
     });
+    sizeFindings.push(`exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
+  }
+  // Flagged at any size: the count is honest again once recounted, but a text
+  // file git was told to call binary is a write nobody reviewed (decision 53).
+  if (changed.forged.length > 0) {
+    const forged = [...changed.forged].sort();
+    const quoted = forged.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
+    const ellipsis = forged.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+    flaggedDebt.push({
+      description: `Text files git reports as binary (${forged.length}) merged from session ${session.id}`,
+      files: forged,
+    });
+    sizeFindings.push(
+      `counts ${forged.length} text file(s) git reports as binary, recounted from the patch: ` +
+        `${quoted}${ellipsis}`,
+    );
+  }
+  if (sizeFindings.length > 0) {
     stages.push({
       stage: 'diff-size',
       status: 'flagged',
-      detail: flagDetail(
-        `${changedLines} changed lines exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`,
-      ),
+      detail: flagDetail(`${changed.lines} changed lines ${sizeFindings.join('; ')}`),
     });
   } else {
-    stages.push({ stage: 'diff-size', status: 'pass', detail: `${changedLines} changed lines` });
+    stages.push({ stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` });
   }
 
   if (!req.adapter.deadCode) {

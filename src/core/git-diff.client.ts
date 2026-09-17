@@ -90,10 +90,43 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
 }
 
 /**
+ * The `-U0` hunk headers of one file's branch diff (merge-base diff): where
+ * each hunk's added lines start, and how many lines it adds and deletes. One
+ * diff per file so hunk headers are the only thing parsed — file names never
+ * need de-quoting.
+ */
+function diffHunks(
+  repoPath: string,
+  target: string,
+  branch: string,
+  path: string,
+): { start: number; added: number; deleted: number }[] {
+  const patch = git(
+    repoPath,
+    'diff',
+    ...DIFF_SAFE_FLAGS,
+    '-U0',
+    `${target}...${branch}`,
+    '--',
+    path,
+  );
+  const hunks: { start: number; added: number; deleted: number }[] = [];
+  for (const line of patch.split('\n')) {
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!hunk) continue;
+    hunks.push({
+      start: Number(hunk[2]),
+      added: hunk[3] === undefined ? 1 : Number(hunk[3]),
+      deleted: hunk[1] === undefined ? 1 : Number(hunk[1]),
+    });
+  }
+  return hunks;
+}
+
+/**
  * 1-based added/modified line numbers per changed file on the branch
- * (merge-base diff). One `-U0` diff per file so hunk headers are the only
- * thing parsed — file names never need de-quoting. Pure deletions yield no
- * entry: deleted lines are free by construction (decision 13).
+ * (merge-base diff). Pure deletions yield no entry: deleted lines are free by
+ * construction (decision 13).
  */
 export function gitDiffAddedLines(
   repoPath: string,
@@ -103,21 +136,8 @@ export function gitDiffAddedLines(
   const added: Record<string, number[]> = {};
   for (const path of gitDiffPaths(repoPath, target, branch)) {
     const lines: number[] = [];
-    const patch = git(
-      repoPath,
-      'diff',
-      ...DIFF_SAFE_FLAGS,
-      '-U0',
-      `${target}...${branch}`,
-      '--',
-      path,
-    );
-    for (const line of patch.split('\n')) {
-      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-      if (!hunk) continue;
-      const start = Number(hunk[1]);
-      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      for (let at = start; at < start + count; at++) lines.push(at);
+    for (const hunk of diffHunks(repoPath, target, branch, path)) {
+      for (let at = hunk.start; at < hunk.start + hunk.added; at++) lines.push(at);
     }
     if (lines.length > 0) added[path] = lines;
   }
@@ -151,6 +171,57 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
     });
   }
   return stats;
+}
+
+/**
+ * Git's own content rule for a binary file: a NUL in the first 8000 bytes
+ * (`buffer_is_binary`). Everything else git calls binary, it was told to.
+ */
+const BINARY_SNIFF_BYTES = 8000;
+
+/** Whether `<rev>:<path>` exists and is binary by content, never by attribute. */
+function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
+  const spec = `${rev}:${path}`;
+  try {
+    git(repoPath, 'cat-file', '-e', spec);
+  } catch {
+    return false;
+  }
+  const blob = execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repoPath, 'cat-file', 'blob', spec], {
+    env: scrubbedGitEnv(),
+    maxBuffer: GIT_MAX_BUFFER,
+  });
+  return blob.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+}
+
+/**
+ * The add/delete counts `--numstat` withheld from a file it reported as
+ * `-\t-`, or null when the file really is binary. `--text` does not restore a
+ * numstat the way it restores a patch, and what git calls binary is not only
+ * content: a `-diff` or `binary` attribute from `info/attributes` or a
+ * `core.attributesFile`, or a `core.bigFileThreshold` below the file's size,
+ * all written where no diff shows them, make every text file `-\t-` — and a
+ * skipped null would then let a 5 000-line diff count as zero (decision 53).
+ *
+ * Content is the question, asked of both sides of the merge-base diff, because
+ * the patch cannot answer it: `--text` parses hunks out of a real binary too,
+ * so "binary but has hunks" would call every committed image forged.
+ */
+export function gitDiffBinaryRecount(
+  repoPath: string,
+  target: string,
+  branch: string,
+  path: string,
+): { added: number; deleted: number } | null {
+  const base = git(repoPath, 'merge-base', target, branch);
+  if (blobIsBinary(repoPath, base, path) || blobIsBinary(repoPath, branch, path)) return null;
+  let added = 0;
+  let deleted = 0;
+  for (const hunk of diffHunks(repoPath, target, branch, path)) {
+    added += hunk.added;
+    deleted += hunk.deleted;
+  }
+  return { added, deleted };
 }
 
 /**

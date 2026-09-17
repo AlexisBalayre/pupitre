@@ -550,6 +550,59 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  // `info/attributes` is refused outright (decision 50), but `core.attributesFile`
+  // in the shared config forges the same `-\t-` numstat and is no driver, so the
+  // count has to survive it rather than the gate refuse it (decision 53).
+  describe('with a session-written attribute telling git every file is binary', () => {
+    function forgeBinary(): void {
+      const attributes = join(repo, '.git', 'forged-attributes');
+      writeFileSync(attributes, '* -diff\n');
+      sh(repo, 'git', 'config', 'core.attributesFile', attributes);
+    }
+
+    it('recounts an oversize diff and flags it instead of passing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+      forgeBinary();
+
+      const outcome = merge();
+
+      expect(outcome.status).toBe('refused');
+      const stage = outcome.report.stages.find((s) => s.stage === 'diff-size');
+      expect(stage?.status).toBe('flagged');
+      expect(stage?.detail).toContain('700 changed lines exceeds the 600-line flag');
+      expect(stage?.detail).toContain('src/big.ts');
+    });
+
+    it('flags a forged binary even when the recounted diff is small', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      forgeBinary();
+
+      const outcome = merge();
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({ stage: 'diff-size', status: 'flagged' }),
+      );
+    });
+
+    it('still counts a real binary as free', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/image.bin', 'x\0y\n'.repeat(700));
+      forgeBinary();
+
+      const outcome = merge();
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'diff-size',
+        status: 'pass',
+        detail: '0 changed lines',
+      });
+    });
+  });
+
   it('parks the session as blocked once the reject cap is reached', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
