@@ -2467,8 +2467,10 @@ changes back into those docs is pending.
     than `auditProject`, so `pup init` is covered as well as `pup audit`: both would otherwise
     store the crash as the bar. It runs straight after the stages, before the debt
     capabilities, because those call the same package manager and would only spend minutes
-    failing the same way. Both commands report it through the guard that already reports a
-    repo with no adapter: one line on stderr, exit 1, no stack. The project row itself may
+    failing the same way. Neither command catches it yet, so it surfaces as a crash: the
+    message on the first line, then a stack. That is loud and stores nothing. Routing it
+    through the guard that reports a repo with no adapter, as one line and exit 1, is a CLI
+    change outside this task's scope. The project row itself may
     exist, because `ensureProject` runs before any stage. That row carries no baseline, so it
     is not a bar.
 

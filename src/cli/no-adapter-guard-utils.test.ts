@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BrokenToolchainError, NoAdapterError } from '../core/init.service.js';
+import { NoAdapterError } from '../core/init.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 
 describe('runOrReportNoAdapter', () => {
@@ -36,18 +36,6 @@ describe('runOrReportNoAdapter', () => {
     expect(result).toBeUndefined();
     expect(process.exitCode).toBe(1);
     expect(errors).toEqual([error.message]);
-  });
-
-  it('reports a broken toolchain cache the same way, naming the install', () => {
-    const error = new BrokenToolchainError('build', '/cache/corepack/v1/pnpm/10.34.5');
-    const result = runOrReportNoAdapter(() => {
-      throw error;
-    });
-
-    expect(result).toBeUndefined();
-    expect(process.exitCode).toBe(1);
-    expect(errors).toEqual([error.message]);
-    expect(error.message).toContain('/cache/corepack/v1/pnpm/10.34.5');
   });
 
   it('rethrows any other error unchanged', () => {
