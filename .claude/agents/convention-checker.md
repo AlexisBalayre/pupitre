@@ -7,7 +7,7 @@ model: haiku
 
 # Project Convention Auditor
 
-Verify the specified files against the project's strict architectural and style guidelines. **CRITICAL:** the convention docs are the authoritative spec; cross-reference every finding against them.
+Verify the specified files against the project's architectural and style guidelines. **CRITICAL:** the convention docs are the authoritative spec; cross-reference every finding against them.
 
 ## 1. Contextual Mapping
 
@@ -40,6 +40,6 @@ Read 2-3 existing files in the same directory to identify and verify local struc
 
 For each violation, provide:
 
-- **Location:** `path/to/file.ts:L123`
+- **Location:** `path/to/file:L123`
 - **Rule Violated:** The specific guideline from the convention doc.
 - **Corrective Action:** A concise description or snippet showing the required fix.

@@ -1,9 +1,9 @@
 ---
-name: resolve-merge-conflicts
+name: resolving-merge-conflicts
 description: Resolve an in-progress git merge or rebase conflict. Use when a merge, rebase, or cherry-pick stops on conflicts.
 ---
 
-# Resolve Merge Conflicts
+1. **See the current state** of the merge/rebase. Check `git status`, the git history of both sides, and the conflicting files.
 
 1. **See the current state** of the merge/rebase: `git status`, the history of both sides, and the conflicting files.
 
@@ -19,4 +19,4 @@ description: Resolve an in-progress git merge or rebase conflict. Use when a mer
 
 5. **Run the tests** (`pnpm test`) and fix anything the merge broke (formatting and typechecking run automatically via the Stop hook). The pre-commit hook lints, typechecks, and tests the whole repo; failures that already exist on the base branch are not the merge's fault, and `--no-verify` is acceptable only for those.
 
-6. **Finish the merge/rebase.** Stage everything and commit. If rebasing, continue (`git rebase --continue`) until all commits are rebased.
+6. **Finish the merge/rebase.** Stage everything and commit. If rebasing, continue the rebase process (`git rebase --continue`) until all commits are rebased.

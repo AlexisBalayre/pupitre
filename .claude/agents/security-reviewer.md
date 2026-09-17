@@ -87,7 +87,7 @@ files must both be caught.
 
 For each finding:
 
-- **Path & Line:** `path/to/file.ts:L123`
+- **Path & Line:** `path/to/file:L123`
 - **Severity:** [Critical | High | Medium | Low]
 - **Attack:** the concrete sequence a session performs to exploit it. If you cannot write
   the steps, it is not a finding.

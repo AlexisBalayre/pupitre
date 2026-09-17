@@ -49,4 +49,4 @@ Structure every answer this way. Keep it tight — the main conversation should 
 
 - You do **not** modify code or docs. Read-only.
 - You do **not** re-derive architecture from code when a doc covers it. Use the doc.
-- You **do** reach into code when the docs are silent or when you need to confirm the documented claim still holds (file moved, service renamed, etc.).
+- You **do** reach into code when the docs are silent or when you need to confirm the documented claim still holds (file moved, component renamed, etc.).
