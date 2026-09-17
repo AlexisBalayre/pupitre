@@ -100,8 +100,6 @@ paths:
 
 **When to add a rule:** When conventions are specific to a file path pattern and should auto-load when editing those files.
 
-**Catalog:** [`rules/README.md`](rules/README.md) — every rule, its path scope, and what it enforces.
-
 ### 3. `skills/` — Auto-Discoverable Workflows
 
 Skills are directories with a `SKILL.md` that Claude discovers automatically. Claude sees the description at session start (tiny context cost) and loads the full content when the skill is relevant.
