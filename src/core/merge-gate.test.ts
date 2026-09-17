@@ -1195,13 +1195,20 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
-  // Fetch URL is GitHub-shaped so the --repo pin can be derived; the push URL
-  // points at a local bare repo so the gate's real `git push` stays offline.
+  const ORIGIN_URL = 'git@github.com:owner/repo.git';
+
+  // Origin is GitHub-shaped so the --repo pin can be derived. A rewrite in the
+  // operator's global config, which the pinned push still honours, lands it in
+  // a local bare repo so the gate's real `git push` stays offline.
   const addOrigin = (): string => {
-    const bare = realpathSync(mkdtempSync(join(tmpdir(), 'pup-origin-')));
+    const host = realpathSync(mkdtempSync(join(tmpdir(), 'pup-origin-')));
+    const bare = join(host, 'owner', 'repo.git');
+    mkdirSync(bare, { recursive: true });
     sh(bare, 'git', 'init', '--bare', '-b', 'main');
-    sh(repo, 'git', 'remote', 'add', 'origin', 'git@github.com:owner/repo.git');
-    sh(repo, 'git', 'remote', 'set-url', '--push', 'origin', bare);
+    sh(repo, 'git', 'remote', 'add', 'origin', ORIGIN_URL);
+    const globalConfig = join(host, 'gitconfig');
+    writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
+    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
     return bare;
   };
 
@@ -1271,6 +1278,33 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The target has not moved, so the bar must not either — the post-PR audit ratchets.
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
+  });
+
+  it('with openPr pushes to the configured origin URL past a rewrite in the shared config', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const bare = addOrigin();
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'pup-elsewhere-')));
+    sh(elsewhere, 'git', 'init', '--bare', '-b', 'main');
+    // Written from the session's worktree into the config every checkout
+    // shares. Matching the whole URL, it outranks the operator's rewrite on any
+    // push that reads this config, by name or by literal URL alike.
+    sh(worktree, 'git', 'config', `url.${elsewhere}.insteadOf`, ORIGIN_URL);
+    sh(worktree, 'git', 'config', `url.${elsewhere}.pushInsteadOf`, ORIGIN_URL);
+
+    const outcome = withFakeGh(fakeGh([]), () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapter: passingAdapter,
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.prUrl).toContain('--repo github.com/owner/repo');
+    expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
+    expect(sh(elsewhere, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
   });
 
   it("pipes the remote-tracking probe's stderr instead of leaking it, while the push stays inherited", () => {

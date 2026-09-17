@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
@@ -231,9 +232,14 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
     assertGhAvailable();
+    // The raw config value, not `remote get-url`: that applies the
+    // `url.<base>.insteadOf` rewrites a session can write into the shared
+    // config. Read once, here, and carried to the push, so the PR's repo and
+    // the pushed-to URL are one value and nothing the stages run can move it
+    // (decision 54).
     let originUrl: string;
     try {
-      originUrl = git(req.repoPath, 'remote', 'get-url', 'origin');
+      originUrl = git(req.repoPath, 'config', '--get', 'remote.origin.url');
     } catch {
       throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
     }
@@ -245,12 +251,14 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     // Everything GitHub can refuse is settled here, before ten minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
-    pullRequest = { ...ref, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
+    pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
   return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target, pullRequest));
 }
 
 interface PullRequestPlan extends PullRequestRef {
+  /** Origin's URL as configured, before any rewrite; the push goes here literally. */
+  originUrl: string;
   /** Set when an open PR for this branch already exists and passed adoption checks. */
   adoptedUrl?: string;
 }
@@ -736,7 +744,7 @@ function gateAndMerge(
       title: prTitle(spec.goal) || `pup session ${session.id}`,
       body: prBody(spec, report, commitSubjects),
     };
-    pushBranch(req.repoPath, session.branch);
+    pushBranch(req.repoPath, pullRequest.originUrl, session.branch);
     if (pullRequest.adoptedUrl) {
       rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
       prWasAdopted = true;
@@ -799,60 +807,68 @@ function gateAndMerge(
 }
 
 /**
- * Push the session branch to origin. A retry after a failed `--pr` run has
- * usually been rebased onto a moved target, so a plain push would be rejected
- * non-fast-forward — and so would every retry after it, dead-ending the branch.
- * The branch is pup's own (`pup/<slug>`, created and deleted by pup) and the
- * gate just validated these commits, so the rewrite is intended. The lease
- * still refuses if origin moved past what pup itself last pushed, and it only
- * applies once a remote-tracking ref exists — on the first push there is
- * nothing to lease against.
+ * Push the session branch to origin's pinned URL. A retry after a failed `--pr`
+ * run has usually been rebased onto a moved target, so a plain push would be
+ * rejected non-fast-forward — and so would every retry after it, dead-ending
+ * the branch. The branch is pup's own (`pup/<slug>`, created and deleted by
+ * pup) and the gate just validated these commits, so the rewrite is intended.
+ * The lease still refuses if origin moved past what pup itself last pushed, and
+ * it only applies once a remote-tracking ref exists — on the first push there
+ * is nothing to lease against.
+ *
+ * Naming the URL is not enough on its own: git rewrites a literal URL through
+ * `url.<base>.insteadOf` and `pushInsteadOf` exactly as it rewrites a remote's,
+ * and a `-c` rewrite of our own loses the tie to a session's that matches the
+ * whole URL. So the push runs from an empty scratch git dir borrowing the
+ * repo's objects: the shared config is never read, while the operator's global
+ * and system config still apply (decision 54). Pushing to a URL updates no
+ * remote-tracking ref, so the lease names its value and the ref is moved here.
  */
-function pushBranch(repoPath: string, branch: string): void {
-  const pushed = (() => {
+function pushBranch(repoPath: string, originUrl: string, branch: string): void {
+  const tracking = `refs/remotes/origin/${branch}`;
+  const leased = (() => {
     try {
       // A missing remote-tracking ref is the expected first-push case, not an
       // error: git's stderr is captured here (not inherited) so its "fatal:
       // Needed a single revision" doesn't reach the operator console.
-      execFileSync(
+      return execFileSync(
         'git',
-        [
-          ...GIT_SAFE_CONFIG,
-          '-C',
-          repoPath,
-          'rev-parse',
-          '--verify',
-          `refs/remotes/origin/${branch}`,
-        ],
+        [...GIT_SAFE_CONFIG, '-C', repoPath, 'rev-parse', '--verify', tracking],
         { encoding: 'utf8', env: scrubbedGitEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
-      );
-      return true;
+      ).trim();
     } catch {
-      return false;
+      return undefined;
     }
   })();
-  // Unlike the shared git() helper this gets a timeout: a stalled push would
-  // otherwise hang while holding the merge lock. Hooks are off for the same
-  // reason they are everywhere else in the gate (decision 28) — pre-push runs
-  // locally, from the session-writable shared hooks directory.
-  execFileSync(
-    'git',
-    [
-      ...GIT_SAFE_CONFIG,
-      '-C',
-      repoPath,
-      'push',
-      ...(pushed ? ['--force-with-lease'] : []),
-      '--set-upstream',
-      'origin',
-      branch,
-    ],
-    {
-      encoding: 'utf8',
-      timeout: GATE_COMMAND_TIMEOUT_MS,
-      env: scrubbedGitEnv(),
-    },
-  );
+  const tip = git(repoPath, 'rev-parse', `refs/heads/${branch}`);
+  const objects = git(repoPath, 'rev-parse', '--path-format=absolute', '--git-path', 'objects');
+  const scratch = mkdtempSync(join(tmpdir(), 'pup-push-'));
+  try {
+    git(scratch, 'init', '--quiet', '--bare', '--template=');
+    // Unlike the shared git() helper this gets a timeout: a stalled push would
+    // otherwise hang while holding the merge lock. Hooks are off for the same
+    // reason they are everywhere else in the gate (decision 28).
+    execFileSync(
+      'git',
+      [
+        ...GIT_SAFE_CONFIG,
+        '--git-dir',
+        scratch,
+        'push',
+        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
+        originUrl,
+        `${tip}:refs/heads/${branch}`,
+      ],
+      {
+        encoding: 'utf8',
+        timeout: GATE_COMMAND_TIMEOUT_MS,
+        env: { ...scrubbedGitEnv(), GIT_OBJECT_DIRECTORY: objects },
+      },
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  git(repoPath, 'update-ref', tracking, tip);
 }
 
 function prTitle(goal: string): string {
