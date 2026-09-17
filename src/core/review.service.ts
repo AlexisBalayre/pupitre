@@ -77,7 +77,7 @@ function buildEntry(
   liveDiffs: Map<string, Set<string>>,
 ): ReviewQueueEntry {
   const paths = gitDiffPaths(repoPath, target, session.branch);
-  const changedLines = countChangedLines(repoPath, target, session.branch);
+  const changedLines = countChangedLines(repoPath, target, session.branch).lines;
   const scopeViolations = scopeViolationCount(db, session.id);
   const overlaps = overlapCount(session, paths, liveDiffs);
   const risk =

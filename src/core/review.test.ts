@@ -95,6 +95,19 @@ describe('review service', { timeout: 20_000 }, () => {
     expect(queue[0]?.risk).toBeGreaterThan(queue[1]?.risk ?? 0);
   });
 
+  // The review queue runs no armed-driver refusal, so `info/attributes` reaches
+  // it directly: a skipped null numstat would floor this session's risk (decision 53).
+  it('recounts a diff git was told to report as binary instead of flooring its risk', () => {
+    const worktree = seedSession(db, repo, 's-forged');
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(400));
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    const [entry] = buildReviewQueue(db, repo);
+
+    expect(entry?.changedLines).toBe(400);
+    expect(entry?.risk).toBeGreaterThan(0);
+  });
+
   it('counts overlap when another live session touches the same file', () => {
     const first = seedSession(db, repo, 's-first');
     commitIn(first, 'src/shared.ts', 'export const shared = 1;\n');

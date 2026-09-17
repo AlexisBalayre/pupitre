@@ -8,6 +8,8 @@ import {
   armedGitDrivers,
   assertNoArmedGitDrivers,
   gitDiffAddedLines,
+  gitDiffBinaryRecount,
+  gitDiffNumstat,
   gitDiffPaths,
 } from './git-diff.client.js';
 
@@ -110,6 +112,85 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
     sh(repo, 'git', 'config', 'diff.pwn.textconv', '/usr/bin/true');
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+  });
+});
+
+// `--text` restores the `-U0` patch above but not `--numstat`: under the same
+// `* -diff` line every file reads `-\t-`, and a null skipped as a real binary
+// lets any diff count as zero changed lines (decision 53).
+describe('gitDiffBinaryRecount', () => {
+  function repoWith(base: Record<string, string>, feature: Record<string, string>): string {
+    const repo = makeRepo();
+    for (const [file, content] of Object.entries(base)) writeFileSync(join(repo, file), content);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    for (const [file, content] of Object.entries(feature)) writeFileSync(join(repo, file), content);
+    commitAll(repo, 'change');
+    return repo;
+  }
+
+  it('recounts adds and deletes of a text file info/attributes marks binary', () => {
+    const repo = repoWith({ 'a.ts': 'one\ntwo\nthree\n' }, { 'a.ts': 'one\nTWO\nfour\nfive\n' });
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: null, deleted: null },
+    ]);
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 3, deleted: 2 });
+  });
+
+  it('recounts a new text file under core.attributesFile and core.bigFileThreshold', () => {
+    const repo = repoWith({ 'a.ts': 'one\n' }, { 'fresh.ts': 'one\ntwo\n' });
+    const attributes = join(repo, '.git', 'forged-attributes');
+    writeFileSync(attributes, '* binary\n');
+    sh(repo, 'git', 'config', 'core.attributesFile', attributes);
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts')).toEqual({
+      added: 2,
+      deleted: 0,
+    });
+
+    sh(repo, 'git', 'config', '--unset', 'core.attributesFile');
+    sh(repo, 'git', 'config', 'core.bigFileThreshold', '1');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')[0]?.added).toBeNull();
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts')).toEqual({
+      added: 2,
+      deleted: 0,
+    });
+  });
+
+  // `--text` parses hunks out of a real binary as well, so the patch cannot be
+  // what tells the two apart.
+  it('answers null for a real binary, armed or not, on either side of the diff', () => {
+    const repo = repoWith(
+      { 'image.bin': 'x\0y\nline\n', 'gone.bin': 'keep\n' },
+      { 'image.bin': 'x\0z\nline\nmore\n', 'gone.bin': 'now\0binary\n', 'new.bin': 'q\0\n' },
+    );
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')['image.bin']).toEqual([1, 3]);
+    for (const path of ['image.bin', 'gone.bin', 'new.bin']) {
+      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toBeNull();
+    }
+
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    for (const path of ['image.bin', 'gone.bin', 'new.bin']) {
+      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toBeNull();
+    }
+  });
+
+  // Git only sniffs the first 8000 bytes, so a NUL past them is text to git
+  // itself — reading the whole blob would let a session append one and pass.
+  it('treats a NUL past the first 8000 bytes as text, the way git does', () => {
+    const late = `${'a'.repeat(9000)}\n\0\n`;
+    const repo = repoWith({ 'a.ts': 'one\n' }, { 'a.ts': `one\n${late}` });
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')[0]?.added).toBe(2);
+
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 2, deleted: 0 });
   });
 });
 
