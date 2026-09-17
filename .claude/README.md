@@ -7,7 +7,7 @@ This directory contains all Claude Code customizations for Pupitre. Everything h
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Always-On Context                     │
-│  CLAUDE.md (project rules, build commands)               │
+│  AGENTS.md via CLAUDE.md (project rules, commands)       │
 │  Rules without paths (unconditional)                     │
 │  Skill descriptions (names + one-liners)                 │
 │  MCP tool schemas                                        │
@@ -27,6 +27,18 @@ This directory contains all Claude Code customizations for Pupitre. Everything h
 
 **Context budget matters.** Everything in "Always-On" consumes tokens every turn. Rules with `paths:` and skills with descriptions load on-demand, saving context. Subagents run in isolated windows. Hooks cost zero context.
 
+What a session pays for this config, in approximate tokens (bytes / 4), so additions stay deliberate:
+
+| Surface | Loaded | Cost |
+|---|---|---|
+| `CLAUDE.md` + `AGENTS.md` | every session | ~1.0k |
+| Descriptions of the model-invocable skills | every session | ~0.7k |
+| Descriptions of all 11 agents | every session | ~0.7k |
+| `docs/conventions/general.md` + `naming.md` | first `.ts` file touched | ~3.1k |
+| `docs/conventions/testing.md` | first test file touched | ~1.2k |
+
+A rule fires on the first Read, Edit, or Write of a matching path (not on MCP results such as codegraph) and its `@import` pulls the whole file, so each convention doc is paid once per session per area. Keep them obligations-only, never instruct the model to Read one, and prefer `disable-model-invocation: true` for user-only skills since agents have no equivalent switch.
+
 ---
 
 ## Directory Structure
@@ -35,19 +47,23 @@ This directory contains all Claude Code customizations for Pupitre. Everything h
 .claude/
 ├── settings.json              # Shared project config (permissions, hooks)
 ├── settings.local.json.example # Template for personal overrides (real file gitignored)
+├── project.env                # Project profile: commands, generated paths, naming, trunk
+├── spot-checks.tsv            # Checks run by convention-spot-check.sh
 │
-├── rules/                 # Path-scoped convention rules (auto-load)
-│   ├── universal-conventions.md
-│   └── testing-conventions.md
+├── rules/                 # Path-scoped convention loaders (auto-load)
+│   ├── core-conventions.md        # *.ts(x) → general.md + naming.md
+│   └── testing-conventions.md     # tests → testing.md
 │
 ├── skills/                # Auto-discoverable knowledge + workflows (each is <name>/SKILL.md)
-│   ├── tdd/   diagnose/   resolve-merge-conflicts/               # engineering
+│   ├── to-spec/   to-tickets/   to-questionnaire/                # planning & specs
+│   ├── tdd/   diagnosing-bugs/   resolving-merge-conflicts/      # engineering
+│   ├── wizard/   research/
 │   ├── improve-codebase-architecture/                            # engineering (manual)
 │   ├── grilling/   grill-me/   grill-with-docs/                  # thinking / design
 │   ├── codebase-design/   domain-modeling/   zoom-out/   prototype/
 │   ├── pr-description/   pr-ci-review/                           # PR & review
 │   ├── address-review-comments/   review-retro/
-│   ├── write-a-skill/   handoff/   caveman/                      # meta / workflow
+│   ├── writing-for-agents/   handoff/   caveman/   wait-what/     # meta / workflow
 │   └── obsidian-vault/   daily-note/                             # personal integrations (.env)
 │
 ├── agents/                # Custom subagents for specialized tasks
@@ -60,43 +76,39 @@ This directory contains all Claude Code customizations for Pupitre. Everything h
 │   └── comment-pruner.md          # dispatched by the comment-pruner Stop hook
 │
 └── hooks/                    # Deterministic shell scripts (zero LLM cost)
-    ├── quality-checks.sh          # Stop: lint/format dirty files + repo typecheck
-    ├── convention-spot-check.sh   # Stop: advisory file-level convention scan
+    ├── quality-checks.sh          # Stop: format/lint dirty files + repo typecheck
+    ├── convention-spot-check.sh   # Stop: spot-checks.tsv scan (blocks once)
     ├── comment-pruner.sh          # Stop: dispatch the comment-pruner subagent on new comments
     ├── git-safety.sh              # PreToolUse(Bash): block dangerous git/shell ops
     ├── protect-generated.sh       # PreToolUse(Edit|Write): block generated files
-    ├── validate-file-naming.sh    # PreToolUse(Write): enforce kebab-case.role.ts
-    └── pre-compact-preserve.sh    # PreCompact: inject must-preserve context
+    ├── validate-file-naming.sh    # PreToolUse(Write): enforce the project's file naming
+    ├── pre-compact-preserve.sh    # PreCompact: inject must-preserve context
+    └── lib/project-env.sh         # reads project.env without executing it
 ```
 
 ---
 
 ## Extension Points Explained
 
-### 1. `CLAUDE.md` — Project Memory
+### 1. `AGENTS.md` + `CLAUDE.md` — Project Memory
 
-The root `CLAUDE.md` contains universal rules Claude sees every session: coding standards, git workflow, key commands. Kept under ~60 lines to minimize context cost.
+`AGENTS.md` holds the tool-neutral rules every session sees: the core rule, design-doc precedence, module boundaries, the conventions table, comments, altitude, git workflow. The root `CLAUDE.md` imports it (`@AGENTS.md`) and adds only what is Claude Code-specific (how rules load, the proactive subagents). Together under ~70 lines to minimize context cost.
 
-**When to edit:** Add universal rules that apply to every file. For area-specific rules, use `rules/` instead.
+**When to edit:** Add universal rules to `AGENTS.md`. For area-specific rules, use `docs/conventions/` + a loader in `rules/` instead.
 
 ### 2. `rules/` — Path-Scoped Convention Rules
 
-Markdown files with `paths:` frontmatter that auto-load when Claude works with matching files. Each rule contains a quick-reference (~15 lines) plus an `@docs/conventions/X.md` import for the full doc.
+Markdown files with `paths:` frontmatter that auto-load when Claude works with matching files. Each rule is a **pure loader**: `paths:` plus `@docs/conventions/<area>.md` imports, no content of its own, so `docs/conventions/` stays the single source of truth.
 
 ```yaml
 ---
 paths:
   - "**/*.test.ts"
 ---
-# Testing Conventions — Quick Reference
-- Prefer the real dependency: `openStore(':memory:')`, a temp git repo
-- `vi.mock` only for modules that would spawn tmux or `claude -p`
-...
-## Full conventions
 @docs/conventions/testing.md
 ```
 
-**Key insight:** Rules follow the "split pattern" — lightweight recognition triggers (quick facts) pointing to detailed knowledge (full convention docs). This keeps always-on context small while ensuring full detail loads when needed.
+**Key insight:** a rule costs nothing until a matching file is touched, then pays the whole doc once per session. Keep the docs obligations-only, and never tell the model to Read one (that duplicates what the rule already injected).
 
 **When to add a rule:** When conventions are specific to a file path pattern and should auto-load when editing those files.
 
@@ -104,7 +116,7 @@ paths:
 
 Skills are directories with a `SKILL.md` that Claude discovers automatically. Claude sees the description at session start (tiny context cost) and loads the full content when the skill is relevant.
 
-This repo ships **30 skills** across scaffolding, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
+This repo ships **26 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
 
 **Frontmatter options:**
 - `name` — identifier and `/slash-command` name
@@ -148,18 +160,20 @@ Shell scripts that run outside the LLM loop on lifecycle events. Zero context co
 
 | Hook | Event | What it does |
 |------|-------|-------------|
-| `quality-checks.sh` | Stop | Lint/format dirty files, typecheck the repo (blocks on failure; tests live in pre-commit) |
-| `convention-spot-check.sh` | Stop | Advisory scan for `export default` and types inlined in service/route files |
+| `quality-checks.sh` | Stop | `FORMAT_FIX_CMD`/`LINT_CMD` on dirty files, `TYPECHECK_CMD` on the repo (blocks on failure; tests live in pre-commit) |
+| `convention-spot-check.sh` | Stop | Run `spot-checks.tsv` over changed files; blocks once, silent on the re-run |
 | `comment-pruner.sh` | Stop | Dispatch the `comment-pruner` subagent when the session added net-new comments |
 | `git-safety.sh` | PreToolUse(Bash) | Block `rm -rf`, `git reset --hard`, force push, `checkout -b` on main, push to main |
-| `protect-generated.sh` | PreToolUse(Edit\|Write) | Block edits to `*.gen.ts` and gRPC stubs |
-| `validate-file-naming.sh` | PreToolUse(Write) | Enforce `kebab-case.role.ts` on new files |
+| `protect-generated.sh` | PreToolUse(Edit\|Write) | Block edits to paths matching `GENERATED_PATHS_REGEX` |
+| `validate-file-naming.sh` | PreToolUse(Write) | Enforce `FILE_NAMING_REGEX` on new files under this checkout |
 | `pre-compact-preserve.sh` | PreCompact | Preserve branch, modified files, test output across compaction |
 
 **Exit codes:**
 - `0` — success, continue
 - `1` — error (shown to user, continues)
 - `2` — **block the operation** (PreToolUse: prevents tool; Stop: feedback to Claude)
+
+**Project profile:** hooks never hardcode the toolchain. They read `.claude/project.env` (committed: Biome, tsc, pnpm, the naming regex, the trunk) through `hooks/lib/project-env.sh`, which parses `KEY=value` lines for a fixed key set and never sources the file, so a checkout cannot run code inside a hook. An empty key turns its check off. `.env` (gitignored) is only for personal-integration skills.
 
 **When to add a hook:** For deterministic checks that should always run. If it doesn't need LLM reasoning, it's a hook.
 
@@ -168,7 +182,7 @@ Shell scripts that run outside the LLM loop on lifecycle events. Zero context co
 ### 6. `settings.json` — Permissions & Hook Wiring
 
 Shared project configuration. Contains:
-- **`permissions.allow`** — pre-approved tool patterns (pnpm, git read-only, MCP tools)
+- **`permissions.allow`** — pre-approved tool patterns (pnpm scripts, worktree scripts, git, `gh`)
 - **`permissions.deny`** — explicitly blocked operations (force push, hard reset, rm -rf)
 - **`hooks`** — wires hook scripts to lifecycle events
 
@@ -180,7 +194,7 @@ Shared project configuration. Contains:
 
 | I want... | Use... |
 |-----------|--------|
-| Claude to always know this | `CLAUDE.md` |
+| Claude to always know this | `AGENTS.md` |
 | Claude to know this when editing specific files | `rules/` with `paths:` |
 | Claude to auto-discover and use this knowledge | `skills/` |
 | A workflow I trigger explicitly | `skills/` with `disable-model-invocation: true` |
@@ -194,8 +208,8 @@ Shared project configuration. Contains:
 
 ### New rule
 1. Create `.claude/rules/<name>.md` with `paths:` frontmatter
-2. Add ~15 lines of quick-reference facts
-3. Point to full docs with `@docs/conventions/<area>.md`
+2. Put only `@docs/conventions/<area>.md` imports in the body, no content of its own
+3. Add the area to the Conventions table in `AGENTS.md` and to the tree above
 
 ### New skill
 1. Create `.claude/skills/<name>/SKILL.md` with `name` and `description` frontmatter

@@ -1,8 +1,11 @@
 # General Conventions
 
 Universal rules for **every** `*.ts` file in `src/`. Area-specific docs ([naming](naming.md),
-[testing](testing.md)) layer on top of these; they never relax them. The thin
-`@docs/conventions/general.md` import in `.claude/rules/universal-conventions.md` points here.
+[testing](testing.md)) layer on top of these; they never relax them. The pure loader
+`.claude/rules/core-conventions.md` imports this file and `naming.md` for every `*.ts(x)` file.
+
+**Genre contract:** obligations only (rules, gotchas, decision rules, naming). System description
+lives in `docs/00`–`09`.
 
 ## File naming
 
@@ -124,12 +127,26 @@ threshold or field name rarely explains itself.
 
 - Inline `//` comments explain **WHY, not WHAT**. If deleting the comment wouldn't confuse a
   reader, delete it.
+- **Seam-duplication test:** a call-site WHY comment that restates the callee's JSDoc is a
+  duplicate; the explanation lives at the seam. Before keeping a comment that explains another
+  module's behaviour, read that module's JSDoc; if it already says it, delete the call-site copy.
 - No `// === Section ===` banners.
 - No journal / changelog comments (`// 2026-05: changed by …`).
 - No commented-out code. Git is the history.
 
-## Clean code
+## Altitude / YAGNI
 
+Build the smallest thing that meets the requirement. Prefer a deep module (simple surface, logic
+hidden) over several shallow ones; a module too thin to justify its file gets folded into its
+caller.
+
+- **Inline by default.** No new file, helper, wrapper, param, option, interface, or generic with
+  a single caller, unless a second caller exists today or a convention in this folder prescribes
+  the construct ("no abstraction until third use"). A one-call `formatX` helper or one-field
+  `options` object is the bloat this targets.
+- **No unreachable defensiveness.** No guard, `catch`, or fallback for a state the types or
+  surrounding code already guarantee. Test: if you cannot write the input that reaches the
+  branch, delete it. Real error handling at seams (I/O, child processes, user input) is exempt.
 - **Delete old code when you replace it.** No compatibility shims, no `// removed` markers,
   no backwards-compat re-exports. The replacement *is* the change.
 - **YAGNI.** Don't add parameters, abstractions, or config for requirements that don't exist

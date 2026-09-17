@@ -12,8 +12,11 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# Trunk branch is configurable via .env (defaults to main).
-if [ -f "${CLAUDE_PROJECT_DIR:-.}/.env" ]; then set -a; . "${CLAUDE_PROJECT_DIR:-.}/.env"; set +a; fi
+# Trunk branch is configurable via .claude/project.env (defaults to main). The
+# file is parsed, never sourced: sourcing would let a checkout run code here and
+# `exit 0` its way past every block below.
+[ -f "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/lib/project-env.sh" ] && . "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/lib/project-env.sh"
+command -v load_project_env >/dev/null && load_project_env "${CLAUDE_PROJECT_DIR:-.}/.claude/project.env"
 TRUNK="${GIT_TRUNK:-main}"
 
 # --- Destructive shell / SQL patterns -----------------------------------------

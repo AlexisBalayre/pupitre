@@ -20,6 +20,8 @@
       "Bash(pnpm lint*)",
       "Bash(pnpm build*)",
       "Bash(pnpm worktree:*)",
+      "Bash(scripts/worktree-create.sh *)",
+      "Bash(scripts/worktree-clean.sh)",
       "Bash(git add*)",
       "Bash(git commit*)",
       "Bash(git branch*)",

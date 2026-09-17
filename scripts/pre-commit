@@ -3,9 +3,44 @@
 # Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 #
 # Complements the Claude Code Stop hook (.claude/hooks/quality-checks.sh): the Stop
-# hook gates agent sessions, this gates human/CLI commits.
+# hook gates agent sessions, this gates human/CLI commits. Commands come from
+# .claude/project.env; an empty command is skipped.
+#
+# The profile is read from the MAIN checkout (the git common dir's parent), never
+# from the worktree being committed, and parsed rather than sourced: this hook runs
+# wherever `git commit` runs, including a session's worktree, and a worktree must not
+# choose the commands that run in the operator's shell. A branch that changes
+# project.env therefore only affects commits once it is merged.
 
 set -e
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+COMMON=$(git rev-parse --path-format=absolute --git-common-dir)
+MAIN=${COMMON%/.git}
+
+# Same reader as .claude/hooks/lib/project-env.sh, inlined because this file is
+# installed outside the tree. Only these keys are read; the file is never executed.
+load_project_env() {
+  local file="$1" line key val
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    val=${line#*=}
+    case "$key" in
+      SOURCE_EXTENSIONS|LINT_CMD|TYPECHECK_CMD|TEST_CMD) ;;
+      *) continue ;;
+    esac
+    case "$val" in
+      \"*\") val=${val#\"}; val=${val%\"} ;;
+      \'*\') val=${val#\'}; val=${val%\'} ;;
+    esac
+    printf -v "$key" '%s' "$val"
+  done < "$file"
+}
+load_project_env "$MAIN/.claude/project.env"
 
 # --- Ensure the repo's Node version (.nvmrc) — shells may default to an older Node ---
 
@@ -18,7 +53,7 @@ fi
 # pnpm may not exist for this Node version — corepack provides it (pinned via packageManager).
 command -v pnpm >/dev/null 2>&1 || corepack enable >/dev/null 2>&1
 
-# --- Block local-only paths (customize for your repo) ---
+# --- Block local-only paths ---
 
 BLOCKED_PATHS="docs/plans/ docs/scratch/"
 
@@ -45,25 +80,30 @@ fi
 
 # --- Code quality checks ---
 
-echo "Running lint..."
-if ! pnpm lint; then
-  echo ""
-  echo "ERROR: Lint check failed. Run 'pnpm lint:fix' to auto-fix issues."
-  exit 1
+EXT_RE=$(printf '%s' "${SOURCE_EXTENSIONS:-}" | tr -s ' ' '|')
+STAGED_SOURCE=""
+if [ -n "$EXT_RE" ]; then
+  STAGED_SOURCE=$(git diff --cached --diff-filter=d --name-only | grep -E "\.($EXT_RE)$" || true)
 fi
 
-echo "Running typecheck..."
-if ! pnpm typecheck; then
-  echo ""
-  echo "ERROR: Type check failed. Fix type errors before committing."
-  exit 1
+if [ -n "${LINT_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
+  echo "Running lint: $LINT_CMD"
+  if ! printf '%s\n' "$STAGED_SOURCE" | sed 's|^|./|' | tr '\n' '\0' | xargs -0 sh -c "$LINT_CMD \"\$@\"" _; then
+    echo ""
+    echo "ERROR: Lint failed on staged files. Run 'pnpm lint:fix' to auto-fix issues."
+    exit 1
+  fi
 fi
 
-echo "Running tests..."
-if ! pnpm test; then
-  echo ""
-  echo "ERROR: Tests failed. Fix failing tests before committing."
-  exit 1
-fi
+for step in TYPECHECK_CMD TEST_CMD; do
+  cmd="${!step:-}"
+  [ -z "$cmd" ] && continue
+  echo "Running $step: $cmd"
+  if ! bash -c "$cmd"; then
+    echo ""
+    echo "ERROR: $step failed. Fix it before committing."
+    exit 1
+  fi
+done
 
 echo "All pre-commit checks passed."

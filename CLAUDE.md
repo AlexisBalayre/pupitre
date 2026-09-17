@@ -1,32 +1,9 @@
-# Pupitre
+@AGENTS.md
 
-Control plane for parallel Claude Code sessions. CLI binary: `pup`.
+## Claude Code specifics
 
-**Core rule:** Before creating or modifying code, read 2-3 similar files in the same directory and match their patterns exactly.
-
-## Design docs
-
-`docs/00`–`08` are the design; `docs/09-decisions.md` records resolved decisions and **wins over
-00–08 where they conflict**. Read 09 before implementing anything it touches.
-
-## Module boundaries
-
-- `src/cli/` stays thin; logic lives in `src/core/`.
-- `src/claude/` is the ONLY module that touches Claude Code (tmux, hooks, `claude -p`).
-
-## Conventions
-
-Path-scoped rules in `.claude/rules/*.md` auto-load the matching `docs/conventions/<area>.md`
-when you touch a file in that area. Priority: correct > simple > readable > fast; no abstraction
-until third use; no new dependency without checking `docs/08-roadmap.md` stack decisions.
-
-**Formatting/typechecking:** Biome + tsc run automatically via the `Stop` hook. Don't run them manually.
-
-## Git workflow (CRITICAL)
-
-- NEVER work on or push to `main`. PRs only.
-- ALWAYS use `pnpm worktree:create <name>` (creates `.worktrees/<name>` with `feature/<name>`). NEVER `git checkout -b` in the main worktree.
-- `git branch --show-current` MUST NOT be `main` before committing.
+- `docs/conventions/*.md` reach you through `.claude/rules/`: the first Read, Edit, or Write of a file in an area injects that area's docs for the rest of the session. Never Read a conventions doc yourself; that duplicates tokens already in context.
+- MCP results (codegraph) do not fire rules. Before your first edit in an area, Read one existing file there with the Read tool; the "read 2-3 similar files" rule already asks for this.
 
 ## Subagents (invoke proactively via Agent tool)
 

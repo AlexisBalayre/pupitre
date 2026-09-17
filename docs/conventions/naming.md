@@ -1,7 +1,7 @@
 # Naming Taxonomy
 
 The authoritative source for the `kebab-case.role.ts` file-naming system. The
-`validate-file-naming.sh` PreToolUse hook and `universal-conventions.md` both defer to this
+`validate-file-naming.sh` PreToolUse hook and `core-conventions.md` both defer to this
 document.
 
 ## The pattern
