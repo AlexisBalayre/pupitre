@@ -48,7 +48,7 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | Skill | When to use | Invoke |
 | :---- | :---------- | :----- |
 | `pr-description` | Draft or rewrite a PR title and body in this repo's house style (What / How / Why / Migration / Behaviour / Notes), then create or update the PR via `gh`. Other skills call it when they open PRs. | Auto or `/pr-description` |
-| `pr-ci-review` | Cost-optimal multi-agent code review of local changes or a PR: relevance-gated `review-*` subagents, a validation pass, and inline posting. | Manual only (`/pr-ci-review`) |
+| `pr-ci-review` | Cost-optimal multi-agent code review of local changes or a PR: relevance-gated `review-*` subagents, a validation pass, and a structured verdict. Under CI (`.github/workflows/claude-code-review.yml`, owner-triggered only) the poster in `tools/review/` renders it to the PR; the model has no write channel. | Manual only (`/pr-ci-review`), or CI on every PR |
 | `address-review-comments` | Triage, decide, challenge, and implement a PR's open review threads end to end, replying as you go, with a human in the loop. | Auto or `/address-review-comments` |
 | `review-retro` | Mine past automated-review runs for recurring process/judgment failures and propose evidence-cited fixes to the review setup as one PR. Needs CI-produced run history (see the skill's setup note). | Manual only (`/review-retro`) |
 

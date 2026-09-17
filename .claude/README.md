@@ -188,6 +188,10 @@ Shared project configuration. Contains:
 
 **`settings.local.json`** (gitignored) extends this with personal preferences — additional MCP servers, machine-specific permissions, etc. Copy `settings.local.json.example` to `settings.local.json` to start; it is merged on top of `settings.json`, never replacing it.
 
+### 7. CI review — `.github/workflows/claude-code-review.yml` + `tools/review/`
+
+Every PR opened, pushed to, or `@claude review`-commented by the repository owner (nobody else: the run bills the owner's Claude subscription) gets the `/pr-ci-review` orchestrator run in GitHub Actions: a deterministic preflight (PR-head checkout, full-vs-incremental mode), the model with a read-only tool allowlist emitting a structured record, and a poster in `tools/review/` that renders it (inline comments for blocking findings, collapsed sections for the rest, a `claude-review` commit status). The model never writes to the PR; a dead run still posts "not reviewed". Each record lands on the `ci/review-metrics` branch for `/review-retro`. Setup and threat model: the comment at the top of the workflow and [`tools/review/README.md`](../tools/review/README.md).
+
 ---
 
 ## Decision Framework
