@@ -1,7 +1,17 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
+import { projectId } from './paths.utils.js';
 import { isSandboxSupported, runGateChild, sandboxLabel } from './sandbox.utils.js';
 
 /** The label pup reports when it applied its own profile rather than inheriting one. */
@@ -128,6 +138,31 @@ describe('runGateChild', () => {
     expect(withFlag).toBe('shh');
     expect(without).toBe('');
     vi.unstubAllEnvs();
+  });
+
+  it('moves aside a corepack install with an empty bin/ before the child runs', () => {
+    // The shape a half-extracted download left twice: corepack reuses the
+    // directory, every stage dies on MODULE_NOT_FOUND for pnpm.cjs, and the
+    // audit stored that as the baseline. A fresh TMPDIR is a fresh cache root.
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cache-root-')));
+    checkouts.push(tmp);
+    vi.stubEnv('TMPDIR', tmp);
+    const cwd = fakeCheckout();
+    const pnpmDir = join(tmp, 'pup-toolchain-cache', projectId(cwd), 'corepack', 'v1', 'pnpm');
+    mkdirSync(join(pnpmDir, '10.34.5', 'bin'), { recursive: true });
+    mkdirSync(join(pnpmDir, '9.15.0', 'bin'), { recursive: true });
+    writeFileSync(join(pnpmDir, '9.15.0', 'bin', 'pnpm.cjs'), '');
+
+    // Checked from inside the child: the repair has to land before it runs.
+    const seen = runGateChild('ls', [pnpmDir], { cwd, repoPath: cwd });
+    vi.unstubAllEnvs();
+
+    const entries = readdirSync(pnpmDir).sort();
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatch(/^10\.34\.5\.corrupt-\d+$/);
+    // The control: a healthy install next to it stays where corepack looks.
+    expect(entries[1]).toBe('9.15.0');
+    expect(seen.trim().split('\n').sort()).toEqual(entries);
   });
 
   it('hands the child a var pup computed, which the operator never exported', () => {

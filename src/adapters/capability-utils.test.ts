@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { failureSummary, isUnavailable, localContext, sanitizeReason } from './capability.utils.js';
+import {
+  brokenPackageManagerInstall,
+  failureSummary,
+  isUnavailable,
+  localContext,
+  sanitizeReason,
+} from './capability.utils.js';
 
 describe('isUnavailable', () => {
   it('separates a reason from a real measurement', () => {
@@ -73,5 +79,42 @@ describe('sanitizeReason', () => {
     const capped = sanitizeReason('🙂'.repeat(400));
     expect([...capped]).toHaveLength(300);
     expect(capped.endsWith('🙂')).toBe(true);
+  });
+});
+
+describe('brokenPackageManagerInstall', () => {
+  const install = '/var/folders/x/T/pup-toolchain-cache/ff2f27df5be3/corepack/v1/pnpm/10.34.5';
+
+  /** Node's banner for a missing entrypoint, as a gate stage's output tail carries it. */
+  function crash(path: string, requireStack = '[]'): string {
+    return [
+      'node:internal/modules/cjs/loader:1386',
+      '  throw err;',
+      '  ^',
+      '',
+      `Error: Cannot find module '${path}'`,
+      '    at Function._resolveFilename (node:internal/modules/cjs/loader:1383:15)',
+      '    at node:internal/main/run_main_module:36:49 {',
+      "  code: 'MODULE_NOT_FOUND',",
+      `  requireStack: ${requireStack}`,
+      '}',
+      '',
+      'Node.js v24.13.1',
+    ].join('\n');
+  }
+
+  it('names the corepack install when the package manager itself cannot load', () => {
+    expect(brokenPackageManagerInstall(crash(`${install}/bin/pnpm.cjs`))).toBe(install);
+  });
+
+  it('leaves a missing module the project required to the stage result', () => {
+    // A require stack means the entrypoint ran: that failure is the checkout's.
+    const required = crash(`${install}/bin/pnpm.cjs`, "[ '/repo/src/index.js' ]");
+    expect(brokenPackageManagerInstall(required)).toBeUndefined();
+    expect(brokenPackageManagerInstall(crash('/repo/dist/cli.js'))).toBeUndefined();
+  });
+
+  it('ignores an ordinary failing stage', () => {
+    expect(brokenPackageManagerInstall('FAIL src/a.test.ts\nTests 1 failed')).toBeUndefined();
   });
 });

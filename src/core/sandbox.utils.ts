@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
@@ -272,8 +280,49 @@ function toolchainCacheDir(repoPath: string): string {
   for (const subdir of Object.values(CACHE_VAR_SUBDIRS)) {
     ensurePrivateDir(join(dir, subdir));
   }
+  quarantineBrokenCorepackInstalls(join(dir, CACHE_VAR_SUBDIRS.COREPACK_HOME as string));
   cacheDirs.set(key, dir);
   return dir;
+}
+
+/** Appended to a version directory moved aside, so the next scan skips it. */
+const QUARANTINE_MARK = '.corrupt-';
+
+/**
+ * Move aside every `<corepack home>/v1/<manager>/<version>` whose `bin/` is
+ * empty, so corepack downloads that version again instead of running it. Twice
+ * a half-extracted install left exactly this shape: corepack finds no
+ * `.corepack` marker, downloads afresh, the rename into the existing directory
+ * fails as "another instance installed it", and it runs the empty one — every
+ * stage then dies on `MODULE_NOT_FOUND` for `pnpm.cjs`, which `pup audit`
+ * stored as a FAIL baseline. An empty `bin/` is never a download still in
+ * progress: corepack extracts into a `v1/corepack-<pid>-<hex>` temp directory
+ * and renames it into place whole. Moved rather than deleted, so the evidence
+ * stays for whoever wants to know how it broke.
+ */
+function quarantineBrokenCorepackInstalls(corepackHome: string): void {
+  const installRoot = join(corepackHome, 'v1');
+  if (!existsSync(installRoot)) return;
+  for (const manager of subdirectories(installRoot)) {
+    // The temp directories an install extracts into; another process may be
+    // filling one right now.
+    if (manager.startsWith('corepack-')) continue;
+    for (const version of subdirectories(join(installRoot, manager))) {
+      if (version.includes(QUARANTINE_MARK)) continue;
+      const versionDir = join(installRoot, manager, version);
+      const binDir = join(versionDir, 'bin');
+      if (!lstatSync(binDir, { throwIfNoEntry: false })?.isDirectory()) continue;
+      if (readdirSync(binDir).length > 0) continue;
+      renameSync(versionDir, `${versionDir}${QUARANTINE_MARK}${Date.now()}`);
+    }
+  }
+}
+
+/** Real directories only: a symlink in a cache is not something to walk into. */
+function subdirectories(path: string): string[] {
+  return readdirSync(path, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
 }
 
 /**
