@@ -2131,6 +2131,7 @@ describe('CLI commands', () => {
       ['running', ['running']],
       ['awaiting-review', ['running', 'awaiting-review']],
       ['merged', ['running', 'awaiting-review', 'merged']],
+      ['rejected', ['running', 'awaiting-review', 'rejected']],
       ['killed', ['killed']],
     ] as [SessionState, SessionState[]][])(
       'refuses a session that is %s, not blocked',
