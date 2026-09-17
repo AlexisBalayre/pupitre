@@ -56,8 +56,11 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
     taskId: 't-run',
     goal: 'the work in flight',
     origin: 'human',
+    scope: ['src/**'],
+    acceptance: ['it works'],
     rejectCount: 0,
     needsHuman: false,
+    recentEvents: [],
     ...overrides,
   };
 }
@@ -68,7 +71,15 @@ function snapshotFixture(overrides: Partial<DashboardSnapshot> = {}): DashboardS
     repoPath: '/repo',
     conductor: { running: false, name: 'pup-conductor-ab12cd34ef56', attachCommand: 'tmux …' },
     sessions: [sessionFixture()],
-    backlog: [{ id: 't-planned', goal: 'the work to come', scope: ['src/**'], origin: 'human' }],
+    backlog: [
+      {
+        id: 't-planned',
+        goal: 'the work to come',
+        scope: ['src/**'],
+        acceptance: [],
+        origin: 'human',
+      },
+    ],
     overdueDebt: [],
     openDebtCount: 0,
     overlaps: [],
@@ -440,6 +451,113 @@ describe('dashboard controls', () => {
     });
   });
 
+  describe('the detail pane', () => {
+    const detailed = snapshotFixture({
+      sessions: [
+        sessionFixture({
+          acceptance: ['the pane opens'],
+          lastGate: {
+            passed: true,
+            stages: [{ stage: 'coverage', status: 'pass' }],
+            at: '2026-09-13T10:00:00.000Z',
+          },
+          recentEvents: [{ type: 'steer', at: '2026-09-13T09:00:00.000Z', detail: 'kickoff' }],
+        }),
+      ],
+      backlog: [
+        {
+          id: 't-planned',
+          goal: 'the work to come',
+          scope: ['docs/**'],
+          acceptance: ['the docs say so'],
+          origin: 'human',
+        },
+      ],
+    });
+
+    it('opens on Enter for the selected session, in place of the table', async () => {
+      const instance = mount(detailed);
+
+      await press(instance, ENTER);
+
+      const frame = instance.lastFrame() ?? '';
+      expect(frame).toContain('Esc closes');
+      expect(frame).toContain('- the pane opens');
+      expect(frame).toMatch(/coverage\s+pass/);
+      expect(frame).toMatch(/steer\s+kickoff/);
+      expect(frame).not.toMatch(/^\s*> running/m);
+      instance.unmount();
+    });
+
+    it('closes on Esc, giving the table back', async () => {
+      const instance = mount(detailed);
+
+      await press(instance, ENTER, ESC);
+
+      expect(instance.lastFrame()).not.toContain('Esc closes');
+      expect(instance.lastFrame()).toMatch(/^\s*> running/m);
+      instance.unmount();
+    });
+
+    it('opens on the planned row the cursor is on', async () => {
+      const instance = mount(detailed);
+
+      await press(instance, DOWN, ENTER);
+
+      expect(instance.lastFrame()).toContain('planned t-planned');
+      expect(instance.lastFrame()).toContain('- the docs say so');
+      instance.unmount();
+    });
+
+    // A view of the row under the cursor, not a mode: the arrows move it.
+    it('follows the cursor while it is open', async () => {
+      const instance = mount(detailed);
+
+      await press(instance, ENTER, DOWN);
+
+      expect(instance.lastFrame()).toContain('planned t-planned');
+      instance.unmount();
+    });
+
+    // An open prompt owns Esc: it cancels the kill, and the pane stays up.
+    it('leaves Esc to an open prompt', async () => {
+      const instance = mount(detailed);
+
+      await press(instance, ENTER, 'k', ESC);
+
+      expect(killSelected).not.toHaveBeenCalled();
+      expect(instance.lastFrame()).toContain('Cancelled.');
+      expect(instance.lastFrame()).toContain('- the pane opens');
+      instance.unmount();
+    });
+
+    // Enter on a finished merge log closes the log, as it did before the pane.
+    it('leaves Enter to a merge log that is open', async () => {
+      const instance = mount(
+        snapshotFixture({ sessions: [sessionFixture({ state: 'awaiting-review' })] }),
+      );
+      await press(instance, 'm', 'y');
+      const handlers = vi.mocked(runMerge).mock.calls[0]?.[2] as MergeHandlers;
+      handlers.onExit(0);
+      await settled();
+
+      await press(instance, ENTER);
+
+      expect(instance.lastFrame()).not.toContain('pup merge s-run-1 --pr');
+      expect(instance.lastFrame()).not.toContain('Esc closes');
+      instance.unmount();
+    });
+
+    it('says there is nothing to open on an empty list', async () => {
+      const instance = mount(snapshotFixture({ sessions: [], backlog: [] }));
+
+      await press(instance, ENTER);
+
+      expect(instance.lastFrame()).toContain('Nothing to open');
+      instance.unmount();
+    });
+  });
+
   describe('a caller that may not drive the fleet', () => {
     const REASON = 'read-only: sessions do not drive sessions (decisions 42, 44).';
 
@@ -482,6 +600,17 @@ describe('dashboard controls', () => {
 
     // The screen is still a screen: looking at it, re-reading it and leaving it
     // are not things a session is refused.
+    it('still opens and closes the detail pane', async () => {
+      const instance = mount(snapshotFixture(), REASON);
+
+      await press(instance, ENTER);
+      expect(instance.lastFrame()).toContain('- it works');
+
+      await press(instance, ESC);
+      expect(instance.lastFrame()).not.toContain('Esc closes');
+      instance.unmount();
+    });
+
     it('still moves the cursor and re-reads on `r`', async () => {
       let reads = 0;
       const instance = render(

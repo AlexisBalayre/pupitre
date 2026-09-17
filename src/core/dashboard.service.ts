@@ -5,11 +5,12 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { conductorName, conductorSocket } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
+import { eventDetail } from './dashboard-events.utils.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
-import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { asStageArray, asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
   type EventRow,
   getProject,
@@ -24,6 +25,7 @@ import { classifySessionActivity, isSessionStalled } from './session-activity.ut
 import type {
   DashboardBaseline,
   DashboardDeadTurn,
+  DashboardEvent,
   DashboardGate,
   DashboardSession,
   DashboardSnapshot,
@@ -75,6 +77,7 @@ export function buildDashboardSnapshot(
         id: task.id,
         goal: goalHeadline(spec.goal),
         scope: asStringArray(spec.scopeIn).map(sanitizeReason),
+        acceptance: asStringArray(spec.acceptance).map(sanitizeReason),
         origin: sanitizeReason(task.origin),
       };
     }),
@@ -92,6 +95,13 @@ export function buildDashboardSnapshot(
     radarStale: !beat || now - beat.getTime() > WATCH_STALE_AFTER_MS,
   };
 }
+
+/**
+ * How many stored events a session row carries: enough for the detail pane to
+ * say what happened to the session last, and the part of its history an
+ * operator deciding what to do next reads. `pup report` is where the rest is.
+ */
+const RECENT_EVENT_COUNT = 5;
 
 /**
  * One stall: how long the session has been quiet, and the name of the stall
@@ -183,6 +193,8 @@ function dashboardSession(
     // the session, so the join misses only on a store someone has edited by
     // hand — which is a row to render, not a reason to drop the session.
     origin: sanitizeReason(task?.origin ?? 'unknown'),
+    scope: asStringArray(spec.scopeIn).map(sanitizeReason),
+    acceptance: asStringArray(spec.acceptance).map(sanitizeReason),
     rejectCount: row.reject_count,
     ...(activity ? { activity } : {}),
     ...(stalledAgeMs === undefined ? {} : { stalledAgeMs }),
@@ -190,6 +202,7 @@ function dashboardSession(
     ...(contextTokens === undefined ? {} : { contextTokens }),
     ...(lastSteer ? { lastSteer } : {}),
     ...(lastGate ? { lastGate } : {}),
+    recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     needsHuman:
       row.state === 'blocked' || stalledAgeMs !== undefined || activity?.kind === 'awaiting-input',
   };
@@ -242,17 +255,43 @@ function newestSteer(newestFirst: EventRow[]): DashboardSteer | undefined {
  */
 function newestGate(newestFirst: EventRow[]): DashboardGate | undefined {
   for (const event of newestFirst) {
-    if (event.type !== 'gate_result') continue;
-    const report = parseJsonOr<{ report?: GateReport }>(event.payload, {}).report;
-    if (!report) continue;
-    const failed = (report.stages ?? []).find((stage) => stage?.status === 'fail');
-    return {
-      passed: report.passed === true,
-      ...(failed ? { failedStage: sanitizeReason(failed.stage) } : {}),
-      at: toIsoUtc(event.created_at),
-    };
+    const gate = event.type === 'gate_result' ? gateOf(event) : undefined;
+    if (gate) return gate;
   }
   return undefined;
+}
+
+/**
+ * The gate run a `gate_result` event reports, or nothing for a bare transition.
+ * The stages go through `asStageArray`'s shape guard first — one `null` member
+ * a session wrote must drop out of the list, not end the snapshot — and then
+ * through decision 29's terminal sanitizing, because a stage detail is a failing
+ * test's own output.
+ */
+function gateOf(event: EventRow): DashboardGate | undefined {
+  const report = parseJsonOr<{ report?: GateReport }>(event.payload, {}).report;
+  if (!report) return undefined;
+  const stages = asStageArray(report.stages).map(({ stage, status, detail }) => ({
+    stage: sanitizeReason(stage),
+    status: sanitizeReason(status),
+    ...(detail === null ? {} : { detail: sanitizeReason(detail) }),
+  }));
+  const failed = stages.find((stage) => stage.status === 'fail');
+  return {
+    passed: report.passed === true,
+    ...(failed ? { failedStage: failed.stage } : {}),
+    stages,
+    at: toIsoUtc(event.created_at),
+  };
+}
+
+function dashboardEvent(event: EventRow): DashboardEvent {
+  const detail = eventDetail(event, event.type === 'gate_result' ? gateOf(event) : undefined);
+  return {
+    type: sanitizeReason(event.type),
+    at: toIsoUtc(event.created_at),
+    ...(detail ? { detail } : {}),
+  };
 }
 
 /**

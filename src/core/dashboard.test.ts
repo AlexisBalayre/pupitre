@@ -34,6 +34,7 @@ import {
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import type { ProjectBaseline } from './types/init.types.js';
+import type { TaskSpec } from './types/profile.types.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
 const API_ERROR = '⏺ API Error: Connection lost while your computer was asleep';
@@ -53,12 +54,13 @@ function seedTask(
   taskId: string,
   goal: string,
   origin = 'human',
+  spec: Partial<TaskSpec> = {},
 ): void {
   ensureProject(db, projectId(repo), repo);
   insertTask(db, {
     id: taskId,
     projectId: projectId(repo),
-    spec: JSON.stringify({ id: taskId, goal, scopeIn: ['src/**'], acceptance: ['done'] }),
+    spec: JSON.stringify({ id: taskId, goal, scopeIn: ['src/**'], acceptance: ['done'], ...spec }),
     origin,
   });
 }
@@ -67,10 +69,15 @@ function seedSession(
   db: Database,
   repo: string,
   sessionId: string,
-  options: { goal?: string; origin?: string; transcriptPath?: string } = {},
+  options: {
+    goal?: string;
+    origin?: string;
+    transcriptPath?: string;
+    spec?: Partial<TaskSpec>;
+  } = {},
 ): void {
   const taskId = `t-${sessionId}`;
-  seedTask(db, repo, taskId, options.goal ?? `goal for ${sessionId}`, options.origin);
+  seedTask(db, repo, taskId, options.goal ?? `goal for ${sessionId}`, options.origin, options.spec);
   insertSession(db, {
     id: sessionId,
     taskId,
@@ -201,9 +208,26 @@ describe('buildDashboardSnapshot', () => {
         taskId: 't-s1',
         goal: 'move the stall rule',
         origin: 'conductor',
+        scope: ['src/**'],
+        acceptance: ['done'],
         rejectCount: 1,
         needsHuman: false,
       });
+    });
+
+    // The detail pane prints both whole, so both are terminal text (decision 29).
+    it("carries the task's scope and acceptance, stripped of what a terminal would obey", () => {
+      seedSession(db, repo, 's1', {
+        spec: {
+          scopeIn: ['src/core/**', '\u001b[2Jdocs/**'],
+          acceptance: ['the snapshot carries it', 'Enter opens\nthe pane'],
+        },
+      });
+
+      const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+      expect(session?.scope).toEqual(['src/core/**', '[2Jdocs/**']);
+      expect(session?.acceptance).toEqual(['the snapshot carries it', 'Enter opens the pane']);
     });
 
     it('classifies a running session from its hook events, detail included', () => {
@@ -376,6 +400,87 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.lastGate).toMatchObject({
         passed: false,
         failedStage: 'tests',
+        stages: [
+          { stage: 'lint', status: 'pass' },
+          { stage: 'tests', status: 'fail', detail: '2 failing' },
+        ],
+      });
+    });
+
+    // A stage detail is a failing test's own output, and the report is a
+    // payload a session can write: a torn member drops out, the rest is one
+    // terminal-safe line each.
+    it("lists the last gate's stages, dropping a malformed one and sanitizing the rest", () => {
+      seedSession(db, repo, 's1');
+      transitionSession(db, 's1', 'running');
+      appendEvent(db, 's1', 'gate_result', {
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'none',
+          stages: [
+            null,
+            { stage: 'build' },
+            { stage: 'tests', status: 'fail', detail: '\u001b[31mFAIL\u001b[0m\n  at a.test.ts' },
+          ],
+        },
+      });
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.lastGate?.stages).toEqual([
+        { stage: 'tests', status: 'fail', detail: '\uFFFD[31mFAIL\uFFFD[0m at a.test.ts' },
+      ]);
+    });
+
+    describe('recent events', () => {
+      it('carries the newest five, oldest of them first, each with what its payload says', () => {
+        seedSession(db, repo, 's1');
+        transitionSession(db, 's1', 'running');
+        appendEvent(db, 's1', 'steer', { kind: 'kickoff', delivered: true });
+        appendEvent(db, 's1', 'steer', { kind: 'message', by: 'conductor' });
+        appendEvent(db, 's1', 'interrupt', { steered: false });
+        appendEvent(db, 's1', 'gate_result', {
+          outcome: 'refused',
+          report: {
+            sessionId: 's1',
+            passed: false,
+            sandbox: 'none',
+            stages: [{ stage: 'tests', status: 'fail' }],
+          },
+        });
+        appendEvent(db, 's1', 'session_done', { summary: 'the pane is in' });
+        transitionSession(db, 's1', 'awaiting-review');
+
+        const { recentEvents } = buildDashboardSnapshot(db, repo, NOW).sessions[0] ?? {};
+
+        // The `queued → running` transition and the kickoff are the two that
+        // fell off the front.
+        expect(recentEvents?.map(({ type, detail }) => ({ type, detail }))).toEqual([
+          { type: 'steer', detail: 'message · by conductor' },
+          { type: 'interrupt', detail: undefined },
+          { type: 'gate_result', detail: 'gate failed at tests · refused' },
+          { type: 'session_done', detail: 'the pane is in' },
+          { type: 'gate_result', detail: 'running → awaiting-review' },
+        ]);
+        expect(recentEvents?.every((event) => Date.parse(event.at) > 0)).toBe(true);
+      });
+
+      it("strips what a terminal would obey out of the session's own words", () => {
+        seedSession(db, repo, 's1');
+        transitionSession(db, 's1', 'running');
+        appendEvent(db, 's1', 'session_done', { summary: '\u001b[2Jdone\nfor real' });
+
+        expect(
+          buildDashboardSnapshot(db, repo, NOW).sessions[0]?.recentEvents.at(-1),
+        ).toMatchObject({
+          type: 'session_done',
+          detail: '[2Jdone for real',
+        });
+      });
+
+      it('is empty for a session nothing has happened to yet', () => {
+        seedSession(db, repo, 's1');
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.recentEvents).toEqual([]);
       });
     });
 
@@ -402,7 +507,7 @@ describe('buildDashboardSnapshot', () => {
   });
 
   describe('backlog', () => {
-    it('lists unclaimed tasks with their goal, scope and origin', () => {
+    it('lists unclaimed tasks with their goal, scope, acceptance and origin', () => {
       seedTask(db, repo, 't-plan', 'wire the snapshot into `pup ui`', 'conductor');
 
       expect(buildDashboardSnapshot(db, repo, NOW).backlog).toEqual([
@@ -410,9 +515,18 @@ describe('buildDashboardSnapshot', () => {
           id: 't-plan',
           goal: 'wire the snapshot into `pup ui`',
           scope: ['src/**'],
+          acceptance: ['done'],
           origin: 'conductor',
         },
       ]);
+    });
+
+    it('strips what a terminal would obey out of the acceptance criteria', () => {
+      seedTask(db, repo, 't-plan', 'a goal', 'human', {
+        acceptance: ['\u001b[31mred\u001b[0m', 42 as unknown as string],
+      });
+
+      expect(buildDashboardSnapshot(db, repo, NOW).backlog[0]?.acceptance).toEqual(['[31mred [0m']);
     });
 
     it('drops a task once a session claims it', () => {

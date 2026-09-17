@@ -33,12 +33,12 @@ export function Footer({
           terminal, and a hint line that truncates hides the keys at its end. */}
       {readOnlyReason ? null : (
         <Text dimColor wrap="truncate-end">
-          l launch s steer i interrupt k kill u unblock R respawn m merge
+          l launch s steer i interrupt k kill u unblock R respawn m merge a attach
         </Text>
       )}
       <Text dimColor wrap="truncate-end">
-        ↑/↓ select {readOnlyReason ? '' : 'a attach A conductor window c conductor on/off '}r
-        refresh q quit · {refreshedAt}
+        ↑/↓ select Enter/Esc detail {readOnlyReason ? '' : 'A conductor c on/off '}r refresh q quit
+        · {refreshedAt}
       </Text>
     </Box>
   );

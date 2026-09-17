@@ -76,6 +76,8 @@ exit 1.
   | `A` | `tmux attach` on the conductor's window, socket included | — |
   | `c` | `pup conductor start`, or `stop` when one is up | both models, on a start |
   | `m` | `pup merge <session> --pr`, on an `awaiting-review` row | `y`/`n` |
+  | `Enter` | open the detail pane on the row: goal, scope, acceptance, the last gate's stages, the last five events | — |
+  | `Esc` | close the detail pane | — |
   | `r` | re-read now | — |
   | `q` | quit | — |
 
@@ -86,9 +88,15 @@ exit 1.
   in flight the keys are deaf, so a second merge or a kill of the session a respawn is waiting
   on cannot be typed by accident.
 
+  The detail pane takes the table's place while it is open and shows the row under the cursor, so
+  `↑`/`↓` move it from row to row and every key above still acts on the row it shows. A planned
+  row has a goal, a scope and acceptance criteria but no gate run and no events, and says so. An
+  open prompt keeps `Esc` and a finished merge log keeps `Enter`, so neither changes meaning
+  because the pane exists.
+
   Every one of those keys runs a command that is operator-only somewhere (decisions 42, 44, 47),
   so a session or the conductor gets the dashboard read-only: the mutating keys are unbound and
-  hidden, the reason is on screen, and the cursor, `r` and `q` still work.
+  hidden, the reason is on screen, and the cursor, the detail pane, `r` and `q` still work.
 - `pup conductor [start|stop] [--model <m>] [--worker-model <m>]` — open (or close) the
   project's conductor: one Claude Code window in the main checkout that plans, launches,
   steers and kills sessions and hands each finished branch to the operator. It reaches a

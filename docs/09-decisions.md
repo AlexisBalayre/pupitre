@@ -2368,6 +2368,33 @@ changes back into those docs is pending.
     is how `dashboard-text.utils.ts` fits a goal, and every caller that reached for it wanted the
     fitted string, while `SnapshotReading` names half of the hook's own return type. Both are now
     private to their file.
+    *Addendum (2026-09-17): the detail pane, now that the snapshot carries it.* The pane the first
+    cut left out is in, and it went in the order this decision's rule demands — the snapshot
+    first, then the component. A session row now carries its task's `scope` and `acceptance`, its
+    `lastGate` carries the stage list with each stage's status and detail, and `recentEvents`
+    holds its five newest stored events, oldest of them first; a backlog row gains `acceptance`
+    beside the scope it already had. All of it is sanitized in `buildDashboardSnapshot`, like
+    every other string there: a stage detail is a failing test's output and an event payload is
+    a session's own words, so each goes through `asStageArray`'s shape guard or a type check and
+    then `sanitizeReason`, and each is tested against a real store with an escape in it. What an
+    event says is decided there too — the transition and verdict on a gate result, a steer's kind
+    and sender, a finished session's summary — as one `detail` line, because the alternative was
+    a component reading raw payloads, which is a second reader of the store under another name.
+    Five, because the pane answers "what happened to this last", and `pup report` holds the rest.
+    `detail.component.tsx` draws a `DetailRow` the controls hook hands it — the selected session
+    or planned task as the snapshot has it — and computes nothing. `Enter` and `Esc` are bound in
+    `use-controls.hook.ts`, not `app.component.tsx` as the task first said: part 3 moved every key
+    there, and the precedence is the point. An open prompt keeps `Esc` for cancelling, a finished
+    merge log keeps `Enter` for closing, and only then does either reach the pane — a key that
+    silently changed meaning because a new pane was added is the failure part 3's one modal hook
+    exists to rule out. The pane is not a mode: it shows whatever row the cursor is on, the arrows
+    still move it, and the action keys still act on the row it names, so nothing on screen can
+    disagree about which row an action will hit. It replaces the table rather than sitting under
+    it, because acceptance, stages and events run to twenty lines and would push the radar and the
+    footer off a 40-row screen; the row's state and id head the pane, so the cursor is not lost.
+    Read-only callers get it: reading a row is looking. The footer's two lines were re-packed to
+    fit it — `a attach` joined the row actions, and the conductor keys shortened to
+    `A conductor c on/off` — so both still fit eighty columns.
 
 ## Implementation notes
 
