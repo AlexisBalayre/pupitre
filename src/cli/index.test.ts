@@ -679,7 +679,13 @@ describe('CLI commands', () => {
       // The dashboard is handed the reading function, not a reading: every
       // frame it draws is a fresh `buildDashboardSnapshot` (decision 52).
       expect(mountedProps().read().backlog).toEqual([
-        { id: 't-plan', goal: 'the only intent there is', scope: ['src/**'], origin: 'human' },
+        {
+          id: 't-plan',
+          goal: 'the only intent there is',
+          scope: ['src/**'],
+          acceptance: [],
+          origin: 'human',
+        },
       ]);
       expect(process.exitCode).toBeUndefined();
     });

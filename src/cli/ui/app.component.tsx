@@ -4,6 +4,7 @@ import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import type { ActionDeps } from './actions.service.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
+import { Detail } from './detail.component.js';
 import { Footer } from './footer.component.js';
 import { Header } from './header.component.js';
 import { MergeLogPane } from './merge-log.component.js';
@@ -38,7 +39,7 @@ export function App({
   // lands on one: this view is for the work a person can still change, and
   // every action here acts on a session that is still running.
   const live = snapshot.sessions.filter((session) => !isTerminal(session.state));
-  const { cursor, prompt, mergeLog, status } = useControls({
+  const { cursor, prompt, mergeLog, detail, status } = useControls({
     deps,
     snapshot,
     live,
@@ -51,13 +52,23 @@ export function App({
       <Box marginTop={1} flexDirection="column">
         <Debt overdueDebt={snapshot.overdueDebt} openDebtCount={snapshot.openDebtCount} />
       </Box>
+      {/* The detail pane takes the table's place rather than a place under it:
+          a row's acceptance, gate stages and events run to twenty lines, and
+          beneath the table they would push the radar and the footer off a
+          40-row screen. The row it shows names itself, so the cursor is not lost. */}
       <Box marginTop={1} flexDirection="column">
-        <Sessions
-          sessions={live}
-          finishedCount={snapshot.sessions.length - live.length}
-          selectedIndex={cursor}
-        />
-        <Backlog backlog={snapshot.backlog} selectedIndex={cursor - live.length} />
+        {detail ? (
+          <Detail row={detail} />
+        ) : (
+          <>
+            <Sessions
+              sessions={live}
+              finishedCount={snapshot.sessions.length - live.length}
+              selectedIndex={cursor}
+            />
+            <Backlog backlog={snapshot.backlog} selectedIndex={cursor - live.length} />
+          </>
+        )}
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Radar overlaps={snapshot.overlaps} radarStale={snapshot.radarStale} />

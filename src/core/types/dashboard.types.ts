@@ -41,12 +41,31 @@ export interface DashboardSteer {
   at: string;
 }
 
+/** One stage of a gate run, as the report recorded it. */
+interface DashboardGateStage {
+  stage: string;
+  /** `pass`, `fail`, `skip`, … as the gate wrote it. */
+  status: string;
+  detail?: string;
+}
+
 /** The newest gate run that left a report behind. */
 export interface DashboardGate {
   passed: boolean;
   /** The first stage that failed; absent on a pass. */
   failedStage?: string;
+  /** Every stage the report carried, in the order the gate ran them. */
+  stages: DashboardGateStage[];
   at: string;
+}
+
+/** One stored event on a session, as the detail pane lists it. */
+export interface DashboardEvent {
+  /** The event type: `steer`, `gate_result`, `turn_died`, … */
+  type: string;
+  at: string;
+  /** The payload in one line — a transition, a steer's kind, a summary — when it says anything. */
+  detail?: string;
 }
 
 /**
@@ -73,6 +92,10 @@ export interface DashboardSession {
   goal: string;
   /** Who asked for the work: the task's origin. */
   origin: string;
+  /** The task's scope-in globs. */
+  scope: string[];
+  /** The task's acceptance criteria, one per entry. */
+  acceptance: string[];
   rejectCount: number;
   /**
    * What the hook events say the session is doing (decision 2). Present only
@@ -91,6 +114,8 @@ export interface DashboardSession {
   contextTokens?: number;
   lastSteer?: DashboardSteer;
   lastGate?: DashboardGate;
+  /** The newest few stored events, oldest of them first — the order they happened in. */
+  recentEvents: DashboardEvent[];
   /**
    * Nothing moves here until a person acts: blocked, stalled, or waiting on an
    * answer. Wider than what sorts first — an awaiting-input session is a
@@ -106,6 +131,8 @@ interface DashboardBacklogTask {
   goal: string;
   /** The task's scope-in globs. */
   scope: string[];
+  /** The task's acceptance criteria, one per entry. */
+  acceptance: string[];
   origin: string;
 }
 

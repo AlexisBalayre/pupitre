@@ -47,6 +47,15 @@ export interface MergeLog {
   running: boolean;
 }
 
+/**
+ * The row the detail pane shows: the session or the planned task under the
+ * cursor, as the snapshot carries it. The row itself rather than an index, so
+ * the pane is drawn from the reading and has nothing to look up.
+ */
+export type DetailRow =
+  | { kind: 'session'; session: DashboardSession }
+  | { kind: 'task'; task: DashboardSnapshot['backlog'][number] };
+
 export interface ControlStatus {
   message: string;
   failed: boolean;
@@ -62,6 +71,8 @@ interface Controls {
   cursor: number;
   prompt?: ControlPrompt;
   mergeLog?: MergeLog;
+  /** Set while the detail pane is open and the cursor is on a row. */
+  detail?: DetailRow;
   status?: ControlStatus;
   /** An action is in flight and the keys are deaf until it lands. */
   busy: boolean;
@@ -98,6 +109,7 @@ export function useControls({
   const lastModel = useRef('');
   const [prompt, setPrompt] = useState<PendingPrompt | undefined>();
   const [mergeLog, setMergeLog] = useState<MergeLog | undefined>();
+  const [detailOpen, setDetailOpen] = useState(false);
   const [status, setStatus] = useState<ControlStatus | undefined>();
   const [busy, setBusy] = useState(false);
   /**
@@ -114,6 +126,11 @@ export function useControls({
   const cursor = Math.min(selected, Math.max(rowCount - 1, 0));
   const session = live[cursor];
   const task = snapshot.backlog[cursor - live.length];
+  const detail: DetailRow | undefined = !detailOpen
+    ? undefined
+    : session
+      ? { kind: 'session', session }
+      : task && { kind: 'task', task };
 
   /** Report an action and re-read the store, so the row reflects what just happened. */
   function settle(result: ActionResult): void {
@@ -299,6 +316,15 @@ export function useControls({
     }
     if (prompt) return answerPrompt(input, key);
     if (mergeLog && (key.escape || key.return)) return setMergeLog(undefined);
+    // The detail pane is a view of the row under the cursor, not a mode: the
+    // arrows still move it and the keys below still act on the row it shows,
+    // so only Enter and Esc are its own. Above the read-only cut, because
+    // reading a row is looking, and looking is refused to nobody.
+    if (key.return) {
+      if (!session && !task) return say('Nothing to open: there are no rows.', true);
+      return setDetailOpen(true);
+    }
+    if (key.escape) return setDetailOpen(false);
     if (input === 'q') return exit();
     if (input === 'r') return refresh();
     if (key.downArrow) return setSelected(Math.min(cursor + 1, rowCount - 1));
@@ -397,6 +423,7 @@ export function useControls({
         }
       : {}),
     ...(mergeLog ? { mergeLog } : {}),
+    ...(detail ? { detail } : {}),
     ...(status ? { status } : {}),
     busy,
   };

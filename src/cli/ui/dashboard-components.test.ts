@@ -6,6 +6,7 @@ import type { ActionDeps } from './actions.service.js';
 import { App } from './app.component.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
+import { Detail } from './detail.component.js';
 import { Footer } from './footer.component.js';
 import { Header } from './header.component.js';
 import { MergeLogPane } from './merge-log.component.js';
@@ -54,8 +55,11 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
     taskId: 't-mtzmobsi',
     goal: 'a live Ink dashboard',
     origin: 'human',
+    scope: ['src/**'],
+    acceptance: ['it works'],
     rejectCount: 0,
     needsHuman: false,
+    recentEvents: [],
     ...overrides,
   };
 }
@@ -227,7 +231,12 @@ describe('dashboard components', () => {
           sessions: [
             sessionFixture({
               contextTokens: 45_000,
-              lastGate: { passed: false, failedStage: 'tests', at: '2026-09-13T10:00:00.000Z' },
+              lastGate: {
+                passed: false,
+                failedStage: 'tests',
+                stages: [{ stage: 'tests', status: 'fail' }],
+                at: '2026-09-13T10:00:00.000Z',
+              },
               lastSteer: { kind: 'manual', by: 'operator', at: '2026-09-13T10:01:00.000Z' },
             }),
           ],
@@ -275,9 +284,16 @@ describe('dashboard components', () => {
               id: 't-one',
               goal: 'extract the gh exec options',
               scope: ['src/**'],
+              acceptance: [],
               origin: 'human',
             },
-            { id: 't-two', goal: 'index the worktree', scope: ['src/**'], origin: 'conductor' },
+            {
+              id: 't-two',
+              goal: 'index the worktree',
+              scope: ['src/**'],
+              acceptance: [],
+              origin: 'conductor',
+            },
           ],
           selectedIndex: 1,
         }),
@@ -347,6 +363,7 @@ describe('dashboard components', () => {
 
       expect(frame).toContain('Launched s-new-1.');
       expect(frame).toContain('↑/↓ select');
+      expect(frame).toContain('Enter/Esc detail');
       expect(frame).toContain('k kill');
       expect(frame).toContain('m merge');
       expect(frame).toContain('q quit');
@@ -368,7 +385,90 @@ describe('dashboard components', () => {
       expect(frame).not.toContain('k kill');
       expect(frame).not.toContain('m merge');
       expect(frame).toContain('↑/↓ select');
+      expect(frame).toContain('Enter/Esc detail');
       expect(frame).toContain('q quit');
+    });
+  });
+
+  describe('detail', () => {
+    it("draws a session's goal, scope, acceptance, gate stages and last events", () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: {
+            kind: 'session',
+            session: sessionFixture({
+              state: 'awaiting-review',
+              origin: 'conductor',
+              scope: ['src/core/**', 'docs/02-cli.md'],
+              acceptance: ['the snapshot carries it', 'Enter opens the pane'],
+              lastGate: {
+                passed: false,
+                failedStage: 'coverage',
+                stages: [
+                  { stage: 'worktree-clean', status: 'pass' },
+                  { stage: 'coverage', status: 'fail', detail: '71% < 80%' },
+                ],
+                at: '2026-09-13T10:00:00.000Z',
+              },
+              recentEvents: [
+                { type: 'steer', at: '2026-09-13T09:00:00.000Z', detail: 'kickoff' },
+                { type: 'session_done', at: '2026-09-13T09:58:00.000Z', detail: 'pane is in' },
+              ],
+            }),
+          },
+        }),
+      );
+
+      expect(frame).toContain('awaiting-review s-mtzmobsi-1 pup/t-mtzmobsi (from conductor)');
+      expect(frame).toContain('Esc closes');
+      expect(frame).toContain('a live Ink dashboard');
+      expect(frame).toContain('src/core/**');
+      expect(frame).toContain('docs/02-cli.md');
+      expect(frame).toContain('- the snapshot carries it');
+      expect(frame).toContain('- Enter opens the pane');
+      expect(frame).toContain('last gate — failed 2026-09-13T10:00:00.000Z');
+      expect(frame).toMatch(/worktree-clean\s+pass/);
+      expect(frame).toMatch(/coverage\s+fail {2}71% < 80%/);
+      expect(frame).toMatch(/2026-09-13T09:00:00.000Z steer\s+kickoff/);
+      expect(frame).toMatch(/2026-09-13T09:58:00.000Z session_done\s+pane is in/);
+    });
+
+    it('says what a session does not have yet rather than drawing empty sections', () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: { kind: 'session', session: sessionFixture({ scope: [], acceptance: [] }) },
+        }),
+      );
+
+      expect(frame).toContain('none declared');
+      expect(frame).toContain('no gate run yet');
+      expect(frame).toContain('no events yet');
+    });
+
+    // The snapshot carries no gate and no events for a task nobody has
+    // launched, so the pane has none to draw — and says why.
+    it('draws a planned task with its intent and no history', () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: {
+            kind: 'task',
+            task: {
+              id: 't-planned',
+              goal: 'index the worktree',
+              scope: ['src/core/**'],
+              acceptance: ['the index is current'],
+              origin: 'human',
+            },
+          },
+        }),
+      );
+
+      expect(frame).toContain('planned t-planned');
+      expect(frame).toContain('index the worktree');
+      expect(frame).toContain('src/core/**');
+      expect(frame).toContain('- the index is current');
+      expect(frame).toContain('not launched: no gate run and no events yet');
+      expect(frame).not.toContain('last gate');
     });
   });
 
@@ -430,7 +530,13 @@ describe('dashboard components', () => {
         sessionFixture({ id: 's-done-1', state: 'merged', goal: 'already landed' }),
       ],
       backlog: [
-        { id: 't-two', goal: 'index the worktree', scope: ['src/**'], origin: 'conductor' },
+        {
+          id: 't-two',
+          goal: 'index the worktree',
+          scope: ['src/**'],
+          acceptance: [],
+          origin: 'conductor',
+        },
       ],
       overdueDebt: [{ id: 8, description: 'shortcut taken', reviewBy: 'next release' }],
       openDebtCount: 1,
@@ -497,7 +603,13 @@ describe('dashboard components', () => {
             reads += 1;
             return snapshotFixture({
               backlog: [
-                { id: `t-read-${reads}`, goal: 'a fresh reading', scope: [], origin: 'human' },
+                {
+                  id: `t-read-${reads}`,
+                  goal: 'a fresh reading',
+                  scope: [],
+                  acceptance: [],
+                  origin: 'human',
+                },
               ],
             });
           },
