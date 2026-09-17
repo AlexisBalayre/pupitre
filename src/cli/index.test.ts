@@ -925,6 +925,104 @@ describe('CLI commands', () => {
 
       expect(logs).toContain('codegraph: not installed');
     });
+
+    const ORIGIN_URL = 'git@github.com:owner/repo.git';
+
+    /** What a real project has: an adapter to detect and an origin to push to. */
+    function initRepoWithOrigin(): string {
+      const repo = initRepoWithAdapter();
+      execFileSync('git', ['remote', 'add', 'origin', ORIGIN_URL], {
+        cwd: repo,
+        env: GIT_ENV,
+        encoding: 'utf8',
+      });
+      return repo;
+    }
+
+    function recordedOrigin(repo: string): string | null {
+      const { db } = resolveProject(repo);
+      const row = db.prepare('SELECT origin_url FROM projects WHERE id = ?').get(projectId(repo)) as
+        | { origin_url: string | null }
+        | undefined;
+      db.close();
+      return row?.origin_url ?? null;
+    }
+
+    // The recorded push target is what `pup merge --pr` refuses to differ from,
+    // so it is printed with the other lines about how this fleet is confined
+    // (decisions 36, 51, 56).
+    it("records origin's URL and prints it beside the sandbox line", () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
+      expect(logs).toContain(`push target: ${ORIGIN_URL}`);
+      expect(logs.indexOf(`push target: ${ORIGIN_URL}`)).toBe(
+        logs.findIndex((line) => line.startsWith('sandbox: ')) + 2,
+      );
+    });
+
+    it('says the push target is unrecorded when the repo has no origin to record', () => {
+      useCwd(initRepoWithAdapter());
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(logs).toContain(
+        'push target: not recorded — `pup merge --pr` refuses until `pup init` records one',
+      );
+    });
+
+    // Nominating the push target is the operator's act: a session that could
+    // write it would be choosing where its own work is pushed, which is the
+    // hole the recorded copy exists to close (decision 56). Discriminating on
+    // the write, not only the message — the row is still unrecorded after.
+    it('records nothing when a session runs `init`, so a session cannot name the target', () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(recordedOrigin(repo)).toBeNull();
+      expect(logs).toContain(
+        'push target: not recorded — `pup merge --pr` refuses until `pup init` records one',
+      );
+    });
+
+    it('refuses `init --origin-moved` when a session is calling', () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['init', '--origin-moved'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup init --origin-moved` is operator-only; sessions cannot move the push target.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+      expect(recordedOrigin(repo)).toBeNull();
+    });
+
+    it('re-records a moved origin when the operator says it moved', () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+      buildProgram().parse(['init'], { from: 'user' });
+      execFileSync('git', ['config', 'remote.origin.url', 'git@github.com:owner/renamed.git'], {
+        cwd: repo,
+        env: GIT_ENV,
+        encoding: 'utf8',
+      });
+
+      buildProgram().parse(['init', '--origin-moved'], { from: 'user' });
+
+      expect(recordedOrigin(repo)).toBe('git@github.com:owner/renamed.git');
+      expect(logs).toContain('push target: git@github.com:owner/renamed.git');
+    });
   });
 
   describe('audit', () => {

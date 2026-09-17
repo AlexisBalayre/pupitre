@@ -1247,7 +1247,7 @@ changes back into those docs is pending.
     `remote.origin.url` in the shared config sends `pushBranch` and `gh pr create` wherever
     the session says, verified under the full `GIT_SAFE_CONFIG`; the fix is to resolve
     `origin` once from the trusted checkout and push to the literal URL (the rewrite half
-    closed by decision 54; a rewritten `remote.origin.url` is still open). A merge driver
+    closed by decision 54, the rewritten `remote.origin.url` by decision 56). A merge driver
     named through the same `info/attributes` runs on a conflicting rebase and is unlisted
     for the same reason as the smudge filter (closed by decision 50).
     *Unreachable is loud.* Two branches in `scopeConflicts` cannot fire while the store is
@@ -2510,7 +2510,8 @@ changes back into those docs is pending.
     trade as clearing the sign flags in decision 41 and refusing local filters in decision 50.
     The shared config is session-writable, so a setting there cannot be told apart from a
     redirect.
-    *Ceilings.* **A rewritten `remote.origin.url` still redirects the push and the PR.** The
+    *Ceilings.* **A rewritten `remote.origin.url` still redirects the push and the PR**
+    (closed by decision 56). The
     value is read from the same shared config a session can write, and there is no trusted
     copy to compare it against. The honest fix is to record origin's URL when the project is
     set up and refuse a merge where the two differ, which is its own change. What this change
@@ -2518,6 +2519,59 @@ changes back into those docs is pending.
     that names no host, owner and repo, like a local path, is refused by `originRepoSlug`
     before anything is pushed. The adoption probe and every gh call still carry the pinned
     `--repo`, and gh itself never pushes.
+
+56. **The push target is recorded at setup, and a merge whose config disagrees is refused
+    (2026-09-17).** Decision 54 pushed from a git dir that reads no shared config, which closed
+    `url.*` rewrites, and stated the ceiling it could not close from there: `remote.origin.url`
+    itself lives in that same session-writable config, so a session that rewrites the value
+    rather than a rewrite rule still aims both the push and the gh `--repo` pin. Reproduced in
+    the gate's own fixture before this was written, and again afterwards with the check taken
+    back out: a `remote.origin.url` written from the worktree lands the session's branch in a
+    second bare repo, and the pull request is pinned to that repo's slug.
+    *The trusted copy is taken once, where trust actually exists.* `pup init` reads
+    `git config --get remote.origin.url` from the checkout the operator is standing in — before
+    any session for the project exists — and stores it on `projects.origin_url`; `pup audit`, operator-only
+    since decision 48, records one the same way when there is none. Raw, through the
+    same `readOriginUrl` the gate reads with, never `remote get-url`: one function, so the
+    recorded value and the compared value cannot drift into being read two different ways. A repo
+    with no origin records nothing; `--pr` there already refuses on the missing remote.
+    *The gate pushes the record, and reads the config only to catch it moving.* `pushTarget`
+    runs in `runMergeGate`, right after the `gh` probe and before the adoption probe, and what it
+    returns — carried to the push and to `originRepoSlug` exactly as decision 54 carries it — is
+    the recorded value, not the configured one. The live read is the tripwire, not the source:
+    when the two disagree the merge is refused with both values named, and when nothing is
+    recorded it is refused pointing at `pup init`. Both refusals land before the gate runs, so
+    nothing is pushed, no PR is opened, and the session stays `awaiting-review`. This is decision
+    6's loud backstop, decision 50's shape: pup could quietly push to the recorded URL and say
+    nothing, but a `remote.origin.url` the operator did not write is a session that wrote it, and
+    that is worth stopping for rather than working around.
+    *Re-recording is a flag, and the flag is operator-only.* Origin does legitimately move — a
+    repo renamed, a fork promoted — so `pup init --origin-moved` re-records from the current
+    config. A plain `pup init` re-run never overwrites a disagreeing value; it reports it as a
+    finding naming both, with the flag. That is the considered-override shape `--accept-debt` and
+    `--allow-overlap` established: the flag refuses a calling session, because re-aiming where
+    sessions' work is pushed is not a session's call (decisions 41, 48).
+    *A session's own `pup init` records nothing at all.* The first record is as dangerous as a
+    re-record — a project set up before this column existed has none, and a session that got
+    there first would nominate the target the gate then holds it to. So the CLI passes `'skip'`
+    when `callingSession` answers, and the row stays empty until an operator runs it. The merge
+    refusing loudly on an unrecorded target is what makes that safe rather than silent.
+    *The operator can see the value they are held to.* `push target: <url>` prints beside the
+    `sandbox:` and `codegraph:` lines on `pup init` and `pup audit` alike, read from the row the
+    gate reads, and says "not recorded" in as many words when there is nothing there
+    (decisions 36, 51).
+    *Ceilings.* **`pup init` is not operator-only**, unlike `pup audit` (decision 48), so a
+    session can still re-run it and re-stamp the debt baseline through the command decision 48
+    did not cover. The push target is defended against that by the `'skip'` above; the baseline
+    is not, and closing it is decision 48's shape applied to one more command — its own change.
+    **A project whose origin moved and whose operator has not re-recorded cannot merge with
+    `--pr`** until they do; that is the intended refusal, but it is a stop-the-world one, and the
+    same is true of every project set up before the column existed. **The record is only as good
+    as the checkout `pup init` ran in:** an operator who onboards a repo whose `remote.origin.url`
+    was already poisoned records the poison, and nothing here can tell. **Decision 27's ceiling
+    stands:** a session that `cd`s out of its worktree and unsets `PUP_SESSION_ID` is an operator
+    to `callingSession`, so the `'skip'` and the flag's refusal make the audit trail honest, not
+    tamper-proof — the sandbox is the instrument for the rest.
 
 ## Implementation notes
 

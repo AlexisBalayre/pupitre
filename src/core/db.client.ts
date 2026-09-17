@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS projects (
   repo_path TEXT NOT NULL,
   adapters TEXT NOT NULL DEFAULT '[]',
   baseline TEXT,
+  origin_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -123,6 +124,14 @@ const MIGRATIONS: { table: string; column: string; kind: 'add' | 'drop'; ddl: st
     column: 'files',
     kind: 'add',
     ddl: "ALTER TABLE decision_records ADD COLUMN files TEXT NOT NULL DEFAULT '[]'",
+  },
+  {
+    // Origin's URL as the trusted checkout had it when the project was set up:
+    // the push target `pup merge --pr` refuses to differ from (decision 56).
+    table: 'projects',
+    column: 'origin_url',
+    kind: 'add',
+    ddl: 'ALTER TABLE projects ADD COLUMN origin_url TEXT',
   },
   {
     // Written on every insert and on merge, read by nothing. The backlog asks
