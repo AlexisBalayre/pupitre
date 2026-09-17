@@ -5,6 +5,7 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { conductorName, conductorSocket } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
+import { eventDetail } from './dashboard-events.utils.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
@@ -285,57 +286,12 @@ function gateOf(event: EventRow): DashboardGate | undefined {
 }
 
 function dashboardEvent(event: EventRow): DashboardEvent {
-  const detail = eventDetail(event);
+  const detail = eventDetail(event, event.type === 'gate_result' ? gateOf(event) : undefined);
   return {
     type: sanitizeReason(event.type),
     at: toIsoUtc(event.created_at),
     ...(detail ? { detail } : {}),
   };
-}
-
-/**
- * What an event's payload says, in the words a person reads it in: the
- * transition and the verdict on a gate result, the kind and sender of a steer,
- * the summary a session finished with. Ids, hashes and file lists stay in the
- * store — `pup report` is where they are read — and a payload with nothing to
- * say leaves the line as its type and its time.
- */
-function eventDetail(event: EventRow): string | undefined {
-  const payload = parseJsonOr<Record<string, unknown>>(event.payload, {});
-  const text = (key: string): string | undefined => {
-    const value = payload[key];
-    return typeof value === 'string' ? sanitizeReason(value) : undefined;
-  };
-  const line = (...parts: (string | undefined)[]): string | undefined =>
-    parts.filter(Boolean).join(' · ') || undefined;
-  switch (event.type) {
-    case 'gate_result': {
-      const [from, to, gate] = [text('from'), text('to'), gateOf(event)];
-      const verdict = gate?.passed
-        ? 'gate passed'
-        : gate && `gate failed${gate.failedStage ? ` at ${gate.failedStage}` : ''}`;
-      return line(
-        from && to ? `${from} → ${to}` : undefined,
-        verdict,
-        text('outcome'),
-        text('reason'),
-      );
-    }
-    case 'steer': {
-      const by = text('by');
-      return line(text('kind'), by && `by ${by}`);
-    }
-    case 'turn_died':
-      return line(text('reason'), text('refusal'));
-    case 'session_done':
-      return text('summary');
-    case 'merge': {
-      const target = text('target');
-      return text('prUrl') ?? (target && `into ${target}`);
-    }
-    default:
-      return text('kind');
-  }
 }
 
 /**
