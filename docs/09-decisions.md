@@ -2461,6 +2461,16 @@ changes back into those docs is pending.
     and an empty `requireStack`, with the path inside a corepack install tree. The empty
     require stack is the discriminator. A missing module the project's own code required has
     a stack, and that failure is the checkout's to answer.
+    *Refused, not stored.* `initProject` runs that check on every failed stage and throws
+    `BrokenToolchainError`, naming the install directory, before it writes the
+    `baseline_history` row or `projects.baseline`. The check lives in `initProject` rather
+    than `auditProject`, so `pup init` is covered as well as `pup audit`: both would otherwise
+    store the crash as the bar. It runs straight after the stages, before the debt
+    capabilities, because those call the same package manager and would only spend minutes
+    failing the same way. Both commands report it through the guard that already reports a
+    repo with no adapter: one line on stderr, exit 1, no stack. The project row itself may
+    exist, because `ensureProject` runs before any stage. That row carries no baseline, so it
+    is not a bar.
 
 ## Implementation notes
 

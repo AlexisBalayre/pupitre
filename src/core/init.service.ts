@@ -1,5 +1,10 @@
 import type { Database } from 'better-sqlite3';
-import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import {
+  brokenPackageManagerInstall,
+  isUnavailable,
+  localContext,
+  sanitizeReason,
+} from '../adapters/capability.utils.js';
 import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import { repoCoverageRatio } from './coverage.utils.js';
@@ -24,6 +29,21 @@ export class NoAdapterError extends Error {
       `No adapter detected for ${repoPath} (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).`,
     );
     this.name = 'NoAdapterError';
+  }
+}
+
+/**
+ * A stage died before measuring anything: the package manager it runs through
+ * could not load from pup's toolchain cache. Stored, that FAIL becomes the bar
+ * the next merge gates against (decision 55), so the capture stops instead.
+ */
+export class BrokenToolchainError extends Error {
+  constructor(stage: string, installPath: string) {
+    super(
+      `${stage} could not load its package manager from the toolchain cache: ${installPath} is broken. ` +
+        'No baseline stored — move that directory aside and re-run.',
+    );
+    this.name = 'BrokenToolchainError';
   }
 }
 
@@ -95,6 +115,12 @@ export function initProject(
         `${stage} fails at baseline — the v1 gate hard-fails this stage, so no session can merge until it passes on ${repoPath}.`,
       );
     }
+  }
+  // Checked before the debt capabilities too: they run the same package
+  // manager, and would only spend minutes failing the same way.
+  for (const { stage, status, detail } of stages) {
+    const installPath = status === 'fail' ? brokenPackageManagerInstall(detail ?? '') : undefined;
+    if (installPath) throw new BrokenToolchainError(stage, installPath);
   }
 
   const debt: DebtBaseline = {};
