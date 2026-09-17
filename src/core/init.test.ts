@@ -1,12 +1,12 @@
-import { mkdtempSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
-import { initProject, NoAdapterError } from './init.service.js';
+import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
@@ -155,6 +155,42 @@ describe('initProject', () => {
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toEqual([]);
+  });
+
+  it('stores nothing when the package manager itself cannot load from the toolchain cache', () => {
+    // The poisoned shape: a corepack install with an empty bin/. The repair
+    // moves it aside before the child runs, and the stage still runs the path
+    // it was handed, so the crash is Node's real missing-entrypoint banner.
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cache-root-')));
+    vi.stubEnv('TMPDIR', tmp);
+    const install = join(
+      tmp,
+      'pup-toolchain-cache',
+      projectId(repo),
+      'corepack',
+      'v1',
+      'pnpm',
+      '10.34.5',
+    );
+    mkdirSync(join(install, 'bin'), { recursive: true });
+    const pnpm = { command: 'node', args: [join(install, 'bin', 'pnpm.cjs')] };
+    const adapter = makeAdapter({
+      gateCommands: () => [
+        { stage: 'build', ...pnpm },
+        { stage: 'test', ...pnpm },
+        { stage: 'lint', ...pnpm },
+      ],
+    });
+
+    try {
+      expect(() => initProject(db, repo, [adapter])).toThrow(BrokenToolchainError);
+      expect(() => initProject(db, repo, [adapter])).toThrow(install);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    expect(getProject(db, projectId(repo))?.baseline).toBeNull();
+    expect(listBaselineHistory(db, projectId(repo))).toEqual([]);
   });
 
   it('throws when no adapter detects the repo', () => {

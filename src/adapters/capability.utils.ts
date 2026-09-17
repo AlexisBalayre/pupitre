@@ -50,3 +50,26 @@ export function failureSummary(error: unknown): string {
   const failure = error as { stderr?: string; stdout?: string; message?: string };
   return sanitizeReason(failure.stderr || failure.stdout || failure.message || 'command failed');
 }
+
+/**
+ * Node's crash when the file it was told to run is missing: the module named in
+ * the banner, with an empty require stack — nothing required it, it was the
+ * entrypoint.
+ */
+const ENTRYPOINT_NOT_FOUND =
+  /Cannot find module '([^'\n]+)'[\s\S]*code: 'MODULE_NOT_FOUND'[\s\S]*requireStack: \[\]/;
+
+/** `<COREPACK_HOME>/v1/<manager>/<version>`, the directory corepack runs a package manager from. */
+const COREPACK_INSTALL = /^(.*\/corepack\/v1\/[^/]+\/[^/]+)\//;
+
+/**
+ * The corepack install directory, when a stage's output says the package
+ * manager itself failed to load rather than anything the checkout did — a
+ * poisoned toolchain cache, not a measurement. Only the entrypoint counts: a
+ * `MODULE_NOT_FOUND` raised by the project's own code has a require stack, and
+ * one for a path outside corepack's install tree is the project's to answer.
+ */
+export function brokenPackageManagerInstall(output: string): string | undefined {
+  const missing = ENTRYPOINT_NOT_FOUND.exec(output)?.[1];
+  return missing ? COREPACK_INSTALL.exec(missing)?.[1] : undefined;
+}
