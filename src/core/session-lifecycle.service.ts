@@ -3,7 +3,6 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
-import { failureSummary } from '../adapters/capability.utils.js';
 import {
   interruptPane,
   kickoff,
@@ -15,7 +14,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
-import { codegraphBinary, ensureCodegraphExcluded, indexDirectory } from './codegraph.client.js';
+import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { assertNoArmedGitDrivers, GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -191,44 +190,6 @@ function knowledgeSliceFor(
   }
 }
 
-/**
- * Index this session's worktree and return the `--mcp-config` path to launch
- * with, or undefined when the session gets no code graph (decision 51). Runs
- * after `worktree add` — the files do not exist before it — and before the
- * launch, so the window opens on a graph of its own branch.
- *
- * Best-effort in one direction only: a failed index costs the session its graph,
- * never its launch, and it withholds the config rather than launching with one
- * codegraph would resolve up into the main checkout (see codegraph.client.ts).
- * No graph is a poorer session; the wrong graph is a lying one.
- */
-function graphForWorktree(
-  binary: string | undefined,
-  repoPath: string,
-  worktreePath: string,
-  compiledDir: string,
-): string | undefined {
-  if (!binary) {
-    console.error('No `codegraph` outside the repo on PATH: launching without a code graph.');
-    return undefined;
-  }
-  try {
-    // Before the index, which is what creates the untracked `.codegraph/` that
-    // would otherwise show up in every `git status`, including the gate's.
-    ensureCodegraphExcluded(repoPath);
-    indexDirectory(binary, worktreePath);
-    return join(compiledDir, 'mcp.json');
-  } catch (error) {
-    // Through `failureSummary` like every other shell-out (decision 29): this is
-    // a third-party CLI's stderr on its way to the operator's terminal, and raw
-    // ANSI there can repaint the line they are reading.
-    console.error(
-      `Could not index ${worktreePath}: launching without a code graph. ${failureSummary(error)}`,
-    );
-    return undefined;
-  }
-}
-
 function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec }): string {
   const paths = projectPaths(req.repoPath);
 
@@ -265,7 +226,11 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
   });
   git(req.repoPath, 'worktree', 'add', '-b', branch, worktreePath, 'HEAD');
   writeCompiledProfile(compiled, compiledDir);
-  const mcpConfigPath = graphForWorktree(binary, req.repoPath, worktreePath, compiledDir);
+  // After `worktree add`, since the files do not exist before it, and before the
+  // launch, so the window opens on a graph of its own branch (decision 51).
+  const mcpConfigPath = prepareGraph(binary, req.repoPath, worktreePath)
+    ? join(compiledDir, 'mcp.json')
+    : undefined;
 
   insertSession(db, {
     id: sessionId,
