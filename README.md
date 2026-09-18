@@ -41,7 +41,7 @@ Pupitre exists so that an engineer can still *master* a codebase that agents are
 | Conflict radar | `pup watch` scans live diffs for same-file overlaps and revives sessions whose turn died. |
 | Merge gate | `pup merge` runs build, tests, lint, a scope audit, then debt deltas: duplication, dead code, complexity, coverage, diff size. Deltas against a baseline, never absolutes, with a ratchet so quality only tightens. |
 | Debt ledger | A flagged shortcut merges only with `--accept-debt <reason>` and a review-by condition. `pup debt` lists what is open, `pup status` shows what is overdue. |
-| Knowledge | Every merge writes a decision record and refreshes the code map in the same transaction. `pup log`, `pup map --open`, `pup report --open`. |
+| Knowledge | Every merge writes a decision record. `pup log`, `pup map --open` and `pup report --open` show what exists and why. |
 | Conductor | `pup conductor` starts one Claude Code session that plans, launches, steers and reports on the workers. It holds every power except the merge. The merge stays yours. |
 | Dashboard | `pup ui` is a live terminal dashboard: sessions, backlog, debt and the conflict radar in one place. |
 
@@ -133,7 +133,11 @@ Early and opinionated. Single user, single machine, TypeScript adapter first. Cl
 
 ## Contributing
 
-Issues and pull requests are welcome. Read [`AGENTS.md`](AGENTS.md) first: it is the same brief the project's own sessions get. Work happens on a branch, never on `main`, and the pre-commit hook runs the tests.
+Issues and pull requests are welcome. Read [`AGENTS.md`](AGENTS.md) first: it is the same brief the project's own sessions get. Work happens on a branch, never on `main`. Install the pre-commit hook once so the tests run before every commit:
+
+```bash
+cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
 
 ## License
 
