@@ -1,9 +1,9 @@
 ---
 name: pr-ci-review
 disable-model-invocation: true
-allowed-tools: Bash(git *), Bash(gh *), Bash(pnpm *), Read, Edit, Write, Grep, Glob, Agent, mcp__github_inline_comment__create_inline_comment
-description: Cost-optimal multi-agent code review of local changes or a PR, across six relevance-gated, model-tiered areas, with a deterministic pre-flight, record-all reporting, and high-signal posting.
-argument-hint: "[pr [<number>]] [--fix | --comment]"
+allowed-tools: Bash(git *), Bash(gh *), Bash(pnpm *), Read, Edit, Write, Grep, Glob, Agent
+description: Cost-optimal multi-agent code review of local changes or a PR, across six relevance-gated, model-tiered areas, with a deterministic pre-flight and a record-all structured verdict CI renders to the PR in full.
+argument-hint: "[pr [<number>]] [--fix]"
 ---
 
 # Code Review Protocol
@@ -41,8 +41,11 @@ Define **the change** once and reuse it everywhere below:
 
 ## 2. Gate the run before spending anything
 
-- **PR freshness** (pr source): before spawning, assert the working tree *is* the PR's current head: `git rev-parse HEAD` must equal `gh pr view <n> --json headRefOid -q .headRefOid`. If they differ, the tree is stale (CI checks out the head, but GitHub can serve a lagging `refs/pull/N/merge`): re-checkout the head with `gh pr checkout <n>`, or stop and say so. A stale tree produces findings that are false on the real head and silently skips the surface the head added. Also assert the tree is **clean** (`git status --porcelain` empty): the SHA match alone passes even when uncommitted edits sit on top of the right HEAD, and those edits make `Read` serve content that disagrees with `gh pr diff`, so reviewers cite code that is not in the PR. If it is dirty, restore it (`git checkout -- .` / `git reset --hard HEAD`) or stop.
-- **Pre-flight** (local source): run `pnpm lint && pnpm typecheck && pnpm test`. This is a single package, so there is nothing to scope — the whole suite is the affected suite. If it fails, **stop**: report the failures and ask the user to return once the tree is green. Reviewers assume the deterministic layer is clean; spawning them on a red tree pays opus to rediscover what tooling already flagged. Integration tests are infra-gated and stay CI's job. For a pr source running under CI, skip the pre-flight: the build workflow already gates the tree.
+- **Under CI (a schema was requested):** the preflight step already asserted the working tree is the PR's clean current head, resolved the merge base, and decided the mode; had any of that failed, you would not be running. Two gates remain yours:
+  - **The config-restore set.** After the preflight and before you started, the CI action replaced `.claude/`, `.mcp.json`, `.claude.json`, `.gitmodules`, `.ripgreprc`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `.husky` with the base branch's copies, because the head's versions are config the CLI executes at startup. A PR touching any of them therefore shows dirty exactly there; never `git checkout --` those paths (that re-arms the injection the restore disarms). Read the PR's own copies from `.claude-pr/<path>`, which the action preserves unexecuted; commit-to-commit diffs (`gh pr diff`, `git diff <merge_base>..HEAD`) show those files' real changes either way.
+  - **The second freshness assertion.** Once the reviewers return, before you consolidate, compare `git rev-parse HEAD` to `gh pr view <n> --json headRefOid -q .headRefOid`: a push landing mid-review leaves the checkout behind the head, and a finding raised against text the true head already fixed is a false positive you shipped. If it moved, re-check each finding against `gh pr diff` rather than discarding the run.
+- **Local pr source:** assert the working tree is the PR's current head (`git rev-parse HEAD` equals the PR's `headRefOid`) and clean (`git status --porcelain` empty); re-checkout with `gh pr checkout <n>`, or stop and say so. A stale or dirty tree makes `Read` serve content that disagrees with `gh pr diff`, so reviewers cite code that is not in the PR.
+- **Pre-flight (local source):** run the project's lint, typecheck, and test commands (`LINT_CMD` / `TYPECHECK_CMD` / `TEST_CMD` in `.claude/project.env`) (this is a single package: the whole suite is the affected suite). An empty key means that check is off; skip it. If it fails, **stop**: report the failures and ask the user to return once the tree is green. Reviewers assume the deterministic layer is clean; spawning them on a red tree pays opus to rediscover what tooling already flagged. Integration tests are infra-gated and stay CI's job.
 
 ## 3. Steer (yourself, no agent)
 
@@ -64,7 +67,7 @@ Spawn a reviewer (via the **Agent** tool, by its `subagent_type`) **only when it
 | `review-correctness` | opus | code with real logic changed; owns behavioral regressions on the surface tests do not cover |
 | `review-security` | opus | a trust boundary is touched (auth, routes, WS handlers, input handling, secrets, config) |
 | `review-context` | sonnet | spec/protocol/infra surfaces touched (CORS, HTTP, docker, CI, settings) |
-| `review-conventions` | sonnet | almost always: `docs/conventions/*`, `docs/09-decisions.md`, and `CLAUDE.md` govern the rules |
+| `review-conventions` | sonnet | almost always: `docs/conventions/*`, `docs/09-decisions.md`, and `AGENTS.md` govern the rules |
 | `review-maintainability` | sonnet | code with real logic changed |
 | `review-docs` | sonnet | the change adds or edits prose (docstrings, comments, markdown, copy) |
 
@@ -115,7 +118,7 @@ Validation buys precision, never recall, and precision is only worth paying for 
 **fix** (local, `--fix`): apply each confirmed finding.
 
 - **Scope discipline**: each fix targets only the flagged issue. Do not refactor adjacent code, touch unrelated docstrings, or remove ticket TODOs.
-- **Post-verify**: after editing, re-run `pnpm typecheck && pnpm test` to prove no regression was introduced. Report the result.
+- **Post-verify**: after editing, re-run `TYPECHECK_CMD` and `TEST_CMD` (scoped to the affected area where the runner allows) to prove no regression was introduced. Report the result.
 - Summarize what changed (file, line, fix). List anything you noticed but did not touch under "Tangential (not applied)" and ask before editing those.
 
 **record** (pr, CI): **you post nothing.** You have no tool that can write to the PR, by design. The record you emit in §9 *is* the round's output: the poster script renders it, anchors each `important` to the diff, posts one review, and pins a review commit status to the head SHA. So a finding you leave out of the record never reaches the author, and there is no second channel through which you could rescue it.
@@ -144,9 +147,9 @@ There is no `comments_posted` field to report: you do not post, so the count is 
 
 ## Todo List
 
-- [ ] Parse arguments into source + action; reject invalid combinations.
-- [ ] Gate the run: PR freshness (pr) or pre-flight `pnpm lint`/`typecheck`/`test` (local).
-- [ ] Steer: read the change shape and intent yourself.
+- [ ] Parse arguments into source + action, and read the mode from the invocation's `Mode:` line; reject invalid combinations.
+- [ ] Gate the run: config-restore awareness under CI, freshness for a local pr, pre-flight lint/typecheck/test suite for local source.
+- [ ] Steer: read the change shape and intent yourself; on incremental, read the prior record's importants.
 - [ ] Gate and spawn only the touched areas, tiered and instance-capped.
 - [ ] Consolidate inline: dedup and assign one area citation-first.
 - [ ] Validate importants only (none for report; before editing for fix; per-finding for record/CI).
