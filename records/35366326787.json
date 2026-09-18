@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T16:13:11.644Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35366326787",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35366326787",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5cb80899914a0f14773b2f296ada89a08dec45f3",
+  "source": "pr",
+  "pr_number": 100,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "5479de8cd95edb248e2e518fe0538e6239cd3b48",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2633-2636",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 57 states, verbatim: docs/09-decisions.md:2634 — \"The conductor's hash needs no such term, its `context.md` carrying every word already. Absent a brief the term is absent from the payload, so a project without one hashes as it always did.\" The reviewed commit does the opposite in src/core/profile-compiler.service.ts:459-467: it adds `brief` as an explicit term to the conductor's hash payload (`.update(JSON.stringify({ files, userConfigHash: input.userConfigHash, brief }))`), specifically because `context.md` does not carry every word — it carries the brief trimmed, so outer whitespace is invisible there. This is a legitimate bug fix (confirmed by the new test profile-compiler.test.ts:384-394), but decision 57's own prose describing the conductor's hash computation is now factually wrong and wasn't updated alongside the code, and the new comment's \"(decision 57)\" citation misleadingly implies the decision already sanctions this when it states the opposite.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "correctness",
+      "description": "The correctness reviewer had no CI sandbox access to node/vitest to empirically run the changed regexes or tests; it verified the fence-regex and heading-regex logic by tracing the code by hand instead of executing it. Sound here given the regexes are small and the traces were thorough, but worth noting as a standing limitation of the static review environment for regex-heavy changes."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 2.6542384500000002,
+  "duration_ms": 449545,
+  "num_turns": 26,
+  "tokens": {
+    "input": 29,
+    "output": 18516,
+    "cache_read": 720336,
+    "cache_creation": 55711,
+    "total": 794592
+  }
+}
