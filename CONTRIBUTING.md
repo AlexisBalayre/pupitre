@@ -47,8 +47,6 @@ pnpm worktree:clean                 # after the merge; removes worktrees whose r
 | Build | `pnpm build` |
 | Review tooling under `tools/review` | `pnpm --dir tools/review typecheck && pnpm --dir tools/review test` |
 
-Run the tests with `PUP_CONDUCTOR` unset if you have a conductor session open in the same shell; the CLI suite stubs it and fails otherwise.
-
 ## Code
 
 The rules live in [`docs/conventions/`](docs/conventions/): `general.md` and `naming.md` for every TypeScript file, `testing.md` for tests. The ones people trip on:
