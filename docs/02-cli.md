@@ -21,7 +21,18 @@ exit 1.
   review step (see 07-onboarding.md). Prints one `codegraph: <version>` or `codegraph: not
   installed` line beside the `sandbox:` one: an external binary detected like `gh` and `tmux`,
   never a dependency, and the difference between a fleet whose sessions query a code graph and
-  one whose sessions grep (decision 51).
+  one whose sessions grep (decision 51). Records `remote.origin.url` as the project's push
+  target and prints it as `push target: <url>` on the next line — that recorded value is what
+  `pup merge --pr` pushes to, and it refuses when the repo's config no longer says the same
+  thing. The record is held back, with a finding, rather than written when the configured URL
+  carries control characters or when sessions have already run for the project; `--origin-moved`
+  is how the operator confirms one. A run from inside a session records nothing: naming the target is the operator's act
+  (decision 56).
+- `pup init --origin-moved` — record the push target from the repo's current
+  `remote.origin.url` when pup will not do it on its own: origin legitimately moved (a rename, a
+  fork promoted), or this is a first record on a project whose sessions have already had the
+  shared config to write. The only way to move it. Operator-only, like `pup audit`: it is the
+  value a session's merge is held to (decision 56).
 - `pup plan add "<goal>" --scope <glob>...` — record a task with no session. `pup plan` lists the
   backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
   rewrites one. A task is in the backlog until a session claims it (decision 40).
@@ -134,6 +145,10 @@ exit 1.
 - `pup review` — the queue: pending branches ordered by risk score, each with generated diff summary, gate results, debt delta.
 - `pup review <session>` — full detail for one branch.
 - `pup merge <session>` — run the gate pipeline; on pass, merge and write knowledge layer in the same transaction; on fail, move to rejected and inject the report. Operator-only, `--pr` included: the verdict moves another session's branch (decisions 26, 44).
+  `--pr` pushes to the URL `pup init` recorded, from a git dir that reads no shared config
+  (decision 54), and refuses before running a single stage — naming both values, having pushed
+  nothing — when the repo's `remote.origin.url` no longer matches the record, or when no push
+  target was ever recorded (decision 56).
 - `pup merge <session> --accept-debt "<reason>" --review-by "<condition>"` — merge despite a flagged shortcut, creating a ledger entry.
 
 ## Session protocol
@@ -158,8 +173,8 @@ worktree both refuse — so a session reports only its own state (decision 44).
 - `pup profile list | show <name> | edit <name>` — manage base and role layers.
 - `pup profile stale` — running sessions whose profile version is behind current.
 - `pup audit` — re-run the baseline stages and report drift against the stored baseline,
-  refreshing it. Prints the same `codegraph:` line `pup init` does, so the capability is
-  reported on the repeat path too and not only the first run. Operator-only: outside a merge this is the only thing that re-stamps the
+  refreshing it. Prints the same `codegraph:` and `push target:` lines `pup init` does, so both
+  are reported on the repeat path too and not only the first run. Operator-only: outside a merge this is the only thing that re-stamps the
   debt baseline, and on a `--pr` repo it is the only thing at all, so a session running it
   from its worktree would choose when its own bar moves (decisions 26, 39, 48).
 - `pup audit --sweep` — spawn a deletion-only session (dead code, unused deps) from the latest audit findings. Operator-only for the same reason `pup launch` is, on top of the baseline one (decision 42).

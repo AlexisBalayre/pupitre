@@ -53,6 +53,7 @@ import {
   listBacklogTasks,
   listEvents,
   saveProjectBaseline,
+  saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
@@ -1199,13 +1200,16 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // Origin is GitHub-shaped so the --repo pin can be derived. A rewrite in the
   // operator's global config, which the pinned push still honours, lands it in
-  // a local bare repo so the gate's real `git push` stays offline.
+  // a local bare repo so the gate's real `git push` stays offline. Recording
+  // the URL on the project row is what the operator's `pup init` would have
+  // done at setup; without it the gate refuses to push anywhere (decision 56).
   const addOrigin = (): string => {
     const host = realpathSync(mkdtempSync(join(tmpdir(), 'pup-origin-')));
     const bare = join(host, 'owner', 'repo.git');
     mkdirSync(bare, { recursive: true });
     sh(bare, 'git', 'init', '--bare', '-b', 'main');
     sh(repo, 'git', 'remote', 'add', 'origin', ORIGIN_URL);
+    saveProjectOriginUrl(db, 'proj-1', ORIGIN_URL);
     const globalConfig = join(host, 'gitconfig');
     writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
     vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
@@ -1305,6 +1309,95 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.prUrl).toContain('--repo github.com/owner/repo');
     expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
     expect(sh(elsewhere, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+  });
+
+  /**
+   * A second GitHub-shaped URL under the same rewrite `addOrigin` installs, so
+   * it resolves to a local bare repo like origin does. Shaped that way on
+   * purpose: a target `originRepoSlug` would refuse anyway, or one no rewrite
+   * can reach, would make a refusal test pass for a reason other than the one
+   * it is testing.
+   */
+  const secondRemote = (bare: string, owner: string, name: string): string => {
+    const path = join(dirname(dirname(bare)), owner, `${name}.git`);
+    mkdirSync(path, { recursive: true });
+    sh(path, 'git', 'init', '--bare', '-b', 'main');
+    return path;
+  };
+
+  it('with openPr refuses when origin no longer matches the recorded push target', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const bare = addOrigin();
+    const rogue = secondRemote(bare, 'attacker', 'repo');
+    // Written from the session's worktree into the config every checkout
+    // shares — the value decision 54 reads raw, and the one thing it could not
+    // defend against because it had nothing to compare it to.
+    sh(worktree, 'git', 'config', 'remote.origin.url', 'git@github.com:attacker/repo.git');
+
+    expect(() =>
+      withFakeGh(fakeGh([]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow(
+      /recorded: +git@github\.com:owner\/repo\.git[\s\S]*configured: +git@github\.com:attacker\/repo\.git/,
+    );
+    expect(sh(rogue, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+    expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+    // Refused before the gate ran, so gh was only probed: nothing was pushed
+    // and no pull request was opened anywhere.
+    expect(ghCalls()).toEqual(['--version']);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  it('with openPr refuses when the project has no recorded push target at all', () => {
+    seedSession(db, repo);
+    // Origin still resolves to the local bare repo: with the guard removed this
+    // test must push somewhere offline, not at the real github.com/owner/repo.
+    addOrigin();
+    db.prepare('UPDATE projects SET origin_url = NULL WHERE id = ?').run('proj-1');
+
+    expect(() =>
+      withFakeGh(fakeGh([]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapter: passingAdapter,
+          openPr: true,
+        }),
+      ),
+    ).toThrow('No push target is recorded');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  it('with openPr pushes to a moved origin once the operator has re-recorded it', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const bare = addOrigin();
+    const moved = secondRemote(bare, 'owner', 'renamed');
+    const movedUrl = 'git@github.com:owner/renamed.git';
+    sh(repo, 'git', 'config', 'remote.origin.url', movedUrl);
+    // What `pup init --origin-moved` writes from the trusted checkout.
+    saveProjectOriginUrl(db, 'proj-1', movedUrl);
+
+    const outcome = withFakeGh(fakeGh([]), () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapter: passingAdapter,
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.prUrl).toContain('--repo github.com/owner/renamed');
+    expect(sh(moved, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
+    expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
   });
 
   it("pipes the remote-tracking probe's stderr instead of leaking it, while the push stays inherited", () => {

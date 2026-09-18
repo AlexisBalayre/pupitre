@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 import {
   brokenPackageManagerInstall,
@@ -8,6 +9,7 @@ import {
 import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import { repoCoverageRatio } from './coverage.utils.js';
+import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
 import {
   DUPLICATION_RULE_ID,
   GATE_COMMAND_TIMEOUT_MS,
@@ -15,7 +17,13 @@ import {
 } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
-import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
+import {
+  countProjectSessions,
+  ensureProject,
+  getProject,
+  saveProjectBaseline,
+  saveProjectOriginUrl,
+} from './session.repository.js';
 import type {
   BaselineStageResult,
   DebtBaseline,
@@ -45,6 +53,101 @@ export class BrokenToolchainError extends Error {
     );
     this.name = 'BrokenToolchainError';
   }
+}
+
+/**
+ * Origin's URL exactly as the config stores it, `undefined` when the repo has
+ * no origin. `config --get`, never `remote get-url`, which applies the
+ * `url.<base>.insteadOf` rewrites a session can write into the shared config
+ * (decision 54). The value `pup init` records and the value the merge gate
+ * compares against it are both read through this one function, so the two
+ * cannot come to read the same config differently (decision 56). stderr is
+ * captured rather than inherited: a path that is no repo at all is an answer
+ * here, not something to print.
+ */
+export function readOriginUrl(repoPath: string): string | undefined {
+  try {
+    const url = execFileSync(
+      'git',
+      [...GIT_SAFE_CONFIG, '-C', repoPath, 'config', '--get', 'remote.origin.url'],
+      // Timed out like every other child pup runs: an `include.path` pointing at
+      // a fifo is another thing a session can write into the shared config, and
+      // an untimed read would hang `pup init` and hang `--pr` before the lock.
+      {
+        encoding: 'utf8',
+        env: scrubbedGitEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GATE_COMMAND_TIMEOUT_MS,
+      },
+    ).trim();
+    return url || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What a `pup init` run may do to the recorded push target (decision 56):
+ * `'record'` writes it when nothing is recorded yet and reports a value that
+ * disagrees rather than overwriting it, `'re-record'` is the operator's word
+ * that origin moved (`pup init --origin-moved`), and `'skip'` is a session's
+ * own `pup init` — the record is what the gate holds a session's merge to, so
+ * a session must not be able to nominate it.
+ */
+export type OriginRecording = 'record' | 're-record' | 'skip';
+
+/**
+ * Store origin's URL as this checkout has it, and return the finding when it
+ * disagrees with what is already recorded. Recorded once at setup, from the
+ * checkout the operator trusts, because the config the gate reads at merge
+ * time is shared with every session's worktree and a session can rewrite it
+ * (decision 56). A repo with no origin records nothing: `pup merge --pr`
+ * refuses on the missing remote before it ever asks about the target.
+ */
+function recordOriginUrl(
+  db: Database,
+  pid: string,
+  repoPath: string,
+  recording: OriginRecording,
+): string | undefined {
+  if (recording === 'skip') return undefined;
+  const configured = readOriginUrl(repoPath);
+  if (!configured) return undefined;
+  const recorded = getProject(db, pid)?.origin_url ?? undefined;
+  if (recorded === configured) return undefined;
+  // Stored only if it survives the sanitizer the terminal messages use: a value
+  // carrying control characters repaints whatever is printed around it, and no
+  // remote URL anyone types needs them. Refused rather than sanitized, because
+  // a sanitized URL is not the one the gate would compare against.
+  const clean = sanitizeReason(configured);
+  if (clean !== configured) {
+    return (
+      `origin is configured as ${clean}, which is not a URL anyone could have typed — control ` +
+      'characters, newlines or over 300 of them. Not recorded: clear it from the config and ' +
+      're-run, and treat the session that wrote it as compromised.'
+    );
+  }
+  // The first record is trust-on-first-use, and it is only honest while nothing
+  // has had the chance to write the config first. A project that already ran
+  // sessions before this was recorded — every project set up before the column
+  // existed — has had exactly that chance, so the operator confirms the value.
+  if (recorded === undefined && recording === 'record' && countProjectSessions(db, pid) > 0) {
+    return (
+      `origin is configured as ${clean}, and sessions have already run here, so the shared ` +
+      'config it comes from has been writable by something other than you. Not recorded: ' +
+      'confirm it with `pup init --origin-moved`.'
+    );
+  }
+  if (recorded === undefined || recording === 're-record') {
+    saveProjectOriginUrl(db, pid, configured);
+    return undefined;
+  }
+  return (
+    `origin is configured as ${sanitizeReason(configured)}, but the recorded push target is ` +
+    `${sanitizeReason(recorded)} — \`pup merge --pr\` refuses while the two disagree. The shared ` +
+    'config is session-writable, so a change you did not make is a session that made it; ' +
+    're-record it with `pup init --origin-moved` only if origin really moved.'
+  );
 }
 
 function runBaselineStage(
@@ -89,6 +192,7 @@ export function initProject(
   repoPath: string,
   adapters: Adapter[],
   gateEnv?: string[],
+  recording: OriginRecording = 'record',
 ): InitReport {
   const detected = adapters.filter((a) => a.detect(repoPath));
   if (detected.length === 0) throw new NoAdapterError(repoPath);
@@ -98,6 +202,11 @@ export function initProject(
 
   const stages: BaselineStageResult[] = [];
   const findings: string[] = [];
+  // Before the stages, so the push target is recorded even on a run that ends
+  // in a broken-toolchain refusal (decision 55): it is not a bar, and setup is
+  // exactly when the checkout is the one the operator trusts.
+  const originFinding = recordOriginUrl(db, pid, repoPath, recording);
+  if (originFinding) findings.push(originFinding);
   const commands = detected.flatMap((a) => a.gateCommands(repoPath));
   for (const stage of ['build', 'test', 'lint'] as const) {
     const command = commands.find((c) => c.stage === stage);

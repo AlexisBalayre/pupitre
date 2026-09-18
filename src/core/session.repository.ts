@@ -60,6 +60,12 @@ export interface ProjectRow {
   adapters: string;
   /** JSON ProjectBaseline; null until `pup init` runs. */
   baseline: string | null;
+  /**
+   * Origin's URL as the trusted checkout had it when `pup init` recorded it —
+   * the push target `pup merge --pr` is held to. Null until a `pup init` run
+   * the operator made records one (decision 56).
+   */
+  origin_url: string | null;
   created_at: string;
 }
 
@@ -82,6 +88,30 @@ export function saveProjectBaseline(
     baseline,
     id,
   );
+}
+
+/**
+ * Record the push target. The one writer of `origin_url`, and it is reached
+ * only from an operator's `pup init`: a value a session could nominate would
+ * be the thing the gate compares against, which is the whole defence
+ * (decision 56).
+ */
+export function saveProjectOriginUrl(db: Database, id: string, originUrl: string): void {
+  db.prepare('UPDATE projects SET origin_url = ? WHERE id = ?').run(originUrl, id);
+}
+
+/**
+ * How many sessions have ever run for a project. Zero is the only state in
+ * which the shared git config has had no writer but the operator, which is what
+ * makes a first push-target record trustworthy (decision 56).
+ */
+export function countProjectSessions(db: Database, projectId: string): number {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM sessions s JOIN tasks t ON t.id = s.task_id WHERE t.project_id = ?',
+    )
+    .get(projectId) as { n: number };
+  return row.n;
 }
 
 export function insertTask(

@@ -27,6 +27,7 @@ import {
   originRepoSlug,
   rewritePullRequest,
 } from './github.client.js';
+import { readOriginUrl } from './init.service.js';
 import { hasOpenLedgerEntry, insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
   COMPLEXITY_FILE_FLAG_DELTA,
@@ -48,6 +49,7 @@ import {
   appendEvent,
   getProject,
   getSession,
+  getTask,
   incrementRejectCount,
   type SessionRow,
   saveProjectBaseline,
@@ -232,17 +234,10 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
     assertGhAvailable();
-    // The raw config value, not `remote get-url`: that applies the
-    // `url.<base>.insteadOf` rewrites a session can write into the shared
-    // config. Read once, here, and carried to the push, so the PR's repo and
-    // the pushed-to URL are one value and nothing the stages run can move it
-    // (decision 54).
-    let originUrl: string;
-    try {
-      originUrl = git(req.repoPath, 'config', '--get', 'remote.origin.url');
-    } catch {
-      throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
-    }
+    // Resolved once, here, and carried to the push, so the PR's repo and the
+    // pushed-to URL are one value and nothing the stages run can move it
+    // (decisions 54, 56).
+    const originUrl = pushTarget(db, session, req.repoPath);
     const ref = {
       repo: originRepoSlug(originUrl),
       head: session.branch,
@@ -256,8 +251,64 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target, pullRequest));
 }
 
+const PUSH_TARGET_HELP =
+  'Nothing was pushed. The config the value lives in is shared with every worktree and a ' +
+  'session can rewrite it, so treat a session that moved it as compromised; if origin really ' +
+  'moved, re-record it with `pup init --origin-moved` from the trusted checkout.';
+
+/**
+ * Where the branch is pushed and which repo the PR is pinned to: the URL
+ * recorded on the project row, and only while origin is still configured as
+ * that same value.
+ *
+ * Decision 54 stopped the push reading `url.*` rewrites out of the shared
+ * config, and left the ceiling this closes: `remote.origin.url` itself lives in
+ * that same session-writable config, so a session that rewrites it aims both
+ * the push and the `--repo` pin. The recorded copy is the trusted one — written
+ * by `pup init` from the operator's checkout — so it is what pup pushes to, and
+ * the live read is here to say when something moved it rather than to be
+ * quietly worked around. Both refusals are decision 6's loud backstop: they
+ * name both values and happen before the gate runs, so nothing is pushed.
+ */
+function pushTarget(db: Database, session: SessionRow, repoPath: string): string {
+  const configured = readOriginUrl(repoPath);
+  if (!configured) {
+    throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
+  }
+  const task = getTask(db, session.task_id);
+  if (!task) throw new Error(`Session ${session.id} has no task row; cannot resolve its project.`);
+  const project = getProject(db, task.project_id);
+  // The session reaches its project through its task row, which is a second
+  // notion of "this project" beside the path the merge was asked for. They
+  // agree in every store pup writes; if they ever did not, the push target
+  // would be read from a row describing another checkout.
+  if (project && project.repo_path !== repoPath) {
+    throw new Error(
+      `Session ${session.id} belongs to project ${task.project_id}, recorded at ` +
+        `${project.repo_path}, not the ${repoPath} this merge was asked for. Nothing was pushed.`,
+    );
+  }
+  const recorded = project?.origin_url ?? undefined;
+  if (!recorded) {
+    throw new Error(
+      'No push target is recorded for this project, so there is nothing to check origin ' +
+        `against: origin says ${sanitizeReason(configured)}, and nothing says that is where ` +
+        'the operator pointed it. Run `pup init` from the trusted checkout to record it, ' +
+        'then retry. Nothing was pushed.',
+    );
+  }
+  if (recorded !== configured) {
+    throw new Error(
+      "Refusing `pup merge --pr`: origin's URL is not the one recorded when this project " +
+        `was set up.\n  recorded:   ${sanitizeReason(recorded)}\n  configured: ` +
+        `${sanitizeReason(configured)}\n${PUSH_TARGET_HELP}`,
+    );
+  }
+  return recorded;
+}
+
 interface PullRequestPlan extends PullRequestRef {
-  /** Origin's URL as configured, before any rewrite; the push goes here literally. */
+  /** The push target recorded at setup; the push goes here literally (decision 56). */
   originUrl: string;
   /** Set when an open PR for this branch already exists and passed adoption checks. */
   adoptedUrl?: string;

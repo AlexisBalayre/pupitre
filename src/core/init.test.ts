@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,8 +10,34 @@ import { openStore } from './db.client.js';
 import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
-import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
+import {
+  ensureProject,
+  getProject,
+  insertSession,
+  insertTask,
+  saveProjectBaseline,
+} from './session.repository.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+
+// Same isolation the other suites use: a test repo must not inherit the
+// developer's global git config, nor the GIT_DIR family a pre-commit run sets.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
+
+function sh(cwd: string, ...args: string[]): string {
+  return execFileSync(args[0] as string, args.slice(1), { cwd, encoding: 'utf8', env: GIT_ENV });
+}
+
+const ORIGIN_URL = 'git@github.com:owner/repo.git';
+
+/** Turns the fixture into a git repo with an origin, as a real project has. */
+function addOrigin(repo: string, url = ORIGIN_URL): void {
+  sh(repo, 'git', 'init', '-b', 'main');
+  sh(repo, 'git', 'remote', 'add', 'origin', url);
+}
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   return {
@@ -87,6 +114,92 @@ describe('initProject', () => {
 
     expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'skipped', 'skipped']);
     expect(report.findings).toHaveLength(2);
+  });
+
+  it("records origin's URL on the project row, raw", () => {
+    addOrigin(repo);
+    // The rewrite `remote get-url` would apply and `config --get` does not:
+    // recording the rewritten value would record whatever a session had
+    // already aimed the repo at (decisions 54, 56).
+    sh(repo, 'git', 'config', 'url./tmp/elsewhere/.insteadOf', ORIGIN_URL);
+
+    const report = initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
+    expect(report.findings).toEqual([]);
+  });
+
+  it('refuses to record a URL nobody could have typed', () => {
+    // Terminal escapes in a remote URL repaint whatever is printed around it,
+    // and a stored one would be reprinted on every init and audit.
+    addOrigin(repo, `${ORIGIN_URL}\u001b[2Aowned`);
+
+    const report = initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
+    expect(report.findings[0]).toContain('not a URL anyone could have typed');
+  });
+
+  it('holds the first record on a project whose sessions could have written it', () => {
+    addOrigin(repo);
+    const pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    insertTask(db, { id: 't1', projectId: pid, spec: '{}' });
+    insertSession(db, {
+      id: 's1',
+      taskId: 't1',
+      worktreePath: join(repo, '.worktrees', 's1'),
+      branch: 'pup/s1',
+      profileHash: 'h',
+    });
+
+    const held = initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, pid)?.origin_url).toBeNull();
+    expect(held.findings[0]).toContain('--origin-moved');
+    // The flag is how the operator confirms it, first record or later move.
+    const confirmed = initProject(db, repo, [makeAdapter()], undefined, 're-record');
+    expect(getProject(db, pid)?.origin_url).toBe(ORIGIN_URL);
+    expect(confirmed.findings).toEqual([]);
+  });
+
+  it('records nothing when the repo has no origin', () => {
+    sh(repo, 'git', 'init', '-b', 'main');
+
+    initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
+  });
+
+  it('keeps the recorded push target when origin now says something else, and says so', () => {
+    addOrigin(repo);
+    initProject(db, repo, [makeAdapter()]);
+    sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:attacker/repo.git');
+
+    const report = initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
+    expect(report.findings).toEqual([expect.stringContaining('git@github.com:attacker/repo.git')]);
+    expect(report.findings[0]).toContain('--origin-moved');
+  });
+
+  it('re-records the push target when the operator says origin moved', () => {
+    addOrigin(repo);
+    initProject(db, repo, [makeAdapter()]);
+    sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:owner/renamed.git');
+
+    const report = initProject(db, repo, [makeAdapter()], undefined, 're-record');
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBe('git@github.com:owner/renamed.git');
+    expect(report.findings).toEqual([]);
+  });
+
+  it("records nothing on a session's own run: the push target is not a session's to name", () => {
+    addOrigin(repo);
+
+    initProject(db, repo, [makeAdapter()], undefined, 'skip');
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
   });
 
   it('refreshes the baseline on re-run', () => {

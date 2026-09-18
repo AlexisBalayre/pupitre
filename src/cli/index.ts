@@ -61,6 +61,7 @@ import {
   appendEvent,
   deleteTask,
   findSessionByWorktree,
+  getProject,
   getSession,
   getTask,
   listBacklogTasks,
@@ -181,7 +182,7 @@ function readKeystroke(): string {
   return key.toLowerCase();
 }
 
-function printInitReport(report: InitReport, repoPath: string): void {
+function printInitReport(db: Database, report: InitReport, repoPath: string): void {
   console.log(`Project ${report.projectId} (${repoPath})`);
   console.log(`adapters: ${report.baseline.adapters.join(', ')}`);
   for (const s of report.baseline.stages) {
@@ -191,6 +192,7 @@ function printInitReport(report: InitReport, repoPath: string): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   console.log(`sandbox: ${report.sandbox}`);
   printCodegraphLine(repoPath);
+  printPushTargetLine(db, report.projectId);
   if (report.findings.length > 0) {
     console.log('findings:');
     for (const f of report.findings) console.log(`  - ${f}`);
@@ -206,6 +208,39 @@ function printInitReport(report: InitReport, repoPath: string): void {
  */
 function printCodegraphLine(repoPath: string): void {
   console.log(`codegraph: ${codegraphLabel(repoPath)}`);
+}
+
+/**
+ * Beside the sandbox line for the third time (decisions 36, 51): the recorded
+ * push target is the value `pup merge --pr` refuses to differ from, so the
+ * operator has to be able to see what they are being held to — and, on a
+ * project set up before it was recorded, that they are being held to nothing
+ * yet. Read from the row rather than carried in the report, because the row is
+ * what the gate reads (decision 56).
+ */
+function printPushTargetLine(db: Database, id: string): void {
+  const recorded = getProject(db, id)?.origin_url;
+  // Sanitized on the way out as well as on the way in: a row written before
+  // `recordOriginUrl` refused control characters would otherwise repaint the
+  // lines above it on the way past (decisions 29, 56).
+  console.log(
+    `push target: ${recorded ? sanitizeReason(recorded) : 'not recorded — `pup merge --pr` refuses until `pup init` records one'}`,
+  );
+}
+
+/**
+ * The record is written before the stages run, so that a capture dying in one —
+ * a broken toolchain, decision 55 — still leaves it made; this keeps the line
+ * that reports it from dying with the capture, where a first record would land
+ * with no output at all.
+ */
+function withPushTargetLine<TResult>(db: Database, repoPath: string, run: () => TResult): TResult {
+  try {
+    return run();
+  } catch (error) {
+    printPushTargetLine(db, projectId(repoPath));
+    throw error;
+  }
 }
 
 /** The gate flags only increases over these numbers, so the human should see the bar. */
@@ -255,6 +290,15 @@ const GATE_ENV_DESCRIPTION =
 
 const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
+
+/**
+ * The only way to move a recorded push target, and it exists because origin
+ * does legitimately move — a repo renamed, a fork promoted. Operator-only, and
+ * a flag rather than a silent refresh on every `pup init`, so that re-aiming
+ * where sessions' work is pushed takes someone typing it (decision 56).
+ */
+const ORIGIN_MOVED_DESCRIPTION =
+  "re-record origin's URL as this project's push target, after origin legitimately moved";
 
 /**
  * Undo a launch whose kickoff was refused, in the order both refused launches
@@ -474,13 +518,36 @@ export function buildProgram(): Command {
     .command('init')
     .description('Onboard a repo: detect stack, baseline, conventions')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
-    .action((opts: { gateEnv?: string }) => {
+    .option('--origin-moved', ORIGIN_MOVED_DESCRIPTION)
+    .action((opts: { gateEnv?: string; originMoved?: boolean }) => {
       const { repoPath, db } = project();
-      const report = runOrReportNoAdapter(() =>
-        initProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+      // Recording the push target is the operator's act: it is the value the
+      // gate holds a session's `--pr` merge to, so a session that could write
+      // it — on a first record as much as on a re-record — would be choosing
+      // where its own work is pushed (decision 56). A session's `pup init`
+      // leaves the record alone and the merge refuses, which is loud; asking
+      // for the flag is refused outright, because it is a considered override
+      // and the consideration is not the session's to make (decisions 41, 48).
+      const session = callingSession(db);
+      if (opts.originMoved && session) {
+        return refuse(
+          '`pup init --origin-moved` is operator-only; sessions cannot move the push target.',
+        );
+      }
+      const recording = session ? 'skip' : opts.originMoved ? 're-record' : 'record';
+      const report = withPushTargetLine(db, repoPath, () =>
+        runOrReportNoAdapter(() =>
+          initProject(
+            db,
+            repoPath,
+            detectAdapters(repoPath),
+            parseGateEnv(opts.gateEnv),
+            recording,
+          ),
+        ),
       );
       if (!report) return;
-      printInitReport(report, repoPath);
+      printInitReport(db, report, repoPath);
       console.log(
         'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
       );
@@ -1521,8 +1588,10 @@ export function buildProgram(): Command {
       if (callingSession(db)) {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
-      const report = runOrReportNoAdapter(() =>
-        auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+      const report = withPushTargetLine(db, repoPath, () =>
+        runOrReportNoAdapter(() =>
+          auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+        ),
       );
       if (!report) return;
       if (opts.sweep) {
@@ -1554,7 +1623,7 @@ export function buildProgram(): Command {
       }
       if (!report.previous) {
         console.log('No stored baseline yet — captured one now, like `pup init`.');
-        printInitReport(report, repoPath);
+        printInitReport(db, report, repoPath);
         return;
       }
       console.log(`Project ${report.projectId} (${repoPath})`);
@@ -1573,6 +1642,7 @@ export function buildProgram(): Command {
       for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
       console.log(`sandbox: ${report.sandbox}`);
       printCodegraphLine(repoPath);
+      printPushTargetLine(db, report.projectId);
       // Same findings `pup init` prints: a stage that cannot measure says why
       // here too, or the repeat path is where the gap goes quiet (decision 29).
       if (report.findings.length > 0) {
