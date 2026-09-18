@@ -49,19 +49,23 @@ export const BRIEF_MAX_CHARS = 8000;
 const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 /**
- * An opening or closing code fence, with CommonMark's three spaces of slack.
- * Captures the run so a closing fence can be matched to the one that opened.
+ * An opening code fence, with CommonMark's three spaces of slack. Captures the
+ * run so a closing fence can be matched to the one that opened. An opener may
+ * carry an info string after the run; a closer may not, so `~~~ end of example`
+ * is fence content and the fence stays open past it.
  */
-const FENCE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 /**
- * A level-2 ATX heading, which is the only structure the brief has. `###` and
- * deeper do not match, and a closed heading (`## Constraints ##`) yields the
- * same title as an open one — CommonMark treats both as the same heading, and
- * an operator whose constraints reached no session because they typed the
- * closing run would have no way to see why.
+ * A level-2 ATX heading, which is the only structure the brief has, with the
+ * three spaces of indent CommonMark allows. `###` and deeper do not match, and
+ * a closed heading (`## Constraints ##`) yields the same title as an open one:
+ * CommonMark treats both as the same heading, and an operator whose
+ * constraints reached no session because they typed the closing run or
+ * indented the line would have no way to see why.
  */
-const SECTION_HEADING = /^##(?:[ \t]+(.*?)(?:[ \t]+#+)?)?[ \t]*$/;
+const SECTION_HEADING = /^ {0,3}##(?:[ \t]+(.*?)(?:[ \t]+#+)?)?[ \t]*$/;
 
 /** Absolute path of the project's brief, whether or not it exists yet. */
 export function briefPath(repoPath: string): string {
@@ -127,15 +131,16 @@ function sections(brief: string): BriefSection[] {
   const found: { heading: string; lines: string[] }[] = [];
   let fence: string | undefined;
   for (const line of brief.split('\n')) {
-    const marker = FENCE.exec(line)?.[1];
     if (fence !== undefined) {
       // Closed only by a run of the same character, at least as long.
-      if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+      const closer = FENCE_CLOSE.exec(line)?.[1];
+      if (closer && closer[0] === fence[0] && closer.length >= fence.length) fence = undefined;
       found.at(-1)?.lines.push(line);
       continue;
     }
-    if (marker) {
-      fence = marker;
+    const opener = FENCE_OPEN.exec(line)?.[1];
+    if (opener) {
+      fence = opener;
       found.at(-1)?.lines.push(line);
       continue;
     }

@@ -379,6 +379,19 @@ describe('the project brief in a compiled context', () => {
     expect(context.slice(brief)).toContain('this document wins');
   });
 
+  // The conductor's context carries the brief trimmed, so the file's outer
+  // whitespace is invisible there; the hash records the file, so it moves.
+  it("moves the conductor's hash for an edit its context cannot show", () => {
+    writeBrief('## Destination\nnorth.\n');
+    const before = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    writeBrief('\n\n## Destination\nnorth.\n\n\n');
+    const after = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    expect(after.contextMarkdown).toBe(before.contextMarkdown);
+    expect(after.hash).not.toBe(before.hash);
+  });
+
   it('compiles a conductor exactly as before when the project has no brief', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 

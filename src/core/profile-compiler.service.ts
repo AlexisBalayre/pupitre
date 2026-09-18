@@ -459,11 +459,12 @@ export function compileConductorProfile(input: ConductorCompileInput): CompiledP
     'hooks/edit-block.sh': buildEditBlockScript(),
     'hooks/bash-guard.sh': buildBashGuardScript(),
   };
-  // No `brief` beside the files here, unlike a session's hash: the conductor's
-  // `context.md` carries the brief whole, so the files already cover every word
-  // of it.
+  // The brief is hashed beside the files here too, even though `context.md`
+  // carries it: the context holds it trimmed, so an edit to the file's outer
+  // whitespace would otherwise leave the conductor's hash where it was while a
+  // session's moved (decision 57).
   const hash = createHash('sha256')
-    .update(JSON.stringify({ files, userConfigHash: input.userConfigHash }))
+    .update(JSON.stringify({ files, userConfigHash: input.userConfigHash, brief }))
     .digest('hex');
   return { hash, tokenEstimate, contextBudget, contextMarkdown, settings, files };
 }

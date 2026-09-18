@@ -176,6 +176,26 @@ describe('workerBrief', () => {
     expect(slice).toBe('### Constraints\nnone.');
   });
 
+  // A closing fence may carry nothing but whitespace after its run; a run with
+  // text after it is content, so an example like `~~~ end of example` does not
+  // end the fence early and let the heading after it start a real section.
+  it('does not close a fence on a run followed by text', () => {
+    const slice = workerBrief(
+      '## Constraints\nnone.\n\n## Priorities\n~~~\n~~~ end of example\n## Destination\nleaked\n~~~\n',
+    );
+
+    expect(slice).toBe('### Constraints\nnone.');
+  });
+
+  // CommonMark allows up to three spaces before an ATX heading; an indented
+  // heading that went unrecognised silently reached no session.
+  it('accepts a heading indented by up to three spaces', () => {
+    expect(workerBrief('   ## Constraints\nNo new dependencies.\n')).toBe(
+      '### Constraints\nNo new dependencies.',
+    );
+    expect(workerBrief('    ## Constraints\nindented code, not a heading.\n')).toBeUndefined();
+  });
+
   // CommonMark reads `## Constraints ##` as the same heading as `## Constraints`.
   // Not recognising it meant the constraints silently reached no session.
   it('accepts a closed ATX heading', () => {
