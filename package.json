@@ -2,6 +2,35 @@
   "name": "pupitre",
   "version": "0.1.0",
   "description": "Control plane for parallel Claude Code sessions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexisBalayre/pupitre.git"
+  },
+  "homepage": "https://github.com/AlexisBalayre/pupitre#readme",
+  "bugs": {
+    "url": "https://github.com/AlexisBalayre/pupitre/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "anthropic",
+    "ai-agents",
+    "agentic-coding",
+    "multi-agent",
+    "orchestration",
+    "git-worktree",
+    "merge-gate",
+    "technical-debt",
+    "code-quality",
+    "cli",
+    "developer-tools",
+    "parallel-agents",
+    "agent-orchestration",
+    "coding-agents",
+    "worktrees",
+    "worktree-manager"
+  ],
   "type": "module",
   "packageManager": "pnpm@10.34.5",
   "bin": {
