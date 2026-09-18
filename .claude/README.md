@@ -117,7 +117,7 @@ paths:
 
 Skills are directories with a `SKILL.md` that Claude discovers automatically. Claude sees the description at session start (tiny context cost) and loads the full content when the skill is relevant.
 
-This repo ships **26 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
+This repo ships **28 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
 
 **Frontmatter options:**
 - `name` — identifier and `/slash-command` name
