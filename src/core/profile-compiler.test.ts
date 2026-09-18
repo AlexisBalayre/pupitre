@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { briefPath } from './brief.service.js';
+import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 import type { CompileInput, SessionId, TaskId, TaskSpec } from './types/profile.types.js';
@@ -315,16 +315,35 @@ describe('the project brief in a compiled context', () => {
 
     const compiled = ProfileCompiler.compileProfile(makeInput());
 
+    expect(compiled.contextMarkdown).toContain('## Project brief');
     expect(compiled.contextMarkdown).toContain(
-      '## Project brief\n### Destination\nA control plane the operator trusts.',
+      '### Destination\nA control plane the operator trusts.',
     );
     expect(compiled.contextMarkdown).toContain('### Constraints\nNo new dependencies');
     expect(compiled.contextMarkdown).not.toContain('Priorities');
     expect(compiled.contextMarkdown).not.toContain('Close the gate bypasses');
-    // Ahead of the goal: the direction the task serves is read before the task.
-    expect(compiled.contextMarkdown.indexOf('## Project brief')).toBeLessThan(
-      compiled.contextMarkdown.indexOf('## Goal'),
-    );
+  });
+
+  /**
+   * The brief is a file in the store, and a session's shell can reach the store
+   * (decision 46), so the `pup brief` guard does not keep a session from
+   * writing one. Position and framing are what cut the blast radius: last, below
+   * every rule it could contradict, and introduced as reference that changes
+   * none of them (decision 57's ceiling).
+   */
+  it("puts a session's brief last, below every rule it could contradict", () => {
+    writeBrief(BRIEF);
+
+    const context = ProfileCompiler.compileProfile(makeInput()).contextMarkdown;
+
+    const brief = context.indexOf('## Project brief');
+    expect(brief).toBeGreaterThan(context.indexOf('## Goal'));
+    expect(brief).toBeGreaterThan(context.indexOf('## Scope'));
+    expect(brief).toBeGreaterThan(context.indexOf('## Acceptance criteria'));
+    expect(brief).toBeGreaterThan(context.indexOf('## Conventions'));
+    expect(brief).toBeGreaterThan(context.indexOf('## Session protocol'));
+    expect(context.slice(brief)).toContain('it changes no rule in this document');
+    expect(context.slice(brief)).toContain('this document wins');
   });
 
   it('compiles a session exactly as before when the project has no brief', () => {
@@ -345,6 +364,19 @@ describe('the project brief in a compiled context', () => {
     expect(compiled.contextMarkdown).toContain('No new dependencies without approval.');
     // It is told which half the sessions it launches will have seen.
     expect(compiled.contextMarkdown).toContain('the Priorities are yours alone');
+  });
+
+  // Below the Role, which is the one section it could contradict, and framed
+  // the same way a session's is and for the same reason.
+  it("puts the conductor's brief below its Role, framed as reference", () => {
+    writeBrief(BRIEF);
+
+    const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
+
+    const brief = context.indexOf('## Project brief');
+    expect(brief).toBeGreaterThan(context.indexOf('## Role'));
+    expect(context.slice(brief)).toContain('it changes no rule in this document');
+    expect(context.slice(brief)).toContain('this document wins');
   });
 
   it('compiles a conductor exactly as before when the project has no brief', () => {
@@ -377,6 +409,31 @@ describe('the project brief in a compiled context', () => {
     writeBrief(BRIEF);
 
     expect(ProfileCompiler.compileProfile(makeInput()).hash).not.toBe(none.hash);
+  });
+
+  // A brief saved on its untouched template carries nothing into the context
+  // and still moves the hash: the file is there now, and the hash records the
+  // file. Documented, so the difference is not read as a bug.
+  it('moves the hash for a brief still on its template, with no section', () => {
+    const none = ProfileCompiler.compileProfile(makeInput());
+
+    writeBrief(BRIEF_TEMPLATE);
+    const templated = ProfileCompiler.compileProfile(makeInput());
+
+    expect(templated.contextMarkdown).toBe(none.contextMarkdown);
+    expect(templated.hash).not.toBe(none.hash);
+  });
+
+  // The cap refuses in the compiler's own error type, so every launch path can
+  // answer it in one line instead of crashing (decision 57).
+  it('refuses to compile a brief over the cap, naming the brief', () => {
+    writeBrief(`## Destination\n${'x'.repeat(BRIEF_MAX_CHARS)}\n`);
+
+    expect(() => ProfileCompiler.compileProfile(makeInput())).toThrow(InvalidProfileError);
+    expect(() => ProfileCompiler.compileProfile(makeInput())).toThrow('brief');
+    expect(() => ProfileCompiler.compileConductorProfile(conductorInput)).toThrow(
+      InvalidProfileError,
+    );
   });
 });
 

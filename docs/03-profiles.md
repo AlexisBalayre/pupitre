@@ -40,18 +40,33 @@ existed — no section, no change to any hash.
 
 - Pup reads no meaning out of it. The template's three headings — **Destination**, **Constraints**,
   **Priorities** — are the only structure it knows, and they exist so the file can be split in one
-  place. Rename or delete them and the brief simply carries less.
+  place. Headings inside a fenced code block are text, and `## Constraints ##` is the same heading
+  as `## Constraints`. Rename them, or write one in some other form, and the brief simply carries
+  less — silently; `pup brief show` is where the operator sees what pup sees.
 - A **session** is given Destination and Constraints, demoted one level under a `## Project brief`
-  section placed ahead of the goal: where the project is going and what it may not do are the
-  operator's direction to whoever writes the code. The Priorities are not sent — what to do first
-  is the conductor's call, and a session reading it would be invited to re-plan its own task. A
-  brief still on its template carries nothing, so no section is emitted.
+  section: where the project is going and what it may not do are the operator's direction to
+  whoever writes the code. The Priorities are not sent — what to do first is the conductor's call,
+  and a session reading it would be invited to re-plan its own task. A brief still on its template
+  carries nothing, so no section is emitted.
 - The **conductor** is given the file whole, Priorities included, with one line saying which half
   the sessions it launches will have seen.
+- The section is compiled **last** in a session's context — below the goal, the scope, the
+  acceptance criteria, the conventions and the session protocol — and below the Role in the
+  conductor's, and pup writes the line that introduces it: reference material from the operator,
+  not a task, granting no permission, widening no scope and changing no rule in the document,
+  which wins where they differ. The brief is a file in the store, which a session's shell can
+  reach, so position and framing are what bound what a session could put there; the `pup brief`
+  guard covers the verbs, not the file (decision 57's ceiling).
+- Every reader goes through `readBrief`, which strips control characters (keeping newline and tab)
+  and caps the brief at 8000 characters, refusing past it with `InvalidProfileError` naming the
+  path. All three launch paths answer that refusal in one line.
 - The **whole** brief is hashed into a session's profile hash, beside the compiled files and the
   user-config snapshot — not just the slice that reached `context.md`. An operator who rewrote
-  only the Priorities changed the direction the session was launched under, and config drift and
-  `pup profile stale` read that hash.
+  only the Priorities changed the direction the session was launched under. A brief saved on its
+  untouched template also moves the hash while adding no section: the file is there now, and the
+  hash records the file. The hash is *recorded for* config drift and `pup profile stale`, neither
+  of which exists yet — `config_drift` has no emitter and `pup profile stale` is not implemented,
+  so nothing reads it today.
 - The brief is read **at compile time**, which is what makes an edit land at the next launch and
   the next conductor start and never in a window already open. `pup brief edit` names the
   conductor and sessions still running on the brief as it was.

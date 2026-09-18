@@ -2,7 +2,15 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BRIEF_TEMPLATE, briefPath, ensureBrief, readBrief, workerBrief } from './brief.service.js';
+import {
+  BRIEF_MAX_CHARS,
+  BRIEF_TEMPLATE,
+  briefPath,
+  ensureBrief,
+  readBrief,
+  workerBrief,
+} from './brief.service.js';
+import { InvalidProfileError } from './profile.errors.js';
 
 const REPO = '/repo';
 
@@ -53,6 +61,57 @@ describe('the project brief on disk', () => {
 
     expect(readBrief(REPO)).toBeUndefined();
   });
+
+  /**
+   * Every reader goes through `readBrief`: `pup brief show` prints it to the
+   * operator's terminal and the kickoff pastes it into tmux. An escape
+   * sequence would repaint the terminal, and a bracketed-paste terminator or a
+   * bare carriage return would cut the paste short (decision 29's shape).
+   */
+  it('strips control characters, keeping newline and tab', () => {
+    writeBrief('## Destination\r\n\u001b[2JShip\u0000 the\tgate.\u009b6n\n');
+
+    expect(readBrief(REPO)).toBe('## Destination\n[2JShip the\tgate.6n\n');
+  });
+
+  // The bracketed-paste terminator, spelled out: the kickoff pastes the
+  // compiled context, and this sequence would end the paste early and leave
+  // the rest of the brief typed as commands.
+  it('strips a bracketed-paste terminator', () => {
+    writeBrief('## Destination\nShip it.\u001b[201~\n');
+
+    expect(readBrief(REPO)).not.toContain('\u001b');
+    expect(readBrief(REPO)).toBe('## Destination\nShip it.[201~\n');
+  });
+
+  /**
+   * Refused here, naming the brief. The context budget would catch it a moment
+   * later as a token count on the compiled result, which reads as "your task
+   * spec is too long" and sends the operator to the wrong file.
+   */
+  it('refuses a brief over the cap, naming the file, its length and the fix', () => {
+    const oversized = `## Destination\n${'x'.repeat(BRIEF_MAX_CHARS)}\n`;
+    const path = writeBrief(oversized);
+
+    expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
+    expect(() => readBrief(REPO)).toThrow(path);
+    expect(() => readBrief(REPO)).toThrow(`is ${oversized.length} characters`);
+    expect(() => readBrief(REPO)).toThrow(`over the ${BRIEF_MAX_CHARS}`);
+    expect(() => readBrief(REPO)).toThrow('pup brief edit');
+  });
+
+  it('accepts a brief exactly at the cap', () => {
+    writeBrief('x'.repeat(BRIEF_MAX_CHARS));
+
+    expect(readBrief(REPO)).toHaveLength(BRIEF_MAX_CHARS);
+  });
+
+  // Measured after stripping, because that is the text every reader gets.
+  it('measures the cap on the stripped text', () => {
+    writeBrief('x'.repeat(BRIEF_MAX_CHARS) + '\u0000'.repeat(100));
+
+    expect(readBrief(REPO)).toHaveLength(BRIEF_MAX_CHARS);
+  });
 });
 
 describe('workerBrief', () => {
@@ -89,5 +148,51 @@ describe('workerBrief', () => {
   // than guessing at which prose was meant for it.
   it('is undefined when the operator renamed the headings away', () => {
     expect(workerBrief('## Where we are going\nsomewhere.\n')).toBeUndefined();
+  });
+
+  /**
+   * The leak a line-based split had: a fenced example of a brief, written under
+   * Priorities, started a section there — and everything after it in the
+   * Priorities went to every session.
+   */
+  it('ignores a heading inside a fenced code block', () => {
+    const slice = workerBrief(
+      '## Destination\nnorth.\n\n' +
+        '## Priorities\nFor example:\n\n' +
+        '```markdown\n## Destination\nsomewhere else\n```\n\n' +
+        'and then the rest of the priorities.\n',
+    );
+
+    expect(slice).toBe('### Destination\nnorth.');
+    expect(slice).not.toContain('somewhere else');
+    expect(slice).not.toContain('rest of the priorities');
+  });
+
+  it('closes a fence only on the same character, and tildes fence too', () => {
+    const slice = workerBrief(
+      '## Priorities\n~~~\n```\n## Destination\nleaked\n~~~\n\n## Constraints\nnone.\n',
+    );
+
+    expect(slice).toBe('### Constraints\nnone.');
+  });
+
+  // CommonMark reads `## Constraints ##` as the same heading as `## Constraints`.
+  // Not recognising it meant the constraints silently reached no session.
+  it('accepts a closed ATX heading', () => {
+    expect(workerBrief('## Constraints ##\nNo new dependencies.\n')).toBe(
+      '### Constraints\nNo new dependencies.',
+    );
+  });
+
+  // A `##` with no title still opens a section, so what follows cannot fall
+  // back into the section above and reach a reader that one was not meant for.
+  it('does not let a titleless heading leak Priorities into Constraints', () => {
+    expect(workerBrief('## Constraints\nnone.\n\n##\n\nsecret priorities.\n')).toBe(
+      '### Constraints\nnone.',
+    );
+  });
+
+  it('keeps a deeper heading inside the section it was written under', () => {
+    expect(workerBrief('## Destination\n### Later\nv2.\n')).toBe('### Destination\n### Later\nv2.');
   });
 });

@@ -104,6 +104,7 @@ import { runMergeGate } from '../core/merge-gate.service.js';
 import { recordWatcherBeat } from '../core/overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
+import { InvalidProfileError } from '../core/profile.errors.js';
 import {
   appendEvent,
   ensureProject,
@@ -1152,6 +1153,21 @@ describe('CLI commands', () => {
       expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true, origin: 'audit' });
     });
 
+    // The compile reads the project brief, so a brief over the cap refuses the
+    // sweep in one line. The sweep's expected-error list was empty, which made
+    // it the one launch path that crashed on it instead (decision 57).
+    it('refuses a sweep in one line when the project brief is over the cap', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new InvalidProfileError('The project brief at /s/brief.md is 9000 characters.');
+      });
+
+      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+
+      expect(errors).toEqual(['The project brief at /s/brief.md is 9000 characters.']);
+      expect(process.exitCode).toBe(1);
+    });
+
     // The audit re-stamps the debt baseline, and on a `--pr` repo nothing else
     // does, so an open `audit` let a session pick the moment its own bar moved;
     // `--sweep` is a launch besides (decisions 26, 39, 42). The stored baseline
@@ -1706,6 +1722,62 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    // A missing editor binary must say so: `exited on a signal` would send the
+    // operator looking at the editor's behaviour instead of their $EDITOR.
+    it('says an editor that is not installed could not run', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('EDITOR', 'pup-no-such-editor');
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('could not run');
+      expect(errors.join('\n')).toContain('ENOENT');
+      expect(errors.join('\n')).not.toContain('on a signal');
+      expect(existsSync(projectPaths(repo).briefFile)).toBe(true);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('falls back to $VISUAL when $EDITOR is unset', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('EDITOR', '');
+      vi.stubEnv('VISUAL', 'pup-visual-editor');
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('pup-visual-editor');
+    });
+
+    // `pup brief show` prints to the operator's terminal, so the cap it shares
+    // with the compilers refuses here in one line too (decision 57).
+    it('refuses to show a brief over the cap, naming the file', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, 'x'.repeat(9000));
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(projectPaths(repo).briefFile);
+      expect(errors.join('\n')).toContain('pup brief edit');
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The terminal the brief is printed to is the operator's: an escape
+    // sequence in a store file a session can reach must not reach it.
+    it('prints a brief with its control characters stripped', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, '## Destination\r\n\u001b[2JShip the gate.\n');
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      expect(logs).toEqual(['## Destination\n[2JShip the gate.']);
+    });
+
     it('refuses an unknown action', () => {
       useCwd(initRepo());
 
@@ -1892,6 +1964,20 @@ describe('CLI commands', () => {
 
       expect(() => buildProgram().parse(['new', 'do the thing'], { from: 'user' })).toThrow();
       expect(createSession).not.toHaveBeenCalled();
+    });
+
+    // Same reason as the sweep: the compile reads the brief, and `pup new`
+    // listed only the scope conflict as answerable (decision 57).
+    it('refuses in one line when the project brief is over the cap', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new InvalidProfileError('The project brief at /s/brief.md is 9000 characters.');
+      });
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
+
+      expect(errors).toEqual(['The project brief at /s/brief.md is 9000 characters.']);
+      expect(process.exitCode).toBe(1);
     });
 
     it('compiles the task spec from its options and launches a session', () => {
