@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T15:17:10.662Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35359960975",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35359960975",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5479de8cd95edb248e2e518fe0538e6239cd3b48",
+  "source": "pr",
+  "pr_number": 100,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/brief.service.ts",
+      "line": "133",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fence closer accepts any line that starts with a matching-character run of sufficient length, regardless of what follows the run. Per CommonMark, a closing fence may only be followed by spaces/tabs — a run followed by an info string or other text remains fence content, not a valid closer. An operator demonstrating fence-and-heading syntax under Priorities with trailing text on a 'closing' fence line (e.g. `~~~ end of example`) would have the fence close early, letting a `## Destination` inside the intended demonstration start a real section and leak into every session's context.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "341",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The conductor's context.md inserts the brief with `brief.trim()`, so two briefs differing only in leading/trailing whitespace of the whole file produce identical conductor context.md. Because the conductor's hash omits a separate `brief` term and relies on `files` covering 'every word of it' (per the comment above the hash), such briefs collide on the conductor hash — contradicting that comment's promise, even though the session hash (which hashes the raw `brief`) does catch the same edit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/brief.service.ts",
+      "line": "64",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SECTION_HEADING` requires `^##` with no leading whitespace, but CommonMark allows an ATX heading indented 0-3 spaces. An operator who writes `   ## Destination` (indented) has the conductor still receive the whole brief verbatim (unaffected, since `brief.trim()` only strips whole-string edges) but `workerBrief` produces no sections at all — the session gets nothing under `## Project brief`, silently, with no signal to the operator that their heading isn't reaching sessions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "175,177,178,186,188",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New prose in this file's `pup brief` documentation uses em/en dashes, which this review's standing house-style rule (`.claude/agents/review-docs.md`) flags for text the change adds — even though historical repo prose uses them freely and CLAUDE.md/docs/conventions are silent on it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "39,41,42,45,48,53,54,64,68",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new 'Project brief (decision 57)' section uses em/en dashes throughout, flagged per the standing house-style rule in `.claude/agents/review-docs.md` for newly added prose.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2593,2612,2623,2629,2635,2650,2658,2668",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 57's new entry uses em/en dashes throughout, flagged per the standing house-style rule in `.claude/agents/review-docs.md` for newly added prose.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/brief.service.ts",
+      "line": "9,27,41,42,60,73,116,117",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This new file's comments use em/en dashes throughout, flagged per the standing house-style rule in `.claude/agents/review-docs.md` for newly added prose (comments count as prose the change adds).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "134,336,337",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New comments and the `BRIEF_FRAMING` string literal use em/en dashes, flagged per the standing house-style rule in `.claude/agents/review-docs.md` for newly added prose.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/brief.service.ts",
+      "line": "83-107",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Symlink-following in readBrief and ensureBrief allows a session to redirect the operator's brief read/write to an arbitrary filesystem path via a planted symlink at ~/.pupitre/<id>/brief.md, exfiltrating or overwriting operator-readable/writable files (e.g. SSH keys).",
+      "refutation": "The validator confirmed the missing lstat check is real and matches decision 51's precedent (assertIndexIsOwnedBy in codegraph.client.ts), but refuted the security escalation: the generated bash-guard hook (buildBashGuardScript in profile-compiler.service.ts, lines 212-226) only blocks writes matching `.claude/`, and decision 36 confirms the session shell itself is unconfined by design — a session already has unrestricted read/write to any operator-accessible path via plain `cat`/`echo >`, no symlink trick needed. Decision 57's own 'Ceilings, stated plainly' paragraph already declares this exact class of gap (store-resident file reachable from a session's shell, guarded only at the CLI verb, sandbox named as the instrument) as an accepted, documented ceiling. The symlink path grants no capability beyond what a session's unconfined bash already has, so treating this as a new HIGH-severity vulnerability misstates the risk against the code and the PR's own declared threat model."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 11.4517595,
+  "duration_ms": 838317,
+  "num_turns": 31,
+  "tokens": {
+    "input": 35,
+    "output": 25653,
+    "cache_read": 1134940,
+    "cache_creation": 118695,
+    "total": 1279323
+  }
+}
