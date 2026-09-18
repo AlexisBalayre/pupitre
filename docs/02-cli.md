@@ -172,6 +172,20 @@ worktree both refuse — so a session reports only its own state (decision 44).
 
 - `pup profile list | show <name> | edit <name>` — manage base and role layers.
 - `pup profile stale` — running sessions whose profile version is behind current.
+- `pup brief [show] | pup brief edit` — the project brief: free Markdown at
+  `~/.pupitre/<id>/brief.md` carrying the operator's direction into the conductor and every
+  session. `edit` creates it from a template with three headings — Destination, Constraints,
+  Priorities — and opens `$EDITOR` (`vi` by default); `show` prints it, or says the project has
+  none. Pup reads no meaning out of the file: it only splits it at those headings, and a project
+  without a brief compiles exactly as it did before there were briefs. A session is given
+  Destination and Constraints as a `## Project brief` section in its context; the conductor is
+  given the file whole, Priorities included, because what comes first is its call. The whole
+  brief is hashed into each session's profile hash, so an edit shows up as config drift even
+  when it touched only the Priorities. An edit takes effect at the next launch and the next
+  conductor start, never in a window already open — `pup brief edit` names the conductor and
+  sessions still running on the brief as it was. Operator-only, `show` included: a session that
+  could write it would be writing its own kickoff and the next session's, and the Priorities are
+  the conductor's to act on rather than a session's to read (decision 57).
 - `pup audit` — re-run the baseline stages and report drift against the stored baseline,
   refreshing it. Prints the same `codegraph:` and `push target:` lines `pup init` does, so both
   are reported on the repeat path too and not only the first run. Operator-only: outside a merge this is the only thing that re-stamps the

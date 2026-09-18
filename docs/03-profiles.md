@@ -31,6 +31,31 @@ mcp: []
 context_budget: 6000  # hard cap for the compiled result, tokens
 ```
 
+## Project brief (decision 57)
+
+The operator's direction for the project, in free Markdown at `~/.pupitre/<id>/brief.md` and
+edited with `pup brief edit`. It is not a layer: one file per project, not per role or task, and
+it is never merged into one. A project with no brief compiles exactly as it did before briefs
+existed — no section, no change to any hash.
+
+- Pup reads no meaning out of it. The template's three headings — **Destination**, **Constraints**,
+  **Priorities** — are the only structure it knows, and they exist so the file can be split in one
+  place. Rename or delete them and the brief simply carries less.
+- A **session** is given Destination and Constraints, demoted one level under a `## Project brief`
+  section placed ahead of the goal: where the project is going and what it may not do are the
+  operator's direction to whoever writes the code. The Priorities are not sent — what to do first
+  is the conductor's call, and a session reading it would be invited to re-plan its own task. A
+  brief still on its template carries nothing, so no section is emitted.
+- The **conductor** is given the file whole, Priorities included, with one line saying which half
+  the sessions it launches will have seen.
+- The **whole** brief is hashed into a session's profile hash, beside the compiled files and the
+  user-config snapshot — not just the slice that reached `context.md`. An operator who rewrote
+  only the Priorities changed the direction the session was launched under, and config drift and
+  `pup profile stale` read that hash.
+- The brief is read **at compile time**, which is what makes an edit land at the next launch and
+  the next conductor start and never in a window already open. `pup brief edit` names the
+  conductor and sessions still running on the brief as it was.
+
 ## Code graph (decision 51)
 
 Present only when `codegraph` is on pup's PATH; absent, a session launches normally with none.

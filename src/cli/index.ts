@@ -20,6 +20,7 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import {
+  conductorName,
   conductorSocket,
   killWatcher,
   launchWatcher,
@@ -27,9 +28,10 @@ import {
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
+import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
-import { startConductor, stopConductor } from '../core/conductor.service.js';
+import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -811,6 +813,61 @@ export function buildProgram(): Command {
           `Conflict radar started with it (tmux: ${target}) — it runs the turn watchdog.`,
         );
       }
+    });
+
+  program
+    .command('brief [action]')
+    .description(
+      'Read or edit the project brief carried into the conductor and every session (show|edit)',
+    )
+    .action((action: string | undefined) => {
+      const { repoPath, db } = project();
+      const verb = action ?? 'show';
+      // The brief is the operator's direction to the whole fleet, and the
+      // conductor and every session read it as theirs. A session that could
+      // write it would be rewriting its own kickoff and the next session's; a
+      // conductor that could would be promoting its plan to the operator's
+      // direction. Both are refused, on `show` as well as `edit`: the
+      // Priorities half is the conductor's to act on, not a session's to read
+      // (decision 57).
+      if (callingSession(db) || callingConductor()) {
+        return refuse(`\`pup brief ${verb}\` is operator-only.`);
+      }
+      if (verb === 'show') {
+        const brief = readBrief(repoPath);
+        if (!brief) {
+          console.log(
+            `No project brief yet. \`pup brief edit\` creates one at ${briefPath(repoPath)}.`,
+          );
+          return;
+        }
+        console.log(brief.trimEnd());
+        return;
+      }
+      if (verb !== 'edit') {
+        return refuse(`Unknown brief action \`${action}\` (expected show|edit).`);
+      }
+      const { path, created } = ensureBrief(repoPath);
+      const editor = process.env.EDITOR ?? 'vi';
+      const edit = spawnSync(editor, [path], { stdio: 'inherit' });
+      if (edit.status !== 0) {
+        // The file stays: a template just written is the start the operator
+        // asked for, and an editor that failed to open is not a reason to
+        // throw it away.
+        return refuse(`\`${editor} ${path}\` exited ${edit.status ?? 'on a signal'}.`);
+      }
+      if (created) console.log(`Created ${path} from the template.`);
+      // Named, not counted: the windows listed here are running on the brief as
+      // it was when they opened, and the operator is the only one who can
+      // decide whether that is worth a restart (decision 57).
+      const running = listSessions(db, ['running']).map((session) => session.id);
+      const conductor = isConductorRunning(repoPath) ? [conductorName(projectId(repoPath))] : [];
+      const already = [...conductor, ...running];
+      console.log(
+        already.length === 0
+          ? 'Saved. It takes effect at the next launch and the next conductor start.'
+          : `Saved. It takes effect at the next launch and the next conductor start; ${already.join(', ')} ${already.length === 1 ? 'is' : 'are'} already running on the brief as it was.`,
+      );
     });
 
   program

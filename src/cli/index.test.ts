@@ -1615,6 +1615,133 @@ describe('CLI commands', () => {
     });
   });
 
+  // The brief is the operator's direction to the whole fleet, read into the
+  // conductor and every session at their next start (decision 57).
+  describe('brief', () => {
+    /** An editor that always succeeds and changes nothing. */
+    function stubEditor(): void {
+      vi.stubEnv('EDITOR', 'true');
+    }
+
+    it('creates the templated brief on first edit, and then shows it', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      const path = projectPaths(repo).briefFile;
+      expect(existsSync(path)).toBe(true);
+      expect(logs).toContain(`Created ${path} from the template.`);
+      const shown = logs.at(-1) ?? '';
+      expect(shown).toContain('## Destination');
+      expect(shown).toContain('## Constraints');
+      expect(shown).toContain('## Priorities');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('defaults to showing, and says a project with no brief has none', () => {
+      const repo = initRepo();
+      useCwd(repo);
+
+      buildProgram().parse(['brief'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('No project brief yet.');
+      expect(existsSync(projectPaths(repo).briefFile)).toBe(false);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('prints the brief the operator wrote, not the template', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, '## Destination\nShip the gate.\n');
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      expect(logs).toContain('## Destination\nShip the gate.');
+    });
+
+    // Naming them is the whole point of the line: a window already open read
+    // the brief as it was, and only the operator can decide whether that is
+    // worth restarting.
+    it('names the running conductor and sessions the edit will not reach', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's1');
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      const line = logs.at(-1) ?? '';
+      expect(line).toContain('takes effect at the next launch and the next conductor start');
+      expect(line).toContain(`pup-conductor-${projectId(repo)}`);
+      expect(line).toContain('s1');
+      expect(line).toContain('are already running on the brief as it was');
+    });
+
+    it('says only that it takes effect later when nothing is running', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(logs.at(-1)).toBe(
+        'Saved. It takes effect at the next launch and the next conductor start.',
+      );
+    });
+
+    it('keeps the file when the editor fails, and says what failed', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('EDITOR', 'false');
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(existsSync(projectPaths(repo).briefFile)).toBe(true);
+      expect(errors.join('\n')).toContain('exited 1');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses an unknown action', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['brief', 'publish'], { from: 'user' });
+
+      expect(errors).toEqual(['Unknown brief action `publish` (expected show|edit).']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // Both halves are refused, `show` included: a session writing the brief
+    // would be writing its own kickoff and the next session's, and the
+    // Priorities are the conductor's to act on, not a session's to read.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s running `brief show` and `brief edit`', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, '## Destination\nShip the gate.\n');
+      vi.stubEnv(variable, value);
+      vi.stubEnv('EDITOR', 'true');
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup brief show` is operator-only.',
+        '`pup brief edit` is operator-only.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   // The conductor is the operator's delegate for planning, launching, steering
   // and killing, refused the merge, the respawn and other projects, and what
   // it plans is recorded as its own (decision 47).

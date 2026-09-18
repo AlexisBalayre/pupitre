@@ -218,6 +218,9 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
     role: req.role,
     task: req.task,
     sessionId: sessionId as SessionId,
+    // The compiler reads the project brief through this (decision 57); the
+    // worktree is not it, and does not exist yet at this point anyway.
+    repoPath: req.repoPath,
     worktreePath,
     eventsFile: paths.eventsFile(sessionId),
     userConfigHash,
