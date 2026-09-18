@@ -104,6 +104,7 @@ import { runMergeGate } from '../core/merge-gate.service.js';
 import { recordWatcherBeat } from '../core/overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
+import { InvalidProfileError } from '../core/profile.errors.js';
 import {
   appendEvent,
   ensureProject,
@@ -1152,6 +1153,21 @@ describe('CLI commands', () => {
       expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true, origin: 'audit' });
     });
 
+    // The compile reads the project brief, so a brief over the cap refuses the
+    // sweep in one line. The sweep's expected-error list was empty, which made
+    // it the one launch path that crashed on it instead (decision 57).
+    it('refuses a sweep in one line when the project brief is over the cap', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new InvalidProfileError('The project brief at /s/brief.md is 9000 characters.');
+      });
+
+      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+
+      expect(errors).toEqual(['The project brief at /s/brief.md is 9000 characters.']);
+      expect(process.exitCode).toBe(1);
+    });
+
     // The audit re-stamps the debt baseline, and on a `--pr` repo nothing else
     // does, so an open `audit` let a session pick the moment its own bar moved;
     // `--sweep` is a launch besides (decisions 26, 39, 42). The stored baseline
@@ -1615,6 +1631,189 @@ describe('CLI commands', () => {
     });
   });
 
+  // The brief is the operator's direction to the whole fleet, read into the
+  // conductor and every session at their next start (decision 57).
+  describe('brief', () => {
+    /** An editor that always succeeds and changes nothing. */
+    function stubEditor(): void {
+      vi.stubEnv('EDITOR', 'true');
+    }
+
+    it('creates the templated brief on first edit, and then shows it', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      const path = projectPaths(repo).briefFile;
+      expect(existsSync(path)).toBe(true);
+      expect(logs).toContain(`Created ${path} from the template.`);
+      const shown = logs.at(-1) ?? '';
+      expect(shown).toContain('## Destination');
+      expect(shown).toContain('## Constraints');
+      expect(shown).toContain('## Priorities');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('defaults to showing, and says a project with no brief has none', () => {
+      const repo = initRepo();
+      useCwd(repo);
+
+      buildProgram().parse(['brief'], { from: 'user' });
+
+      expect(logs.join('\n')).toContain('No project brief yet.');
+      expect(existsSync(projectPaths(repo).briefFile)).toBe(false);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('prints the brief the operator wrote, not the template', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, '## Destination\nShip the gate.\n');
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      expect(logs).toContain('## Destination\nShip the gate.');
+    });
+
+    // Naming them is the whole point of the line: a window already open read
+    // the brief as it was, and only the operator can decide whether that is
+    // worth restarting.
+    it('names the running conductor and sessions the edit will not reach', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedStalledSession(repo, 's1');
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      const line = logs.at(-1) ?? '';
+      expect(line).toContain('takes effect at the next launch and the next conductor start');
+      expect(line).toContain(`pup-conductor-${projectId(repo)}`);
+      expect(line).toContain('s1');
+      expect(line).toContain('are already running on the brief as it was');
+    });
+
+    it('says only that it takes effect later when nothing is running', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(logs.at(-1)).toBe(
+        'Saved. It takes effect at the next launch and the next conductor start.',
+      );
+    });
+
+    it('keeps the file when the editor fails, and says what failed', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('EDITOR', 'false');
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(existsSync(projectPaths(repo).briefFile)).toBe(true);
+      expect(errors.join('\n')).toContain('exited 1');
+      expect(process.exitCode).toBe(1);
+    });
+
+    // A missing editor binary must say so: `exited on a signal` would send the
+    // operator looking at the editor's behaviour instead of their $EDITOR.
+    it('says an editor that is not installed could not run', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('EDITOR', 'pup-no-such-editor');
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('could not run');
+      expect(errors.join('\n')).toContain('ENOENT');
+      expect(errors.join('\n')).not.toContain('on a signal');
+      expect(existsSync(projectPaths(repo).briefFile)).toBe(true);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('falls back to $VISUAL when $EDITOR is unset', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('EDITOR', '');
+      vi.stubEnv('VISUAL', 'pup-visual-editor');
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('pup-visual-editor');
+    });
+
+    // `pup brief show` prints to the operator's terminal, so the cap it shares
+    // with the compilers refuses here in one line too (decision 57).
+    it('refuses to show a brief over the cap, naming the file', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, 'x'.repeat(9000));
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(projectPaths(repo).briefFile);
+      expect(errors.join('\n')).toContain('pup brief edit');
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The terminal the brief is printed to is the operator's: an escape
+    // sequence in a store file a session can reach must not reach it.
+    it('prints a brief with its control characters stripped', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, '## Destination\r\n\u001b[2JShip the gate.\n');
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+
+      expect(logs).toEqual(['## Destination\n[2JShip the gate.']);
+    });
+
+    it('refuses an unknown action', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['brief', 'publish'], { from: 'user' });
+
+      expect(errors).toEqual(['Unknown brief action `publish` (expected show|edit).']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // Both halves are refused, `show` included: a session writing the brief
+    // would be writing its own kickoff and the next session's, and the
+    // Priorities are the conductor's to act on, not a session's to read.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s running `brief show` and `brief edit`', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      writeFileSync(projectPaths(repo).briefFile, '## Destination\nShip the gate.\n');
+      vi.stubEnv(variable, value);
+      vi.stubEnv('EDITOR', 'true');
+
+      buildProgram().parse(['brief', 'show'], { from: 'user' });
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup brief show` is operator-only.',
+        '`pup brief edit` is operator-only.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   // The conductor is the operator's delegate for planning, launching, steering
   // and killing, refused the merge, the respawn and other projects, and what
   // it plans is recorded as its own (decision 47).
@@ -1765,6 +1964,20 @@ describe('CLI commands', () => {
 
       expect(() => buildProgram().parse(['new', 'do the thing'], { from: 'user' })).toThrow();
       expect(createSession).not.toHaveBeenCalled();
+    });
+
+    // Same reason as the sweep: the compile reads the brief, and `pup new`
+    // listed only the scope conflict as answerable (decision 57).
+    it('refuses in one line when the project brief is over the cap', () => {
+      useCwd(initRepo());
+      vi.mocked(createSession).mockImplementation(() => {
+        throw new InvalidProfileError('The project brief at /s/brief.md is 9000 characters.');
+      });
+
+      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
+
+      expect(errors).toEqual(['The project brief at /s/brief.md is 9000 characters.']);
+      expect(process.exitCode).toBe(1);
     });
 
     it('compiles the task spec from its options and launches a session', () => {

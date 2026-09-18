@@ -20,6 +20,7 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import {
+  conductorName,
   conductorSocket,
   killWatcher,
   launchWatcher,
@@ -27,9 +28,10 @@ import {
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
+import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
-import { startConductor, stopConductor } from '../core/conductor.service.js';
+import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -577,7 +579,10 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
-      const sessionId = launchOrRefuse(db, task.id, [ScopeConflictError], () =>
+      // `InvalidProfileError` too: the compile validates the spec AND reads the
+      // project brief, so an oversized brief must refuse in one line here
+      // rather than crash out of a launch (decision 57).
+      const sessionId = launchOrRefuse(db, task.id, [ScopeConflictError, InvalidProfileError], () =>
         createSession(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
@@ -811,6 +816,73 @@ export function buildProgram(): Command {
           `Conflict radar started with it (tmux: ${target}) — it runs the turn watchdog.`,
         );
       }
+    });
+
+  program
+    .command('brief [action]')
+    .description(
+      'Read or edit the project brief carried into the conductor and every session (show|edit)',
+    )
+    .action((action: string | undefined) => {
+      const { repoPath, db } = project();
+      const verb = action ?? 'show';
+      // The brief is the operator's direction to the whole fleet, and the
+      // conductor and every session read it as theirs. A session that could
+      // write it would be rewriting its own kickoff and the next session's; a
+      // conductor that could would be promoting its plan to the operator's
+      // direction. Both are refused, on `show` as well as `edit`: the
+      // Priorities half is the conductor's to act on, not a session's to read
+      // (decision 57).
+      if (callingSession(db) || callingConductor()) {
+        return refuse(`\`pup brief ${verb}\` is operator-only.`);
+      }
+      if (verb === 'show') {
+        let brief: string | undefined;
+        try {
+          brief = readBrief(repoPath);
+        } catch (error) {
+          // The one refusal a read can raise: a brief over the cap. One line
+          // naming the file, not a stack trace (decision 57).
+          if (!(error instanceof InvalidProfileError)) throw error;
+          return refuse(error.message);
+        }
+        if (!brief) {
+          console.log(
+            `No project brief yet. \`pup brief edit\` creates one at ${briefPath(repoPath)}.`,
+          );
+          return;
+        }
+        console.log(brief.trimEnd());
+        return;
+      }
+      if (verb !== 'edit') {
+        return refuse(`Unknown brief action \`${action}\` (expected show|edit).`);
+      }
+      const { path, created } = ensureBrief(repoPath);
+      const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
+      const edit = spawnSync(editor, [path], { stdio: 'inherit' });
+      if (edit.error || edit.status !== 0) {
+        // The file stays: a template just written is the start the operator
+        // asked for, and an editor that failed to open is not a reason to
+        // throw it away. An editor that is not installed says so — `exited on
+        // a signal` would send the operator looking at the wrong thing.
+        const why = edit.error
+          ? `could not run: ${sanitizeReason(edit.error.message)}`
+          : `exited ${edit.status ?? 'on a signal'}`;
+        return refuse(`\`${editor} ${path}\` ${why}. The brief is there to edit by hand.`);
+      }
+      if (created) console.log(`Created ${path} from the template.`);
+      // Named, not counted: the windows listed here are running on the brief as
+      // it was when they opened, and the operator is the only one who can
+      // decide whether that is worth a restart (decision 57).
+      const running = listSessions(db, ['running']).map((session) => session.id);
+      const conductor = isConductorRunning(repoPath) ? [conductorName(projectId(repoPath))] : [];
+      const already = [...conductor, ...running];
+      console.log(
+        already.length === 0
+          ? 'Saved. It takes effect at the next launch and the next conductor start.'
+          : `Saved. It takes effect at the next launch and the next conductor start; ${already.join(', ')} ${already.length === 1 ? 'is' : 'are'} already running on the brief as it was.`,
+      );
     });
 
   program
@@ -1599,9 +1671,11 @@ export function buildProgram(): Command {
           return refuse('Baseline regressed — fix the regression before sweeping.');
         }
         const task = buildSweepTask(`sweep-${Date.now().toString(36)}` as TaskId, report.findings);
-        // Nothing here is a refusal the operator can answer: the task was just
-        // minted, and the sweep waives the one conflict a launch can raise.
-        const sessionId = launchOrRefuse(db, task.id, [], () =>
+        // The task was just minted and the sweep waives the one conflict a
+        // launch can raise, so the only refusal left for the operator to answer
+        // is the project brief, which the compile reads and can refuse for
+        // being oversized (decision 57).
+        const sessionId = launchOrRefuse(db, task.id, [InvalidProfileError], () =>
           createSession(db, {
             repoPath,
             base: DEFAULT_BASE_PROFILE,

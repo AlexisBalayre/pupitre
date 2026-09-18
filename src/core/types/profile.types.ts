@@ -43,6 +43,13 @@ export interface CompileInput {
   role?: ProfileLayer;
   task: TaskSpec;
   sessionId: SessionId;
+  /**
+   * The repository the session belongs to. Only the project brief is read
+   * through it: the compiler locates `~/.pupitre/<id>/brief.md` itself rather
+   * than take the text from its caller, so a session and the conductor pick up
+   * the same file by the same rule (decision 57).
+   */
+  repoPath: string;
   /** Absolute path of the session's git worktree — scope enforcement is relative to it. */
   worktreePath: string;
   /** Absolute path of the JSONL file hook events are appended to. */

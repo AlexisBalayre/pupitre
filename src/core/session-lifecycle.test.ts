@@ -32,6 +32,7 @@ import {
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
@@ -726,5 +727,71 @@ describe('launchTask code graph', () => {
     expect(launchedWith()?.mcpConfigPath).toBeUndefined();
     expect(kickoffContext()).not.toContain('## Code graph');
     expect(vi.mocked(console.error).mock.calls).toHaveLength(1);
+  });
+});
+
+/**
+ * The launch is where the brief is read: the compiler locates it from the repo
+ * path the launch hands it, so an edit lands in the next session's kickoff and
+ * in no window already open (decision 57).
+ */
+describe('launchTask and the project brief', () => {
+  let db: Database;
+  let repo: string;
+
+  const kickoffContext = () => vi.mocked(kickoff).mock.calls.at(-1)?.[1];
+
+  const launch = () =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+    });
+
+  function writeBrief(text: string): void {
+    const path = briefPath(repo);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  }
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    // The brief lives under $HOME/.pupitre beside the compiled profiles.
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-brief-home-'))));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-brief-launch-')));
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+    planTask(db, { repoPath: repo, task: spec() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("kicks a session off on the brief's Destination and Constraints, never its Priorities", () => {
+    writeBrief(
+      '## Destination\nA control plane the operator trusts.\n\n' +
+        '## Constraints\nNo new dependencies without approval.\n\n' +
+        '## Priorities\n1. Close the gate bypasses.\n',
+    );
+
+    launch();
+
+    expect(kickoffContext()).toContain('## Project brief');
+    expect(kickoffContext()).toContain('### Destination\nA control plane the operator trusts.');
+    expect(kickoffContext()).toContain('### Constraints\nNo new dependencies without approval.');
+    expect(kickoffContext()).not.toContain('Close the gate bypasses');
+  });
+
+  it('kicks off exactly as before when the project has no brief', () => {
+    launch();
+
+    expect(kickoffContext()).not.toContain('Project brief');
+    expect(kickoffContext()).toContain('## Goal');
   });
 });
