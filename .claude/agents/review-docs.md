@@ -20,7 +20,6 @@ Coding agents routinely emit low-quality comments and docstrings: restating the 
 - **Stale or inaccurate prose**: documentation or comments now factually wrong because the code changed (stale signature, wrong parameter, contradicted behavior).
 - **Useless or misleading prose**: documenting something that does not exist, or duplicating information that lives elsewhere.
 - **Broken references**: dead relative links, references to a renamed or removed symbol or file.
-- **Em-dash in new prose or copy**: flag em/en dashes (`—`, `–`, and the ` -- ` substitute) in prose and comments the change adds; existing repo prose is not a violation. The authority for this rule is this manifest, a standing reviewer directive, not `CLAUDE.md` or `docs/conventions` (both are silent, and historical repo prose uses em-dashes freely); cite it as `.claude/agents/review-docs.md` so the validator adjudicates scope (did the change add this text?), not the rule's existence. Report **one finding per file** listing every offending line, never one per occurrence, and tag it `nit`: a dash is a house-style slip, never a statement a reader can act wrongly on.
 
 ## Do NOT flag
 
