@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T10:39:52.703Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35335547262",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35335547262",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b9c12a3f9f3182c08b19d7f94b512219256c439d",
+  "source": "pr",
+  "pr_number": 97,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "0f2f2fcba7b2d9836dbafa08e335a7e8d760c8b0",
+  "prior_importants": [
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "119-128",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 0.61471725,
+  "duration_ms": 156970,
+  "num_turns": 16,
+  "tokens": {
+    "input": 17,
+    "output": 8949,
+    "cache_read": 336415,
+    "cache_creation": 32768,
+    "total": 378149
+  }
+}
