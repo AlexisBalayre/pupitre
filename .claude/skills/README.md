@@ -19,6 +19,8 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | `to-spec` | Turn the current conversation into a spec: no interview, just synthesis of what was already discussed. | Manual only (`/to-spec`) |
 | `to-tickets` | Break a plan, spec, or conversation into tracer-bullet tickets, each declaring its blocking edges. | Manual only (`/to-tickets`) |
 | `to-questionnaire` | A decision you can't answer alone: turn it into a questionnaire for the one person who can. | Manual only (`/to-questionnaire`) |
+| `wayfinder` | Plan work too big for one agent session as a shared map of decision tickets under `docs/plans/<effort>/`, then resolve them one at a time; decisions that bind the codebase land in `docs/09-decisions.md`. | Manual only (`/wayfinder`) |
+| `implement` | Implement a spec, a `pup plan` task, or a set of tickets: TDD, the project's typecheck/test commands, a self-review against the acceptance criteria, then commit on a feature branch. | Manual only (`/implement`) |
 
 ## Engineering — build, fix, and clean up
 
@@ -47,7 +49,7 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 
 | Skill | When to use | Invoke |
 | :---- | :---------- | :----- |
-| `pr-description` | Draft or rewrite a PR title and body in this repo's house style (What / How / Why / Migration / Behaviour / Notes), then create or update the PR via `gh`. Other skills call it when they open PRs. | Auto or `/pr-description` |
+| `pr-description` | Draft or rewrite a PR title and body (Summary as a diagram, diff sketch or tree; before/after Evidence; Merge Danger: one-way or two-way door and blast radius), anchored to the decision it lands, then create or update the PR via `gh`. Other skills call it when they open PRs. | Auto or `/pr-description` |
 | `pr-ci-review` | Cost-optimal multi-agent code review of local changes or a PR: relevance-gated `review-*` subagents, a validation pass, and a structured verdict. Under CI (`.github/workflows/claude-code-review.yml`, owner-triggered only) the poster in `tools/review/` renders it to the PR; the model has no write channel. | Manual only (`/pr-ci-review`), or CI on every PR |
 | `address-review-comments` | Triage, decide, challenge, and implement a PR's open review threads end to end, replying as you go, with a human in the loop. | Auto or `/address-review-comments` |
 | `review-retro` | Mine past automated-review runs for recurring process/judgment failures and propose evidence-cited fixes to the review setup as one PR. Needs CI-produced run history (see the skill's setup note). | Manual only (`/review-retro`) |
