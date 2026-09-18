@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T10:22:53.910Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35333416221",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35333416221",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e3b256a15094442b6adc2e852edf0dfeeffa8f97",
+  "source": "pr",
+  "pr_number": 96,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "README.md",
+      "line": "44",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The Knowledge row claims 'pup merge... refreshes the code map in the same transaction,' but `runMergeGate` in `src/core/merge-gate.service.ts` never calls `buildCodeMap` — it only calls `draftDecisionRecord`. `buildCodeMap` (src/core/code-map.service.ts) is invoked only from the `pup map` CLI action and from session-profile compilation, and it's a stateless, live computation with nothing persisted to refresh. Merge does not touch the code map at all.",
+      "body": "**Concern:** The \"What you get\" table states: \"Every merge writes a decision record and refreshes the code map in the same transaction.\" The decision-record half is accurate (`draftDecisionRecord` is called inside `runMergeGate`). The code-map half is not: `buildCodeMap` is called from exactly two places in the whole codebase (`pup map`'s CLI action and session profile compilation) and never from `src/core/merge-gate.service.ts` or anything it calls. It's also a pure, stateless computation each call (live git log + adapter dep graph, nothing cached in the DB), so there is no persisted map for a merge to \"refresh\" even in principle. This mirrors an already-aspirational line in `docs/04-gates-and-debt.md` (\"Knowledge transaction: regenerate code map for touched modules...\"), but this PR newly asserts it as present-tense, factual behavior in public-facing marketing copy — a reader has no way to know it doesn't match the shipped implementation.\n\n**Permalink:** https://github.com/AlexisBalayre/pupitre/blob/e3b256a15094442b6adc2e852edf0dfeeffa8f97/README.md#L44",
+      "suggestion": "| Knowledge | Every merge writes a decision record. `pup log`, `pup map --open`, `pup report --open` show what exists and why. |"
+    },
+    {
+      "file": "README.md",
+      "line": "136",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Contributing section states 'the pre-commit hook runs the tests' as an unconditional fact, but `scripts/pre-commit` is never wired up automatically: its own header requires `cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`. There's no `prepare`/`postinstall` script or `.husky/` directory, and the only CI workflow (`claude-code-review.yml`) is an LLM review, not a test runner. AGENTS.md, which this same sentence points readers to, never mentions the hook or its install step either — so a new contributor reading this line has no actual test gate on their commits unless they take an undocumented manual step.",
+      "body": "**Concern:** \"Work happens on a branch, never on `main`, and the pre-commit hook runs the tests\" reads as an active guarantee, but the hook is inert until manually installed: `scripts/pre-commit`'s own header says `Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`. `package.json` has no `prepare`/`postinstall` script and there's no `.husky/` directory to auto-install it, and `.github/workflows/` has no CI that runs tests on a PR (only the LLM-based `claude-code-review.yml`). `AGENTS.md` — which this same sentence tells contributors to read first — never mentions this hook or its install step; neither does `docs/workflow.md`, which documents the hook's behavior but not how to activate it. A contributor could reasonably believe their commits are already gated by tests and skip running the test suite themselves.\n\n**Permalink:** https://github.com/AlexisBalayre/pupitre/blob/e3b256a15094442b6adc2e852edf0dfeeffa8f97/README.md#L136",
+      "suggestion": "Issues and pull requests are welcome. Read [`AGENTS.md`](AGENTS.md) first: it is the same brief the project's own sessions get. Work happens on a branch, never on `main`; install the pre-commit hook (`cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`) to run the tests before committing."
+    },
+    {
+      "file": "README.md",
+      "line": "124",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The design-doc table describes '05 Knowledge layer' as covering 'Code map, decision records, report,' but docs/05-knowledge-layer.md has no section on the `pup report` HTML artifact — that's actually specified in docs/02-cli.md. A reader following the link to learn about `pup report` won't find it there.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "cost_usd": 2.9476811,
+  "duration_ms": 655973,
+  "num_turns": 24,
+  "tokens": {
+    "input": 41,
+    "output": 13791,
+    "cache_read": 954865,
+    "cache_creation": 65463,
+    "total": 1034160
+  }
+}
