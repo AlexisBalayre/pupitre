@@ -56,6 +56,7 @@ A rule fires on the first Read, Edit, or Write of a matching path (not on MCP re
 │
 ├── skills/                # Auto-discoverable knowledge + workflows (each is <name>/SKILL.md)
 │   ├── to-spec/   to-tickets/   to-questionnaire/                # planning & specs
+│   ├── wayfinder/   implement/
 │   ├── tdd/   diagnosing-bugs/   resolving-merge-conflicts/      # engineering
 │   ├── wizard/   research/
 │   ├── improve-codebase-architecture/                            # engineering (manual)

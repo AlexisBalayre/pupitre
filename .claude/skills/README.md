@@ -19,6 +19,8 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | `to-spec` | Turn the current conversation into a spec: no interview, just synthesis of what was already discussed. | Manual only (`/to-spec`) |
 | `to-tickets` | Break a plan, spec, or conversation into tracer-bullet tickets, each declaring its blocking edges. | Manual only (`/to-tickets`) |
 | `to-questionnaire` | A decision you can't answer alone: turn it into a questionnaire for the one person who can. | Manual only (`/to-questionnaire`) |
+| `wayfinder` | Plan work too big for one agent session as a shared map of decision tickets under `docs/plans/<effort>/`, then resolve them one at a time; decisions that bind the codebase land in `docs/09-decisions.md`. | Manual only (`/wayfinder`) |
+| `implement` | Implement a spec, a `pup plan` task, or a set of tickets: TDD, the project's typecheck/test commands, a self-review against the acceptance criteria, then commit on a feature branch. | Manual only (`/implement`) |
 
 ## Engineering — build, fix, and clean up
 
