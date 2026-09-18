@@ -133,11 +133,7 @@ Early and opinionated. Single user, single machine, TypeScript adapter first. Cl
 
 ## Contributing
 
-Issues and pull requests are welcome. Read [`AGENTS.md`](AGENTS.md) first: it is the same brief the project's own sessions get. Work happens on a branch, never on `main`. Install the pre-commit hook once so the tests run before every commit:
-
-```bash
-cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
-```
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the setup, the worktree loop, the conventions and the pull request format; [`AGENTS.md`](AGENTS.md) is the same brief the project's own sessions get. Work happens on a branch, never on `main`, and the pre-commit hook you install once runs the tests before every commit.
 
 ## License
 
