@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T11:47:09.261Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35340373459",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35340373459",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cf7f6d62024bf88477f9d0c2fef837beda72e8f2",
+  "source": "pr",
+  "pr_number": 99,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2532-2588",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New decision 56 prose uses em-dashes/en-dashes, which this pipeline's house style (`.claude/agents/review-docs.md`) flags as a style slip in newly-added text, even though historical repo prose uses them freely.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "25, 31, 149-150",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New `pup init`, `pup init --origin-moved`, and `pup merge --pr` bullets use em-dashes, flagged for the same house-style reason as the decisions.md instance.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "34",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The only way to move it.\" is an isolated three-word sentence wedged between two long clause-heavy sentences in the `--origin-moved` bullet; its referent is momentarily ambiguous and it could be folded into the surrounding sentence or dropped since the following sentence already conveys exclusivity.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "148-151",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pup merge --pr` bullet says the refusal happens \"naming both values\" for both the mismatch case and the no-recorded-target case, but `pushTarget` in `src/core/merge-gate.service.ts` only names one value (the configured URL) when nothing was ever recorded — there's no second recorded value to name in that branch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "118-121",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The first two sentences of the comment above the sanitize-refusal branch in `recordOriginUrl` restate `sanitizeReason`'s own JSDoc rationale in `src/adapters/capability.utils.ts` almost verbatim; per this repo's comment convention, a call-site WHY that duplicates the callee's JSDoc should be trimmed. The final sentence (\"Refused rather than sanitized...\") is genuinely local WHY and should stay.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "237-244",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`withPushTargetLine<TResult>` is a generic wrapper introduced for exactly two call sites (init, audit); per this repo's \"no abstraction until third use\" convention, inlining the small try/catch at each site (letting `printPushTargetLine`'s own JSDoc carry the decision-55 WHY) would be more consistent with house style than the shared generic wrapper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "285-290",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In `pushTarget`, if `getProject` returns undefined (task's project row missing), the code silently falls through to the \"No push target is recorded\" refusal instead of surfacing the project-row inconsistency — still fail-safe (nothing pushed), but the operator gets a misleading message pointing at `pup init` rather than the real problem. This branch also has no test coverage.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "57-77",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readOriginUrl` collapses every failure mode (no origin, not a repo, or a timed-out config read) into a single `undefined` return. `GIT_SAFE_CONFIG` doesn't cover `include.path`, so a session-planted blocking fifo there induces the timeout branch: at merge time this produces a misleading \"needs an origin remote\" refusal instead of a true-failure message (matches pre-existing behavior of the code it replaces, not a new regression), and at `pup init --origin-moved` time it makes the operator's re-record attempt silently no-op with no finding, leaving the stale value recorded with no feedback that the action didn't take.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "197-208",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`ensureProject` inserts a fresh `projects` row before `recordOriginUrl` runs, so a session's own `pup init` call (recording='skip') can still create the trust-anchor row itself with `origin_url` left NULL; the later trust-on-first-use check (`countProjectSessions > 0`) still catches this at the operator's first real record, so it isn't exploitable via this diff, but the underlying ability of a session to create the row at all predates this PR and the new defense is layered on top of it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2513-2521",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Internal contradiction: decision 54's ceiling paragraph inserts \"(closed by decision 56)\" right after the bolded ceiling statement, but the following sentences continue to describe the same gap in present tense and call the fix \"its own change,\" as if unsolved.",
+      "refutation": "Refuted against house-style precedent: decision 41's own Ceilings paragraph (unedited by this PR, lines ~1282-1290) uses the identical pattern — present-tense \"still\" narration immediately beside a \"(closed by decision N)\" parenthetical, including the exact phrase \"and is its own change (closed by decision 44)\". Decision records in this repo are dated snapshots narrated in the voice of their writing time, with the parenthetical serving as a later update layer. Decision 54's edit is consistent with, not a deviation from, that established convention."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 12.80013115,
+  "duration_ms": 672245,
+  "num_turns": 29,
+  "tokens": {
+    "input": 29,
+    "output": 32399,
+    "cache_read": 1005933,
+    "cache_creation": 94026,
+    "total": 1132387
+  }
+}
