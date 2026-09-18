@@ -1008,6 +1008,63 @@ describe('CLI commands', () => {
       expect(recordedOrigin(repo)).toBeNull();
     });
 
+    it('prints a recorded push target through the sanitizer', () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+      // A row written before `recordOriginUrl` refused these: printing it raw
+      // would let it repaint the sandbox and codegraph lines above it.
+      const { db } = resolveProject(repo);
+      ensureProject(db, projectId(repo), repo);
+      db.prepare('UPDATE projects SET origin_url = ? WHERE id = ?').run(
+        `${ORIGIN_URL}\u001b[2Aowned`,
+        projectId(repo),
+      );
+      db.close();
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(logs).toContain(`push target: ${ORIGIN_URL} [2Aowned`);
+    });
+
+    // The record is made before the stages so a stage that dies cannot lose it
+    // (decision 55); the line reporting it has to survive the same death, or a
+    // first record lands with no output at all.
+    it('prints the recorded push target when a broken toolchain kills the capture', () => {
+      const repo = initRepo();
+      execFileSync('git', ['remote', 'add', 'origin', ORIGIN_URL], {
+        cwd: repo,
+        env: GIT_ENV,
+        encoding: 'utf8',
+      });
+      useCwd(repo);
+      const tmp = tempDir('pup-cli-cache-');
+      vi.stubEnv('TMPDIR', tmp);
+      // The poisoned shape decision 55 recognises: a corepack install whose
+      // bin/ is empty, so the stage's `node <entrypoint>` dies with an empty
+      // require stack. Reached through a custom adapter, the one way a test
+      // repo can name the command a stage runs.
+      const install = join(
+        tmp,
+        'pup-toolchain-cache',
+        projectId(repo),
+        'corepack',
+        'v1',
+        'pnpm',
+        '1.0.0',
+      );
+      mkdirSync(join(install, 'bin'), { recursive: true });
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(
+        join(repo, '.pupitre', 'adapter.yml'),
+        `id: fake\nbuild: node ${join(install, 'bin', 'pnpm.cjs')}\n`,
+      );
+
+      expect(() => buildProgram().parse(['init'], { from: 'user' })).toThrow('toolchain cache');
+
+      expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
+      expect(logs).toEqual([`push target: ${ORIGIN_URL}`]);
+    });
+
     it('re-records a moved origin when the operator says it moved', () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);

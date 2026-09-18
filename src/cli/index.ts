@@ -218,11 +218,29 @@ function printCodegraphLine(repoPath: string): void {
  * yet. Read from the row rather than carried in the report, because the row is
  * what the gate reads (decision 56).
  */
-function printPushTargetLine(db: Database, projectId: string): void {
-  const recorded = getProject(db, projectId)?.origin_url;
+function printPushTargetLine(db: Database, id: string): void {
+  const recorded = getProject(db, id)?.origin_url;
+  // Sanitized on the way out as well as on the way in: a row written before
+  // `recordOriginUrl` refused control characters would otherwise repaint the
+  // lines above it on the way past (decisions 29, 56).
   console.log(
-    `push target: ${recorded ?? 'not recorded — `pup merge --pr` refuses until `pup init` records one'}`,
+    `push target: ${recorded ? sanitizeReason(recorded) : 'not recorded — `pup merge --pr` refuses until `pup init` records one'}`,
   );
+}
+
+/**
+ * The record is written before the stages run, so that a capture dying in one —
+ * a broken toolchain, decision 55 — still leaves it made; this keeps the line
+ * that reports it from dying with the capture, where a first record would land
+ * with no output at all.
+ */
+function withPushTargetLine<TResult>(db: Database, repoPath: string, run: () => TResult): TResult {
+  try {
+    return run();
+  } catch (error) {
+    printPushTargetLine(db, projectId(repoPath));
+    throw error;
+  }
 }
 
 /** The gate flags only increases over these numbers, so the human should see the bar. */
@@ -517,8 +535,16 @@ export function buildProgram(): Command {
         );
       }
       const recording = session ? 'skip' : opts.originMoved ? 're-record' : 'record';
-      const report = runOrReportNoAdapter(() =>
-        initProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv), recording),
+      const report = withPushTargetLine(db, repoPath, () =>
+        runOrReportNoAdapter(() =>
+          initProject(
+            db,
+            repoPath,
+            detectAdapters(repoPath),
+            parseGateEnv(opts.gateEnv),
+            recording,
+          ),
+        ),
       );
       if (!report) return;
       printInitReport(db, report, repoPath);
@@ -1562,8 +1588,10 @@ export function buildProgram(): Command {
       if (callingSession(db)) {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
-      const report = runOrReportNoAdapter(() =>
-        auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+      const report = withPushTargetLine(db, repoPath, () =>
+        runOrReportNoAdapter(() =>
+          auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+        ),
       );
       if (!report) return;
       if (opts.sweep) {

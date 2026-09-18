@@ -277,7 +277,18 @@ function pushTarget(db: Database, session: SessionRow, repoPath: string): string
   }
   const task = getTask(db, session.task_id);
   if (!task) throw new Error(`Session ${session.id} has no task row; cannot resolve its project.`);
-  const recorded = getProject(db, task.project_id)?.origin_url ?? undefined;
+  const project = getProject(db, task.project_id);
+  // The session reaches its project through its task row, which is a second
+  // notion of "this project" beside the path the merge was asked for. They
+  // agree in every store pup writes; if they ever did not, the push target
+  // would be read from a row describing another checkout.
+  if (project && project.repo_path !== repoPath) {
+    throw new Error(
+      `Session ${session.id} belongs to project ${task.project_id}, recorded at ` +
+        `${project.repo_path}, not the ${repoPath} this merge was asked for. Nothing was pushed.`,
+    );
+  }
+  const recorded = project?.origin_url ?? undefined;
   if (!recorded) {
     throw new Error(
       'No push target is recorded for this project, so there is nothing to check origin ' +

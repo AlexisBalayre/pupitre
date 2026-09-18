@@ -2560,6 +2560,14 @@ changes back into those docs is pending.
     `sandbox:` and `codegraph:` lines on `pup init` and `pup audit` alike, read from the row the
     gate reads, and says "not recorded" in as many words when there is nothing there
     (decisions 36, 51).
+    *What is refused rather than recorded.* A configured URL that does not survive
+    `sanitizeReason` — control characters, newlines, 300-plus characters — is reported as a
+    finding and not stored: no remote URL anyone types needs an escape sequence, a stored one
+    would repaint the terminal every time the line is printed, and a sanitized copy is not the
+    value the gate could compare against. The print sanitizes too, for rows written before this.
+    And the first record is only trust-on-first-use while nothing else has had the config: on a
+    project that has already run sessions — every project set up before the column existed — it
+    is held back with a finding, and `--origin-moved` is how the operator confirms it.
     *Ceilings.* **`pup init` is not operator-only**, unlike `pup audit` (decision 48), so a
     session can still re-run it and re-stamp the debt baseline through the command decision 48
     did not cover. The push target is defended against that by the `'skip'` above; the baseline
@@ -2568,7 +2576,13 @@ changes back into those docs is pending.
     `--pr`** until they do; that is the intended refusal, but it is a stop-the-world one, and the
     same is true of every project set up before the column existed. **The record is only as good
     as the checkout `pup init` ran in:** an operator who onboards a repo whose `remote.origin.url`
-    was already poisoned records the poison, and nothing here can tell. **Decision 27's ceiling
+    was already poisoned records the poison, and nothing here can tell — holding the first record
+    back narrows this to a project with no sessions yet, where the operator is the only writer the
+    config has had, but a repo cloned from a poisoned source is recorded as it stands.
+    **The store is the root of trust:** the recorded URL is a row in the same SQLite store a
+    session can reach on disk, so this is loud against a session that rewrites git config and
+    silent against one that rewrites the store — decision 46's ceiling, and the one every check
+    pup makes against its own rows stands on. **Decision 27's ceiling
     stands:** a session that `cd`s out of its worktree and unsets `PUP_SESSION_ID` is an operator
     to `callingSession`, so the `'skip'` and the flag's refusal make the audit trail honest, not
     tamper-proof — the sandbox is the instrument for the rest.

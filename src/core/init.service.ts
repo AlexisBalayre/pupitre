@@ -18,6 +18,7 @@ import {
 import { projectId } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import {
+  countProjectSessions,
   ensureProject,
   getProject,
   saveProjectBaseline,
@@ -69,7 +70,15 @@ export function readOriginUrl(repoPath: string): string | undefined {
     const url = execFileSync(
       'git',
       [...GIT_SAFE_CONFIG, '-C', repoPath, 'config', '--get', 'remote.origin.url'],
-      { encoding: 'utf8', env: scrubbedGitEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
+      // Timed out like every other child pup runs: an `include.path` pointing at
+      // a fifo is another thing a session can write into the shared config, and
+      // an untimed read would hang `pup init` and hang `--pr` before the lock.
+      {
+        encoding: 'utf8',
+        env: scrubbedGitEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GATE_COMMAND_TIMEOUT_MS,
+      },
     ).trim();
     return url || undefined;
   } catch {
@@ -106,6 +115,29 @@ function recordOriginUrl(
   if (!configured) return undefined;
   const recorded = getProject(db, pid)?.origin_url ?? undefined;
   if (recorded === configured) return undefined;
+  // Stored only if it survives the sanitizer the terminal messages use: a value
+  // carrying control characters repaints whatever is printed around it, and no
+  // remote URL anyone types needs them. Refused rather than sanitized, because
+  // a sanitized URL is not the one the gate would compare against.
+  const clean = sanitizeReason(configured);
+  if (clean !== configured) {
+    return (
+      `origin is configured as ${clean}, which is not a URL anyone could have typed — control ` +
+      'characters, newlines or over 300 of them. Not recorded: clear it from the config and ' +
+      're-run, and treat the session that wrote it as compromised.'
+    );
+  }
+  // The first record is trust-on-first-use, and it is only honest while nothing
+  // has had the chance to write the config first. A project that already ran
+  // sessions before this was recorded — every project set up before the column
+  // existed — has had exactly that chance, so the operator confirms the value.
+  if (recorded === undefined && recording === 'record' && countProjectSessions(db, pid) > 0) {
+    return (
+      `origin is configured as ${clean}, and sessions have already run here, so the shared ` +
+      'config it comes from has been writable by something other than you. Not recorded: ' +
+      'confirm it with `pup init --origin-moved`.'
+    );
+  }
   if (recorded === undefined || recording === 're-record') {
     saveProjectOriginUrl(db, pid, configured);
     return undefined;

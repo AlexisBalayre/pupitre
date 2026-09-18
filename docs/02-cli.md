@@ -24,12 +24,15 @@ exit 1.
   one whose sessions grep (decision 51). Records `remote.origin.url` as the project's push
   target and prints it as `push target: <url>` on the next line — that recorded value is what
   `pup merge --pr` pushes to, and it refuses when the repo's config no longer says the same
-  thing. A run from inside a session records nothing: naming the target is the operator's act
+  thing. The record is held back, with a finding, rather than written when the configured URL
+  carries control characters or when sessions have already run for the project; `--origin-moved`
+  is how the operator confirms one. A run from inside a session records nothing: naming the target is the operator's act
   (decision 56).
-- `pup init --origin-moved` — re-record the push target from the repo's current
-  `remote.origin.url`, for when origin legitimately moves (a rename, a fork promoted). The only
-  way to move it. Operator-only, like `pup audit`: it is the value a session's merge is held to
-  (decision 56).
+- `pup init --origin-moved` — record the push target from the repo's current
+  `remote.origin.url` when pup will not do it on its own: origin legitimately moved (a rename, a
+  fork promoted), or this is a first record on a project whose sessions have already had the
+  shared config to write. The only way to move it. Operator-only, like `pup audit`: it is the
+  value a session's merge is held to (decision 56).
 - `pup plan add "<goal>" --scope <glob>...` — record a task with no session. `pup plan` lists the
   backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
   rewrites one. A task is in the backlog until a session claims it (decision 40).

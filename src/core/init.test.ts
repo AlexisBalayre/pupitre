@@ -10,7 +10,13 @@ import { openStore } from './db.client.js';
 import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
-import { ensureProject, getProject, saveProjectBaseline } from './session.repository.js';
+import {
+  ensureProject,
+  getProject,
+  insertSession,
+  insertTask,
+  saveProjectBaseline,
+} from './session.repository.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 
 // Same isolation the other suites use: a test repo must not inherit the
@@ -121,6 +127,40 @@ describe('initProject', () => {
 
     expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
     expect(report.findings).toEqual([]);
+  });
+
+  it('refuses to record a URL nobody could have typed', () => {
+    // Terminal escapes in a remote URL repaint whatever is printed around it,
+    // and a stored one would be reprinted on every init and audit.
+    addOrigin(repo, `${ORIGIN_URL}\u001b[2Aowned`);
+
+    const report = initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
+    expect(report.findings[0]).toContain('not a URL anyone could have typed');
+  });
+
+  it('holds the first record on a project whose sessions could have written it', () => {
+    addOrigin(repo);
+    const pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    insertTask(db, { id: 't1', projectId: pid, spec: '{}' });
+    insertSession(db, {
+      id: 's1',
+      taskId: 't1',
+      worktreePath: join(repo, '.worktrees', 's1'),
+      branch: 'pup/s1',
+      profileHash: 'h',
+    });
+
+    const held = initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, pid)?.origin_url).toBeNull();
+    expect(held.findings[0]).toContain('--origin-moved');
+    // The flag is how the operator confirms it, first record or later move.
+    const confirmed = initProject(db, repo, [makeAdapter()], undefined, 're-record');
+    expect(getProject(db, pid)?.origin_url).toBe(ORIGIN_URL);
+    expect(confirmed.findings).toEqual([]);
   });
 
   it('records nothing when the repo has no origin', () => {

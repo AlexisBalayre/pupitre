@@ -1357,7 +1357,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   it('with openPr refuses when the project has no recorded push target at all', () => {
     seedSession(db, repo);
-    sh(repo, 'git', 'remote', 'add', 'origin', ORIGIN_URL);
+    // Origin still resolves to the local bare repo: with the guard removed this
+    // test must push somewhere offline, not at the real github.com/owner/repo.
+    addOrigin();
+    db.prepare('UPDATE projects SET origin_url = NULL WHERE id = ?').run('proj-1');
 
     expect(() =>
       withFakeGh(fakeGh([]), () =>
