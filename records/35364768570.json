@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T15:57:24.637Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35364768570",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35364768570",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7569ed4abd0bd04d70dffa3222a7c5e9cc92fc92",
+  "source": "pr",
+  "pr_number": 101,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "50",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "CONTRIBUTING.md tells contributors to manually unset PUP_CONDUCTOR before running tests or the suite fails, but the suite already neutralizes it for every test.",
+      "body": "This sentence tells a contributor they must manually unset `PUP_CONDUCTOR` before `pnpm test` or the suite fails:\n\n> Run the tests with `PUP_CONDUCTOR` unset if you have a conductor session open in the same shell; the CLI suite stubs it and fails otherwise.\n\nThat's stale. `src/cli/index.test.ts`'s outer `describe('CLI commands', ...)` block already runs a `beforeEach` (around lines 351-356) that does `vi.stubEnv('PUP_SESSION_ID', ''); vi.stubEnv('PUP_CONDUCTOR', '')` before every test in the file, with a comment explaining exactly this scenario (a suite run from inside a conductor's own tmux inherits the variable). `callingConductor()` in `src/cli/index.ts:417-418` reads `process.env.PUP_CONDUCTOR` fresh on every call rather than capturing it at import time, so `vi.stubEnv` fully overrides whatever the invoking shell exports for the whole test body. `docs/09-decisions.md:1832-1835` documents this as a landed fix: \"`PUP_CONDUCTOR` now joins `PUP_SESSION_ID` at `''` in the CLI suite's `beforeEach`, because a suite run from inside the conductor's own tmux inherits the variable and 37 project-resolution tests then fail on a guard that is working correctly.\"\n\nSo the suite does *not* fail when `PUP_CONDUCTOR` is set in the invoking shell — the stub already handles it. The instruction asks contributors to work around a failure mode the code no longer has. Recommend dropping the sentence, or replacing it with a note that the suite already stubs the variable so no action is needed.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7569ed4abd0bd04d70dffa3222a7c5e9cc92fc92/CONTRIBUTING.md#L50",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The review-validator for the PUP_CONDUCTOR finding wrote a top-line verdict of \"REFUTED\" but every piece of evidence and its closing sentence (\"CONTRIBUTING.md:50 ... is stale/incorrect\") actually confirms the finding. Treated as a mislabeling and resolved by substance (confirmed) rather than the label."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 2.4460438000000004,
+  "duration_ms": 430188,
+  "num_turns": 18,
+  "tokens": {
+    "input": 21,
+    "output": 12411,
+    "cache_read": 465702,
+    "cache_creation": 41398,
+    "total": 519532
+  }
+}
