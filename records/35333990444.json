@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T10:27:33.539Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35333990444",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35333990444",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f5e416145c2e7cc2b21e46f89d36c86ef8bef999",
+  "source": "pr",
+  "pr_number": 97,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/README.md",
+      "line": "120",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "\"This repo ships **26 skills**\" is stale: this PR adds `wayfinder` and `implement` to the tree diagram (line 59) and to `.claude/skills/README.md`'s catalog, bringing the true count to 28, but line 120 (untouched by this PR) still says 26.",
+      "body": "This PR adds `wayfinder` and `implement` to the tree diagram (line 59) and to `.claude/skills/README.md`'s catalog (2 new rows), bringing the real total to 28 skills — but line 120 still reads \"This repo ships **26 skills**\". Since this PR is what pushes the count from 26 to 28, and it edits this same file, please bump the number here too.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0f2f2fcba7b2d9836dbafa08e335a7e8d760c8b0/.claude/README.md#L120",
+      "suggestion": "This repo ships **28 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only)."
+    },
+    {
+      "file": ".claude/skills/README.md",
+      "line": "22-23",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`implement` is catalogued under \"Planning & specs\" (both in `.claude/skills/README.md`'s table and the companion tree diagram at `.claude/README.md:59`), but its own description is pure execution (TDD, typecheck, commit) — the opposite of the section's stated trait (\"these write local Markdown under `docs/plans/<slug>/`\"). It fits \"Engineering — build, fix, and clean up\" (alongside `tdd`, `wizard`, `research`) far better; `wayfinder`, which genuinely produces planning Markdown, is correctly placed. No hard rule is broken, and the row's own text is accurate on its own, so this doesn't mislead a reader who reads the row itself.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The PR head moved mid-review: this run's checkout and all three reviewers analyzed commit f5e416145c2e7cc2b21e46f89d36c86ef8bef999 (the head at gate time), but by the time findings were consolidated, gh reported the true PR head had advanced to 0f2f2fcba7b2d9836dbafa08e335a7e8d760c8b0 via a new commit ('Take the template's pr-description skill') that touches .claude/skills/README.md, .claude/skills/pr-description/SKILL.md, and .claude/skills/pr-description/TEMPLATE.md — none of which this run reviewed. Both consolidated findings were re-checked against the new gh pr diff and remain valid at unchanged locations (neither flagged line was touched by the new commit), so nothing here is a false positive, but the pr-description skill delta itself was never reviewed by any area and needs a follow-up pass, presumably on the next CI trigger for this PR."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 2.6769504,
+  "duration_ms": 535275,
+  "num_turns": 22,
+  "tokens": {
+    "input": 27,
+    "output": 22384,
+    "cache_read": 708302,
+    "cache_creation": 63882,
+    "total": 794595
+  }
+}
