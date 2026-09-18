@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-18T10:35:40.929Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35334403151",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35334403151",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0f2f2fcba7b2d9836dbafa08e335a7e8d760c8b0",
+  "source": "pr",
+  "pr_number": 97,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "f5e416145c2e7cc2b21e46f89d36c86ef8bef999",
+  "prior_importants": [
+    {
+      "file": ".claude/README.md",
+      "line": "120",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "119-128",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The \"call-tree or call-stack change\" worked diff example removes and re-adds the identical, unchanged line `navigateToSession` (a no-op `-`/`+` pair), contradicting the section's own instruction to \"match the diff shape to the topic\" and teaching agents the wrong convention for showing a new child added under an unchanged parent.",
+      "body": "This worked example is meant to teach an agent the right `diff` shape for a call-tree change, but it shows a no-op `-`/`+` pair on identical text:\n\n```diff\n submitForm\n   createSession\n     persistPrompt\n+    expandSkillMention\n     launchAgent\n-  navigateToSession\n+  navigateToSession\n+    subscribeToEvents\n```\n\n`navigateToSession` is removed and re-added with byte-identical text and indentation — a diff a real tool would never produce, and exactly what the section's own guidance one screen above (\"Use `diff` when the point is what changes... Match the diff shape to the topic\") argues against. None of the file's other four worked diff examples use a same-text `-`/`+` pair; they all keep unchanged lines as plain context and mark only genuinely different lines (e.g. the component-tree example keeps `<SessionToolbar>` unmarked and only `+`-marks the new `<RunSkillButton />`). Since this is a worked example an agent will pattern-match against when drafting a real PR Summary, it actively teaches the wrong lesson.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0f2f2fcba7b2d9836dbafa08e335a7e8d760c8b0/.claude/skills/pr-description/SKILL.md#L119-L128",
+      "suggestion": "```diff\n submitForm\n   createSession\n     persistPrompt\n+    expandSkillMention\n     launchAgent\n   navigateToSession\n+    subscribeToEvents\n```"
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "245-252",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The attribution sentence \"The Summary views are adapted from Dex Horthy's `show-me` skill (humanlayer/skills)\" sits as an unmarked trailing paragraph inside `## Body rules` (the file's last section), directly beneath a bullet that says \"Never add ... any agent attribution ... to the PR body\" — no heading or separator marks it as meta-commentary about the skill file itself rather than PR-body content.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "242",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"follow-up to a prior PR\" worked-example title (`chore(skills): take the template's implement and wayfinder skills (follow-up to #93)`) is 84 characters, over the \"≲ 80 chars\" rule stated three lines above it — the one example meant to model a compliant title exceeds the limit it illustrates.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Neither reviewer brief mentioned that .claude/ is config-restored to the base branch in the working tree under CI, so a plain Read on .claude/skills/pr-description/SKILL.md serves stale (pre-delta) content. Both the conventions and docs reviewers independently discovered this and correctly worked around it via `git show HEAD:<path>`, so it did not degrade this run, but the brief should include this caveat going forward to avoid relying on reviewers rediscovering it."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 2.6065235,
+  "duration_ms": 449637,
+  "num_turns": 25,
+  "tokens": {
+    "input": 25,
+    "output": 16132,
+    "cache_read": 615073,
+    "cache_creation": 54626,
+    "total": 685856
+  }
+}
