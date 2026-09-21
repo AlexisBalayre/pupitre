@@ -19,7 +19,7 @@ cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 pnpm test
 ```
 
-The pre-commit hook runs the test suite before every commit. Nothing installs it for you, and CI does not run the tests, so a clone without it is a clone with no gate.
+The pre-commit hook lints the staged sources, typechecks, and runs the test suite before every commit, so a commit can be refused with no test failure involved. Nothing installs it for you, and CI does not run any of those, so a clone without it is a clone with no gate.
 
 ## The loop
 
@@ -52,11 +52,11 @@ pnpm worktree:clean                 # after the merge; removes worktrees whose r
 The rules live in [`docs/conventions/`](docs/conventions/): `general.md` and `naming.md` for every TypeScript file, `testing.md` for tests. The ones people trip on:
 
 - **Read two or three neighbouring files first** and match their patterns. The codebase is consistent on purpose.
-- **Files are `kebab-case.role.ts`**, for example `merge-gate.service.ts`, `session.repository.ts`, `db-client.test.ts`. A Claude Code hook refuses a name that does not match; if you write files by hand, match it yourself. The full role list is in `.claude/project.env`.
-- **Module boundaries:** `src/cli/` stays thin and delegates to `src/core/`; `src/claude/` is the only module that touches Claude Code (tmux, hooks, `claude -p`); `src/adapters/` holds the per-language toolchains.
+- **Files are `kebab-case.role.ts`**, for example `merge-gate.service.ts`, `session.repository.ts`, `db-client.test.ts`. A Claude Code hook refuses a name that does not match; if you write files by hand, match it yourself. The roles and what each means are listed in [`docs/conventions/naming.md`](docs/conventions/naming.md).
+- **Module boundaries:** `src/cli/` stays thin and delegates to `src/core/`; `src/claude/` is the only module that touches Claude Code (tmux, hooks, `claude -p`). For orientation, the per-language toolchains live in `src/adapters/`.
 - **Priority is correct, then simple, then readable, then fast.** No abstraction until its third use. No new dependency without checking the stack decisions in [`docs/08-roadmap.md`](docs/08-roadmap.md).
 - **Comments say why, never what.** If deleting a comment would not confuse a competent reader, delete it.
-- **Tests prove the behaviour, not the code.** A guard needs a test that fails when the guard is removed. Say in the PR that you checked.
+- **Tests prove the behaviour, not the code.** Reviews here routinely ask, for a change that adds a guard, whether a test fails when the guard is removed; checking that before you open the PR, and saying so, saves a round.
 
 ## Decisions
 
@@ -66,8 +66,8 @@ A change that alters a rule, a boundary, a gate stage, a persisted noun, or anyt
 
 - Title: `<type>(<scope>): <summary>`, imperative, lowercase after the colon, no trailing period. Types are `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`. Scopes in use: `gate`, `cli`, `ui`, `conductor`, `watch`, `profile`, `init`, `store`, `adapters`, `claude`, `report`, `tooling`, `skills`, `deps`.
 - Body: a **Summary** that shows the change as a diff sketch, call tree or file tree rather than prose; **Evidence** that it works, before and after; **Merge Danger**, saying whether it is a one-way or two-way door and what it can break. End with `Lands decision NN.` or `Follow-up to #NNNN.` when either applies.
-- Keep the diff to what the title says. The gate flags diffs over 600 changed lines; large tests are the usual reason and are fine, but say so.
-- An automated review runs on pull requests opened by the repository owner and posts inline findings. It does not run on external pull requests, so those get a human review instead; expect questions grounded in the decisions log.
+- Keep the diff to what the title says. The gate refuses a diff over 600 changed lines unless the merge is run with `--accept-debt "<reason>" --review-by "<condition>"`, which records a ledger entry; large tests are the usual reason and are fine, but the reason has to be given.
+- An automated review runs when the repository owner opens, pushes to, or comments `@claude review` on a pull request, and posts inline findings. It bills the owner's subscription, so on an external pull request it runs only if the owner asks for it; otherwise expect a human review, with questions grounded in the decisions log.
 
 ## Security
 

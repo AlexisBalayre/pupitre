@@ -133,7 +133,7 @@ Early and opinionated. Single user, single machine, TypeScript adapter first. Cl
 
 ## Contributing
 
-Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the setup, the worktree loop, the conventions and the pull request format; [`AGENTS.md`](AGENTS.md) is the same brief the project's own sessions get. Work happens on a branch, never on `main`, and the pre-commit hook you install once runs the tests before every commit.
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the setup, the worktree loop, the conventions and the pull request format; [`AGENTS.md`](AGENTS.md) is the same brief the project's own sessions get. Work happens on a branch, never on `main`, and the pre-commit hook you install once lints, typechecks and runs the tests before every commit.
 
 ## License
 
