@@ -2363,6 +2363,32 @@ describe('CLI commands', () => {
       ]);
     });
 
+    // A session's shell can write a BLOB into its own row; the driver hands it
+    // back as bytes, and every reader must still get a string (decision 62).
+    it('reads a BLOB stamp as dormant, scrubbed, in list, status --dormant and dormant', () => {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      const { db } = resolveProject(repo);
+      db.prepare('UPDATE projects SET dormant_at = ? WHERE id = ?').run(
+        Buffer.from([0x1b, 0x5b, 0x32, 0x4a]),
+        id,
+      );
+      db.close();
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['project', 'list'], { from: 'user' });
+      buildProgram().parse(['status', '--dormant'], { from: 'user' });
+      buildProgram().parse(['project', 'dormant', id], { from: 'user' });
+
+      expect(logs).toEqual([
+        `${id}  ${repo}  dormant since [2J  conductor stopped`,
+        `${id}  ${repo}  conductor stopped  dormant since [2J`,
+        '  0 running, 0 planned, 0 merged',
+        `Project ${id} is already dormant since [2J.`,
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('refuses an empty registry, an id on list, and an unknown action', () => {
       useCwd(tempDir('pup-cli-noproj-'));
 

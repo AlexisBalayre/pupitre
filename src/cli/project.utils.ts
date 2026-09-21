@@ -124,7 +124,10 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
           repoPath: row.repo_path,
           dbFile,
           repoExists: existsSync(row.repo_path),
-          dormantAt: row.dormant_at,
+          // A session can write a BLOB into its own row, which TEXT affinity
+          // keeps and the driver returns as bytes; every reader takes a string
+          // (decision 62, as decision 61 did for the planted ledger id).
+          dormantAt: row.dormant_at === null ? null : String(row.dormant_at),
         })),
     );
 }

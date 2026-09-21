@@ -3045,8 +3045,21 @@ changes back into those docs is pending.
     and both fleet readers never migrates a store (decision 43), so it asks
     `table_info(projects)` first and reads a store without the column as active rather than as
     unreadable. That is what keeps a hidden project's store shut: whether a project is dormant
-    is known from the read-only scan, before any reader would open it. The one writer is
-    `saveProjectDormantAt`, reached only from the operator's `pup project`.
+    is known from the read-only scan, before any reader would open it. The one writer in pup is
+    `saveProjectDormantAt`, reached only from the operator's `pup project`; it is not the only
+    writer on disk, since a session's shell can reach its own store (decision 57), which is why
+    the value is coerced below.
+    *Whatever type the column holds, it is read as a string.* A session can write a BLOB into
+    its own project's row (`UPDATE projects SET dormant_at = X'1b5b324a'`); TEXT affinity keeps
+    it, better-sqlite3 returns it as a `Uint8Array`, and `sanitizeReason`, which takes a
+    string, threw on it in `pup status --dormant`, `pup project list` and decision 43's
+    refusal. The registry scan now builds `dormantAt` with `String()` when it is not null, and
+    `pup project dormant`'s `already dormant since` line, which reads through `getProject`,
+    does the same, mirroring decision 61's `String()` for a planted TEXT ledger id. Such a
+    project reads dormant, as any non-null stamp does, and its stamp prints as the bytes
+    decoded as text and scrubbed. Tested with the escape `ESC [2J` as a BLOB: listed dormant
+    with the escape stripped in `pup project list`, `pup status --dormant` and
+    `pup project dormant`, none of them throwing.
     *Operator-only, `list` included.* A session that could set it could hide its own project
     from the operator's views and switch off the watchdog that resumes it; the conductor could
     put the project it runs to sleep. So all three are refused for a calling session and for
@@ -3087,7 +3100,13 @@ changes back into those docs is pending.
     those is a small follow-up if the operator wants it. The radar's overlap scan still runs
     for a dormant project, since it types nothing and a dormant project has no live session to
     overlap unless one was launched after. A registry that is all dormant prints only the
-    count line in the fleet `pup status` and an empty fleet in `pup ui`.
+    count line in the fleet `pup status` and an empty fleet in `pup ui`. A project whose repo
+    is gone can be neither put to sleep nor woken: `resolveProject` refuses it in
+    `openRegistered` before the row is reached, as it does for every command (decision 43).
+    Kept as a ceiling rather than a special case here, because a gone repo is already listed
+    missing and never opened by the fleet readers, so its dormancy changes nothing they show;
+    the place to deal with a gone project's row is the `pup init --forget <id>` decision 43
+    already names.
 
 ## Implementation notes
 

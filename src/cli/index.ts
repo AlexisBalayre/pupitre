@@ -995,7 +995,9 @@ export function buildProgram(): Command {
           return;
         }
         if (row.dormant_at !== null) {
-          console.log(`Project ${pid} is already dormant since ${sanitizeReason(row.dormant_at)}.`);
+          console.log(
+            `Project ${pid} is already dormant since ${sanitizeReason(String(row.dormant_at))}.`,
+          );
           return;
         }
         // Named, not counted, like the brief's list of what runs on the old
