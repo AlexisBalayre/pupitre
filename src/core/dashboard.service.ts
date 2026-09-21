@@ -30,6 +30,7 @@ import type {
   DashboardSession,
   DashboardSnapshot,
   DashboardSteer,
+  FleetSummary,
 } from './types/dashboard.types.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { GateReport } from './types/merge-gate.types.js';
@@ -93,6 +94,29 @@ export function buildDashboardSnapshot(
       files: pair.files.map(sanitizeReason),
     })),
     radarStale: !beat || now - beat.getTime() > WATCH_STALE_AFTER_MS,
+  };
+}
+
+/**
+ * A project folded to what the operator has to act on (decision 60). Awaiting
+ * review is here though nothing is wrong with it, because nothing moves until
+ * a person merges it; awaiting-input is not, because a permission ask answers
+ * itself or turns into a stall within minutes, and the fleet is read across
+ * projects rather than watched.
+ */
+export function fleetSummary(snapshot: DashboardSnapshot): FleetSummary {
+  const count = (state: DashboardSession['state']): number =>
+    snapshot.sessions.filter((session) => session.state === state).length;
+  return {
+    needsYou: snapshot.sessions.filter(
+      (session) =>
+        session.state === 'blocked' ||
+        session.state === 'awaiting-review' ||
+        session.stalledAgeMs !== undefined,
+    ),
+    running: count('running'),
+    planned: snapshot.backlog.length,
+    merged: count('merged'),
   };
 }
 

@@ -1399,6 +1399,17 @@ changes back into those docs is pending.
     store directory holding a `state.db` with no `projects` row — `pup status` in a repo that
     never ran `pup init` creates one — is not a project and is skipped. Nothing prunes stale
     projects; a `pup init --forget <id>` would be the place.
+    *Addendum, 2026-09-21: `pup status` and `pup ui` may read across stores; nothing else may.*
+    Outside any repo, `pup status` no longer picks the one live project or refuses with the
+    listing: it prints the fleet view, one block per registered project, and `pup status --all`
+    prints the same from anywhere (decision 60). Reading every store is a third door to
+    another project's store beside `--project` and the auto-select, so it carries the same
+    guard — refused on `PUP_SESSION_ID` or a calling conductor alone, then on the session's own
+    store — and a project whose repo is gone is still reported, never used: listed as missing,
+    its store never opened. The exemption is for the two readers only; `pup ui --all` is the
+    next change and is recorded there. Every other command keeps this decision's rule
+    unchanged — outside a repo with several live projects it lists them and asks for
+    `--project <id>`, because a command that writes must be pointed at one project by name.
 44. **A session reports only its own state, and `merge` and `respawn` are operator-only
     (2026-09-06).** Decision 42 closed `launch` and `kill` and named what it left open: a chain
     of commands by which a session could still end a *running* session's work, and two more
@@ -2848,6 +2859,47 @@ changes back into those docs is pending.
     they are installed there: a loud failure, the safe direction, and an environment question
     rather than a gate one. The flag fires for any touched package, so a package that means to
     have no typecheck has to be accepted as debt each time it changes, or declare the script.
+
+60. **Outside a repo, `pup status` is the fleet: every project, what needs you in each
+    (2026-09-21).** The multi-project design (a stream is a project with its conductor
+    running, one conductor per project) left the operator switching with `--project` and no
+    way to see across the projects at once; `pup status` from `$HOME` answered "pass --project"
+    on exactly the store it was meant to read. Now, outside any repo, or with `--all` from
+    anywhere, it reads every project `listRegisteredProjects` finds and prints one block per
+    project: the header `<id>  <repo_path>  conductor running|stopped`, then overdue debt, then
+    only the session rows that wait on the operator — blocked, stalled (a dead turn is a stall,
+    and reads `TURN DIED` as on the full table), awaiting review — and last one line of counts,
+    `N running, N planned, N merged`. The full single-project table is one `--project <id>`
+    away, and `--project` wins over `--all`, since naming a project is the narrower ask; inside
+    a repo, plain `pup status` is unchanged.
+    *Reused, not re-read.* Each block is `buildDashboardSnapshot` on that project's store,
+    folded by `fleetSummary` — so the fleet, the full table and `pup ui` cannot disagree about
+    what is stalled — and each store is closed before the next is opened. Rows print through
+    the one `sessionLine` the full table uses. Awaiting-input is left out of the fold though
+    the full table flags it: a permission ask answers itself or becomes a stall within
+    minutes, and the fleet is read across projects, not watched. Awaiting review is in,
+    because nothing moves there until a person merges. Running and merged are counted by
+    state, so a stalled session is both a row and one of the running; planned is the backlog,
+    which includes a killed session's task.
+    *A missing repo is listed, its store never opened.* `openStore` lays the schema and
+    migrations down, which would write to a store nobody can act on; the block is the header
+    and `missing: the repo no longer exists`. An empty registry refuses in one line pointing at
+    `pup init`, as before, but without "Not inside a git repository", which `--all` from inside
+    one would make false. Outside a repo with a single project the fleet is still what prints —
+    one block, not the full table — so the output outside a repo does not change shape with the
+    number of projects.
+    *Operator-only, and status only for now.* The addendum to decision 43 records why only
+    `pup status` and `pup ui` may read across stores; `pup ui --all` is the next task. The
+    attach command is not in the header: it is one `--project` away, on the full table.
+    *Dormant projects* are hidden unless `--dormant` is given, per the design; no project can
+    be dormant yet, so the flag lands with the task that adds dormancy rather than as a no-op
+    option here.
+    *Tests,* on temp stores under a stubbed HOME: two projects print their blocks with the
+    need-you rows, debt and counts; `--all` inside a repo prints what outside prints while plain
+    `pup status` there prints its own table; a gone repo whose bare store holds only its
+    `projects` row is listed missing and still holds only that table afterwards; a session and
+    a session that left every repo are refused; and `plan` outside a repo with two projects
+    still refuses with the listing.
 
 ## Implementation notes
 

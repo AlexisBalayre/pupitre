@@ -36,6 +36,7 @@ import {
   blockedReason,
   buildDashboardSnapshot,
   findStalledSessions,
+  fleetSummary,
   goalHeadline,
 } from '../core/dashboard.service.js';
 import {
@@ -102,13 +103,15 @@ import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
-import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { DashboardSession, DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
   enclosingProject,
+  fleetProjects,
+  openRegistered,
   ProjectResolutionError,
   type ResolvedProject,
   resolveProject,
@@ -504,6 +507,16 @@ export function buildProgram(): Command {
     const selected = program.opts().project as string | undefined;
     const own = enclosingProject(process.cwd());
     if (own && selected === undefined) return own;
+    refuseUnlessOperator(own);
+    return resolveProject(process.cwd(), selected);
+  };
+
+  /**
+   * Every door to a store other than the caller's own — `--project`, the
+   * auto-select, and the fleet view (decision 60) — is the operator's. Closes
+   * the caller's own store, which it only reads to ask this.
+   */
+  const refuseUnlessOperator = (own: ResolvedProject | undefined): void => {
     try {
       // The variable alone refuses: a session that cd's outside every repo
       // has no own store to be found in, and decision 42's ceiling needed it
@@ -513,7 +526,6 @@ export function buildProgram(): Command {
     } finally {
       own?.db.close();
     }
-    return resolveProject(process.cwd(), selected);
   };
 
   program
@@ -888,7 +900,24 @@ export function buildProgram(): Command {
   program
     .command('status')
     .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
-    .action(() => {
+    .option(
+      '--all',
+      'every registered project, what needs you in each (the default outside a repo)',
+    )
+    .action((opts: { all?: boolean }) => {
+      // Outside a repo, or with `--all`, the fleet view; `--project` names one
+      // project's full table and so wins over `--all` (decision 60).
+      const selected = program.opts().project as string | undefined;
+      const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
+      if (own && !opts.all) {
+        printDashboard(own.db, buildDashboardSnapshot(own.db, own.repoPath, Date.now()));
+        return;
+      }
+      if (selected === undefined) {
+        refuseUnlessOperator(own);
+        printFleet(Date.now());
+        return;
+      }
       const { repoPath, db } = project();
       printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
     });
@@ -948,6 +977,55 @@ export function buildProgram(): Command {
    * two from drifting into two different accounts of the same store
    * (decision 52).
    */
+  /**
+   * One block per registered project, from each store's own snapshot: its
+   * header, then only what waits on the operator, then counts (decision 60).
+   * A project whose repo is gone is marked missing and its store left shut —
+   * opening it would migrate a store nobody can act on. Each store is closed
+   * before the next is opened, so a long fleet holds one handle at a time.
+   */
+  function printFleet(now: number): void {
+    fleetProjects().forEach((registered, index) => {
+      if (index > 0) console.log('');
+      const header = `${registered.id}  ${sanitizeReason(registered.repoPath)}`;
+      if (!registered.repoExists) {
+        console.log(`${header}  missing: the repo no longer exists`);
+        return;
+      }
+      const { repoPath, db } = openRegistered(registered);
+      try {
+        const snapshot = buildDashboardSnapshot(db, repoPath, now);
+        const summary = fleetSummary(snapshot);
+        console.log(
+          `${header}  ${snapshot.conductor.running ? 'conductor running' : 'conductor stopped'}`,
+        );
+        for (const entry of snapshot.overdueDebt) {
+          console.log(
+            `  OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
+          );
+        }
+        for (const session of summary.needsYou) console.log(`  ${sessionLine(session)}`);
+        console.log(
+          `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
+        );
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  /** One session row, the same in the single-project table and the fleet view. */
+  function sessionLine(session: DashboardSession): string {
+    const marker =
+      session.state === 'blocked'
+        ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
+        : '';
+    return (
+      `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
+      `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`
+    );
+  }
+
   function printDashboard(db: Database, snapshot: DashboardSnapshot): void {
     for (const entry of snapshot.overdueDebt) {
       console.log(
@@ -969,16 +1047,7 @@ export function buildProgram(): Command {
       console.log('Nothing running and nothing planned.');
       return;
     }
-    for (const session of snapshot.sessions) {
-      const marker =
-        session.state === 'blocked'
-          ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
-          : '';
-      console.log(
-        `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
-          `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`,
-      );
-    }
+    for (const session of snapshot.sessions) console.log(sessionLine(session));
     // Planned tasks share the session table's columns under `planned`, the
     // state docs/01 gives a task with no session row: what will be built
     // belongs beside what is being built, not in a separate command

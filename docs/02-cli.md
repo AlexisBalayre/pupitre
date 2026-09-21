@@ -6,12 +6,13 @@ outside any repo, the store under `~/.pupitre` decides only when exactly one pro
 registered — with several it lists them as `id  repo_path` (a deleted repo is marked `(missing)`)
 and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
 project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
-exit 1.
+exit 1. `pup status` is the one exception: outside any repo it prints every project instead
+(decision 60, addendum to decision 43).
 
 ## Global options
 
 - `--project <id>` — control a registered project by id; the ids are the directory names under
-  `~/.pupitre`, and `pup status` from outside any repo lists them when more than one exists.
+  `~/.pupitre`, and `pup status` from outside any repo heads each project's block with its id.
   Operator-only, as is the store's auto-select outside a repo: a session reaches only the
   project around its cwd, whose store is where its guards live (decision 43).
 
@@ -51,6 +52,12 @@ exit 1.
   error on its pane and typed the resume, the row reads
   `TURN DIED (API error) — resumed by watch at hh:mm` instead of the bare age, or
   `… resume refused at hh:mm, needs a human` when the paste could not land.
+  Outside any repo, or with `--all` from anywhere, it prints the fleet instead: one block per
+  registered project, headed `<id>  <repo_path>  conductor running|stopped`, then overdue debt
+  and only the rows that need the operator — blocked, stalled or dead turn, awaiting-review —
+  and a closing `N running, N planned, N merged`. A project whose repo is gone reads
+  `missing: the repo no longer exists` and its store is not opened. `--project <id>` wins over
+  `--all` and prints that project's full table. Operator-only, like `--project` (decision 60).
 - `pup watch [--once|--start|--stop] [--interval <seconds>]` — the conflict radar: every fifteen
   seconds, scan the live sessions' diffs for same-file overlaps and print each `STALLED`
   session, then run the turn watchdog over the stalled ones — read each one's launch pane and,

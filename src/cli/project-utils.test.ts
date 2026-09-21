@@ -9,6 +9,7 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { ensureProject } from '../core/session.repository.js';
 import {
   enclosingProject,
+  fleetProjects,
   listRegisteredProjects,
   ProjectResolutionError,
   resolveProject,
@@ -139,6 +140,35 @@ describe('listRegisteredProjects', () => {
     rmSync(repo, { recursive: true });
 
     expect(listRegisteredProjects(base)).toEqual([expect.objectContaining({ repoExists: false })]);
+  });
+});
+
+describe('fleetProjects', () => {
+  it('lists every registered project, a missing repo included', () => {
+    const live = initRepo();
+    const gone = initRepo();
+    register(base, live);
+    register(base, gone);
+    rmSync(gone, { recursive: true });
+
+    expect(
+      fleetProjects()
+        .map((project) => [project.repoPath, project.repoExists])
+        .sort(),
+    ).toEqual(
+      [
+        [gone, false],
+        [live, true],
+      ].sort(),
+    );
+  });
+
+  it('refuses in one line when nothing is registered', () => {
+    expect(() => fleetProjects()).toThrow(
+      new ProjectResolutionError(
+        'No project registered; run pup init from the repo you want to control.',
+      ),
+    );
   });
 });
 
