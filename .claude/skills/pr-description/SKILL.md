@@ -19,8 +19,13 @@ Use this template for writing the PR body:
 
 ## Merge Danger
 
-**Door:** one-way or two-way
-**Blast Radius:** <potential ramifications of merge>
+**Door:** <one-way or two-way>
+
+<optional: description>
+
+**Blast Radius:** <one-word description>
+
+<optional: potential ramifications of merge>
 
 Lands decision NN. Follow-up to #NNNN.
 ```
@@ -164,7 +169,7 @@ Execution-based evidence is A-tier. Test results, console output. Show the exact
 
 Describe whether it's a one-way or two-way door. You can walk back through two-way doors, but not one-way doors. A PR that is cheap to roll back is lower risk. Changes that involve destructive actions or hard-to-reverse decisions are one-way doors.
 
-The blast radius is the potential impact or scope of the changes introduced by this PR. Consider all possibilities. Examples are layout shift, breakages for consumers, mobile responsiveness, etc.
+The blast radius is the potential impact or scope of the changes introduced by this PR. Consider all possibilities. Examples are layout shift, breakages for consumers, mobile responsiveness, etc. Name it in one word first so it scans (in this repo: `none`, `docs`, `cli`, `gate`, `store`, `sessions`, `fleet`), then put the ramifications below it.
 
 In this repo the doors worth naming: a `SCHEMA` or `MIGRATIONS` change in `src/core/db.client.ts` reaches every store under `~/.pupitre/` on next open (say whether it is additive and nullable, and what a store created before it does); a gate stage, compiled hook, or profile-compiler change reaches every session launched after it merges, including the conductor's; anything that shells out (`git`, `gh`, `tmux`, `claude -p`) is where the security review looks, so name what a session-controlled worktree could feed it.
 
