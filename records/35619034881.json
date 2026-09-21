@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T15:35:07.621Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35619034881",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35619034881",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fee41155efd2b896cfaad5749c88bf4665f2a714",
+  "source": "pr",
+  "pr_number": 108,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "50afee37634178faddc623ec91248b22fc3607c2",
+  "prior_importants": [
+    {
+      "file": "src/cli/project.utils.ts",
+      "line": "7 (import), 142-150 (registryLine)",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/project.utils.ts",
+      "line": "143",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new optional parameter registryLine(project, isConductorRunning?: boolean) shares its exact name with the imported service function isConductorRunning (../core/conductor.service.js) that call sites in src/cli/index.ts invoke to produce the argument. It's semantically accurate ('the isConductorRunning answer') and the JSDoc above the function explains the split, but a reader skimming the signature in isolation may briefly read it as if a function reference is being threaded through rather than a precomputed boolean. A name like conductorRunning?: boolean would avoid the echo without losing clarity.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/project.utils.ts",
+      "line": "146",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conductor-string ternary is now a three-way nested ternary (undefined -> '', true -> '  conductor running', false -> '  conductor stopped'), combining two patterns that exist separately elsewhere in this file/index.ts (a plain boolean-to-string ternary, and an undefined-guard-to-empty-string ternary). It's still correct and short, but the nesting is a small step up in complexity from the single-level ternaries used for the same kind of string-building nearby; an if/else or a small local function would read more uniformly with the surrounding style.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 3.7011170500000006,
+  "duration_ms": 439409,
+  "num_turns": 32,
+  "tokens": {
+    "input": 47,
+    "output": 23621,
+    "cache_read": 1251319,
+    "cache_creation": 73231,
+    "total": 1348218
+  }
+}
