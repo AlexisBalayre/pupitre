@@ -2682,7 +2682,7 @@ changes back into those docs is pending.
     why. A directory below the measured root that commits its own `package.json` has its own
     runner, so the root runner is not expected to cover it, and it is skipped the way
     `.worktrees/` is skipped as another checkout. `nestedPackageDirs` answers it in
-    `typescript-source.utils.ts`, once per capability call. The source walk stops there, which
+    `git-tree.client.ts`, once per capability call. The source walk stops there, which
     takes the directory out of the dependency graph, dead exports and duplication together.
     `coverableFiles` does not expect coverage for a file inside one, and `rootCoverageReport`
     drops the same files from the report with the same predicate, so report and expectation
