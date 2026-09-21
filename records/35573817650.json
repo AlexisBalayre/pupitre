@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T07:44:11.395Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35573817650",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35573817650",
+  "actor": "AlexisBalayre",
+  "commit_sha": "37e2bea5d0d0472f91b49f795a6069587470ed9d",
+  "source": "pr",
+  "pr_number": 101,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "70",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "CONTRIBUTING.md claims the automated review 'does not run on external pull requests,' but the workflow is actor-gated, not PR-author-gated, and its issue_comment trigger fires on any PR when the owner comments `@claude review`.",
+      "body": "This line says:\n\n> An automated review runs on pull requests opened by the repository owner and posts inline findings. It does not run on external pull requests, so those get a human review instead; expect questions grounded in the decisions log.\n\nThis overstates the boundary. `.github/workflows/claude-code-review.yml` (lines 34-38) gates on the *actor*, not the PR's author:\n\n```yaml\nif: |\n  github.actor == github.repository_owner && (\n    (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||\n    (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude review'))\n  )\n```\n\nThe workflow's own comment (lines 31-33) confirms this is intentional: \"Owner-only: the review bills the owner's Claude subscription, so a PR opened, pushed to, or `@claude review`-commented by anyone else is skipped. `actor` is the PR opener/pusher or the commenter.\" Nothing in the workflow checks `github.event.pull_request.user.login` (the PR's actual author). So if the repository owner comments `@claude review` on an externally-opened PR, the job condition evaluates true and the automated review runs and posts inline findings on it — contradicting the blanket claim that it never runs on external PRs.\n\nSuggest rephrasing to something like: \"An automated review runs automatically when the repository owner opens, pushes to, or marks a PR ready; on any other PR (including external ones) the owner can trigger it manually by commenting `@claude review`. Otherwise expect a human review, grounded in the decisions log.\"\n\nhttps://github.com/AlexisBalayre/pupitre/blob/37e2bea5d0d0472f91b49f795a6069587470ed9d/CONTRIBUTING.md#L70",
+      "suggestion": null
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "22",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The pre-commit hook runs the test suite\" undersells what it actually gates: `scripts/pre-commit` also runs lint (Biome) and typecheck before the tests, so a contributor could be surprised when a commit is blocked with no test failure involved.",
+      "body": null,
+      "suggestion": "The pre-commit hook lints, typechecks, and runs the test suite before every commit."
+    },
+    {
+      "file": "README.md",
+      "line": "136",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Same undersell as CONTRIBUTING.md#L22: \"the pre-commit hook you install once runs the tests before every commit\" omits that it also lints and typechecks.",
+      "body": null,
+      "suggestion": "...and the pre-commit hook you install once lints, typechecks, and tests before every commit."
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "55",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The full role list is in `.claude/project.env`\" points readers at a single regex alternation instead of `docs/conventions/naming.md`'s explicit, human-readable \"25 valid roles\" section that the paragraph above already links to.",
+      "body": null,
+      "suggestion": "The full role list is in [`docs/conventions/naming.md`](docs/conventions/naming.md#the-25-valid-roles)."
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "56",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The module-boundaries bullet adds \"`src/adapters/` holds the per-language toolchains\" alongside the two boundary rules AGENTS.md actually documents (`src/cli/` thin, `src/claude/` sole Claude Code touchpoint); `src/adapters/` isn't named as a boundary rule anywhere in AGENTS.md or docs/conventions, so it's presented with more authority than it has.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "59",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"A guard needs a test that fails when the guard is removed\" is stated as a general Code-section rule, but docs/conventions/testing.md never states this as a blanket obligation — the \"fails when the guard is deleted\" phrasing only appears describing specific historical decisions in docs/09-decisions.md.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "69",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The gate flags diffs over 600 changed lines... fine, but say so\" undersells decision 17: an oversize diff is mechanically refused unless `--accept-debt \"<reason>\" --review-by \"<condition>\"` is passed (docs/09-decisions.md lines ~379-382), not just mentioned in the PR body.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 2.4527697999999996,
+  "duration_ms": 383408,
+  "num_turns": 15,
+  "tokens": {
+    "input": 25,
+    "output": 13243,
+    "cache_read": 530998,
+    "cache_creation": 61059,
+    "total": 605325
+  }
+}
