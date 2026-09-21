@@ -278,6 +278,95 @@ describe('typescriptAdapter nested packages', () => {
     ]);
   });
 
+  describe('touchedNestedPackages', () => {
+    const scripted = {
+      ...tree,
+      'tools/review/package.json': JSON.stringify({
+        scripts: { test: 'vitest run', typecheck: 'tsc --noEmit' },
+      }),
+      'tools/review/pnpm-lock.yaml': '',
+    };
+
+    it('resolves test and typecheck from the trusted manifest, run through its package manager', () => {
+      const measurePath = makeTree({
+        ...scripted,
+        // The session's manifest drops both scripts; the trusted one still names them.
+        'tools/review/package.json': JSON.stringify({ scripts: {} }),
+      });
+      const ctx = { measurePath, configPath: makeTree(scripted) };
+
+      expect(
+        typescriptAdapter.touchedNestedPackages?.(ctx, [
+          'src/app.ts',
+          'tools/review/src/r.ts',
+          'tools/review/README.md',
+          'tools/plain/p.ts',
+        ]),
+      ).toEqual([
+        {
+          dir: 'tools/review',
+          changedFiles: ['tools/review/src/r.ts', 'tools/review/README.md'],
+          droppedSources: ['tools/review/src/r.ts'],
+          commands: [
+            { stage: 'test', command: 'pnpm', args: ['run', 'test'] },
+            { stage: 'typecheck', command: 'pnpm', args: ['run', 'typecheck'] },
+          ],
+          missing: [],
+        },
+      ]);
+    });
+
+    it('names the scripts the trusted manifest lacks, whatever the session declares', () => {
+      const configPath = makeTree({
+        ...tree,
+        'tools/review/package.json': JSON.stringify({ scripts: { typecheck: 'tsc' } }),
+      });
+      const ctx = { measurePath: makeTree(scripted), configPath };
+
+      const [pkg] = typescriptAdapter.touchedNestedPackages?.(ctx, ['tools/review/src/r.ts']) ?? [];
+
+      expect(pkg?.commands).toEqual([
+        { stage: 'typecheck', command: 'npm', args: ['run', 'typecheck'] },
+      ]);
+      expect(pkg?.missing).toEqual(['test']);
+    });
+
+    it('treats a manifest-less package as declaring nothing', () => {
+      const ctx = localContext(makeTree(tree));
+
+      const [pkg] = typescriptAdapter.touchedNestedPackages?.(ctx, ['tools/review/src/r.ts']) ?? [];
+
+      expect(pkg).toMatchObject({ commands: [], missing: ['test', 'typecheck'] });
+    });
+
+    it('gives a file to its innermost package and keeps deletions out of the dropped sources', () => {
+      const ctx = localContext(
+        makeTree({
+          ...tree,
+          'tools/review/inner/package.json': '{}',
+          'tools/review/inner/i.ts': '',
+        }),
+      );
+
+      const packages = typescriptAdapter.touchedNestedPackages?.(ctx, [
+        'tools/review/inner/i.ts',
+        'tools/review/src/gone.ts',
+      ]);
+
+      expect(packages?.map((p) => [p.dir, p.changedFiles, p.droppedSources])).toEqual([
+        ['tools/review', ['tools/review/src/gone.ts'], []],
+        ['tools/review/inner', ['tools/review/inner/i.ts'], ['tools/review/inner/i.ts']],
+      ]);
+    });
+
+    it('touches nothing for a package the trusted checkout does not commit', () => {
+      const { 'tools/review/package.json': _, ...trusted } = tree;
+      const ctx = { measurePath: makeTree(tree), configPath: makeTree(trusted) };
+
+      expect(typescriptAdapter.touchedNestedPackages?.(ctx, ['tools/review/src/r.ts'])).toEqual([]);
+    });
+  });
+
   it('drops exactly the nested entries from the coverage report', () => {
     const repo = makeTree({ 'pkg/package.json': '{}', 'pkg/src/b.ts': '', 'pkgs/c.ts': '' });
     const entry = {

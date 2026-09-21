@@ -72,9 +72,10 @@ jobs:
           fetch-depth: 0
 
       # Toolchain ahead of the PR-head checkout: the metrics step runs on
-      # `always()` but still needs pnpm, so a failure before the install would
-      # take the record down with it (a review that died at checkout would leave
-      # no artifact at all, invisible to the retro's mining).
+      # `always()` but still needs pnpm. The tooling itself is installed from
+      # the merge base once the head is checked out, below, so a run that dies
+      # at the head checkout leaves no record: the price of never installing
+      # the head's copy.
       - name: Set up pnpm
         # Pinned to a full SHA: this workflow carries secrets + a write token, so
         # third-party actions are pinned, not floated on a mutable tag.
@@ -89,9 +90,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: tools/review/pnpm-lock.yaml
-
-      - name: Install review tooling
-        run: pnpm install --dir tools/review --frozen-lockfile
 
       # Land on the PR head, not the default refs/pull/N/merge ref that the
       # pull_request checkout leaves behind. Reviewers, inline-comment line
@@ -119,6 +117,27 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # tools/review runs below with this job's write token, so the copy that
+      # runs is the merge base's, never the PR head's: a PR that edits it would
+      # otherwise execute its own unreviewed code with that token, AGENTS.md's
+      # hazard below in executable form (pupitre decision 59). Extracted beside
+      # the checkout rather than restored in place, so the head's tree stays
+      # clean for the preflight and reviewers still read the head's copy, and
+      # excluded locally so it never reads as a dirty tree. Every script step
+      # runs from it; the head's tools/review is never installed or executed.
+      - name: Restore review tooling from base
+        if: steps.pr-head.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          base_ref=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)
+          merge_base=$(git merge-base "origin/${base_ref}" HEAD)
+          mkdir -p .git/info .review-tooling
+          echo '/.review-tooling/' >> .git/info/exclude
+          git archive "$merge_base" tools/review | tar -x --strip-components=2 -C .review-tooling
+          pnpm install --dir .review-tooling --frozen-lockfile
+
       # Deterministic preflight: head freshness, tree cleanliness, the merge
       # base, and the full/incremental mode decision, all run as a plain step so
       # a failure is a red step the poster turns into a "not reviewed" verdict,
@@ -139,13 +158,13 @@ jobs:
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_TRIGGER: ${{ github.event_name == 'issue_comment' && 'comment' || github.event.action }}
           REVIEW_FORCE_FULL: ${{ github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude review full') }}
-        run: pnpm --dir tools/review --silent run review:preflight
+        run: pnpm --dir .review-tooling --silent run review:preflight
 
       - name: Generate review schema
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: gen-schema
         run: |
-          schema=$(pnpm --dir tools/review --silent run review:print-schema)
+          schema=$(pnpm --dir .review-tooling --silent run review:print-schema)
           # Escape single quotes so the schema embeds safely in the single-quoted
           # --json-schema token below, whatever its descriptions contain.
           schema=${schema//\'/\'\\\'\'}
@@ -226,7 +245,7 @@ jobs:
           REVIEW_MERGE_BASE: ${{ steps.preflight.outputs.merge_base }}
           GH_TOKEN: ${{ github.token }}
           REVIEW_POSTED_OUTPUT: ${{ github.workspace }}/posted.json
-        run: pnpm --dir tools/review --silent run review:post
+        run: pnpm --dir .review-tooling --silent run review:post
 
       - name: Emit review metrics
         # No record for a merged-PR or already-reviewed skip: a review that never
@@ -242,7 +261,7 @@ jobs:
           REVIEW_POSTED_INPUT: ${{ github.workspace }}/posted.json
           # pnpm --dir runs the writer in the package dir, so anchor the output to the workspace root where upload-artifact resolves its path
           REVIEW_METRICS_OUTPUT: ${{ github.workspace }}/review-metrics.json
-        run: pnpm --dir tools/review --silent run review:metrics
+        run: pnpm --dir .review-tooling --silent run review:metrics
 
       - name: Upload review metrics
         if: always() && steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'

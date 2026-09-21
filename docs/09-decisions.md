@@ -2716,8 +2716,11 @@ changes back into those docs is pending.
     green with that line removed; and matching a nested directory as a string prefix fails the
     two tests that hold a sibling (`pkgs/` beside `pkg/`). A directory without its own
     `package.json` is still walked, with a test.
-    *Ceilings, stated plainly.* **`tools/review` is now measured by no stage except scope-audit
-    and complexity.** Nothing invokes its own runner: the root `tsc` includes `src` only, the
+    *Ceilings, stated plainly.* **Closed by decision 59:** the gate now runs a touched nested
+    package's own `test` and `typecheck`, the three debt stages name what they left out,
+    `DUPLICATION_RULE_ID` is bumped, and the review workflow runs the merge base's
+    `tools/review`, not the PR head's. As stated at the time: **`tools/review` is now measured
+    by no stage except scope-audit and complexity.** Nothing invokes its own runner: the root `tsc` includes `src` only, the
     root vitest includes `src/**/*.test.ts` only, biome ignores `tools/review`, and the review
     workflow installs it and runs its scripts but never `pnpm --dir tools/review test`. That
     workflow executes the PR head's `tools/review` code with a write token, so this is the
@@ -2765,6 +2768,71 @@ changes back into those docs is pending.
     an unrelated later PR landing at 85–90% patch coverage will be flagged for a move it did
     not cause. That is the honest number arriving, not a regression, and the operator should
     expect it rather than reach for `--accept-debt`.
+
+59. **A nested package's own runner is a gate stage, and what the root leaves out is said
+    (2026-09-21).** Decision 58 took nested packages out of the root's metrics on the claim that
+    their own runner covers them, and stated the ceiling: nothing invoked that runner, so
+    `tools/review` was measured by scope-audit and complexity alone while the review workflow
+    executed the PR head's copy of it with a write token. This closes the four gaps it named.
+    *The runner runs.* When the diff touches a file inside a nested package, the gate runs that
+    package's `test` and `typecheck` scripts as hard stages, after the root's build, test and
+    lint and before the scope audit, named `test (<dir>)` and `typecheck (<dir>)`. They
+    resolve from the trusted checkout's `<dir>/package.json` through its own package manager,
+    decision 11's manifest-wins rule as `gateCommands` applies it to the root, so a session that
+    deletes its package's test script fails the stage rather than skipping it. They run with
+    the package directory as cwd through the same `runGateChild` the root stages use, one
+    shared closure in the gate, so the sandbox, the timeout, the env scrub and the
+    failure-detail cleaning are the root's by construction. A file belongs to its innermost
+    nested package. Any changed file triggers the stages, a deletion or a README included,
+    since a deleted test is a change the package's tests are for. The adapter answers through
+    one optional capability, `touchedNestedPackages`, reusing decision 58's resolver and
+    predicate, so the packages the gate runs are exactly the ones the root measurements drop;
+    an adapter without it has no nested packages, which is Python's position under decision 58.
+    *A missing script is a flag, not a skip.* A nested package whose trusted manifest declares
+    no `test` or no `typecheck` gets a flagged stage per missing script, with a ledger entry
+    when accepted. A root with no test script is skipped as "not measured", but that is a
+    whole-repo configuration; here the diff has changed code that no stage of any kind
+    measures, which is decision 30's "changed source plus no measurement is a flag". The
+    scripts are required by name, with no `tsc` fallback: the package's own manifest is the
+    only statement of how it is checked. A flagged stage now sits among the hard ones, so
+    `flaggedDebt` and its detail builder moved above them; its text is pup's own plus a
+    `quotePath`-sanitized directory, so steering it after a later hard failure is safe.
+    *What was left out is said (decision 29).* Dead code, duplication and coverage append
+    "; N changed file(s) in a nested package not measured here (<dirs>)" to every detail they
+    print, pass, skip or flag, ahead of the accept hint, the way duplication already names its
+    uncounted fixture blocks. N counts changed source files that still exist, the ones the
+    root walk and `coverableFiles` would otherwise have seen; directories past three are
+    elided. Before this, a PR touching only `tools/review` read "no instrumentable changed
+    lines" on coverage, a pass that described an exclusion as an absence.
+    *The duplication rule id is bumped* to `tests-excluded+nested-packages`, so a baseline
+    stamped before decision 58 skips with "run `pup audit`" instead of comparing (decision
+    39's mechanism). Decision 58 left the id unchanged with a gap of zero; the bump makes the
+    check real rather than coincidental, at the cost of one skipped duplication stage until the
+    operator re-stamps.
+    *The workflow runs the base's tooling.* `claude-code-review.yml` extracts `tools/review`
+    at the merge base into `.review-tooling/` with `git archive`, installs it there, and runs
+    every script step from it. Restoring in place, as AGENTS.md is restored, would dirty the
+    tree before the preflight, which refuses a dirty tree, and would hide the head's copy from
+    the reviewers who are meant to read it; the directory is added to `.git/info/exclude` so
+    it never reads as dirt. The early install from the merge ref is gone, so a run that dies at
+    the head checkout now leaves no metrics record. The CI review only executes the workflow
+    on `main`, so this PR's own run cannot exercise the change.
+    *Tests, and the mutation.* Unit tests on temp repos, never the gate run on itself (decision
+    39): a nested test script that exits non-zero refuses the merge with its output in the
+    detail; removing the stage loop from the gate fails five of the nested-package tests,
+    including that one, with the file restored from a backup copy. Others assert the stage
+    order and pass, the package directory as cwd, the env scrub, the trusted manifest winning
+    in both directions, no stage for a diff outside every package, the flag and its ledger
+    entries, the note on all three debt stages and its elision, the innermost-package rule, and
+    the rule-id skip. The first full-suite run also exposed a test-isolation leak: a test whose
+    gate never steered left a throwing once-implementation queued on `steerPane`, which
+    `clearAllMocks` keeps, and the suite now resets that mock before each test.
+    *Ceilings.* The stages run the scripts the trusted manifest names, but the bodies come from
+    the worktree's manifest, as the root's do. Nothing installs the nested package's
+    dependencies in the worktree, so a package whose runner needs them fails its stage until
+    they are installed there: a loud failure, the safe direction, and an environment question
+    rather than a gate one. The flag fires for any touched package, so a package that means to
+    have no typecheck has to be accepted as debt each time it changes, or declare the script.
 
 ## Implementation notes
 

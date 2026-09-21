@@ -6,6 +6,11 @@ Ordered stages; first hard failure stops the pipeline.
 
 1. Build and tests (adapter commands). Hard fail.
 2. Lint and format check. Hard fail.
+   - Nested packages: a directory that commits its own `package.json` is its own measurement
+     unit, left out of the root's debt metrics (decision 58). When the diff touches one, its
+     own `test` and `typecheck` scripts run as hard stages, resolved from the trusted
+     checkout's manifest and run in the package directory under the same sandbox. A script the
+     manifest does not declare is flagged, not skipped (decision 59).
 3. Scope audit: diff paths vs scope-in/scope-out; violations logged during the session are re-checked here. Hard fail.
 4. Debt delta (soft fail: flags, mergeable only with `--accept-debt`):
    - Duplication: diff vs existing codebase (jscpd or adapter equivalent). Production code
@@ -14,6 +19,9 @@ Ordered stages; first hard failure stops the pipeline.
    - Dead code introduced (knip / ts-prune / vulture via adapter).
    - Complexity delta on touched files.
    - Coverage delta on touched files (no drop allowed).
+   - Dead code, duplication and coverage each say how many changed files a nested package kept
+     from them, and which packages: "not measured here" is never read as "nothing to measure"
+     (decision 59).
    - Diff size vs task size (small task, large diff is flagged).
 5. Reviewer subagent: mechanical review pass; findings attached to the review queue entry.
 6. Knowledge transaction: regenerate code map for touched modules, write decision record, create or close ledger entries. A merge without this transaction is invalid.

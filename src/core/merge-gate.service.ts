@@ -204,7 +204,8 @@ function formatGateReport(report: GateReport): string {
 
 /**
  * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), then the
- * hard stages — build, tests, lint, scope audit — and the soft debt stages:
+ * hard stages — build, tests, lint, a touched nested package's own test and
+ * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
  * decision 21). Pass: ff-only merge, full cleanup (decision 16), and the debt
  * baseline ratchets to the merged state. Hard fail: re-steer with the report, cap
@@ -369,6 +370,33 @@ function gateAndMerge(
     }
   }
 
+  /** Runs one hard stage; false once it has recorded the failure. */
+  const commandStage = (
+    stage: string,
+    command: { command: string; args: string[] },
+    cwd: string,
+  ): boolean => {
+    try {
+      // The session wrote what this runs (its own scripts, its own config), so
+      // it runs confined: an env allowlist (decision 28) inside a sandbox whose
+      // writes are default-deny (decision 36). The stage writes in its own
+      // worktree; `repoPath` is passed to scope the toolchain cache, and stays
+      // read-only, which is what keeps decision 29's trusted checkout trusted
+      // while the session's own code is running.
+      runGateChild(command.command, command.args, {
+        cwd,
+        repoPath: req.repoPath,
+        gateEnv: req.gateEnv,
+        timeout: GATE_COMMAND_TIMEOUT_MS,
+      });
+      stages.push({ stage, status: 'pass' });
+      return true;
+    } catch (error) {
+      stages.push({ stage, status: 'fail', detail: commandFailureDetail(error) });
+      return false;
+    }
+  };
+
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
   const commands = req.adapter.gateCommands(req.repoPath);
@@ -378,27 +406,58 @@ function gateAndMerge(
       stages.push({ stage, status: 'skipped', detail: 'not measured — no command available' });
       continue;
     }
-    try {
-      // The session wrote what this runs (its own scripts, its own config), so
-      // it runs confined: an env allowlist (decision 28) inside a sandbox whose
-      // writes are default-deny (decision 36). The stage writes in its own
-      // worktree; `repoPath` is passed to scope the toolchain cache, and stays
-      // read-only, which is what keeps decision 29's trusted checkout trusted
-      // while the session's own code is running.
-      runGateChild(command.command, command.args, {
-        cwd: worktree,
-        repoPath: req.repoPath,
-        gateEnv: req.gateEnv,
-        timeout: GATE_COMMAND_TIMEOUT_MS,
-      });
-      stages.push({ stage, status: 'pass' });
-    } catch (error) {
-      stages.push({ stage, status: 'fail', detail: commandFailureDetail(error) });
-      return failed();
-    }
+    if (!commandStage(stage, command, worktree)) return failed();
   }
 
   const changedPaths = gitDiffPaths(req.repoPath, target, session.branch);
+  const flaggedDebt: { description: string; files: string[] }[] = [];
+  const acceptHint =
+    'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
+  const flagDetail = (summary: string): string =>
+    req.acceptDebt
+      ? `${summary} — accepted as debt: ${req.acceptDebt.reason}`
+      : `${summary}. ${acceptHint}`;
+
+  // Decision 58 leaves a nested package out of every root measurement because
+  // its own runner covers it; nothing else invokes that runner, so the gate
+  // does, as hard stages in the package's own directory. A script the trusted
+  // manifest lacks is a flag: changed code no stage measures is never a free
+  // pass (decisions 30, 59).
+  const nestedPackages = req.adapter.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
+  for (const pkg of nestedPackages) {
+    const dir = quotePath(pkg.dir);
+    for (const command of pkg.commands) {
+      if (!commandStage(`${command.stage} (${dir})`, command, join(worktree, pkg.dir))) {
+        return failed();
+      }
+    }
+    for (const stage of pkg.missing) {
+      flaggedDebt.push({
+        description: `Nested package ${pkg.dir} changed with no ${stage} script, merged from session ${session.id}`,
+        files: [...pkg.changedFiles].sort(),
+      });
+      stages.push({
+        stage: `${stage} (${dir})`,
+        status: 'flagged',
+        detail: flagDetail(
+          `not measured — ${dir}/package.json declares no ${stage} script, and no root stage measures a nested package`,
+        ),
+      });
+    }
+  }
+  // Said on every debt stage the exclusion shapes, so a pass there reads as
+  // "measured without these", not as "nothing to measure" (decision 29).
+  const droppedDirs = nestedPackages.filter((pkg) => pkg.droppedSources.length > 0);
+  const droppedCount = droppedDirs.reduce((sum, pkg) => sum + pkg.droppedSources.length, 0);
+  const nestedNote =
+    droppedCount === 0
+      ? ''
+      : `; ${droppedCount} changed file(s) in a nested package not measured here (${droppedDirs
+          .slice(0, DEBT_DETAIL_SAMPLES)
+          .map((pkg) => quotePath(pkg.dir))
+          .join(', ')}${droppedDirs.length > DEBT_DETAIL_SAMPLES ? ', …' : ''})`;
+  const measuredHere = (detail: string): string => `${detail}${nestedNote}`;
+
   const specRow = db
     .prepare('SELECT project_id, spec FROM tasks WHERE id = ?')
     .get(session.task_id) as { project_id: string; spec: string };
@@ -434,13 +493,6 @@ function gateAndMerge(
     ? (JSON.parse(project.baseline) as ProjectBaseline)
     : undefined;
   const measuredDebt: DebtBaseline = {};
-  const flaggedDebt: { description: string; files: string[] }[] = [];
-  const acceptHint =
-    'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
-  const flagDetail = (summary: string): string =>
-    req.acceptDebt
-      ? `${summary} — accepted as debt: ${req.acceptDebt.reason}`
-      : `${summary}. ${acceptHint}`;
 
   const changed = countChangedLines(req.repoPath, target, session.branch);
   const sizeFindings: string[] = [];
@@ -490,19 +542,23 @@ function gateAndMerge(
       stages.push({
         stage: 'dead-code',
         status: 'skipped',
-        detail: `not measured — ${sanitizeReason(result.unavailable)}`,
+        detail: measuredHere(`not measured — ${sanitizeReason(result.unavailable)}`),
       });
     } else if (!known) {
       stages.push({
         stage: 'dead-code',
         status: 'skipped',
-        detail: 'not measured — no debt baseline; run `pup init`',
+        detail: measuredHere('not measured — no debt baseline; run `pup init`'),
       });
     } else {
       const knownKeys = new Set(known.map((d) => `${d.file}\u0000${d.exportName}`));
       const fresh = result.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
       if (fresh.length === 0) {
-        stages.push({ stage: 'dead-code', status: 'pass', detail: 'no new unused exports' });
+        stages.push({
+          stage: 'dead-code',
+          status: 'pass',
+          detail: measuredHere('no new unused exports'),
+        });
       } else {
         const quoted = fresh
           .slice(0, DEBT_DETAIL_SAMPLES)
@@ -518,7 +574,9 @@ function gateAndMerge(
         stages.push({
           stage: 'dead-code',
           status: 'flagged',
-          detail: flagDetail(`${fresh.length} new unused export(s): ${quoted}${ellipsis}`),
+          detail: flagDetail(
+            measuredHere(`${fresh.length} new unused export(s): ${quoted}${ellipsis}`),
+          ),
         });
       }
     }
@@ -559,16 +617,19 @@ function gateAndMerge(
       stages.push({
         stage: 'duplication',
         status: 'skipped',
-        detail:
+        detail: measuredHere(
           baseline?.debt?.duplicatedLines === undefined
             ? 'not measured — no debt baseline; run `pup init`'
             : 'not measured — the stored baseline counts duplication a different way; run `pup audit`',
+        ),
       });
     } else if (duplication.duplicatedLines <= knownLines) {
       stages.push({
         stage: 'duplication',
         status: 'pass',
-        detail: `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})${fixtureNote}`,
+        detail: measuredHere(
+          `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})${fixtureNote}`,
+        ),
       });
     } else {
       const changedSet = new Set(changedPaths);
@@ -599,7 +660,9 @@ function gateAndMerge(
         stage: 'duplication',
         status: 'flagged',
         detail: flagDetail(
-          `duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} (e.g. ${samples})${fixtureNote}`,
+          measuredHere(
+            `duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} (e.g. ${samples})${fixtureNote}`,
+          ),
         ),
       });
     }
@@ -679,17 +742,21 @@ function gateAndMerge(
           stage: 'coverage',
           status: 'flagged',
           detail: flagDetail(
-            `${coverable.length} changed source file(s) went unmeasured — ${reason}`,
+            measuredHere(`${coverable.length} changed source file(s) went unmeasured — ${reason}`),
           ),
         });
       } else {
-        stages.push({ stage: 'coverage', status: 'skipped', detail: `not measured — ${reason}` });
+        stages.push({
+          stage: 'coverage',
+          status: 'skipped',
+          detail: measuredHere(`not measured — ${reason}`),
+        });
       }
     } else if (baselineRatio === undefined) {
       stages.push({
         stage: 'coverage',
         status: 'skipped',
-        detail: 'not measured — no coverage baseline; run `pup init`',
+        detail: measuredHere('not measured — no coverage baseline; run `pup init`'),
       });
     } else {
       const patch = patchCoverage(
@@ -736,19 +803,19 @@ function gateAndMerge(
         stages.push({
           stage: 'coverage',
           status: 'flagged',
-          detail: flagDetail(problems.join('; ')),
+          detail: flagDetail(measuredHere(problems.join('; '))),
         });
       } else if (ratio === undefined) {
         stages.push({
           stage: 'coverage',
           status: 'pass',
-          detail: 'no instrumentable changed lines',
+          detail: measuredHere('no instrumentable changed lines'),
         });
       } else {
         stages.push({
           stage: 'coverage',
           status: 'pass',
-          detail: `patch coverage ${pct(ratio)} (baseline ${pct(baselineRatio)})`,
+          detail: measuredHere(`patch coverage ${pct(ratio)} (baseline ${pct(baselineRatio)})`),
         });
       }
     }
