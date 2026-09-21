@@ -992,9 +992,11 @@ export function buildProgram(): Command {
         console.log(`${header}  missing: the repo no longer exists`);
         return;
       }
-      const { repoPath, db } = openRegistered(registered);
+      let db: Database | undefined;
       try {
-        const snapshot = buildDashboardSnapshot(db, repoPath, now);
+        const opened = openRegistered(registered);
+        db = opened.db;
+        const snapshot = buildDashboardSnapshot(db, opened.repoPath, now);
         const summary = fleetSummary(snapshot);
         console.log(
           `${header}  ${snapshot.conductor.running ? 'conductor running' : 'conductor stopped'}`,
@@ -1008,8 +1010,14 @@ export function buildProgram(): Command {
         console.log(
           `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
         );
+      } catch (error) {
+        // One store that fails to migrate or holds a torn row is that
+        // project's line, not the fleet's end, as `listRegisteredProjects`
+        // degrades an unreadable store. Nothing of the block has printed yet:
+        // the snapshot is read whole before its header.
+        console.log(`${header}  unreadable: ${failureSummary(error)}`);
       } finally {
-        db.close();
+        db?.close();
       }
     });
   }

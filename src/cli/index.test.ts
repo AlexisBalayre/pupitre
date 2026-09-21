@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -653,6 +654,71 @@ describe('CLI commands', () => {
         vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
 
         expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow('operator-only');
+      });
+
+      it('refuses the conductor, even from inside a repo with --all', () => {
+        const repo = initRepo();
+        registerProject(repo);
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+        expect(() => buildProgram().parse(['status', '--all'], { from: 'user' })).toThrow(
+          'operator-only',
+        );
+      });
+
+      // A store under ~/.pupitre is session-writable and the fleet opens every
+      // one of them, so what a row says is sanitized before the terminal sees
+      // it (decision 29).
+      it('strips control characters out of a session row it prints', () => {
+        const repo = initRepo();
+        seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
+        const { db } = resolveProject(repo);
+        db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run(
+          'pup/\u001b[2Jhijack',
+          's-blocked',
+        );
+        db.close();
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        const row = logs.find((line) => line.includes('s-blocked')) ?? '';
+        expect(row).toContain('pup/ [2Jhijack');
+        expect(row).not.toContain('\u001b');
+      });
+
+      it('prints the next project when one store cannot be read', () => {
+        const broken = initRepo();
+        const fine = initRepo();
+        seedSession(broken, 's1');
+        // A transcript directory whose newest .jsonl cannot be read: the
+        // snapshot throws on it, as it would on a store that fails to migrate.
+        const transcripts = tempDir('pup-cli-tx-');
+        const unreadable = join(transcripts, 'session.jsonl');
+        writeFileSync(unreadable, '{}\n');
+        chmodSync(unreadable, 0o000);
+        const { db } = resolveProject(broken);
+        db.prepare('UPDATE sessions SET transcript_path = ? WHERE id = ?').run(transcripts, 's1');
+        transitionSession(db, 's1', 'running');
+        db.close();
+        seedBacklogTask(fine, 't-plan', 'still here');
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        try {
+          buildProgram().parse(['status'], { from: 'user' });
+        } finally {
+          chmodSync(unreadable, 0o600);
+        }
+
+        expect(logs).toContainEqual(
+          expect.stringMatching(
+            new RegExp(`^${projectId(broken)}  ${broken}  unreadable: .*EACCES`),
+          ),
+        );
+        expect(logs).toContain(`${projectId(fine)}  ${fine}  conductor stopped`);
+        expect(logs).toContain('  0 running, 1 planned, 0 merged');
+        expect(process.exitCode).toBeUndefined();
       });
 
       // Every other command keeps decision 43's refusal outside a repo.

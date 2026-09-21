@@ -2888,6 +2888,13 @@ changes back into those docs is pending.
     one would make false. Outside a repo with a single project the fleet is still what prints —
     one block, not the full table — so the output outside a repo does not change shape with the
     number of projects.
+    *Every store is foreign, so each is sanitized and isolated.* The fleet opens stores the
+    operator never pointed at, and `~/.pupitre` is reachable by a session, so the snapshot now
+    passes a session row's `id` and `branch` through `sanitizeReason` like its other stored
+    text (decision 29; `pup report` already did), leaving `state`, which is checked on write. A
+    store that fails to open, migrate or snapshot — a torn row, an unreadable transcript —
+    prints `<id>  <repo_path>  unreadable: <reason>` and the fleet moves on to the next
+    project, as `listRegisteredProjects` degrades an unreadable store rather than failing.
     *Operator-only, and status only for now.* The addendum to decision 43 records why only
     `pup status` and `pup ui` may read across stores; `pup ui --all` is the next task. The
     attach command is not in the header: it is one `--project` away, on the full table.
@@ -2898,8 +2905,10 @@ changes back into those docs is pending.
     need-you rows, debt and counts; `--all` inside a repo prints what outside prints while plain
     `pup status` there prints its own table; a gone repo whose bare store holds only its
     `projects` row is listed missing and still holds only that table afterwards; a session and
-    a session that left every repo are refused; and `plan` outside a repo with two projects
-    still refuses with the listing.
+    a session that left every repo and the conductor are refused; a control character in a
+    branch is stripped from the row; a store whose transcript cannot be read reads unreadable
+    while the next project still prints; and `plan` outside a repo with two projects still
+    refuses with the listing.
 
 ## Implementation notes
 

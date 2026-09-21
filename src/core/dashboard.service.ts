@@ -208,9 +208,11 @@ function dashboardSession(
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   return {
-    id: row.id,
+    // The store is session-writable and, since the fleet view (decision 60),
+    // not always the caller's own; `state` is checked on write, these are not.
+    id: sanitizeReason(row.id),
     state: row.state,
-    branch: row.branch,
+    branch: sanitizeReason(row.branch),
     taskId: row.task_id,
     goal: goalHeadline(spec.goal),
     // The task row is the only record of who asked for the work. It outlives

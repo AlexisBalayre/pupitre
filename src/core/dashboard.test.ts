@@ -466,6 +466,16 @@ describe('buildDashboardSnapshot', () => {
         expect(recentEvents?.every((event) => Date.parse(event.at) > 0)).toBe(true);
       });
 
+      it("strips what a terminal would obey out of the row's id and branch", () => {
+        seedSession(db, repo, 's1');
+        db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run('pup/\u001b[2Js1', 's1');
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]).toMatchObject({
+          id: 's1',
+          branch: 'pup/ [2Js1',
+        });
+      });
+
       it("strips what a terminal would obey out of the session's own words", () => {
         seedSession(db, repo, 's1');
         transitionSession(db, 's1', 'running');
