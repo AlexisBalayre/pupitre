@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T12:09:46.839Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35597275728",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35597275728",
+  "actor": "AlexisBalayre",
+  "commit_sha": "245891d738cb8615cf38fb43b06c9c12feed27ba",
+  "source": "pr",
+  "pr_number": 106,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "2d766b59b46782c0192b031b758b76c868caa817",
+  "prior_importants": [
+    {
+      "file": "docs/02-cli.md",
+      "line": "77",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "208-210",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The rewritten comment claims `state` \"reaches the terminal only through equality against known literals,\" but `state` is printed raw (not equality-gated) at `src/cli/index.ts:1024` inside `sessionLine` (used by both `printDashboard` and `printFleet`), `src/cli/ui/sessions.component.tsx:60`, and `src/cli/ui/detail.component.tsx:24` — none of which are equality comparisons, and `sessions.state` has no SQL CHECK constraint (`src/core/db.client.ts:55`), so a foreign/fleet store (decision 60) can carry an arbitrary `state` value that reaches the terminal unsanitized.",
+      "body": "This comment was rewritten by this commit to justify why `state` skips `sanitizeReason()` while `id` and `branch` don't, but the new justification doesn't match what the code does:\n\n- `src/cli/index.ts:1024` (`sessionLine`, called from both `printDashboard` and `printFleet`): `` `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` `` — raw interpolation, not an equality check. The fleet path is exactly the scenario this comment invokes (a store that \"since the fleet view (decision 60), [is] not always the caller's own\"), so this is reachable with a genuinely foreign `state` value.\n- `src/cli/ui/sessions.component.tsx:60`: `{session.state.padEnd(STATE_COLUMN_CHARS)}` — raw JSX rendering.\n- `src/cli/ui/detail.component.tsx:24`: `{row.session.state}` — raw JSX rendering.\n- `src/core/db.client.ts:55`: `state TEXT NOT NULL DEFAULT 'queued'` has no `CHECK` constraint (contrast `ledger_entries.status`, which does), so nothing at the schema level restricts `state` to the known enum literals either.\n\nThe equality comparisons that do exist (`session.state === 'blocked'` at index.ts:1020, `STATE_COLOURS[session.state]` lookup) run *alongside* the raw print, not instead of it — a value that matches none of them still falls through to the raw `padEnd`/interpolation. The comment should state the actual justification (state is only ever set by the codebase's own writers to a known literal — if that's even true for a foreign store under decision 60) rather than a claim the code doesn't support.\n\n<https://github.com/AlexisBalayre/pupitre/blob/245891d738cb8615cf38fb43b06c9c12feed27ba/src/core/dashboard.service.ts#L208-L210>",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 2.125735249999999,
+  "duration_ms": 390436,
+  "num_turns": 27,
+  "tokens": {
+    "input": 29,
+    "output": 15007,
+    "cache_read": 694086,
+    "cache_creation": 49702,
+    "total": 758824
+  }
+}
