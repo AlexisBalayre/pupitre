@@ -4,7 +4,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
-import { isConductorRunning } from '../core/conductor.service.js';
 import { openStore } from '../core/db.client.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
@@ -134,19 +133,24 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
 
 /**
  * One registered project as `pup project list` prints it, and as decision
- * 43's refusal lists the choices: id, repo, dormant or active, and whether its
- * conductor runs, with a gone repo marked. Everything a store wrote goes
- * through decision 29's sanitizing — the store is foreign to whoever reads the
- * registry (decision 62).
+ * 43's refusal lists the choices: id, repo, dormant or active, with a gone repo
+ * marked. `list` adds whether the conductor runs by passing the probe's answer;
+ * a util cannot make that probe itself (`docs/conventions/naming.md`), and the
+ * refusal does not pay a tmux spawn per project for it. Everything a store
+ * wrote goes through decision 29's sanitizing — the store is foreign to
+ * whoever reads the registry (decision 62).
  */
-export function registryLine(project: RegisteredProject): string {
+export function registryLine(project: RegisteredProject, isConductorRunning?: boolean): string {
   const state =
     project.dormantAt === null ? 'active' : `dormant since ${sanitizeReason(project.dormantAt)}`;
-  const conductor = isConductorRunning(project.repoPath)
-    ? 'conductor running'
-    : 'conductor stopped';
+  const conductor =
+    isConductorRunning === undefined
+      ? ''
+      : isConductorRunning
+        ? '  conductor running'
+        : '  conductor stopped';
   const missing = project.repoExists ? '' : '  (missing)';
-  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}  ${conductor}${missing}`;
+  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}${conductor}${missing}`;
 }
 
 /**
@@ -200,7 +204,7 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
   }
   throw new ProjectResolutionError(
     [
-      ...registered.map(registryLine),
+      ...registered.map((project) => registryLine(project)),
       'Not inside a git repository; pass --project <id> to pick one of these.',
     ].join('\n'),
   );

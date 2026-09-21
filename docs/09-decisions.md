@@ -3027,7 +3027,8 @@ changes back into those docs is pending.
     `(missing)` when the repo is gone. `dormant` stamps a new nullable `projects.dormant_at`
     with the time; `wake` clears it. Fleet `pup status` and `pup ui` leave a dormant project
     out, and `--dormant` puts it back; the fleet `pup status` says how many it left out on a
-    closing line, `N dormant projects not shown; --dormant shows them.`, and a dormant project
+    closing line, `N dormant projects not shown; --dormant shows them.` (`1 dormant project not
+    shown; --dormant shows it.` for one), and a dormant project
     shown under `--dormant` ends its header with `dormant since <when>`. The radar's turn
     watchdog passes a dormant project over whole: no pane read, no resume, no conductor nudge.
     *Refused while anything is live, and each thing named.* A project put to sleep with work in
@@ -3064,16 +3065,20 @@ changes back into those docs is pending.
     from the operator's views and switch off the watchdog that resumes it; the conductor could
     put the project it runs to sleep. So all three are refused for a calling session and for
     the conductor, by `PUP_SESSION_ID` or `PUP_CONDUCTOR` alone first and then by the session's
-    own store, the same detection as `refuseUnlessOperator` (decisions 27, 43), with the
-    command's own one-line refusal. `list` is refused too: it reads every store under
+    own store, through `refuseUnlessOperator` itself (decisions 27, 43), with the one
+    refusal every other door prints. `list` is refused too: it reads every store under
     `~/.pupitre`, and only the two fleet readers were given that (addendum to decision 43).
     The project is the `<id>` argument, or `--project <id>`, or the repo around the current
     directory, through `resolveProject`, and two different ids refuse rather than pick one.
     `list --project <id>` prints that one project's line.
-    *The refusal's listing is `list`'s.* Decision 43's refusal outside a repo with several live
-    projects printed its own `id  repo_path` lines. It now prints `registryLine` for each, the
-    function `list` prints through, so the two cannot drift, and the operator choosing a
-    `--project` sees which projects are dormant and which have a conductor up. The refusal's
+    *The refusal's listing is `list`'s, less one column.* Decision 43's refusal outside a repo
+    with several registered projects whose repos are present printed its own `id  repo_path`
+    lines. It now prints `registryLine` for each, the function `list` prints through, so the
+    two cannot drift, and the operator choosing a `--project` sees which projects are dormant.
+    Whether a conductor is up is `list`'s column alone: `registryLine` lives in a util, which
+    cannot call the tmux probe (`docs/conventions/naming.md`), so `list` passes the probe's
+    answer in and the refusal, raised inside that util, prints without it — and does not spawn
+    one tmux per registered project on the way to saying "pass `--project`". The refusal's
     guard is unchanged. Every field a store wrote — the repo path and the dormant stamp — goes
     through `sanitizeReason` (decision 29), since the store is foreign to whoever reads the
     registry. The dormant flag decides no path: `fleetRefusal`'s realpath check still runs on

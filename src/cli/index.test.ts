@@ -780,10 +780,7 @@ describe('CLI commands', () => {
         expect(() => buildProgram().parse(['plan', 'list'], { from: 'user' })).toThrow(
           new ProjectResolutionError(
             [
-              ...[
-                `${idA}  ${repoA}  active  conductor stopped`,
-                `${idB}  ${repoB}  active  conductor stopped`,
-              ].sort(),
+              ...[`${idA}  ${repoA}  active`, `${idB}  ${repoB}  active`].sort(),
               'Not inside a git repository; pass --project <id> to pick one of these.',
             ].join('\n'),
           ),
@@ -2512,16 +2509,19 @@ describe('CLI commands', () => {
     });
 
     describe.each([['list'], ['dormant'], ['wake']])('%s is operator-only', (action) => {
+      // The same refusal `--project` throws (decision 43): one guard, not a per-command copy.
+      const operatorOnlyMessage =
+        'Reaching another project is operator-only; a session controls only the project it runs in.';
+
       it('refuses a session asking from its worktree', () => {
         const repo = initRepo();
         const worktree = worktreeOf(repo, 's1');
         seedSession(repo, 's1', worktree);
         useCwd(worktree);
 
-        buildProgram().parse(['project', action], { from: 'user' });
-
-        expect(errors).toEqual([`\`pup project ${action}\` is operator-only.`]);
-        expect(process.exitCode).toBe(1);
+        expect(() => buildProgram().parse(['project', action], { from: 'user' })).toThrow(
+          operatorOnlyMessage,
+        );
         expect(dormantAt(repo)).toBeNull();
       });
 
@@ -2531,9 +2531,9 @@ describe('CLI commands', () => {
         useCwd(tempDir('pup-cli-noproj-'));
         vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
 
-        buildProgram().parse(['--project', id, 'project', action], { from: 'user' });
-
-        expect(errors).toEqual([`\`pup project ${action}\` is operator-only.`]);
+        expect(() =>
+          buildProgram().parse(['--project', id, 'project', action], { from: 'user' }),
+        ).toThrow(operatorOnlyMessage);
         expect(logs).toEqual([]);
         expect(dormantAt(repo)).toBeNull();
       });
@@ -2544,9 +2544,9 @@ describe('CLI commands', () => {
         useCwd(repo);
         vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
 
-        buildProgram().parse(['project', action], { from: 'user' });
-
-        expect(errors).toEqual([`\`pup project ${action}\` is operator-only.`]);
+        expect(() => buildProgram().parse(['project', action], { from: 'user' })).toThrow(
+          operatorOnlyMessage,
+        );
         expect(logs).toEqual([]);
         expect(dormantAt(repo)).toBeNull();
       });

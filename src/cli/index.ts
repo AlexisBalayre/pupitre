@@ -933,28 +933,16 @@ export function buildProgram(): Command {
       'The registered projects: list them, or put one to sleep and wake it (list|dormant|wake)',
     )
     .action((action: string, id: string | undefined) => {
+      // The registry is every project's, and dormancy is what the fleet views
+      // and the radar read to pass a project over: a session could hide its
+      // own project from the operator, and the conductor could put the project
+      // it runs to sleep. Both are refused, on `list` and on a mistyped action
+      // too, as every door to another project's store is (decisions 43, 62).
+      refuseUnlessOperator(enclosingProject(process.cwd()));
       if (!['list', 'dormant', 'wake'].includes(action)) {
         return refuse(
           `Unknown project action \`${sanitizeReason(action)}\` (expected list|dormant|wake).`,
         );
-      }
-      // The registry is every project's, and dormancy is what the fleet views
-      // and the radar read to pass a project over: a session could hide its
-      // own project from the operator, and the conductor could put the project
-      // it runs to sleep. Both are refused, on `list` too, by the variables
-      // alone and then by the session's own store, as every door to another
-      // project's store is (decisions 43, 62).
-      const own = enclosingProject(process.cwd());
-      try {
-        if (
-          process.env.PUP_SESSION_ID ||
-          callingConductor() ||
-          (own !== undefined && callingSession(own.db))
-        ) {
-          return refuse(`\`pup project ${action}\` is operator-only.`);
-        }
-      } finally {
-        own?.db.close();
       }
       const selected = program.opts().project as string | undefined;
       if (action === 'list') {
@@ -969,7 +957,9 @@ export function buildProgram(): Command {
               : `No project ${sanitizeReason(selected)}; \`pup project list\` shows the registered ones.`,
           );
         }
-        for (const entry of registered) console.log(registryLine(entry));
+        for (const entry of registered) {
+          console.log(registryLine(entry, isConductorRunning(entry.repoPath)));
+        }
         return;
       }
       if (id !== undefined && selected !== undefined && id !== selected) {
@@ -1003,7 +993,7 @@ export function buildProgram(): Command {
         // Named, not counted, like the brief's list of what runs on the old
         // brief: each one is something the operator stops by name first. A
         // project put to sleep with work in flight would hide that work from
-        // every view that would have shown it needing them (decision 62).
+        // every view that would have shown it needing the operator (decision 62).
         const live = [
           ...(isConductorRunning(repoPath) ? [conductorName(pid)] : []),
           ...listSessions(db, holdingStates()).map((session) => sanitizeReason(session.id)),
@@ -1120,12 +1110,11 @@ export function buildProgram(): Command {
    * `fleetRefusal` turns away, or whose store will not open, is a line of its
    * own and never opened again; one whose snapshot throws is that reading's line, and the
    * rest of the fleet still renders — `printFleet`'s isolation, per reading.
-   * A dormant project is left out, its store never opened, unless `--dormant`.
    */
-  function fleetReader(pupBin: string, showDormant: boolean): () => DashboardReading {
+  function fleetReader(pupBin: string, shouldShowDormant: boolean): () => DashboardReading {
     const shut: string[] = [];
     const opened: { header: string; deps: ActionDeps }[] = [];
-    for (const registered of awakeFleet(showDormant).shown) {
+    for (const registered of awakeFleet(shouldShowDormant).shown) {
       const header = fleetHeader(registered);
       const refusal = fleetRefusal(registered);
       if (refusal) {
@@ -1162,12 +1151,12 @@ export function buildProgram(): Command {
    * read from each store's own row by the read-only registry scan, so a
    * hidden project's store is never opened; `hidden` is how many were left out.
    */
-  function awakeFleet(showDormant: boolean): {
+  function awakeFleet(shouldShowDormant: boolean): {
     shown: ReturnType<typeof fleetProjects>;
     hidden: number;
   } {
     const registered = fleetProjects();
-    const shown = showDormant
+    const shown = shouldShowDormant
       ? registered
       : registered.filter((project) => project.dormantAt === null);
     return { shown, hidden: registered.length - shown.length };
@@ -1188,8 +1177,8 @@ export function buildProgram(): Command {
    * Dormant projects are left out and counted on a last line, or shown with
    * their header saying so under `--dormant` (decision 62).
    */
-  function printFleet(now: number, showDormant: boolean): void {
-    const { shown, hidden } = awakeFleet(showDormant);
+  function printFleet(now: number, shouldShowDormant: boolean): void {
+    const { shown, hidden } = awakeFleet(shouldShowDormant);
     shown.forEach((registered, index) => {
       if (index > 0) console.log('');
       const header = fleetHeader(registered);

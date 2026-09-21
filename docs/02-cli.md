@@ -3,8 +3,8 @@
 Binary: `pup`. Every command resolves its project through one rule (decision 43): `--project <id>`
 wins from anywhere, even inside another repo; otherwise the repo around the current directory;
 outside any repo, the store under `~/.pupitre` decides only when exactly one project is
-registered — with several it lists them as `pup project list` prints them (a deleted repo is
-marked `(missing)`) and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
+registered — with several it lists them the way `pup project list` prints them, less the
+conductor column (a deleted repo is marked `(missing)`), and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
 project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
 exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
 instead (decisions 60, 61, addendum to decision 43).
@@ -59,7 +59,8 @@ instead (decisions 60, 61, addendum to decision 43).
   `missing: the repo no longer exists` and its store is not opened. `--project <id>` wins over
   `--all` and prints that project's full table. Operator-only, like `--project` (decision 60).
   A dormant project is left out, its store not opened, and counted on a closing
-  `N dormant projects not shown; --dormant shows them.`; `--dormant` shows it with
+  `N dormant projects not shown; --dormant shows them.` (`1 dormant project not shown;
+  --dormant shows it.` for one); `--dormant` shows it with
   `dormant since <when>` at the end of its header (decision 62).
 - `pup watch [--once|--start|--stop] [--interval <seconds>]` — the conflict radar: every fifteen
   seconds, scan the live sessions' diffs for same-file overlaps and print each `STALLED`

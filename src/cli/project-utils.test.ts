@@ -281,10 +281,10 @@ describe('resolveProject', () => {
 
       const lines = message.split('\n');
       expect(lines).toHaveLength(4);
-      // The same lines `pup project list` prints (decision 62).
-      expect(lines).toContain(`${idA}  ${repoA}  active  conductor stopped`);
-      expect(lines).toContain(`${idB}  ${repoB}  active  conductor stopped`);
-      expect(lines).toContain(`${idStale}  ${stale}  active  conductor stopped  (missing)`);
+      // The lines `pup project list` prints, less its conductor column (decision 62).
+      expect(lines).toContain(`${idA}  ${repoA}  active`);
+      expect(lines).toContain(`${idB}  ${repoB}  active`);
+      expect(lines).toContain(`${idStale}  ${stale}  active  (missing)`);
       expect(lines[3]).toBe(
         'Not inside a git repository; pass --project <id> to pick one of these.',
       );
@@ -310,9 +310,7 @@ describe('resolveProject', () => {
       }
 
       expect(message).not.toContain('\u001b');
-      expect(message).toContain(
-        `${projectId(evil)}  /gone/ [2J [31mrepo  active  conductor stopped  (missing)`,
-      );
+      expect(message).toContain(`${projectId(evil)}  /gone/ [2J [31mrepo  active  (missing)`);
     });
 
     // The store outlives temp repos; the one project still on disk is still
