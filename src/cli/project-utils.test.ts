@@ -74,8 +74,41 @@ describe('listRegisteredProjects', () => {
     const id = register(base, repo);
 
     expect(listRegisteredProjects(base)).toEqual([
-      { id, repoPath: repo, dbFile: projectPaths(repo, base).dbFile, repoExists: true },
+      {
+        id,
+        repoPath: repo,
+        dbFile: projectPaths(repo, base).dbFile,
+        repoExists: true,
+        dormantAt: null,
+      },
     ]);
+  });
+
+  // The scan never migrates, so a store no pup has opened since the column
+  // was added is read as it is: active, not unreadable (decision 62).
+  it('reads a store from before dormant_at as active, and a dormant row as dormant', () => {
+    const base = tempDir('pup-proj-base-');
+    const old = initRepo();
+    const oldId = projectId(old);
+    mkdirSync(join(base, oldId));
+    const bare = new Database(join(base, oldId, 'state.db'));
+    bare.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+    bare.prepare('INSERT INTO projects VALUES (?, ?)').run(oldId, old);
+    bare.close();
+    const asleep = initRepo();
+    const asleepId = register(base, asleep);
+    const db = openStore(projectPaths(asleep, base).dbFile);
+    db.prepare('UPDATE projects SET dormant_at = ? WHERE id = ?').run(
+      '2026-09-21T10:00:00Z',
+      asleepId,
+    );
+    db.close();
+
+    const byId = new Map(listRegisteredProjects(base).map((project) => [project.id, project]));
+
+    expect(byId.get(oldId)?.dormantAt).toBeNull();
+    expect(byId.get(asleepId)?.dormantAt).toBe('2026-09-21T10:00:00Z');
+    expect(errors).toEqual([]);
   });
 
   // Every store under the base is read, including one a session wrote or a
@@ -248,9 +281,10 @@ describe('resolveProject', () => {
 
       const lines = message.split('\n');
       expect(lines).toHaveLength(4);
-      expect(lines).toContain(`${idA}  ${repoA}`);
-      expect(lines).toContain(`${idB}  ${repoB}`);
-      expect(lines).toContain(`${idStale}  ${stale}  (missing)`);
+      // The lines `pup project list` prints, less its conductor column (decision 62).
+      expect(lines).toContain(`${idA}  ${repoA}  active`);
+      expect(lines).toContain(`${idB}  ${repoB}  active`);
+      expect(lines).toContain(`${idStale}  ${stale}  active  (missing)`);
       expect(lines[3]).toBe(
         'Not inside a git repository; pass --project <id> to pick one of these.',
       );
@@ -276,7 +310,7 @@ describe('resolveProject', () => {
       }
 
       expect(message).not.toContain('\u001b');
-      expect(message).toContain(`${projectId(evil)}  /gone/ [2J [31mrepo  (missing)`);
+      expect(message).toContain(`${projectId(evil)}  /gone/ [2J [31mrepo  active  (missing)`);
     });
 
     // The store outlives temp repos; the one project still on disk is still

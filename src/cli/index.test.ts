@@ -117,6 +117,7 @@ import {
   insertTask,
   listBacklogTasks,
   listEvents,
+  saveProjectDormantAt,
   transitionSession,
 } from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
@@ -229,6 +230,13 @@ function registerProject(repoPath: string): string {
   ensureProject(db, pid, repoPath);
   db.close();
   return pid;
+}
+
+/** Puts a registered project to sleep, as `pup project dormant` leaves it. */
+function markDormant(repoPath: string, at = '2026-09-21T10:00:00.000Z'): void {
+  const { db } = resolveProject(repoPath);
+  saveProjectDormantAt(db, projectId(repoPath), at);
+  db.close();
 }
 
 /** One planned task: a row in the backlog with no session of its own. */
@@ -624,6 +632,46 @@ describe('CLI commands', () => {
         expect(tables.map((table) => table.name)).toEqual(['projects']);
       });
 
+      // Decision 62: a dormant project is counted, not shown, until --dormant.
+      it('hides a dormant project and counts it, and shows it with --dormant', () => {
+        const awake = initRepo();
+        const asleep = initRepo();
+        registerProject(awake);
+        seedBacklogTask(asleep, 't-sleep', 'planned while asleep');
+        markDormant(asleep);
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        buildProgram().parse(['status'], { from: 'user' });
+        expect(logs).toEqual([
+          `${projectId(awake)}  ${awake}  conductor stopped`,
+          '  0 running, 0 planned, 0 merged',
+          '',
+          '1 dormant project not shown; --dormant shows it.',
+        ]);
+
+        logs.length = 0;
+        buildProgram().parse(['status', '--dormant'], { from: 'user' });
+        expect(logs).toContain(
+          `${projectId(asleep)}  ${asleep}  conductor stopped  dormant since 2026-09-21T10:00:00.000Z`,
+        );
+        expect(logs).toContain('  0 running, 1 planned, 0 merged');
+        expect(logs.join('\n')).not.toContain('not shown');
+      });
+
+      it('prints only the count when every project is dormant', () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        registerProject(repoA);
+        registerProject(repoB);
+        markDormant(repoA);
+        markDormant(repoB);
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs).toEqual(['2 dormant projects not shown; --dormant shows them.']);
+      });
+
       it('refuses in one line when nothing is registered', () => {
         useCwd(tempDir('pup-cli-noproj-'));
 
@@ -732,7 +780,7 @@ describe('CLI commands', () => {
         expect(() => buildProgram().parse(['plan', 'list'], { from: 'user' })).toThrow(
           new ProjectResolutionError(
             [
-              ...[`${idA}  ${repoA}`, `${idB}  ${repoB}`].sort(),
+              ...[`${idA}  ${repoA}  active`, `${idB}  ${repoB}  active`].sort(),
               'Not inside a git repository; pass --project <id> to pick one of these.',
             ].join('\n'),
           ),
@@ -1041,6 +1089,26 @@ describe('CLI commands', () => {
             .read()
             .projects.map((p) => p.deps.repoPath),
         ).toEqual([repoA]);
+      });
+
+      it('leaves a dormant project out of the reading, and reads it with --dormant', () => {
+        const awake = initRepo();
+        const asleep = initRepo();
+        registerProject(awake);
+        registerProject(asleep);
+        markDormant(asleep);
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        runUi(true);
+        expect([...readProjects().keys()]).toEqual([projectId(awake)]);
+        expect(mountedProps().read().unreadable).toEqual([]);
+
+        vi.mocked(render).mockClear();
+        runUi(true, ['ui', '--dormant']);
+        expect([...readProjects().keys()].sort()).toEqual(
+          [projectId(awake), projectId(asleep)].sort(),
+        );
       });
 
       it('leaves --project to name one project, over --all', () => {
@@ -2231,6 +2299,260 @@ describe('CLI commands', () => {
   // The conductor is the operator's delegate for planning, launching, steering
   // and killing, refused the merge, the respawn and other projects, and what
   // it plans is recorded as its own (decision 47).
+  // Decision 62: the registry, and putting a project to sleep and waking it.
+  describe('project', () => {
+    function dormantAt(repo: string): string | null {
+      const { db } = resolveProject(repo);
+      const row = db
+        .prepare('SELECT dormant_at FROM projects WHERE id = ?')
+        .get(projectId(repo)) as { dormant_at: string | null };
+      db.close();
+      return row.dormant_at;
+    }
+
+    it('lists every registered project with its state and its conductor', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      registerProject(repoA);
+      registerProject(repoB);
+      markDormant(repoB);
+      vi.mocked(isConductorRunning).mockImplementation((repoPath) => repoPath === repoA);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['project', 'list'], { from: 'user' });
+
+      expect([...logs].sort()).toEqual(
+        [
+          `${projectId(repoA)}  ${repoA}  active  conductor running`,
+          `${projectId(repoB)}  ${repoB}  dormant since 2026-09-21T10:00:00.000Z  conductor stopped`,
+        ].sort(),
+      );
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('lists the one project --project names, and refuses an id nobody registered', () => {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      registerProject(initRepo());
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['--project', id, 'project', 'list'], { from: 'user' });
+      expect(logs).toEqual([`${id}  ${repo}  active  conductor stopped`]);
+
+      buildProgram().parse(['--project', 'nope\u001b[2J', 'project', 'list'], { from: 'user' });
+      expect(errors).toEqual([
+        'No project nope [2J; `pup project list` shows the registered ones.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // A store is session-writable, and the registry prints what it says (decision 29).
+    it('strips control characters out of a dormant stamp before printing it', () => {
+      const repo = initRepo();
+      registerProject(repo);
+      markDormant(repo, '2026\u001b[31m');
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['project', 'list'], { from: 'user' });
+
+      expect(logs).toEqual([
+        `${projectId(repo)}  ${repo}  dormant since 2026 [31m  conductor stopped`,
+      ]);
+    });
+
+    // A session's shell can write a BLOB into its own row; the driver hands it
+    // back as bytes, and every reader must still get a string (decision 62).
+    it('reads a BLOB stamp as dormant, scrubbed, in list, status --dormant and dormant', () => {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      const { db } = resolveProject(repo);
+      db.prepare('UPDATE projects SET dormant_at = ? WHERE id = ?').run(
+        Buffer.from([0x1b, 0x5b, 0x32, 0x4a]),
+        id,
+      );
+      db.close();
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['project', 'list'], { from: 'user' });
+      buildProgram().parse(['status', '--dormant'], { from: 'user' });
+      buildProgram().parse(['project', 'dormant', id], { from: 'user' });
+
+      expect(logs).toEqual([
+        `${id}  ${repo}  dormant since [2J  conductor stopped`,
+        `${id}  ${repo}  conductor stopped  dormant since [2J`,
+        '  0 running, 0 planned, 0 merged',
+        `Project ${id} is already dormant since [2J.`,
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('refuses an empty registry, an id on list, and an unknown action', () => {
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['project', 'list'], { from: 'user' });
+      buildProgram().parse(['project', 'list', 'abc'], { from: 'user' });
+      buildProgram().parse(['project', 'forget'], { from: 'user' });
+
+      expect(errors).toEqual([
+        'No project registered; run pup init from the repo you want to control.',
+        '`pup project list` takes no id; use --project <id>.',
+        'Unknown project action `forget` (expected list|dormant|wake).',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses to put a project to sleep while its conductor or a session is live, naming them', () => {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      seedSession(repo, 's-live');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-live', 'running');
+      db.close();
+      seedKilledSession(repo, 's-gone');
+      seedSession(repo, 's-review');
+      const review = resolveProject(repo);
+      transitionSession(review.db, 's-review', 'running');
+      transitionSession(review.db, 's-review', 'awaiting-review');
+      review.db.close();
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      useCwd(repo);
+
+      buildProgram().parse(['project', 'dormant'], { from: 'user' });
+
+      // Sessions seeded in the same second tie on created_at, so their order is the store's.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(
+        new RegExp(
+          `^Project ${id} still has pup-conductor-${id}, (s-live, s-review|s-review, s-live) live; stop them \\(pup conductor stop, pup kill <session>, or merge\\) before putting it to sleep\\.$`,
+        ),
+      );
+      expect(process.exitCode).toBe(1);
+      expect(dormantAt(repo)).toBeNull();
+
+      // The conductor stopped and one session merged, the other still live:
+      // named alone. Awaiting review is live, not only running.
+      errors.length = 0;
+      vi.mocked(isConductorRunning).mockReturnValue(false);
+      const merged = resolveProject(repo);
+      transitionSession(merged.db, 's-live', 'killed');
+      merged.db.close();
+      buildProgram().parse(['project', 'dormant'], { from: 'user' });
+      expect(errors).toEqual([
+        `Project ${id} still has s-review live; stop it (pup conductor stop, pup kill <session>, or merge) before putting it to sleep.`,
+      ]);
+
+      // Everything stopped: it sleeps.
+      const reopened = resolveProject(repo);
+      transitionSession(reopened.db, 's-review', 'merged');
+      reopened.db.close();
+      process.exitCode = undefined;
+      buildProgram().parse(['project', 'dormant'], { from: 'user' });
+      expect(process.exitCode).toBeUndefined();
+      expect(logs).toEqual([
+        `Project ${id} is dormant: pup status, pup ui and the radar pass it over until \`pup project wake ${id}\`.`,
+      ]);
+      expect(dormantAt(repo)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('wakes a dormant project, and says so when there is nothing to change', () => {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      markDormant(repo);
+      useCwd(repo);
+
+      buildProgram().parse(['project', 'dormant'], { from: 'user' });
+      buildProgram().parse(['project', 'wake'], { from: 'user' });
+      buildProgram().parse(['project', 'wake'], { from: 'user' });
+
+      expect(logs).toEqual([
+        `Project ${id} is already dormant since 2026-09-21T10:00:00.000Z.`,
+        `Project ${id} is awake: the fleet views and the radar read it again.`,
+        `Project ${id} is already active.`,
+      ]);
+      expect(dormantAt(repo)).toBeNull();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('targets a project by id or --project from anywhere, and refuses two different ones', () => {
+      const repoA = initRepo();
+      const repoB = initRepo();
+      const idA = registerProject(repoA);
+      const idB = registerProject(repoB);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      buildProgram().parse(['project', 'dormant', idA], { from: 'user' });
+      buildProgram().parse(['--project', idB, 'project', 'dormant'], { from: 'user' });
+      expect(dormantAt(repoA)).not.toBeNull();
+      expect(dormantAt(repoB)).not.toBeNull();
+      buildProgram().parse(['--project', idA, 'project', 'wake', idA], { from: 'user' });
+      expect(dormantAt(repoA)).toBeNull();
+      expect(process.exitCode).toBeUndefined();
+
+      buildProgram().parse(['--project', idA, 'project', 'wake', idB], { from: 'user' });
+      expect(errors).toEqual([
+        `\`pup project wake\` was given two projects (${idB} and --project ${idA}); name one.`,
+      ]);
+      expect(dormantAt(repoB)).not.toBeNull();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses a repo that was never registered', () => {
+      const repo = initRepo();
+      useCwd(repo);
+
+      buildProgram().parse(['project', 'dormant'], { from: 'user' });
+
+      expect(errors).toEqual([
+        `No project at ${repo}; run pup init from the repo you want to control.`,
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    describe.each([['list'], ['dormant'], ['wake']])('%s is operator-only', (action) => {
+      // The same refusal `--project` throws (decision 43): one guard, not a per-command copy.
+      const operatorOnlyMessage =
+        'Reaching another project is operator-only; a session controls only the project it runs in.';
+
+      it('refuses a session asking from its worktree', () => {
+        const repo = initRepo();
+        const worktree = worktreeOf(repo, 's1');
+        seedSession(repo, 's1', worktree);
+        useCwd(worktree);
+
+        expect(() => buildProgram().parse(['project', action], { from: 'user' })).toThrow(
+          operatorOnlyMessage,
+        );
+        expect(dormantAt(repo)).toBeNull();
+      });
+
+      it('refuses a session that left every repo but still exports PUP_SESSION_ID', () => {
+        const repo = initRepo();
+        const id = registerProject(repo);
+        useCwd(tempDir('pup-cli-noproj-'));
+        vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
+
+        expect(() =>
+          buildProgram().parse(['--project', id, 'project', action], { from: 'user' }),
+        ).toThrow(operatorOnlyMessage);
+        expect(logs).toEqual([]);
+        expect(dormantAt(repo)).toBeNull();
+      });
+
+      it('refuses the conductor, from inside its own repo', () => {
+        const repo = initRepo();
+        registerProject(repo);
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+        expect(() => buildProgram().parse(['project', action], { from: 'user' })).toThrow(
+          operatorOnlyMessage,
+        );
+        expect(logs).toEqual([]);
+        expect(dormantAt(repo)).toBeNull();
+      });
+    });
+  });
+
   describe('a calling conductor', () => {
     beforeEach(() => {
       vi.stubEnv('PUP_CONDUCTOR', 'p1');

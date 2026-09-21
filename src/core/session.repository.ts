@@ -66,6 +66,11 @@ export interface ProjectRow {
    * the operator made records one (decision 56).
    */
   origin_url: string | null;
+  /**
+   * When `pup project dormant` put the project to sleep, or null while it is
+   * active; the fleet views and the radar pass over it (decision 62).
+   */
+  dormant_at: string | null;
   created_at: string;
 }
 
@@ -98,6 +103,20 @@ export function saveProjectBaseline(
  */
 export function saveProjectOriginUrl(db: Database, id: string, originUrl: string): void {
   db.prepare('UPDATE projects SET origin_url = ? WHERE id = ?').run(originUrl, id);
+}
+
+/**
+ * Put a project to sleep, or wake it with `null`. The one writer of
+ * `dormant_at`, reached only from the operator's `pup project dormant|wake`
+ * (decision 62).
+ */
+export function saveProjectDormantAt(db: Database, id: string, dormantAt: string | null): void {
+  db.prepare('UPDATE projects SET dormant_at = ? WHERE id = ?').run(dormantAt, id);
+}
+
+/** Whether the project's row says it is dormant; a project with no row is not. */
+export function isProjectDormant(db: Database, id: string): boolean {
+  return (getProject(db, id)?.dormant_at ?? null) !== null;
 }
 
 /**
