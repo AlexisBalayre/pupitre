@@ -14,7 +14,7 @@ export interface ResolvedProject {
 }
 
 /** A project `pup init` registered, read back from its own store under `~/.pupitre`. */
-export interface RegisteredProject {
+interface RegisteredProject {
   id: string;
   repoPath: string;
   dbFile: string;
