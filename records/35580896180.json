@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T09:07:06.380Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35580896180",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35580896180",
+  "actor": "AlexisBalayre",
+  "commit_sha": "696f6ccf32792924f017fe99f8817cb54e8498f4",
+  "source": "pr",
+  "pr_number": 103,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "cc13ad914ec1828e43e7b0806269f6190cb74cd3",
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "3",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2684-2685",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 58's writeup still says `nestedPackageDirs` answers it in `typescript-source.utils.ts`. This commit moved `nestedPackageDirs` out of that file into `src/adapters/git-tree.client.ts` (confirmed: `git-tree.client.ts` now defines it; `typescript-source.utils.ts` no longer contains it), but `docs/09-decisions.md` was not touched in this diff. The move is exactly the kind of relocation the commit was careful to reflect elsewhere — it updated the sibling JSDoc in `typescript-source.utils.ts` to say \"from `git-tree.client.ts`\" — but missed the one other place in the repo that names the old file by path. A reader following decision 58 to find `nestedPackageDirs` will land in the wrong file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/coverage.utils.ts",
+      "line": "17-21",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rewritten `withoutFiles` JSDoc fixes the prior \"restates the signature\" nit but overreaches the other way: `withoutFiles(report, excluded)` is a generic 2-line filter over an arbitrary predicate, yet the doc bakes in one caller's vocabulary (\"the ratchet reads it\", \"`coverableFiles` must agree\") and, fact-for-fact, duplicates `rootCoverageReport`'s own docstring at its one call site (`src/adapters/typescript.adapter.ts:144-150`, which already says \"restricted to the root's own files... with the same predicate as `coverableFiles`, so report and expectation cannot drift (decisions 32, 58)\"). If `withoutFiles` ever gets a second, unrelated caller, this docstring becomes actively misleading about what the function does in general. Suggest either trimming this to the generic contract (\"drops files matching `excluded` from the report\") and letting `rootCoverageReport` carry the full WHY it already has, or keeping this one and trimming the duplication out of `rootCoverageReport` — not both in full.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "64",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`isInNestedPackage`'s doc comment was edited from `(see \\`nestedPackageDirs\\`)` to `(from \\`git-tree.client.ts\\`)`. This trades a precise pointer (the exact producer function) for a vaguer one (a whole file that also exports `committedPackageDirs`, `MANIFEST`, `LS_TREE_MAX_BUFFER`). Not wrong, just a small loss of precision with no apparent benefit. Suggest `(from \\`nestedPackageDirs\\` in \\`git-tree.client.ts\\`)` if this is going to be touched again.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 2.7910474499999998,
+  "duration_ms": 352124,
+  "num_turns": 22,
+  "tokens": {
+    "input": 19,
+    "output": 20689,
+    "cache_read": 454414,
+    "cache_creation": 61517,
+    "total": 536639
+  }
+}
