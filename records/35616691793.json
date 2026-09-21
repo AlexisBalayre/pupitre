@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T15:19:11.945Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35616691793",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35616691793",
+  "actor": "AlexisBalayre",
+  "commit_sha": "50afee37634178faddc623ec91248b22fc3607c2",
+  "source": "pr",
+  "pr_number": 108,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "maintainability",
+    "maintainability"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/project.utils.ts",
+      "line": "7 (import), 142-150 (registryLine)",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "project.utils.ts (a `.utils.ts` file) adds `import { isConductorRunning } from '../core/conductor.service.js'` and calls it inside the new `registryLine`, violating docs/conventions/naming.md's utils rule that bans importing `service`/`manager`/`repository`/`client`.",
+      "body": "`docs/conventions/naming.md` (line 76) states the `utils` role's calling convention:\n\n> `utils` — **Pure functions only.** Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\n\nThis PR adds a new import to `src/cli/project.utils.ts`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/50afee37634178faddc623ec91248b22fc3607c2/src/cli/project.utils.ts#L7\n\n```ts\nimport { isConductorRunning } from '../core/conductor.service.js';\n```\n\nand uses it in the new `registryLine` export:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/50afee37634178faddc623ec91248b22fc3607c2/src/cli/project.utils.ts#L142-L150\n\n`conductor.service.ts` is a `.service.ts` file — precisely the role banned for a `utils` importer. This is a new import introduced by this diff (confirmed against the merge base), not a pre-existing issue, though the file already had two other rule-violating `client` imports (`db.client.js`, `git-diff.client.js`) before this PR, so this compounds an existing problem rather than being the file's first violation. Either move the conductor lookup into a `service`/`repository`-role module `registryLine` can call, or reconsider the file's role.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "936-958",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `pup project` command's operator-only guard (lines 947-958) reimplements `refuseUnlessOperator` (lines 549-559) inline — same three-part check and try/finally-close pattern — instead of calling the existing helper; decision 62's own prose even describes it as \"the same detection as refuseUnlessOperator\", and AGENTS.md's Core rule asks new code to match an existing sibling pattern rather than re-derive it. A per-command refusal message is the only reason given for the duplication.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1125, 1165, 1191",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `showDormant: boolean` parameter on `fleetReader`, `awakeFleet`, and `printFleet` doesn't follow docs/conventions/general.md's boolean-naming rule (\"Boolean names start with is / has / should / can\"); `showDormant` starts with none of those prefixes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "936-958",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A session running `pup project forget` (an unknown action) gets `Unknown project action ...` instead of `operator-only`, because the unknown-action check fires before the operator guard; harmless (nothing sensitive is revealed) but inconsistent with how `dormant`/`wake` are gated, where the operator check fires first.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "947-980",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "For `pup project dormant`/`wake` run from inside a repo with no `<id>`/`--project`, the enclosing store is opened once for the operator guard (closed in a finally) and reopened moments later by `resolveProject` for the actual work — a redundant open/migrate pass on the same store file, harmless but wasteful.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "6-7",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The reworded opening sentence, \"with several it lists them as `pup project list` prints them (a deleted repo is marked `(missing)`)\", is grammatically broken (\"lists them as X prints them\" doesn't parse); the described behavior itself is accurate. Suggested fix: \"it lists them the way `pup project list` prints them.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3073-3074",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In decision 62's \"The refusal's listing is list's\" paragraph, \"Decision 43's refusal outside a repo with several live projects\" reuses \"live\" in decision 43's old sense (repo present on disk), while every other \"live\" in this same decision 62 entry means \"conductor running or session in a holding state\" — a reader skimming decision 62 alone can momentarily misread it backwards.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1003-1006",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"...would hide that work from every view that would have shown it needing them (decision 62)\" has a dangling \"them\" with no antecedent in the comment itself; the parallel decision-62 prose spells out \"...needing the operator\", but the code comment's paraphrase drops \"the operator\", forcing the reader to already know the doc wording to resolve the pronoun.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1123",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new JSDoc line on `fleetReader` (\"A dormant project is left out, its store never opened, unless --dormant.\") duplicates what `awakeFleet`'s own JSDoc already says one function down, which `fleetReader` calls directly — the caller-level sentence adds nothing a reader wouldn't get by following the call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "62",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The doc quotes a single fixed template, \"N dormant projects not shown; --dormant shows them.\", but the real output pluralizes both the noun and pronoun on N (`printFleet` singular-cases to \"1 dormant project not shown; --dormant shows it.\"); the doc's fixed quote is silently wrong for N=1.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3030",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Same singular/plural mismatch as the docs/02-cli.md instance: decision 62 quotes only the plural closing-line template, but the actual singular case reads \"1 dormant project not shown; --dormant shows it.\" — not stated as a template, so a reader taking the quoted string literally is misled for N=1.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 10.40166544999999,
+  "duration_ms": 681747,
+  "num_turns": 26,
+  "tokens": {
+    "input": 25,
+    "output": 30144,
+    "cache_read": 742693,
+    "cache_creation": 116983,
+    "total": 889845
+  }
+}
