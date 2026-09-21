@@ -15,6 +15,20 @@ export function repoCoverageRatio(report: CoverageReport): number | undefined {
 }
 
 /**
+ * Drop files another runner owns from the report before the ratchet reads it:
+ * the report and `coverableFiles` must agree on what counts, or the repo ratio
+ * moves for files no gate stage expects to be covered (decisions 32, 58).
+ */
+export function withoutFiles(
+  report: CoverageReport,
+  excluded: (file: string) => boolean,
+): CoverageReport {
+  return {
+    files: Object.fromEntries(Object.entries(report.files).filter(([file]) => !excluded(file))),
+  };
+}
+
+/**
  * Patch coverage (decision 13): only added/modified lines that carry
  * instrumented statements count — types, comments, and config lines are free,
  * as are files coverage never saw (assets, docs).

@@ -62,6 +62,12 @@ export function isCoverageExcluded(path: string): boolean {
   );
 }
 
+/** Whether a repo-relative file sits inside one of `nested` (see `nestedPackageDirs` in `git-tree.client.ts`). */
+export function isInNestedPackage(file: string, nested: Set<string>): boolean {
+  const dirs = file.split('/').slice(0, -1);
+  return dirs.some((_, i) => nested.has(dirs.slice(0, i + 1).join('/')));
+}
+
 /**
  * Resolve a relative import specifier to a repo file. Tries the literal path,
  * `.js`->`.ts` and `.js`->`.tsx` (ESM-style extensioned imports of TS sources:
