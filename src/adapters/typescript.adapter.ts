@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
+import { withoutFiles } from '../core/coverage.utils.js';
 import { runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import type {
@@ -22,6 +23,8 @@ import { COVERAGE_RUN_TIMEOUT_MS } from './typescript-debt.constants.js';
 import { findDeadExports, findDuplication, measureComplexity } from './typescript-debt.utils.js';
 import {
   isCoverageExcluded,
+  isInNestedPackage,
+  isNestedPackageDir,
   isSourceFile,
   resolveImport,
   SOURCE_EXTENSIONS,
@@ -50,24 +53,39 @@ const SKIPPED_DIRS = new Set([
   '.claude',
 ]);
 
-function walkSourceFiles(repoPath: string, dir = repoPath, found: string[] = []): string[] {
+/** The checkouts a nested package must exist in to be skipped (decision 58). */
+function checkouts({ measurePath, configPath }: CapabilityContext): string[] {
+  return [measurePath, configPath];
+}
+
+function walkSourceFiles(
+  ctx: CapabilityContext,
+  dir = ctx.measurePath,
+  found: string[] = [],
+): string[] {
+  const repoPath = ctx.measurePath;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIPPED_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-        walkSourceFiles(repoPath, join(dir, entry.name), found);
+      if (
+        !SKIPPED_DIRS.has(entry.name) &&
+        !entry.name.startsWith('.') &&
+        !isNestedPackageDir(relative(repoPath, path).split(sep).join('/'), checkouts(ctx))
+      ) {
+        walkSourceFiles(ctx, path, found);
       }
     } else if (isSourceFile(entry.name)) {
-      found.push(relative(repoPath, join(dir, entry.name)));
+      found.push(relative(repoPath, path));
     }
   }
   return found;
 }
 
 /** Repo-relative `/`-separated path -> content, sorted for deterministic metrics. */
-function readSources(repoPath: string): Record<string, string> {
+function readSources(ctx: CapabilityContext): Record<string, string> {
   const sources: Record<string, string> = {};
-  for (const file of walkSourceFiles(repoPath).sort()) {
-    sources[file.split(sep).join('/')] = readFileSync(join(repoPath, file), 'utf8');
+  for (const file of walkSourceFiles(ctx).sort()) {
+    sources[file.split(sep).join('/')] = readFileSync(join(ctx.measurePath, file), 'utf8');
   }
   return sources;
 }
@@ -165,8 +183,9 @@ export const typescriptAdapter: Adapter = {
    * tsconfig or full parse is needed. Only relative, in-repo imports become
    * edges; package imports are ignored. Windows separators normalize to `/`.
    */
-  depGraph({ measurePath: repoPath }: CapabilityContext): DepGraph {
-    const files = walkSourceFiles(repoPath).map((f) => f.split(sep).join('/'));
+  depGraph(ctx: CapabilityContext): DepGraph {
+    const repoPath = ctx.measurePath;
+    const files = walkSourceFiles(ctx).map((f) => f.split(sep).join('/'));
     const fileSet = new Set(files);
     const modules: Record<string, string[]> = {};
     const edgeSet = new Set<string>();
@@ -193,15 +212,18 @@ export const typescriptAdapter: Adapter = {
     };
   },
 
-  deadCode({ measurePath, configPath }: CapabilityContext): DeadExport[] {
-    const sources = readSources(measurePath);
+  deadCode(ctx: CapabilityContext): DeadExport[] {
+    const sources = readSources(ctx);
     // Entry points come from the trusted manifest: a session that declares its
     // own dead export an entry point would otherwise hide it from the ratchet.
-    return findDeadExports(sources, manifestEntryFiles(configPath, new Set(Object.keys(sources))));
+    return findDeadExports(
+      sources,
+      manifestEntryFiles(ctx.configPath, new Set(Object.keys(sources))),
+    );
   },
 
-  duplication({ measurePath }: CapabilityContext): DuplicationReport {
-    return findDuplication(readSources(measurePath));
+  duplication(ctx: CapabilityContext): DuplicationReport {
+    return findDuplication(readSources(ctx));
   },
 
   complexity({ measurePath: repoPath }: CapabilityContext, files: string[]): FileComplexity[] {
@@ -213,18 +235,18 @@ export const typescriptAdapter: Adapter = {
       }));
   },
 
-  coverableFiles({ measurePath }: CapabilityContext, files: string[]): string[] {
+  coverableFiles(ctx: CapabilityContext, files: string[]): string[] {
     return files.filter(
       (file) =>
-        isSourceFile(file) && !isCoverageExcluded(file) && existsSync(join(measurePath, file)),
+        isSourceFile(file) &&
+        !isCoverageExcluded(file) &&
+        !isInNestedPackage(file, checkouts(ctx)) &&
+        existsSync(join(ctx.measurePath, file)),
     );
   },
 
-  coverage({
-    measurePath,
-    configPath,
-    gateEnv,
-  }: CapabilityContext): CoverageReport | CapabilityUnavailable {
+  coverage(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable {
+    const { measurePath, configPath, gateEnv } = ctx;
     // Declared in the trusted manifest, run against the measured checkout: a
     // session cannot switch the stage off by dropping its own devDependency.
     const manifest = readManifest(configPath);
@@ -270,7 +292,12 @@ export const typescriptAdapter: Adapter = {
       const raw = JSON.parse(
         readFileSync(join(outDir, 'coverage-final.json'), 'utf8'),
       ) as IstanbulCoverageMap;
-      return istanbulToCoverageReport(raw, measurePath);
+      // The include glob reaches into nested packages, whose own runner covers
+      // them; the same predicate as `coverableFiles`, so report and expectation
+      // cannot drift (decisions 32, 58).
+      return withoutFiles(istanbulToCoverageReport(raw, measurePath), (file) =>
+        isInNestedPackage(file, checkouts(ctx)),
+      );
     } catch (error) {
       // A failed instrumented run (crash, timeout, threshold config) degrades to
       // "not measured" — the plain test stage has already gated correctness.

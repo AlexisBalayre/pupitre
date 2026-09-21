@@ -46,6 +46,16 @@ checkouts agree it is one: the worktree alone is the session's to write, and the
 checkout is only trusted one merge deep, so a pattern that would exempt an arbitrary module
 name should be ignored wherever it comes from (decision 31).
 
+A nested package is its own measurement unit (decision 58). A directory below the measured
+root that holds its own `package.json`, like a workspace member or a standalone tool with its
+own lockfile and runner, is left out of the TypeScript adapter's source walk (and so its
+dependency graph, dead exports and duplication), its coverable files and its coverage report,
+the way `.worktrees/` is left out as another checkout. The root runner is not expected to cover
+it, and its exports are consumed by its own entry points. The marker must exist in both
+checkouts, so a session cannot exempt `src/core/` by writing `src/core/package.json`: a
+package it creates is counted at the root until it has merged. The Python adapter does not
+apply the rule; its tools discover files themselves under the repo's own config.
+
 ## Degradation rules
 
 - No depGraph: code map falls back to Claude-generated (flagged as approximate on the map).

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CoverageReport } from '../adapters/types/adapter.types.js';
-import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
+import { patchCoverage, repoCoverageRatio, withoutFiles } from './coverage.utils.js';
 
 const report: CoverageReport = {
   files: {
@@ -38,5 +38,13 @@ describe('patchCoverage', () => {
     const patch = patchCoverage(report, { 'docs/readme.md': [1, 2, 3] });
 
     expect(patch).toEqual({ covered: 0, instrumented: 0, uncovered: [] });
+  });
+});
+
+describe('withoutFiles', () => {
+  it('drops exactly the files the predicate names', () => {
+    expect(withoutFiles(report, (file) => file === 'src/b.ts')).toEqual({
+      files: { 'src/a.ts': { covered: [1, 3], instrumented: [1, 2, 3] } },
+    });
   });
 });

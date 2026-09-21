@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { localContext } from './capability.utils.js';
+import type { DeadExport, DuplicationReport } from './types/adapter.types.js';
 import { typescriptAdapter } from './typescript.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
@@ -179,5 +180,71 @@ describe('typescriptAdapter.depGraph', () => {
 
     expect(graph?.modules).toEqual({ '(root)': ['helper.ts', 'main.ts'] });
     expect(graph?.edges).toEqual([]);
+  });
+});
+
+describe('typescriptAdapter nested packages', () => {
+  // Decision 58: a directory with its own package.json has its own runner, so
+  // the root counts none of it. tools/plain has no manifest and is still walked.
+  const clone = Array.from({ length: 8 }, (_, i) => `export const v${i} = ${i} * 2;`).join('\n');
+  const tree = {
+    'package.json': '{}',
+    'src/app.ts': "import { p } from '../tools/plain/p.js';\nexport const a = p;\n",
+    'tools/plain/p.ts': 'export const p = 1;\nexport const plainDead = 2;\n',
+    'tools/plain/clone.ts': `${clone}\n`,
+    'tools/review/package.json': '{}',
+    'tools/review/src/r.ts': 'export const reviewDead = 1;\n',
+    'tools/review/src/clone.ts': `${clone}\n`,
+  };
+
+  function makeTree(files: Record<string, string>): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-nested-')));
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true });
+      writeFileSync(join(dir, name), content);
+    }
+    return dir;
+  }
+
+  it('leaves a nested package out of the walk, dead code, duplication and coverage', () => {
+    const ctx = localContext(makeTree(tree));
+
+    expect(Object.keys(typescriptAdapter.depGraph?.(ctx).modules ?? {}).sort()).toEqual([
+      'src',
+      'tools/plain',
+    ]);
+    const dead = typescriptAdapter.deadCode?.(ctx) as DeadExport[];
+    expect(dead.map((d) => d.file)).not.toContain('tools/review/src/r.ts');
+    const duplication = typescriptAdapter.duplication?.(ctx) as DuplicationReport;
+    expect(duplication.duplicatedLines).toBe(0);
+    expect(
+      typescriptAdapter.coverableFiles?.(ctx, ['src/app.ts', 'tools/review/src/r.ts']),
+    ).toEqual(['src/app.ts']);
+  });
+
+  it('still walks a directory without its own package.json', () => {
+    const ctx = localContext(makeTree(tree));
+
+    const dead = typescriptAdapter.deadCode?.(ctx) as DeadExport[];
+    expect(dead).toContainEqual({ file: 'tools/plain/p.ts', exportName: 'plainDead' });
+    expect(typescriptAdapter.coverableFiles?.(ctx, ['tools/plain/p.ts'])).toEqual([
+      'tools/plain/p.ts',
+    ]);
+  });
+
+  it('counts a nested package the trusted checkout does not have', () => {
+    // A package.json is one file a session can write anywhere; a worktree-only
+    // marker would buy exemption with `touch src/core/package.json`.
+    const measurePath = makeTree(tree);
+    const { 'tools/review/package.json': _, ...trusted } = tree;
+    const ctx = { measurePath, configPath: makeTree(trusted) };
+
+    const dead = typescriptAdapter.deadCode?.(ctx) as DeadExport[];
+    expect(dead).toContainEqual({ file: 'tools/review/src/r.ts', exportName: 'reviewDead' });
+    const duplication = typescriptAdapter.duplication?.(ctx) as DuplicationReport;
+    expect(duplication.duplicatedLines).toBeGreaterThan(0);
+    expect(typescriptAdapter.coverableFiles?.(ctx, ['tools/review/src/r.ts'])).toEqual([
+      'tools/review/src/r.ts',
+    ]);
   });
 });

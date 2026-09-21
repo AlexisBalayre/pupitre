@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 
 export const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
@@ -60,6 +61,32 @@ export function isCoverageExcluded(path: string): boolean {
     /^(?:dist|build|coverage|tests?)\//.test(path) ||
     /(?:^|\/)(?:node_modules|__tests__|__mocks__|\.worktrees)\//.test(path)
   );
+}
+
+/**
+ * Whether `dir` (repo-relative, `/`-separated) is the root of a nested package:
+ * a directory below the measured root holding its own `package.json`, as a
+ * workspace member or a standalone tool does. Such a directory has its own
+ * lockfile, test config and runner, so the root runner is not expected to cover
+ * it and its exports are consumed by its own entry points, not by the root's
+ * modules. Counting it at the root reads its whole source as uncovered and
+ * its exports as dead (decision 58), which is the same reason `.worktrees/` is
+ * skipped as another checkout.
+ *
+ * The marker is corroborated in every checkout given, which for a merge gate is
+ * the worktree and the trusted checkout (decision 31's AND). A `package.json`
+ * is one file a session can write anywhere, so a worktree-only marker would be
+ * an exemption bought with `touch src/core/package.json`: a nested package the
+ * session creates is counted at the root until it has merged.
+ */
+export function isNestedPackageDir(dir: string, checkouts: string[]): boolean {
+  return dir !== '' && checkouts.every((root) => existsSync(join(root, dir, 'package.json')));
+}
+
+/** Whether a repo-relative file sits inside a nested package (see `isNestedPackageDir`). */
+export function isInNestedPackage(file: string, checkouts: string[]): boolean {
+  const dirs = file.split('/').slice(0, -1);
+  return dirs.some((_, i) => isNestedPackageDir(dirs.slice(0, i + 1).join('/'), checkouts));
 }
 
 /**

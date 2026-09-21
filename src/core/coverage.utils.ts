@@ -14,6 +14,16 @@ export function repoCoverageRatio(report: CoverageReport): number | undefined {
   return instrumented === 0 ? undefined : covered / instrumented;
 }
 
+/** The report without the files `excluded` names. */
+export function withoutFiles(
+  report: CoverageReport,
+  excluded: (file: string) => boolean,
+): CoverageReport {
+  return {
+    files: Object.fromEntries(Object.entries(report.files).filter(([file]) => !excluded(file))),
+  };
+}
+
 /**
  * Patch coverage (decision 13): only added/modified lines that carry
  * instrumented statements count — types, comments, and config lines are free,
