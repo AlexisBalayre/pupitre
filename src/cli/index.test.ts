@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { CommanderError } from 'commander';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -482,58 +484,260 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('planned');
     });
 
-    // Outside any repo the store decides, but only when it cannot be wrong
-    // (decision 43).
-    it('runs against the only registered project when outside any repo', () => {
-      const repo = initRepo();
-      seedBacklogTask(repo, 't-plan', 'the one project there is');
-      useCwd(tempDir('pup-cli-noproj-'));
+    // Outside any repo `pup status` reads every registered store rather than
+    // refusing; the one reader decision 60 lets cross stores.
+    describe('the fleet view', () => {
+      /** A session walked to `state` through the transitions the gate would make. */
+      function seedSessionIn(repo: string, sessionId: string, path: SessionState[]): void {
+        seedSession(repo, sessionId);
+        const { db } = resolveProject(repo);
+        for (const state of path) transitionSession(db, sessionId, state);
+        db.close();
+      }
 
-      buildProgram().parse(['status'], { from: 'user' });
+      it('prints one block per project: what needs the operator, then counts', () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        seedBlockedSession(repoA, 's-blocked', 'lint keeps failing');
+        seedStalledSession(repoA, 's-stalled');
+        seedDeadTurn(repoA, 's-stalled');
+        seedStalledSession(repoA, 's-quiet');
+        seedSessionIn(repoA, 's-review', ['running', 'awaiting-review']);
+        seedSessionIn(repoA, 's-busy', ['running']);
+        seedSessionIn(repoA, 's-done', ['running', 'awaiting-review', 'merged']);
+        seedBacklogTask(repoA, 't-plan', 'planned in A');
+        const debt = seedLedgerEntry(repoB);
+        const { db } = resolveProject(repoB);
+        db.prepare("UPDATE ledger_entries SET review_by = '2020-01-01' WHERE id = ?").run(debt);
+        db.close();
+        useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(logs.join('\n')).toContain('the one project there is');
-      expect(process.exitCode).toBeUndefined();
-    });
+        buildProgram().parse(['status'], { from: 'user' });
 
-    it('runs against the one project still on disk when the others are stale', () => {
-      const live = initRepo();
-      seedBacklogTask(live, 't-plan', 'the one repo still here');
-      const stale = initRepo();
-      registerProject(stale);
-      rmSync(stale, { recursive: true });
-      useCwd(tempDir('pup-cli-noproj-'));
+        const idA = projectId(repoA);
+        const idB = projectId(repoB);
+        const blockA = [
+          `${idA}  ${repoA}  conductor stopped`,
+          expect.stringMatching(
+            /^ {2}blocked +s-blocked +pup\/s-blocked {2}needs a human \(3 rejections\)/,
+          ),
+          expect.stringMatching(/^ {2}running +s-stalled +pup\/s-stalled {2}TURN DIED/),
+          expect.stringMatching(/^ {2}running +s-quiet +pup\/s-quiet {2}STALLED/),
+          expect.stringMatching(/^ {2}awaiting-review +s-review +pup\/s-review$/),
+          '  3 running, 1 planned, 1 merged',
+        ];
+        const blockB = [
+          `${idB}  ${repoB}  conductor stopped`,
+          `  OVERDUE DEBT #${debt}  shortcut taken  (review by: 2020-01-01)`,
+          '  0 running, 0 planned, 0 merged',
+        ];
+        // The store lists projects in directory order, which the ids decide.
+        const [first, second] = idA < idB ? [blockA, blockB] : [blockB, blockA];
+        expect(logs).toEqual([...first, '', ...second]);
+        expect(logs.join('\n')).not.toContain('s-busy');
+        expect(logs.join('\n')).not.toContain('planned in A');
+        expect(process.exitCode).toBeUndefined();
+      });
 
-      buildProgram().parse(['status'], { from: 'user' });
+      it('names a running conductor, without the attach line the full table carries', () => {
+        const repo = initRepo();
+        registerProject(repo);
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(logs.join('\n')).toContain('the one repo still here');
-      expect(process.exitCode).toBeUndefined();
-    });
+        buildProgram().parse(['status'], { from: 'user' });
 
-    it('lists the registered projects and refuses when several could apply', () => {
-      const repoA = initRepo();
-      const repoB = initRepo();
-      const idA = registerProject(repoA);
-      const idB = registerProject(repoB);
-      useCwd(tempDir('pup-cli-noproj-'));
+        expect(logs[0]).toBe(`${projectId(repo)}  ${repo}  conductor running`);
+      });
 
-      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
-        new ProjectResolutionError(
-          [
-            ...[`${idA}  ${repoA}`, `${idB}  ${repoB}`].sort(),
-            'Not inside a git repository; pass --project <id> to pick one of these.',
-          ].join('\n'),
-        ),
-      );
-    });
+      it('is the view outside a repo even with only one project registered', () => {
+        const repo = initRepo();
+        seedBacklogTask(repo, 't-plan', 'the one project there is');
+        useCwd(tempDir('pup-cli-noproj-'));
 
-    it('refuses in one line when outside any repo and nothing is registered', () => {
-      useCwd(tempDir('pup-cli-noproj-'));
+        buildProgram().parse(['status'], { from: 'user' });
 
-      expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
-        new ProjectResolutionError(
-          'Not inside a git repository and no project registered; run pup init from the repo you want to control.',
-        ),
-      );
+        expect(logs).toEqual([
+          `${projectId(repo)}  ${repo}  conductor stopped`,
+          '  0 running, 1 planned, 0 merged',
+        ]);
+      });
+
+      it('is what --all prints from inside a repo, which alone prints its own table', () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        seedBacklogTask(repoA, 't-a', 'planned in A');
+        registerProject(repoB);
+        useCwd(repoA);
+
+        buildProgram().parse(['status', '--all'], { from: 'user' });
+        const fleet = [...logs];
+        logs.length = 0;
+        useCwd(tempDir('pup-cli-noproj-'));
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(fleet).toEqual(logs);
+        expect(fleet).toContain(`${projectId(repoB)}  ${repoB}  conductor stopped`);
+        logs.length = 0;
+        useCwd(repoA);
+        buildProgram().parse(['status'], { from: 'user' });
+        expect(logs).toEqual([expect.stringMatching(/^planned +t-a +planned in A/)]);
+      });
+
+      it('leaves --project to print that one project in full', () => {
+        const repo = initRepo();
+        const id = registerProject(repo);
+        seedBacklogTask(repo, 't-a', 'planned here');
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        buildProgram().parse(['--project', id, 'status', '--all'], { from: 'user' });
+
+        expect(logs).toEqual([expect.stringMatching(/^planned +t-a +planned here/)]);
+      });
+
+      it('marks a project whose repo is gone missing, and never opens its store', () => {
+        const live = initRepo();
+        registerProject(live);
+        // A bare store holding only its `projects` row: opening it through
+        // openStore would lay the schema down, so the absence of `sessions`
+        // afterwards is the proof it stayed shut.
+        const gone = tempDir('pup-cli-gone-');
+        const goneId = projectId(gone);
+        const goneStore = join(home, '.pupitre', goneId, 'state.db');
+        mkdirSync(join(home, '.pupitre', goneId), { recursive: true });
+        const bare = new Database(goneStore);
+        bare.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+        bare.prepare('INSERT INTO projects VALUES (?, ?)').run(goneId, gone);
+        bare.close();
+        rmSync(gone, { recursive: true });
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs).toContain(`${goneId}  ${gone}  missing: the repo no longer exists`);
+        expect(logs).toContain(`${projectId(live)}  ${live}  conductor stopped`);
+        const check = new Database(goneStore, { readonly: true });
+        const tables = check
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[];
+        check.close();
+        expect(tables.map((table) => table.name)).toEqual(['projects']);
+      });
+
+      it('refuses in one line when nothing is registered', () => {
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow(
+          new ProjectResolutionError(
+            'No project registered; run pup init from the repo you want to control.',
+          ),
+        );
+      });
+
+      // Reading every store is another project's door like `--project`: a
+      // session's guards cannot find it in any store but its own (decision 43).
+      it('refuses a session asking from its worktree', () => {
+        const own = initRepo();
+        const worktree = join(own, '.worktrees', 's1');
+        mkdirSync(worktree, { recursive: true });
+        seedSession(own, 's1', worktree);
+        useCwd(worktree);
+
+        expect(() => buildProgram().parse(['status', '--all'], { from: 'user' })).toThrow(
+          'operator-only',
+        );
+      });
+
+      it('refuses a session that left every repo but still exports PUP_SESSION_ID', () => {
+        registerProject(initRepo());
+        useCwd(tempDir('pup-cli-noproj-'));
+        vi.stubEnv('PUP_SESSION_ID', 's-elsewhere');
+
+        expect(() => buildProgram().parse(['status'], { from: 'user' })).toThrow('operator-only');
+      });
+
+      it('refuses the conductor, even from inside a repo with --all', () => {
+        const repo = initRepo();
+        registerProject(repo);
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+        expect(() => buildProgram().parse(['status', '--all'], { from: 'user' })).toThrow(
+          'operator-only',
+        );
+      });
+
+      // A store under ~/.pupitre is session-writable and the fleet opens every
+      // one of them, so what a row says is sanitized before the terminal sees
+      // it (decision 29).
+      it('strips control characters out of a session row it prints', () => {
+        const repo = initRepo();
+        seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
+        const { db } = resolveProject(repo);
+        db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run(
+          'pup/\u001b[2Jhijack',
+          's-blocked',
+        );
+        db.close();
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        const row = logs.find((line) => line.includes('s-blocked')) ?? '';
+        expect(row).toContain('pup/ [2Jhijack');
+        expect(row).not.toContain('\u001b');
+      });
+
+      it('prints the next project when one store cannot be read', () => {
+        const broken = initRepo();
+        const fine = initRepo();
+        seedSession(broken, 's1');
+        // A transcript directory whose newest .jsonl cannot be read: the
+        // snapshot throws on it, as it would on a store that fails to migrate.
+        const transcripts = tempDir('pup-cli-tx-');
+        const unreadable = join(transcripts, 'session.jsonl');
+        writeFileSync(unreadable, '{}\n');
+        chmodSync(unreadable, 0o000);
+        const { db } = resolveProject(broken);
+        db.prepare('UPDATE sessions SET transcript_path = ? WHERE id = ?').run(transcripts, 's1');
+        transitionSession(db, 's1', 'running');
+        db.close();
+        seedBacklogTask(fine, 't-plan', 'still here');
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        try {
+          buildProgram().parse(['status'], { from: 'user' });
+        } finally {
+          chmodSync(unreadable, 0o600);
+        }
+
+        expect(logs).toContainEqual(
+          expect.stringMatching(
+            new RegExp(`^${projectId(broken)}  ${broken}  unreadable: .*EACCES`),
+          ),
+        );
+        expect(logs).toContain(`${projectId(fine)}  ${fine}  conductor stopped`);
+        expect(logs).toContain('  0 running, 1 planned, 0 merged');
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      // Every other command keeps decision 43's refusal outside a repo.
+      it('leaves every other command refusing when several projects could apply', () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        const idA = registerProject(repoA);
+        const idB = registerProject(repoB);
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        expect(() => buildProgram().parse(['plan', 'list'], { from: 'user' })).toThrow(
+          new ProjectResolutionError(
+            [
+              ...[`${idA}  ${repoA}`, `${idB}  ${repoB}`].sort(),
+              'Not inside a git repository; pass --project <id> to pick one of these.',
+            ].join('\n'),
+          ),
+        );
+      });
     });
 
     it('ignores the store while inside a repo', () => {

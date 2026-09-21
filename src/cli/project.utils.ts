@@ -122,7 +122,7 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
  * `--project` argument is whatever argv says; both reach the operator's
  * terminal only through here (decision 29).
  */
-function openRegistered(project: RegisteredProject): ResolvedProject {
+export function openRegistered(project: RegisteredProject): ResolvedProject {
   if (!project.repoExists) {
     throw new ProjectResolutionError(
       `Project ${project.id} is registered at ${sanitizeReason(project.repoPath)}, which no longer exists; ${INIT_HINT}`,
@@ -174,6 +174,20 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
       '\n',
     ),
   );
+}
+
+/**
+ * Every registered project, for the fleet view: `pup status` outside a repo or
+ * with `--all`, the one reader decision 60 lets cross stores. A project whose
+ * repo is gone is still listed, for the reader to mark missing without opening
+ * its store; an empty fleet refuses, since there is nothing to show and the
+ * fix is the operator's.
+ */
+export function fleetProjects(): RegisteredProject[] {
+  const registered = listRegisteredProjects();
+  if (registered.length === 0)
+    throw new ProjectResolutionError(`No project registered; ${INIT_HINT}`);
+  return registered;
 }
 
 /**

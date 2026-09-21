@@ -166,3 +166,16 @@ export interface DashboardSnapshot {
   /** The radar's heartbeat has gone quiet: the overlaps above may be stale. */
   radarStale: boolean;
 }
+
+/**
+ * One project as the fleet view prints it (decision 60): the rows that wait on
+ * the operator, and the rest as counts. Read off a `DashboardSnapshot`, never
+ * off the store, so the fleet and the single-project table cannot disagree.
+ */
+export interface FleetSummary {
+  /** Blocked, stalled (a dead turn is a stall) and awaiting-review, in the snapshot's order. */
+  needsYou: DashboardSession[];
+  running: number;
+  planned: number;
+  merged: number;
+}

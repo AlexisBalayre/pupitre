@@ -16,8 +16,10 @@ import {
   blockedReason,
   buildDashboardSnapshot,
   findStalledSessions,
+  fleetSummary,
   goalHeadline,
 } from './dashboard.service.js';
+import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
@@ -464,6 +466,21 @@ describe('buildDashboardSnapshot', () => {
         expect(recentEvents?.every((event) => Date.parse(event.at) > 0)).toBe(true);
       });
 
+      it("strips what a terminal would obey out of the row's id, state and branch", () => {
+        seedSession(db, repo, 's1');
+        db.prepare('UPDATE sessions SET branch = ?, state = ? WHERE id = ?').run(
+          'pup/\u001b[2Js1',
+          'running\u001b[2J',
+          's1',
+        );
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]).toMatchObject({
+          id: 's1',
+          state: 'running [2J',
+          branch: 'pup/ [2Js1',
+        });
+      });
+
       it("strips what a terminal would obey out of the session's own words", () => {
         seedSession(db, repo, 's1');
         transitionSession(db, 's1', 'running');
@@ -585,6 +602,48 @@ describe('buildDashboardSnapshot', () => {
 
     it('calls them stale when the radar has never run', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).radarStale).toBe(true);
+    });
+  });
+
+  // The fleet view's fold of one project (decision 60), read off this snapshot.
+  describe('fleetSummary', () => {
+    function seedIn(sessionId: string, path: SessionState[]): void {
+      seedSession(db, repo, sessionId);
+      for (const state of path) transitionSession(db, sessionId, state);
+    }
+
+    it('keeps blocked, stalled and awaiting-review rows and counts the rest', () => {
+      seedIn('s-busy', ['running']);
+      seedIn('s-asking', ['running']);
+      seedEventsFile(repo, 's-asking', { hook_event_name: 'Notification' });
+      seedIn('s-stalled', ['running']);
+      seedEventsFile(repo, 's-stalled', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 1);
+      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-blocked', ['running', 'blocked']);
+      seedIn('s-merged', ['running', 'awaiting-review', 'merged']);
+      seedIn('s-killed', ['killed']);
+      seedTask(db, repo, 't-plan', 'planned');
+
+      const summary = fleetSummary(buildDashboardSnapshot(db, repo, NOW));
+
+      expect(summary.needsYou.map((session) => session.id)).toEqual([
+        's-stalled',
+        's-blocked',
+        's-review',
+      ]);
+      // A killed session's task is planned again, beside the one never claimed.
+      expect(summary).toMatchObject({ running: 3, planned: 2, merged: 1 });
+    });
+
+    it('is all zeros for a project with nothing in it', () => {
+      ensureProject(db, projectId(repo), repo);
+
+      expect(fleetSummary(buildDashboardSnapshot(db, repo, NOW))).toEqual({
+        needsYou: [],
+        running: 0,
+        planned: 0,
+        merged: 0,
+      });
     });
   });
 });
