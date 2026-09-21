@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T09:08:10.970Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35581190986",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35581190986",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2fa48b8d69eb62086d5ced5b7bb29df0a75d3c4f",
+  "source": "pr",
+  "pr_number": 104,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "22-28",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The two new optional-elaboration placeholders in the Merge Danger template are asymmetric in specificity: `<optional: potential ramifications of merge>` under Blast Radius tells the agent exactly what content goes there, while `<optional: description>` under Door is generic and doesn't say a description of what (rationale for the door choice vs. something else, left to inference from position). Since this file is a fill-in-the-blank template for an agent, the Door placeholder would benefit from the same specificity as its sibling, e.g. `<optional: why it's one-way or two-way>`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 0.96741735,
+  "duration_ms": 215729,
+  "num_turns": 10,
+  "tokens": {
+    "input": 13,
+    "output": 7501,
+    "cache_read": 252739,
+    "cache_creation": 30948,
+    "total": 291201
+  }
+}
