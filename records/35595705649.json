@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T11:57:25.654Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35595705649",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35595705649",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2d766b59b46782c0192b031b758b76c868caa817",
+  "source": "pr",
+  "pr_number": 106,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/02-cli.md",
+      "line": "77",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup ui`'s doc claim \"Piped or redirected, it prints what `pup status` prints\" is now false outside a repo: `pup status` unconditionally prints the fleet view there (decision 60), while `pup ui` still auto-selects the sole project via the unchanged `project()`/decision-43 path and prints the single-project table.",
+      "body": "This sentence predates PR #106 and wasn't revisited when `pup status`'s outside-a-repo behavior changed.\n\n- `pup status` (bare, no `--project`) outside any repo now **always** prints the fleet view (`printFleet`), even with exactly one registered project — see `src/cli/index.ts` lines 901-923 and the test `'is the view outside a repo even with only one project registered'` in `src/cli/index.test.ts`.\n- `pup ui` still resolves through the unmodified `project()` helper (decision 43's single-project auto-select), and when piped/non-TTY calls `printDashboard(db, read())` — the single-project full table, never `printFleet` (`src/cli/index.ts` lines 926-937).\n\nSo outside a repo with exactly one registered project, piped `pup ui` and typed `pup status` now print two different shapes, contradicting the doc's unqualified claim.\n\nSuggested fix:\n```markdown\n  Piped or redirected inside a repo, it prints what `pup status` prints there, once, and\n  exits 0; outside a repo `pup ui` still resolves through decision 43's single-project rule,\n  not the fleet `pup status` prints there — it has no fleet view yet (decision 60).\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/2d766b59b46782c0192b031b758b76c868caa817/docs/02-cli.md#L72-L78>",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "972-1037",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The pre-existing JSDoc explaining why `pup status` and `pup ui` share one snapshot-reading function (decision 52) used to sit directly above `printDashboard`; this diff inserted `printFleet` and its own JSDoc between them without relocating it, so the old comment now hovers over `printFleet` (which it doesn't describe) and `printDashboard` is left with no docstring.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/project.utils.ts",
+      "line": "186-191",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fleetProjects(base?: string)`'s `base` parameter has no caller — production and both test call sites always invoke it with zero arguments — so per this repo's Altitude/YAGNI rule it should be inlined to `fleetProjects()` until a second caller or a stated WHY justifies it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "108-116",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fleetSummary`'s `needsYou` filter re-derives the \"blocked or stalled\" condition inline instead of reusing the existing private `sortsFirst` helper in the same file, which is exactly that condition; could be `sortsFirst(session) || session.state === 'awaiting-review'` to keep the classification defined once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "1402, 2898-2900",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The addendum's bolded lead sentence and decision 60's echo both state in the present tense that \"`pup status` and `pup ui` may read across stores,\" before the immediately-following text clarifies `pup ui --all` doesn't exist yet — a reader skimming just the bold claim could conclude `pup ui --all` is already implemented.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2901-2903",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Dormant projects are hidden unless `--dormant` is given, per the design\" cites no concrete decision or design doc — `dormant`/`--dormant` appears nowhere else in the repo's design docs or decision history, breaking this file's otherwise careful citation discipline.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "211-215",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment justifying why `state` isn't sanitized (\"checked on write\") overstates the guarantee — `sessions.state` has no SQL CHECK constraint and a session with direct SQLite access could write arbitrary bytes there; what actually makes printing raw `state` safe on the fleet path is `fleetSummary`'s strict-equality filter against known enum literals, not a write-time check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "59, 152",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`paths.eventsFile(row.id)` uses raw session-writable `row.id` as a path segment with no traversal check; this PR's fleet view now exercises this against every registered project's store rather than only the caller's own, widening the pre-existing issue's blast radius without introducing it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "22-25",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "A `Notification` hook's `event.message` flows unsanitized into `SessionActivity.detail` and is rendered raw by `activityLabel`'s awaiting-input branch on the single-project table; not reachable through the new fleet view (its needsYou filter excludes plain awaiting-input sessions), and not touched by this PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 11.407052799999999,
+  "duration_ms": 721035,
+  "num_turns": 33,
+  "tokens": {
+    "input": 31,
+    "output": 26618,
+    "cache_read": 941352,
+    "cache_creation": 105637,
+    "total": 1073638
+  }
+}
