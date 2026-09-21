@@ -30,7 +30,8 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
 });
 
-import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import {
   killSession,
   SteerNotDeliveredError,
@@ -162,6 +163,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Clearing keeps a queued once-implementation; a test whose gate never
+    // steers would otherwise hand its throwing steer to the next one that does.
+    vi.mocked(steerPane).mockReset();
     db = openStore(':memory:');
     repo = initRepo();
     ghLog = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-ghlog-'))), 'calls');
@@ -859,6 +863,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   it.each([
     ['a baseline captured before the rule was stamped', undefined, 62],
     ['a baseline captured under a superseded rule', 'imports-counted', 62],
+    // Decision 59: nested packages left the count, so a pre-59 number is not a bar.
+    ['a baseline stamped before nested packages were left out', 'tests-excluded', 62],
     // The number is what the old rule would have flagged and refused. Skipping
     // the compare must not turn that refusal into an unbounded silent floor.
     ['a rise the skipped compare never saw', undefined, 5000],
@@ -919,6 +925,228 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         detail: '8 duplicated lines (baseline 12)',
       }),
     );
+  });
+
+  // Decision 58 leaves a nested package out of every root measurement on the
+  // claim that its own runner covers it; decision 59 makes the gate run it.
+  describe('a diff touching a nested package', () => {
+    const NESTED_SCOPE = { scopeIn: ['src/**', 'tools/**'] };
+    /** The real resolver: nested markers read from both checkouts' HEAD. */
+    const nestedAdapter = (overrides: Partial<Adapter> = {}): Adapter => ({
+      ...passingAdapter,
+      touchedNestedPackages: typescriptAdapter.touchedNestedPackages,
+      ...overrides,
+    });
+    /** Commits a nested package on main, so both checkouts carry its marker. */
+    const commitNestedPackage = (scripts: Record<string, string>): void =>
+      commitIn(repo, 'tools/review/package.json', JSON.stringify({ scripts }));
+
+    it("refuses the merge when the package's own test script fails", () => {
+      commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'test (tools/review)',
+        status: 'fail',
+        detail: expect.stringContaining('nested-test-ran'),
+      });
+      expect(sh(repo, 'git', 'log', '--oneline', 'main')).not.toContain('tools/review/src/r.ts');
+    });
+
+    it('runs test then typecheck in the package directory, and merges when both pass', () => {
+      commitNestedPackage({ test: 'true', typecheck: 'true' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('merged');
+      const stageNames = outcome.report.stages.map((s) => s.stage);
+      expect(
+        stageNames.slice(stageNames.indexOf('lint') + 1, stageNames.indexOf('scope-audit')),
+      ).toEqual(['test (tools/review)', 'typecheck (tools/review)']);
+    });
+
+    it('runs the script with the package as its working directory', () => {
+      commitNestedPackage({ test: 'true', typecheck: 'pwd; exit 1' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/README.md', 'docs only\n');
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'typecheck (tools/review)',
+        detail: expect.stringContaining(realpathSync(join(worktree, 'tools/review'))),
+      });
+    });
+
+    it('runs the script inside the gate sandbox, without the operator secrets', () => {
+      vi.stubEnv('PUP_TEST_SECRET', 'sk-do-not-leak');
+      commitNestedPackage({
+        test: 'test -z "$PUP_TEST_SECRET" && test -n "$PATH"',
+        typecheck: 'true',
+      });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'test (tools/review)',
+        status: 'pass',
+      });
+    });
+
+    it("resolves the scripts from the trusted checkout, not the session's manifest", () => {
+      commitNestedPackage({ test: 'true', typecheck: 'true' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      // Deleting the script in the worktree fails the stage, never skips it.
+      commitIn(
+        worktree,
+        'tools/review/package.json',
+        JSON.stringify({ scripts: { typecheck: 'true' } }),
+      );
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'test (tools/review)',
+        status: 'fail',
+      });
+    });
+
+    it('runs nothing for a diff that stays outside every nested package', () => {
+      commitNestedPackage({ test: 'exit 1', typecheck: 'exit 1' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages.map((s) => s.stage)).not.toContain('test (tools/review)');
+    });
+
+    it('flags a package whose trusted manifest declares no test script', () => {
+      commitNestedPackage({ typecheck: 'true' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      // The session's own manifest adding the script buys nothing.
+      commitIn(
+        worktree,
+        'tools/review/package.json',
+        JSON.stringify({ scripts: { test: 'true', typecheck: 'true' } }),
+      );
+
+      const outcome = merge(nestedAdapter());
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'test (tools/review)',
+        status: 'flagged',
+        detail: expect.stringContaining(
+          'not measured — tools/review/package.json declares no test script',
+        ),
+      });
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'typecheck (tools/review)',
+        status: 'pass',
+      });
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('records the missing script as debt when the merge accepts it', () => {
+      commitNestedPackage({});
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      const outcome = merge(nestedAdapter(), { reason: 'tooling', reviewBy: 'next sprint' });
+
+      expect(outcome.status).toBe('merged');
+      expect(
+        listLedgerEntries(db, 'proj-1').map((e) => [e.description, JSON.parse(e.files)]),
+      ).toEqual([
+        [
+          `Nested package tools/review changed with no test script, merged from session ${SESSION_ID}`,
+          ['tools/review/src/r.ts'],
+        ],
+        [
+          `Nested package tools/review changed with no typecheck script, merged from session ${SESSION_ID}`,
+          ['tools/review/src/r.ts'],
+        ],
+      ]);
+    });
+
+    it('names the changed files a nested package kept from the debt stages', () => {
+      commitNestedPackage({ test: 'true', typecheck: 'true' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+      commitIn(worktree, 'tools/review/src/s.ts', 'export const s = 1;\n');
+      commitIn(worktree, 'tools/review/README.md', 'not source\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 12, coverageRatio: 0.8 });
+      const adapter = nestedAdapter({
+        ...debtAdapter(),
+        touchedNestedPackages: typescriptAdapter.touchedNestedPackages,
+        duplication: () => ({ duplicatedLines: 8, blocks: [] }),
+        coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
+        coverableFiles: typescriptAdapter.coverableFiles,
+      });
+
+      const outcome = merge(adapter);
+
+      expect(outcome.status).toBe('merged');
+      const note = '; 2 changed file(s) in a nested package not measured here (tools/review)';
+      expect(outcome.report.stages).toEqual(
+        expect.arrayContaining([
+          { stage: 'dead-code', status: 'pass', detail: `no new unused exports${note}` },
+          {
+            stage: 'duplication',
+            status: 'pass',
+            detail: `8 duplicated lines (baseline 12)${note}`,
+          },
+          { stage: 'coverage', status: 'pass', detail: `no instrumentable changed lines${note}` },
+        ]),
+      );
+    });
+
+    it('puts the note ahead of the accept hint on a flagged stage, and elides past three', () => {
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+      const pkg = (dir: string, files: number): NestedPackage => {
+        const sources = Array.from({ length: files }, (_, i) => `${dir}/f${i}.ts`);
+        return { dir, changedFiles: sources, droppedSources: sources, commands: [], missing: [] };
+      };
+      const adapter = debtAdapter({
+        deadCode: () => [{ file: 'src/feature.ts', exportName: 'feature' }],
+        touchedNestedPackages: () => [
+          pkg('a', 1),
+          pkg('b', 0),
+          pkg('c', 2),
+          pkg('d', 1),
+          pkg('e', 1),
+        ],
+      });
+
+      const outcome = merge(adapter);
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'dead-code',
+          status: 'flagged',
+          detail:
+            '1 new unused export(s): src/feature.ts#feature; 5 changed file(s) in a nested ' +
+            'package not measured here (a, c, d, …). Re-run with --accept-debt "<reason>" ' +
+            '--review-by "<condition>", or steer the session to address it.',
+        }),
+      );
+    });
   });
 
   it('flags a touched file whose complexity rises past the threshold', () => {

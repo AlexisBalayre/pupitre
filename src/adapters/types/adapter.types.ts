@@ -77,6 +77,27 @@ export interface CapabilityContext {
   gateEnv?: string[];
 }
 
+/** A nested package's own script the gate runs for it (decision 59). */
+export type NestedPackageStage = 'test' | 'typecheck';
+
+/**
+ * A nested package the diff touches. Decision 58 leaves its files out of every
+ * root measurement because its own runner covers them; this is what the gate
+ * needs to run that runner, and to say what the root stages left out.
+ */
+export interface NestedPackage {
+  /** Repo-relative, `/`-separated directory holding the package's manifest. */
+  dir: string;
+  /** Every changed file inside the package, deletions included. */
+  changedFiles: string[];
+  /** The changed source files the root's debt capabilities dropped as nested. */
+  droppedSources: string[];
+  /** Resolved from the trusted checkout's manifest; run with the package as cwd. */
+  commands: { stage: NestedPackageStage; command: string; args: string[] }[];
+  /** Stages the trusted manifest declares no script for. */
+  missing: NestedPackageStage[];
+}
+
 /**
  * Why a capability produced no measurement. The reason reaches the operator in
  * the gate report, so it names the tool and what went wrong — a stage that
@@ -110,4 +131,10 @@ export interface Adapter {
    * construction) from changed code the coverage tool never saw (decision 30).
    */
   coverableFiles?(ctx: CapabilityContext, files: string[]): string[];
+  /**
+   * The nested packages `files` touch, which every capability above leaves
+   * out: the gate runs their own scripts and names what was dropped
+   * (decisions 29, 59). An adapter without it has no nested packages.
+   */
+  touchedNestedPackages?(ctx: CapabilityContext, files: string[]): NestedPackage[];
 }

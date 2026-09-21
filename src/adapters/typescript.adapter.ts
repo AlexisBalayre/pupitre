@@ -17,6 +17,8 @@ import type {
   FileComplexity,
   GateCommand,
   GateStage,
+  NestedPackage,
+  NestedPackageStage,
 } from './types/adapter.types.js';
 import type { IstanbulCoverageMap } from './types/istanbul.types.js';
 import { istanbulToCoverageReport } from './typescript-coverage.utils.js';
@@ -42,6 +44,9 @@ interface PackageManifest {
 }
 
 const GATE_STAGES: GateStage[] = ['build', 'test', 'lint'];
+
+/** What a nested package must declare for the gate to measure it (decision 59). */
+const NESTED_STAGES: NestedPackageStage[] = ['test', 'typecheck'];
 
 const SKIPPED_DIRS = new Set([
   'node_modules',
@@ -261,6 +266,36 @@ export const typescriptAdapter: Adapter = {
         !isInNestedPackage(file, nested) &&
         existsSync(join(ctx.measurePath, file)),
     );
+  },
+
+  touchedNestedPackages(ctx: CapabilityContext, files: string[]): NestedPackage[] {
+    const nested = nestedPackages(ctx);
+    const touched = new Map<string, string[]>();
+    for (const file of files) {
+      // The innermost package owns the file: its runner is the one that tests it.
+      const [dir] = [...nested]
+        .filter((candidate) => isInNestedPackage(file, new Set([candidate])))
+        .sort((a, b) => b.length - a.length);
+      if (dir !== undefined) touched.set(dir, [...(touched.get(dir) ?? []), file]);
+    }
+    return [...touched.keys()].sort().map((dir) => {
+      const changedFiles = touched.get(dir) as string[];
+      // Scripts from the trusted checkout, as `gateCommands` resolves the root's
+      // (decision 11): a session that deletes one flags the stage, not skips it.
+      const trusted = join(ctx.configPath, dir);
+      const scripts = readManifest(trusted)?.scripts ?? {};
+      const pm = packageManager(trusted);
+      const declared = NESTED_STAGES.filter((stage) => scripts[stage]);
+      return {
+        dir,
+        changedFiles,
+        droppedSources: changedFiles.filter(
+          (file) => isSourceFile(file) && existsSync(join(ctx.measurePath, file)),
+        ),
+        commands: declared.map((stage) => ({ stage, command: pm, args: ['run', stage] })),
+        missing: NESTED_STAGES.filter((stage) => !scripts[stage]),
+      };
+    });
   },
 
   coverage(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable {
