@@ -3,11 +3,12 @@ import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import type { ActionDeps } from './actions.service.js';
 import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
-import { useSnapshot } from './use-snapshot.hook.js';
+import { type DashboardReading, useSnapshot } from './use-snapshot.hook.js';
 
-function snapshotWith(projectId: string): DashboardSnapshot {
-  return {
+function readingWith(projectId: string): DashboardReading {
+  const snapshot: DashboardSnapshot = {
     projectId,
     repoPath: '/repo',
     conductor: { running: false, name: 'pup-conductor-x', attachCommand: 'tmux -L x attach -t x' },
@@ -18,15 +19,16 @@ function snapshotWith(projectId: string): DashboardSnapshot {
     overlaps: [],
     radarStale: false,
   };
+  return { projects: [{ deps: {} as ActionDeps, snapshot }], unreadable: [] };
 }
 
 /**
  * A hook has no frame of its own, so it is mounted in the smallest component
  * that can show what it returns.
  */
-function Probe({ read }: { read: () => DashboardSnapshot }) {
-  const { snapshot } = useSnapshot(read);
-  return createElement(Text, null, snapshot.projectId);
+function Probe({ read }: { read: () => DashboardReading }) {
+  const { reading } = useSnapshot(read);
+  return createElement(Text, null, reading.projects[0]?.snapshot.projectId);
 }
 
 /**
@@ -39,14 +41,14 @@ function Probe({ read }: { read: () => DashboardSnapshot }) {
  */
 describe('useSnapshot', () => {
   let reads: number;
-  let read: () => DashboardSnapshot;
+  let read: () => DashboardReading;
 
   beforeEach(() => {
     vi.useFakeTimers();
     reads = 0;
     read = () => {
       reads += 1;
-      return snapshotWith(`read-${reads}`);
+      return readingWith(`read-${reads}`);
     };
   });
 

@@ -35,6 +35,14 @@ export const STATE_COLUMN_CHARS = 16;
 export const ID_COLUMN_CHARS = 28;
 
 /**
+ * The project column `pup ui --all` puts before the state (decision 61): a
+ * project id is twelve hex characters, the name `--project` takes and the
+ * fleet header prints beside each repo, plus the two-space gutter. The id
+ * rather than the repo's directory name, which two checkouts can share.
+ */
+export const PROJECT_COLUMN_CHARS = 14;
+
+/**
  * How often `R` asks whether the session has written its handoff yet. The same
  * cadence `pup respawn` polls at, for the same reason: the answer is a file the
  * session writes at the end of a turn, and a turn is minutes long. The

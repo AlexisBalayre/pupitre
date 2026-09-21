@@ -1,18 +1,16 @@
-import { Box } from 'ink';
+import { Box, Text } from 'ink';
 import { isTerminal } from '../../core/session-state.utils.js';
-import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from './actions.service.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
 import { Detail } from './detail.component.js';
 import { Footer } from './footer.component.js';
-import { Header } from './header.component.js';
+import { FleetHeader, Header } from './header.component.js';
 import { MergeLogPane } from './merge-log.component.js';
 import { Prompt } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
-import { useControls } from './use-controls.hook.js';
-import { useSnapshot } from './use-snapshot.hook.js';
+import { type LiveRow, type PlannedRow, useControls } from './use-controls.hook.js';
+import { type DashboardReading, type ProjectReading, useSnapshot } from './use-snapshot.hook.js';
 
 /**
  * `pup ui`'s whole layout. The two hooks below hold everything that changes:
@@ -20,37 +18,69 @@ import { useSnapshot } from './use-snapshot.hook.js';
  * a keypress does to it. This component reads both and draws; it holds no
  * state of its own and takes no decision, which is the rule that keeps every
  * value on screen a field of one reading (decision 52).
+ *
+ * A reading holds one project or, with `--all`, several (decision 61). Their
+ * rows share one table and one cursor, each row carrying the project it came
+ * from so the keys write through that project's store; a project column is
+ * drawn only when more than one project is on screen, which leaves a single
+ * project's layout exactly as it was.
  */
-export function App({
-  read,
-  showAttach,
-  deps,
-  readOnlyReason,
-}: {
-  read: () => DashboardSnapshot;
+export interface AppProps {
+  /** One look at every store on screen, each with the deps its rows' keys write through. */
+  read: () => DashboardReading;
   showAttach: boolean;
-  /** What the controls write through — the caller's open store and its repo. */
-  deps: ActionDeps;
   /** Set for a session or the conductor: the dashboard, and no controls. */
   readOnlyReason?: string;
-}) {
-  const { snapshot, readAt, refresh } = useSnapshot(read);
+}
+
+export function App({ read, showAttach, readOnlyReason }: AppProps) {
+  const { reading, readAt, refresh } = useSnapshot(read);
+  const { projects, unreadable } = reading;
+  const isFleet = projects.length > 1;
   // Merged and killed sessions are counted, not listed, and the cursor never
   // lands on one: this view is for the work a person can still change, and
-  // every action here acts on a session that is still running.
-  const live = snapshot.sessions.filter((session) => !isTerminal(session.state));
+  // every action here acts on a session that is still running. Rows stay
+  // grouped by project, each group in the order its snapshot sorted it.
+  const live: LiveRow[] = projects.flatMap((project) =>
+    project.snapshot.sessions
+      .filter((session) => !isTerminal(session.state))
+      .map((session) => ({ session, project })),
+  );
+  const planned: PlannedRow[] = projects.flatMap((project) =>
+    project.snapshot.backlog.map((task) => ({ task, project })),
+  );
+  const sessionCount = projects.reduce((sum, project) => sum + project.snapshot.sessions.length, 0);
+  const projectColumn = (rows: { project: ProjectReading }[]) =>
+    isFleet ? { projects: rows.map((row) => row.project.snapshot.projectId) } : {};
   const { cursor, prompt, mergeLog, detail, status } = useControls({
-    deps,
-    snapshot,
+    projects,
     live,
+    planned,
     refresh,
     readOnly: Boolean(readOnlyReason),
   });
+  const [only] = projects;
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Header snapshot={snapshot} showAttach={showAttach} />
+      {isFleet || !only ? (
+        <FleetHeader snapshots={projects.map((project) => project.snapshot)} />
+      ) : (
+        <Header snapshot={only.snapshot} showAttach={showAttach} />
+      )}
+      {unreadable.map((line) => (
+        <Text key={line} color="red" wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
       <Box marginTop={1} flexDirection="column">
-        <Debt overdueDebt={snapshot.overdueDebt} openDebtCount={snapshot.openDebtCount} />
+        {projects.map(({ snapshot }) => (
+          <Debt
+            key={snapshot.projectId}
+            overdueDebt={snapshot.overdueDebt}
+            openDebtCount={snapshot.openDebtCount}
+            {...(isFleet ? { project: snapshot.projectId } : {})}
+          />
+        ))}
       </Box>
       {/* The detail pane takes the table's place rather than a place under it:
           a row's acceptance, gate stages and events run to twenty lines, and
@@ -62,16 +92,28 @@ export function App({
         ) : (
           <>
             <Sessions
-              sessions={live}
-              finishedCount={snapshot.sessions.length - live.length}
+              sessions={live.map((row) => row.session)}
+              {...projectColumn(live)}
+              finishedCount={sessionCount - live.length}
               selectedIndex={cursor}
             />
-            <Backlog backlog={snapshot.backlog} selectedIndex={cursor - live.length} />
+            <Backlog
+              backlog={planned.map((row) => row.task)}
+              {...projectColumn(planned)}
+              selectedIndex={cursor - live.length}
+            />
           </>
         )}
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Radar overlaps={snapshot.overlaps} radarStale={snapshot.radarStale} />
+        {projects.map(({ snapshot }) => (
+          <Radar
+            key={snapshot.projectId}
+            overlaps={snapshot.overlaps}
+            radarStale={snapshot.radarStale}
+            {...(isFleet ? { project: snapshot.projectId } : {})}
+          />
+        ))}
       </Box>
       {mergeLog ? (
         <Box marginTop={1}>

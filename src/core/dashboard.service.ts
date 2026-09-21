@@ -76,7 +76,11 @@ export function buildDashboardSnapshot(
     backlog: listBacklogTasks(db, pid).map((task) => {
       const spec = parseJsonOr<Partial<TaskSpec>>(task.spec, {});
       return {
-        id: task.id,
+        // The store is not always the caller's own since the fleet views
+        // (decisions 60, 61), and `pup ui` draws the backlog and the radar,
+        // which the fleet `pup status` does not (the ledger it draws too,
+        // unsanitized until now): every id is scrubbed like the session row's.
+        id: sanitizeReason(task.id),
         goal: goalHeadline(spec.goal),
         scope: asStringArray(spec.scopeIn).map(sanitizeReason),
         acceptance: asStringArray(spec.acceptance).map(sanitizeReason),
@@ -84,14 +88,16 @@ export function buildDashboardSnapshot(
       };
     }),
     overdueDebt: listOverdueLedgerEntries(db, pid, new Date(now)).map((entry) => ({
-      id: entry.id,
+      // Integer by the schema pup lays down, but a planted store can have
+      // created `ledger_entries` with a TEXT id first, so affinity is no pin.
+      id: sanitizeReason(String(entry.id)),
       description: sanitizeReason(entry.description),
       reviewBy: sanitizeReason(entry.review_by),
     })),
     openDebtCount: listLedgerEntries(db, pid).length,
     overlaps: listOverlaps(db).map((pair) => ({
-      sessionA: pair.sessionA,
-      sessionB: pair.sessionB,
+      sessionA: sanitizeReason(pair.sessionA),
+      sessionB: sanitizeReason(pair.sessionB),
       files: pair.files.map(sanitizeReason),
     })),
     radarStale: !beat || now - beat.getTime() > WATCH_STALE_AFTER_MS,

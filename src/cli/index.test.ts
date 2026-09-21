@@ -141,10 +141,10 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
-import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
+import type { DashboardReading, ProjectReading } from './ui/use-snapshot.hook.js';
 
 const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
@@ -843,11 +843,11 @@ describe('CLI commands', () => {
     }
 
     /** `pup ui` with stdout claiming to be, or not to be, a terminal. */
-    function runUi(isTty: boolean): void {
+    function runUi(isTty: boolean, args: string[] = ['ui']): void {
       const wasTty = process.stdout.isTTY;
       process.stdout.isTTY = isTty;
       try {
-        buildProgram().parse(['ui'], { from: 'user' });
+        buildProgram().parse(args, { from: 'user' });
       } finally {
         process.stdout.isTTY = wasTty;
       }
@@ -855,20 +855,25 @@ describe('CLI commands', () => {
 
     /** The props `pup ui` mounted the dashboard with. */
     function mountedProps(): {
-      read: () => DashboardSnapshot;
+      read: () => DashboardReading;
       showAttach: boolean;
-      deps: { repoPath: string; pupBin: string };
       readOnlyReason?: string;
     } {
       const [element] = firstCall(render);
       return (
         element as ReactElement<{
-          read: () => DashboardSnapshot;
+          read: () => DashboardReading;
           showAttach: boolean;
-          deps: { repoPath: string; pupBin: string };
           readOnlyReason?: string;
         }>
       ).props;
+    }
+
+    /** The one project a single-project dashboard reads. */
+    function onlyProject(): ProjectReading {
+      const { projects } = mountedProps().read();
+      expect(projects).toHaveLength(1);
+      return projects[0] as ProjectReading;
     }
 
     it('mounts the dashboard on the alternate screen, reading the live store', () => {
@@ -883,7 +888,7 @@ describe('CLI commands', () => {
       expect(options).toMatchObject({ alternateScreen: true });
       // The dashboard is handed the reading function, not a reading: every
       // frame it draws is a fresh `buildDashboardSnapshot` (decision 52).
-      expect(mountedProps().read().backlog).toEqual([
+      expect(onlyProject().snapshot.backlog).toEqual([
         {
           id: 't-plan',
           goal: 'the only intent there is',
@@ -923,8 +928,8 @@ describe('CLI commands', () => {
 
       runUi(true);
 
-      expect(mountedProps().deps.repoPath).toBe(repo);
-      expect(mountedProps().deps.pupBin).toBe(realpathSync(process.argv[1] ?? 'pup'));
+      expect(onlyProject().deps.repoPath).toBe(repo);
+      expect(onlyProject().deps.pupBin).toBe(realpathSync(process.argv[1] ?? 'pup'));
     });
 
     // Every key the dashboard binds runs a command that is operator-only
@@ -982,6 +987,211 @@ describe('CLI commands', () => {
       runUi(false);
 
       expect(logs).toContain('Nothing running and nothing planned.');
+    });
+
+    // Decision 61: outside a repo, or with --all, every project's store in one
+    // table, each row's keys writing through its own project.
+    describe('across projects', () => {
+      /** The projects a fleet reading holds, keyed by project id. */
+      function readProjects(): Map<string, ProjectReading> {
+        const { projects } = mountedProps().read();
+        return new Map(projects.map((project) => [project.snapshot.projectId, project]));
+      }
+
+      it('reads every project outside a repo, each with its own store and repo', () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        seedSession(repoA, 's-a');
+        seedSession(repoB, 's-b');
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        runUi(true);
+
+        const projects = readProjects();
+        const a = projects.get(projectId(repoA));
+        const b = projects.get(projectId(repoB));
+        expect(projects.size).toBe(2);
+        expect(a?.deps.repoPath).toBe(repoA);
+        expect(b?.deps.repoPath).toBe(repoB);
+        // The deps are that project's own open store, not a second project's.
+        expect(b && getSession(b.deps.db, 's-b')).toBeDefined();
+        expect(b && getSession(b.deps.db, 's-a')).toBeUndefined();
+        expect(a?.snapshot.sessions.map((session) => session.id)).toEqual(['s-a']);
+        expect(b?.deps.pupBin).toBe(realpathSync(process.argv[1] ?? 'pup'));
+        expect(mountedProps()).toMatchObject({ showAttach: true });
+        expect(mountedProps().readOnlyReason).toBeUndefined();
+        expect(mountedProps().read().unreadable).toEqual([]);
+      });
+
+      it('reads the fleet from inside a repo with --all, and only that repo without it', () => {
+        const repoA = initRepo();
+        registerProject(repoA);
+        registerProject(initRepo());
+        useCwd(repoA);
+        stubRender();
+
+        runUi(true, ['ui', '--all']);
+        expect(mountedProps().read().projects).toHaveLength(2);
+
+        vi.mocked(render).mockClear();
+        runUi(true);
+        expect(
+          mountedProps()
+            .read()
+            .projects.map((p) => p.deps.repoPath),
+        ).toEqual([repoA]);
+      });
+
+      it('leaves --project to name one project, over --all', () => {
+        const repo = initRepo();
+        const id = registerProject(repo);
+        registerProject(initRepo());
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        runUi(true, ['--project', id, 'ui', '--all']);
+
+        expect(
+          mountedProps()
+            .read()
+            .projects.map((p) => p.deps.repoPath),
+        ).toEqual([repo]);
+      });
+
+      it('lists a project whose repo is gone and one it cannot read, and reads the rest', () => {
+        const live = initRepo();
+        registerProject(live);
+        const gone = initRepo();
+        const goneId = registerProject(gone);
+        rmSync(gone, { recursive: true });
+        const broken = initRepo();
+        seedSession(broken, 's1');
+        // A transcript that cannot be read makes the snapshot throw, as a
+        // store that fails to migrate would.
+        const transcripts = tempDir('pup-cli-tx-');
+        const unreadable = join(transcripts, 'session.jsonl');
+        writeFileSync(unreadable, '{}\n');
+        const { db } = resolveProject(broken);
+        db.prepare('UPDATE sessions SET transcript_path = ? WHERE id = ?').run(transcripts, 's1');
+        transitionSession(db, 's1', 'running');
+        db.close();
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        runUi(true);
+        chmodSync(unreadable, 0o000);
+        let reading: DashboardReading;
+        try {
+          reading = mountedProps().read();
+        } finally {
+          chmodSync(unreadable, 0o600);
+        }
+
+        expect(reading.projects.map((p) => p.deps.repoPath)).toEqual([live]);
+        expect(reading.unreadable).toContain(
+          `${goneId}  ${gone}  missing: the repo no longer exists`,
+        );
+        expect(reading.unreadable).toContainEqual(
+          expect.stringMatching(
+            new RegExp(`^${projectId(broken)}  ${broken}  unreadable: .*EACCES`),
+          ),
+        );
+        // The next reading finds the transcript readable again.
+        expect(mountedProps().read().projects).toHaveLength(2);
+      });
+
+      it('lists a store it cannot open and reads the rest', () => {
+        const live = initRepo();
+        registerProject(live);
+        // A store the listing can read but `openStore` refuses: its schema
+        // indexes `events`, and a view there cannot be indexed.
+        const odd = initRepo();
+        const oddId = projectId(odd);
+        mkdirSync(join(home, '.pupitre', oddId), { recursive: true });
+        const bare = new Database(join(home, '.pupitre', oddId, 'state.db'));
+        bare.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+        bare.exec('CREATE VIEW events AS SELECT 1 AS session_id');
+        bare.prepare('INSERT INTO projects VALUES (?, ?)').run(oddId, odd);
+        bare.close();
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        runUi(true);
+
+        const reading = mountedProps().read();
+        expect(reading.projects.map((p) => p.deps.repoPath)).toEqual([live]);
+        expect(reading.unreadable).toEqual([
+          `${oddId}  ${odd}  unreadable: views may not be indexed`,
+        ]);
+      });
+
+      // A store keyed to the hash of the operator's repo path plus a slash:
+      // the path exists, the hash differs, and its rows are a session's own.
+      // Listed, never opened, in all three fleet readers (decision 61).
+      it('never opens a project whose path is a variant of a repo path', () => {
+        const real = initRepo();
+        registerProject(real);
+        const variant = `${real}/`;
+        const plantedId = projectId(variant);
+        const plantedStore = join(home, '.pupitre', plantedId, 'state.db');
+        mkdirSync(join(home, '.pupitre', plantedId), { recursive: true });
+        const bare = new Database(plantedStore);
+        bare.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+        bare.prepare('INSERT INTO projects VALUES (?, ?)').run(plantedId, variant);
+        bare.close();
+        const line = `${plantedId}  ${variant}  not its own path: a variant of a repo path, never opened`;
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        buildProgram().parse(['status'], { from: 'user' });
+        const status = [...logs];
+        logs.length = 0;
+        runUi(false, ['ui', '--all']);
+        const piped = [...logs];
+        runUi(true, ['ui', '--all']);
+        const reading = mountedProps().read();
+
+        expect(status).toContain(line);
+        expect(piped).toContain(line);
+        expect(status).toContain(`${projectId(real)}  ${real}  conductor stopped`);
+        expect(reading.unreadable).toEqual([line]);
+        expect(reading.projects.map((p) => p.deps.repoPath)).toEqual([real]);
+        const check = new Database(plantedStore, { readonly: true });
+        const tables = check
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[];
+        check.close();
+        expect(tables.map((table) => table.name)).toEqual(['projects']);
+      });
+
+      it('prints the fleet `pup status` prints when piped', () => {
+        const repo = initRepo();
+        seedBacklogTask(repo, 't-plan', 'planned here');
+        useCwd(tempDir('pup-cli-noproj-'));
+
+        runUi(false);
+
+        expect(render).not.toHaveBeenCalled();
+        expect(logs).toEqual([
+          `${projectId(repo)}  ${repo}  conductor stopped`,
+          '  0 running, 1 planned, 0 merged',
+        ]);
+      });
+
+      // Reading every store is another project's door, as it is for `pup status`.
+      it.each([
+        ['a session that left every repo', { PUP_SESSION_ID: 's-elsewhere' }],
+        ['the conductor', { PUP_CONDUCTOR: 'p1' }],
+      ])('refuses %s', (_who, env) => {
+        registerProject(initRepo());
+        useCwd(tempDir('pup-cli-noproj-'));
+        for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+        stubRender();
+
+        expect(() => runUi(true)).toThrow('operator-only');
+        expect(render).not.toHaveBeenCalled();
+      });
     });
   });
 

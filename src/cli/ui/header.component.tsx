@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink';
+import { sanitizeReason } from '../../adapters/capability.utils.js';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
 
 /**
@@ -21,7 +22,8 @@ export function Header({
       <Text>
         <Text bold>pupitre</Text>
         <Text> {snapshot.projectId} </Text>
-        <Text dimColor>{snapshot.repoPath}</Text>
+        {/* `--project <id>` can name a store a session planted (decision 29). */}
+        <Text dimColor>{sanitizeReason(snapshot.repoPath)}</Text>
       </Text>
       <Text>
         <Text color={conductor.running ? 'green' : 'gray'}>
@@ -41,6 +43,33 @@ export function Header({
           {baseline.deadExports === undefined ? '' : `  dead exports ${baseline.deadExports}`}
         </Text>
       ) : null}
+    </Box>
+  );
+}
+
+/**
+ * `pup ui --all`'s header over more than one project, or over none when every
+ * store was unreadable (decision 61): a line per project, its id — the one the table's project column prints — its repo and
+ * whether its conductor is up, as the fleet `pup status` heads each block. No
+ * attach command and no baseline: both are per project and one `--project`
+ * away, and a line each would push the table off the screen the fleet is for.
+ */
+export function FleetHeader({ snapshots }: { snapshots: DashboardSnapshot[] }) {
+  return (
+    <Box flexDirection="column">
+      <Text bold>pupitre</Text>
+      {snapshots.map((snapshot) => (
+        <Text key={snapshot.projectId} wrap="truncate-end">
+          {/* One template per column, as the radar's line: Ink collapses the
+              whitespace between children. The path is what a foreign store's
+              `projects` row says, so it is sanitized (decision 29). */}
+          <Text>{`${snapshot.projectId}  `}</Text>
+          <Text dimColor>{`${sanitizeReason(snapshot.repoPath)}  `}</Text>
+          <Text color={snapshot.conductor.running ? 'green' : 'gray'}>
+            conductor {snapshot.conductor.running ? 'running' : 'down'}
+          </Text>
+        </Text>
+      ))}
     </Box>
   );
 }

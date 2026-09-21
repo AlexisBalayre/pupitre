@@ -22,6 +22,7 @@ import {
   unblockSelected,
 } from './actions.service.js';
 import { HANDOFF_POLL_MS, MERGE_LOG_LINES } from './dashboard.constants.js';
+import type { ProjectReading } from './use-snapshot.hook.js';
 
 /**
  * The dashboard's hands, as `useSnapshot` is its clock: every keypress, what
@@ -56,6 +57,21 @@ export type DetailRow =
   | { kind: 'session'; session: DashboardSession }
   | { kind: 'task'; task: DashboardSnapshot['backlog'][number] };
 
+/**
+ * A row of the table and the project it was read from. The keys act on the row
+ * through that project's store and repo, never through whichever store the
+ * dashboard was opened in: with `--all` the rows come from several (decision 61).
+ */
+export interface LiveRow {
+  session: DashboardSession;
+  project: ProjectReading;
+}
+
+export interface PlannedRow {
+  task: DashboardSnapshot['backlog'][number];
+  project: ProjectReading;
+}
+
 export interface ControlStatus {
   message: string;
   failed: boolean;
@@ -84,16 +100,18 @@ type PendingPrompt =
   | { kind: 'input'; label: string; value: string; run: (value: string) => void };
 
 export function useControls({
-  deps,
-  snapshot,
+  projects,
   live,
+  planned,
   refresh,
   readOnly,
 }: {
-  deps: ActionDeps;
-  snapshot: DashboardSnapshot;
+  /** Every project the reading holds, for the keys that need no row. */
+  projects: ProjectReading[];
   /** The session rows on screen, in the order they are drawn. */
-  live: DashboardSession[];
+  live: LiveRow[];
+  /** The planned rows beneath them, likewise. */
+  planned: PlannedRow[];
   refresh: () => void;
   /** A session or the conductor is watching: every mutating key is unbound. */
   readOnly: boolean;
@@ -120,12 +138,19 @@ export function useControls({
    */
   const mergeChild = useRef<ChildProcess | undefined>(undefined);
 
-  const rowCount = live.length + snapshot.backlog.length;
+  const rowCount = live.length + planned.length;
   // Clamped at render rather than on every keypress: a merge or a launch can
   // shorten the list under a cursor that was in range when it was last moved.
   const cursor = Math.min(selected, Math.max(rowCount - 1, 0));
-  const session = live[cursor];
-  const task = snapshot.backlog[cursor - live.length];
+  const sessionRow = live[cursor];
+  const taskRow = planned[cursor - live.length];
+  const session = sessionRow?.session;
+  const task = taskRow?.task;
+  // The project every key below writes through: the row's own. With no row
+  // under the cursor only a lone project is unambiguous — the conductor keys
+  // still work on an empty single-project screen, and name no one's on a fleet.
+  const project =
+    (sessionRow ?? taskRow)?.project ?? (projects.length === 1 ? projects[0] : undefined);
   const detail: DetailRow | undefined = !detailOpen
     ? undefined
     : session
@@ -143,12 +168,12 @@ export function useControls({
   }
 
   /** Run an action against the selected session, or say why there is none. */
-  function onSession(verb: string, act: (id: string) => void): void {
-    if (!session) {
+  function onSession(verb: string, act: (id: string, deps: ActionDeps) => void): void {
+    if (!sessionRow) {
       say(`Nothing to ${verb}: the cursor is not on a session.`, true);
       return;
     }
-    act(session.id);
+    act(sessionRow.session.id, sessionRow.project.deps);
   }
 
   function answerPrompt(input: string, key: Key): void {
@@ -202,7 +227,7 @@ export function useControls({
   }
 
   /** The respawn's wait, and the merge's, both run past this handler's return. */
-  function startRespawn(sessionId: string): void {
+  function startRespawn(sessionId: string, deps: ActionDeps): void {
     setBusy(true);
     say(`Asked ${sessionId} for a handoff; waiting …`);
     void respawnSelected(deps, sessionId, HANDOFF_WAIT_DEFAULT_MS, HANDOFF_POLL_MS, (elapsed) => {
@@ -213,7 +238,7 @@ export function useControls({
     });
   }
 
-  function startMerge(sessionId: string): void {
+  function startMerge(sessionId: string, deps: ActionDeps): void {
     setBusy(true);
     setMergeLog({ sessionId, lines: [], firstLine: 0, running: true });
     try {
@@ -277,6 +302,11 @@ export function useControls({
   }
 
   function startConductorToggle(): void {
+    if (!project) {
+      say('Whose conductor? Put the cursor on a row of that project.', true);
+      return;
+    }
+    const { deps, snapshot } = project;
     if (snapshot.conductor.running) {
       runAfterFrame('Stopping the conductor …', () =>
         toggleConductor(deps, true, { model: '', workerModel: '' }),
@@ -332,22 +362,22 @@ export function useControls({
     if (readOnly) return;
     switch (input) {
       case 'l':
-        if (!task) return say('Nothing to launch: the cursor is not on a planned task.', true);
+        if (!taskRow) return say('Nothing to launch: the cursor is not on a planned task.', true);
         return setPrompt({
           kind: 'input',
-          label: `model for ${task.id} (blank for the default)`,
+          label: `model for ${taskRow.task.id} (blank for the default)`,
           // The last model typed, so a fleet run on one model is one keystroke
           // per launch rather than the same string retyped every time.
           value: lastModel.current,
           run: (model) => {
             lastModel.current = model;
-            runAfterFrame(`Launching ${task.id}: waiting for the window …`, () =>
-              launchSelected(deps, task.id, model),
+            runAfterFrame(`Launching ${taskRow.task.id}: waiting for the window …`, () =>
+              launchSelected(taskRow.project.deps, taskRow.task.id, model),
             );
           },
         });
       case 's':
-        return onSession('steer', (id) =>
+        return onSession('steer', (id, deps) =>
           setPrompt({
             kind: 'input',
             label: `steer ${id}`,
@@ -361,50 +391,54 @@ export function useControls({
           }),
         );
       case 'i':
-        return onSession('interrupt', (id) => settle(interruptSelected(deps, id)));
+        return onSession('interrupt', (id, deps) => settle(interruptSelected(deps, id)));
       case 'k':
-        return onSession('kill', (id) =>
+        return onSession('kill', (id, deps) =>
           setPrompt({
             kind: 'confirm',
             question: `Kill ${id}? Its window goes and its task returns to the backlog.`,
             run: () => settle(killSelected(deps, id)),
           }),
         );
-      case 'u':
-        if (!session) return say('Nothing to unblock: the cursor is not on a session.', true);
-        if (session.state !== 'blocked') {
-          return say(`${session.id} is ${session.state}; only blocked sessions unblock.`, true);
+      case 'u': {
+        if (!sessionRow) return say('Nothing to unblock: the cursor is not on a session.', true);
+        const { session: blocked, project: owner } = sessionRow;
+        if (blocked.state !== 'blocked') {
+          return say(`${blocked.id} is ${blocked.state}; only blocked sessions unblock.`, true);
         }
         // The reason first, and read from the store rather than typed by the
         // operator: unblocking is a claim that the block was addressed, and
         // nobody can make that claim about a reason they were never shown.
         return setPrompt({
           kind: 'confirm',
-          question: `${session.id} was blocked: ${selectedBlockedReason(deps, session.id)} — unblock?`,
-          run: () => settle(unblockSelected(deps, session.id)),
+          question: `${blocked.id} was blocked: ${selectedBlockedReason(owner.deps, blocked.id)} — unblock?`,
+          run: () => settle(unblockSelected(owner.deps, blocked.id)),
         });
+      }
       case 'R':
         return onSession('respawn', startRespawn);
       case 'a':
         return onSession('attach', (id) => startAttach(sessionAttachTarget(id)));
       case 'A':
-        if (!snapshot.conductor.running) return say('No conductor to attach to.', true);
-        return startAttach(conductorAttachTarget(snapshot));
+        if (!project) return say('Whose conductor? Put the cursor on a row of that project.', true);
+        if (!project.snapshot.conductor.running) return say('No conductor to attach to.', true);
+        return startAttach(conductorAttachTarget(project.snapshot));
       case 'c':
         return startConductorToggle();
       case 'm': {
-        if (!session) return say('Nothing to merge: the cursor is not on a session.', true);
-        if (session.state !== 'awaiting-review') {
-          return say(`${session.id} is ${session.state}; only a finished branch merges.`, true);
+        if (!sessionRow) return say('Nothing to merge: the cursor is not on a session.', true);
+        const { session: finished, project: owner } = sessionRow;
+        if (finished.state !== 'awaiting-review') {
+          return say(`${finished.id} is ${finished.state}; only a finished branch merges.`, true);
         }
-        const id = session.id;
+        const id = finished.id;
         // Confirmed, unlike the steer or the interrupt: a passing gate pushes
         // the branch and opens a pull request, and `m` sits under the cursor
         // keys this screen is navigated with.
         return setPrompt({
           kind: 'confirm',
           question: `Run the gate on ${id} and open a PR on a pass?`,
-          run: () => startMerge(id),
+          run: () => startMerge(id, owner.deps),
         });
       }
       default:

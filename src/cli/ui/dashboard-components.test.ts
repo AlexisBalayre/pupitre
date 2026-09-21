@@ -13,6 +13,7 @@ import { MergeLogPane } from './merge-log.component.js';
 import { Prompt } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
+import type { DashboardReading } from './use-snapshot.hook.js';
 
 /**
  * Every component renders one fixture snapshot and is asserted on the frame
@@ -45,6 +46,11 @@ function snapshotFixture(overrides: Partial<DashboardSnapshot> = {}): DashboardS
     radarStale: false,
     ...overrides,
   };
+}
+
+/** One project's reading, as `pup ui` in a repo reads it. */
+function readingOf(snapshot: DashboardSnapshot): DashboardReading {
+  return { projects: [{ deps: DEPS, snapshot }], unreadable: [] };
 }
 
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
@@ -103,6 +109,17 @@ describe('dashboard components', () => {
 
       expect(frame).toContain('conductor running');
       expect(frame.includes('tmux -L pup-conductor-ab12cd34ef56')).toBe(visible);
+    });
+
+    // `--project <id>` can name a store a session planted, and its path is
+    // whatever that store's `projects` row says (decision 29).
+    it('strips what a terminal would obey out of the repo path', () => {
+      const snapshot = snapshotFixture({ repoPath: '/repo/\u001b[2Jpupitre' });
+
+      const frame = frameOf(createElement(Header, { snapshot, showAttach: true }));
+
+      expect(frame).toContain('/repo/ [2Jpupitre');
+      expect(frame).not.toContain('\u001b[2J');
     });
 
     it('prints the baseline figures it was given and skips the ones it was not', () => {
@@ -317,7 +334,7 @@ describe('dashboard components', () => {
       const frame = frameOf(
         createElement(Debt, {
           overdueDebt: [
-            { id: 8, description: 'shortcut taken', reviewBy: 'before the next release' },
+            { id: '8', description: 'shortcut taken', reviewBy: 'before the next release' },
           ],
           openDebtCount: 3,
         }),
@@ -538,7 +555,7 @@ describe('dashboard components', () => {
           origin: 'conductor',
         },
       ],
-      overdueDebt: [{ id: 8, description: 'shortcut taken', reviewBy: 'next release' }],
+      overdueDebt: [{ id: '8', description: 'shortcut taken', reviewBy: 'next release' }],
       openDebtCount: 1,
       overlaps: [{ sessionA: 's-a-1', sessionB: 's-b-1', files: ['src/a.ts'] }],
       radarStale: true,
@@ -546,7 +563,7 @@ describe('dashboard components', () => {
 
     it('lays out every section from one reading', () => {
       const frame = frameOf(
-        createElement(App, { read: () => populated, showAttach: true, deps: DEPS }),
+        createElement(App, { read: () => readingOf(populated), showAttach: true }),
       );
 
       expect(frame).toContain('ab12cd34ef56');
@@ -566,7 +583,7 @@ describe('dashboard components', () => {
     // cursor and sometimes proposes killing a session is neither.
     it('moves one cursor down from the last session onto the backlog', async () => {
       const instance = render(
-        createElement(App, { read: () => populated, showAttach: true, deps: DEPS }),
+        createElement(App, { read: () => readingOf(populated), showAttach: true }),
       );
       expect(instance.lastFrame()).toMatch(/^\s*> blocked/m);
 
@@ -580,7 +597,7 @@ describe('dashboard components', () => {
 
     it('holds the cursor at the ends of the list', async () => {
       const instance = render(
-        createElement(App, { read: () => populated, showAttach: true, deps: DEPS }),
+        createElement(App, { read: () => readingOf(populated), showAttach: true }),
       );
 
       instance.stdin.write(UP);
@@ -594,24 +611,108 @@ describe('dashboard components', () => {
       instance.unmount();
     });
 
+    // Decision 61: `pup ui --all` puts several stores' rows in one table, and
+    // the project column that tells them apart is drawn only when there is
+    // more than one project to tell apart.
+    describe('across projects', () => {
+      const other = snapshotFixture({
+        projectId: 'bbbbbbbbbbbb',
+        repoPath: '/repo/other',
+        conductor: { running: true, name: 'pup-conductor-bbbbbbbbbbbb', attachCommand: 'tmux …' },
+        // The same session id as the first project's: ids are unique per store.
+        sessions: [sessionFixture()],
+        backlog: [
+          { id: 't-other', goal: 'the other plan', scope: [], acceptance: [], origin: 'human' },
+        ],
+        overdueDebt: [{ id: '8', description: 'the other shortcut', reviewBy: 'soon' }],
+        openDebtCount: 1,
+        overlaps: [{ sessionA: 's-x-1', sessionB: 's-y-1', files: ['src/x.ts'] }],
+      });
+
+      function fleetFrame(
+        reading: Omit<DashboardReading, 'projects'> & { snapshots: DashboardSnapshot[] },
+      ) {
+        return frameOf(
+          createElement(App, {
+            read: () => ({
+              projects: reading.snapshots.map((snapshot) => ({ deps: DEPS, snapshot })),
+              unreadable: reading.unreadable,
+            }),
+            showAttach: true,
+          }),
+        );
+      }
+
+      it('leads every row with its project when two are live', () => {
+        const frame = fleetFrame({ snapshots: [populated, other], unreadable: [] });
+
+        expect(frame).toMatch(/^\s*> ab12cd34ef56 {2}blocked +s-mtzmobsi-1/m);
+        expect(frame).toMatch(/^ {3}bbbbbbbbbbbb {2}running +s-mtzmobsi-1/m);
+        expect(frame).toMatch(/^ {3}ab12cd34ef56 {2}planned +t-two/m);
+        expect(frame).toMatch(/^ {3}bbbbbbbbbbbb {2}planned +t-other/m);
+        // One line per project in the header, as the fleet `pup status` heads its blocks.
+        expect(frame).toMatch(/^ ab12cd34ef56 {2}\/repo\/pupitre {2}conductor down$/m);
+        expect(frame).toMatch(/^ bbbbbbbbbbbb {2}\/repo\/other {2}conductor running$/m);
+        expect(frame).not.toContain('attach:');
+        // Ledger numbers and radars are per store, so each line says whose.
+        expect(frame).toContain('ab12cd34ef56  OVERDUE DEBT #8  shortcut taken');
+        expect(frame).toContain('bbbbbbbbbbbb  OVERDUE DEBT #8  the other shortcut');
+        expect(frame).toContain('bbbbbbbbbbbb  OVERLAP  s-x-1 <-> s-y-1');
+        expect(frame).toContain('ab12cd34ef56  conflict radar off');
+        expect(frame).toContain('1 finished');
+      });
+
+      // A foreign store's `projects` row is session-writable (decision 29).
+      it('strips what a terminal would obey out of a project’s repo path', () => {
+        const hostile = { ...other, repoPath: '/repo/\u001b[2Jother' };
+
+        const frame = fleetFrame({ snapshots: [populated, hostile], unreadable: [] });
+
+        expect(frame).toContain('bbbbbbbbbbbb  /repo/ [2Jother  conductor running');
+        expect(frame).not.toContain('\u001b[2J');
+      });
+
+      it('draws no column for a single project, whatever the flag', () => {
+        const frame = fleetFrame({ snapshots: [populated], unreadable: [] });
+
+        expect(frame).toMatch(/^\s*> blocked +s-mtzmobsi-1/m);
+        expect(frame).toMatch(/^ {3}planned +t-two/m);
+        expect(frame).toContain('pupitre ab12cd34ef56 /repo/pupitre');
+        expect(frame).toMatch(/^ OVERDUE DEBT #8/m);
+      });
+
+      it('says which projects it could not read, beside the ones it could', () => {
+        const unreadable = ['cccccccccccc  /gone  missing: the repo no longer exists'];
+
+        const one = fleetFrame({ snapshots: [populated], unreadable });
+        const none = fleetFrame({ snapshots: [], unreadable });
+
+        expect(one).toContain(unreadable[0]);
+        expect(one).toMatch(/^\s*> blocked +s-mtzmobsi-1/m);
+        expect(none).toContain(unreadable[0]);
+        expect(none).toContain('no live sessions');
+      });
+    });
+
     it('re-reads the store on `r`, without waiting for the interval', async () => {
       let reads = 0;
       const instance = render(
         createElement(App, {
-          deps: DEPS,
           read: () => {
             reads += 1;
-            return snapshotFixture({
-              backlog: [
-                {
-                  id: `t-read-${reads}`,
-                  goal: 'a fresh reading',
-                  scope: [],
-                  acceptance: [],
-                  origin: 'human',
-                },
-              ],
-            });
+            return readingOf(
+              snapshotFixture({
+                backlog: [
+                  {
+                    id: `t-read-${reads}`,
+                    goal: 'a fresh reading',
+                    scope: [],
+                    acceptance: [],
+                    origin: 'human',
+                  },
+                ],
+              }),
+            );
           },
           showAttach: true,
         }),
