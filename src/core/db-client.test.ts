@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
 
@@ -44,6 +45,35 @@ describe('openStore', () => {
         .get(),
     ).toBeDefined();
     reopened.close();
+  });
+
+  it('adds dormant_at to a store created before it, keeping its project active', () => {
+    // A projects table as stores had it before decision 62: every column but
+    // the new one, and a registered project in it.
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const old = new Database(dbPath);
+    old.exec(`CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      repo_path TEXT NOT NULL,
+      adapters TEXT NOT NULL DEFAULT '[]',
+      baseline TEXT,
+      origin_url TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    old.prepare("INSERT INTO projects (id, repo_path) VALUES ('p1', '/repo')").run();
+    old.close();
+
+    const reopened = openStore(dbPath);
+    const columns = (reopened.pragma('table_info(projects)') as { name: string }[]).map(
+      (column) => column.name,
+    );
+    const row = reopened
+      .prepare("SELECT repo_path, dormant_at FROM projects WHERE id = 'p1'")
+      .get();
+    reopened.close();
+
+    expect(columns).toContain('dormant_at');
+    expect(row).toEqual({ repo_path: '/repo', dormant_at: null });
   });
 
   it('drops a column a pre-existing store still has, keeping its rows', () => {

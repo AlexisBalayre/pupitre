@@ -13,10 +13,12 @@ import {
   incrementRejectCount,
   insertSession,
   insertTask,
+  isProjectDormant,
   listBacklogTasks,
   listEvents,
   listSessions,
   listTasks,
+  saveProjectDormantAt,
   transitionSession,
   updateTaskSpec,
 } from './session.repository.js';
@@ -120,6 +122,20 @@ describe('session repository', () => {
 
     expect(rows.map((e) => e.type)).toEqual(['steer', 'session_done']);
     expect(rows[1]?.payload).toBe(JSON.stringify({ summary: 'shipped' }));
+  });
+});
+
+describe('project dormancy', () => {
+  it('puts a project to sleep and wakes it, and a project with no row is active', () => {
+    const db = openStore(':memory:');
+    ensureProject(db, 'proj-1', '/repo');
+
+    expect(isProjectDormant(db, 'proj-1')).toBe(false);
+    saveProjectDormantAt(db, 'proj-1', '2026-09-21T10:00:00.000Z');
+    expect(isProjectDormant(db, 'proj-1')).toBe(true);
+    saveProjectDormantAt(db, 'proj-1', null);
+    expect(isProjectDormant(db, 'proj-1')).toBe(false);
+    expect(isProjectDormant(db, 'no-such-project')).toBe(false);
   });
 });
 

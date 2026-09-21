@@ -3,8 +3,8 @@
 Binary: `pup`. Every command resolves its project through one rule (decision 43): `--project <id>`
 wins from anywhere, even inside another repo; otherwise the repo around the current directory;
 outside any repo, the store under `~/.pupitre` decides only when exactly one project is
-registered — with several it lists them as `id  repo_path` (a deleted repo is marked `(missing)`)
-and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
+registered — with several it lists them as `pup project list` prints them (a deleted repo is
+marked `(missing)`) and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
 project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
 exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
 instead (decisions 60, 61, addendum to decision 43).
@@ -58,6 +58,9 @@ instead (decisions 60, 61, addendum to decision 43).
   and a closing `N running, N planned, N merged`. A project whose repo is gone reads
   `missing: the repo no longer exists` and its store is not opened. `--project <id>` wins over
   `--all` and prints that project's full table. Operator-only, like `--project` (decision 60).
+  A dormant project is left out, its store not opened, and counted on a closing
+  `N dormant projects not shown; --dormant shows them.`; `--dormant` shows it with
+  `dormant since <when>` at the end of its header (decision 62).
 - `pup watch [--once|--start|--stop] [--interval <seconds>]` — the conflict radar: every fifteen
   seconds, scan the live sessions' diffs for same-file overlaps and print each `STALLED`
   session, then run the turn watchdog over the stalled ones — read each one's launch pane and,
@@ -68,7 +71,8 @@ instead (decisions 60, 61, addendum to decision 43).
   `Retrying` is a live turn and is left alone. `--once` runs a single sweep and exits; `--start`
   runs it in a detached tmux session and `--stop` ends that; `--interval` changes the cadence.
   Operator-only, like `pup audit`: the sweep types into panes and records resumes in the
-  watcher's name (addendum to decision 35).
+  watcher's name (addendum to decision 35). A dormant project's watchdog does nothing: no pane
+  is read and nothing is typed until it is woken (decision 62).
 - `pup ui` — the same reading as `pup status`, held open and redrawn every two seconds: the
   header (project, conductor, baseline figures), overdue debt, the live sessions with their
   activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,
@@ -92,7 +96,8 @@ instead (decisions 60, 61, addendum to decision 43).
   row's project, and with no row under the cursor they refuse unless only one project is
   shown. The projects are the ones registered when the dashboard opened; a project `pup init`
   registers later shows up at the next `pup ui`. `--project <id>` wins over `--all`.
-  Operator-only, like `pup status --all`.
+  A dormant project is left out, its store never opened, unless `--dormant` is given
+  (decision 62). Operator-only, like `pup status --all`.
 
   The cursor moves with `↑`/`↓` over the session rows and the planned rows beneath them — one
   list, so an action always acts on the row it is on. Every key below runs the same core
@@ -214,6 +219,16 @@ worktree both refuse — so a session reports only its own state (decision 44).
   its own kickoff and the next session's, and the Priorities are the conductor's to act on rather
   than a session's to read. The guard covers the verbs, not the store-resident file a session's
   shell can reach; the sandbox is the instrument for that (decision 57).
+- `pup project list | dormant [<id>] | wake [<id>]` — the registry. `list` prints one line per
+  registered project, `<id>  <repo_path>  active|dormant since <when>  conductor running|stopped`,
+  with `(missing)` when the repo is gone; decision 43's refusal outside a repo lists the same
+  lines. `dormant` puts a project to sleep: `pup status`, `pup ui` and the radar's watchdog pass
+  it over until `wake` clears it. It is refused while the project's conductor or any session not
+  yet merged or killed is live, naming each one to stop first. The project is `<id>`, or
+  `--project <id>`, or the repo around the current directory; `list --project <id>` prints that
+  one line. Operator-only, `list` included, for a calling session and for the conductor: a
+  session could hide its own project from the operator's views, and the conductor could put
+  the project it runs to sleep (decision 62).
 - `pup audit` — re-run the baseline stages and report drift against the stored baseline,
   refreshing it. Prints the same `codegraph:` and `push target:` lines `pup init` does, so both
   are reported on the repeat path too and not only the first run. Operator-only: outside a merge this is the only thing that re-stamps the

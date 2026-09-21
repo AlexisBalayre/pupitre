@@ -11,7 +11,13 @@ import {
 import { findStalledSessions } from './dashboard.service.js';
 import { projectId } from './paths.utils.js';
 import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import { appendEvent, getSession, listEvents, type SessionRow } from './session.repository.js';
+import {
+  appendEvent,
+  getSession,
+  isProjectDormant,
+  listEvents,
+  type SessionRow,
+} from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { sessionPane, steerSession } from './session-lifecycle.service.js';
 
@@ -69,10 +75,14 @@ interface ResumedTurn {
  * window is checked last, so the nudge reaches it after the sessions it will
  * be asked about have been resumed.
  *
+ * A dormant project is passed over whole (decision 62): the operator put it
+ * to sleep, and a resume typed into it would be the watcher waking it.
+ *
  * Returns what it acted on, one entry per pane, for `pup watch` to print.
  */
 export function sweepDeadTurns(db: Database, repoPath: string, now: number): ResumedTurn[] {
   const resumed: ResumedTurn[] = [];
+  if (isProjectDormant(db, projectId(repoPath))) return resumed;
   for (const stalled of findStalledSessions(db, repoPath, now)) {
     const entry = resumeSession(db, stalled.id, stalled.stalledAt, now);
     if (entry) resumed.push(entry);

@@ -36,6 +36,7 @@ import {
   insertSession,
   insertTask,
   listEvents,
+  saveProjectDormantAt,
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
@@ -148,6 +149,23 @@ describe('sweepDeadTurns', () => {
         { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') },
       ]);
       expect(eventsOfType(db, 's1', 'steer')).toEqual([{ kind: 'resume', by: 'watch' }]);
+    });
+
+    // The operator put the project to sleep; a resume would be the watcher
+    // waking it (decision 62). Its conductor pane is not even read.
+    it('is left alone while its project is dormant, and resumed once it is woken', () => {
+      vi.mocked(conductorPane).mockReturnValue({ sessionId: 'conductor', paneId: '%1' });
+      saveProjectDormantAt(db, projectId(repo), '2026-09-21T10:00:00.000Z');
+
+      expect(sweepDeadTurns(db, repo, now())).toEqual([]);
+      expect(deadTurnError).not.toHaveBeenCalled();
+      expect(conductorPane).not.toHaveBeenCalled();
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+
+      saveProjectDormantAt(db, projectId(repo), null);
+      vi.mocked(conductorPane).mockReturnValue(undefined);
+      expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
     });
 
     it('is left alone by every later sweep of the same stall', () => {

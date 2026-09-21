@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
+import { isConductorRunning } from '../core/conductor.service.js';
 import { openStore } from '../core/db.client.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
@@ -20,6 +21,8 @@ interface RegisteredProject {
   dbFile: string;
   /** False when the repo was deleted or moved since it registered — reported, never used. */
   repoExists: boolean;
+  /** When the operator put the project to sleep, or null while it is active (decision 62). */
+  dormantAt: string | null;
 }
 
 /**
@@ -59,6 +62,7 @@ function repoRoot(cwd: string): string {
 interface ProjectRow {
   id: string;
   repo_path: string;
+  dormant_at: string | null;
 }
 
 /**
@@ -68,13 +72,21 @@ interface ProjectRow {
  * store that cannot be read is no project rather than every command's crash.
  * It is said once on stderr, not swallowed: a project that vanishes from the
  * listing because its store lost its permissions is otherwise a mystery. An
- * empty `projects` table is a store `pup status` created and is silent.
+ * empty `projects` table is a store `pup status` created and is silent. A
+ * store no pup has opened since `dormant_at` was added has no such column,
+ * and reads as active until its next open migrates it (decision 62).
  */
 function readProjectRows(dbFile: string): ProjectRow[] {
   let db: Database.Database | undefined;
   try {
     db = new Database(dbFile, { readonly: true, fileMustExist: true });
-    return db.prepare('SELECT id, repo_path FROM projects ORDER BY id').all() as ProjectRow[];
+    const columns = db.pragma('table_info(projects)') as { name: string }[];
+    const dormantAt = columns.some((column) => column.name === 'dormant_at')
+      ? 'dormant_at'
+      : 'NULL AS dormant_at';
+    return db
+      .prepare(`SELECT id, repo_path, ${dormantAt} FROM projects ORDER BY id`)
+      .all() as ProjectRow[];
   } catch (error) {
     console.error(`Skipping unreadable store ${sanitizeReason(dbFile)}: ${failureSummary(error)}`);
     return [];
@@ -112,8 +124,26 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
           repoPath: row.repo_path,
           dbFile,
           repoExists: existsSync(row.repo_path),
+          dormantAt: row.dormant_at,
         })),
     );
+}
+
+/**
+ * One registered project as `pup project list` prints it, and as decision
+ * 43's refusal lists the choices: id, repo, dormant or active, and whether its
+ * conductor runs, with a gone repo marked. Everything a store wrote goes
+ * through decision 29's sanitizing — the store is foreign to whoever reads the
+ * registry (decision 62).
+ */
+export function registryLine(project: RegisteredProject): string {
+  const state =
+    project.dormantAt === null ? 'active' : `dormant since ${sanitizeReason(project.dormantAt)}`;
+  const conductor = isConductorRunning(project.repoPath)
+    ? 'conductor running'
+    : 'conductor stopped';
+  const missing = project.repoExists ? '' : '  (missing)';
+  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}  ${conductor}${missing}`;
 }
 
 /**
@@ -165,14 +195,11 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
         : `Not inside a git repository and every registered project is missing its repo (${stale}); ${INIT_HINT}`,
     );
   }
-  const listing = registered.map(
-    (project) =>
-      `${project.id}  ${sanitizeReason(project.repoPath)}${project.repoExists ? '' : '  (missing)'}`,
-  );
   throw new ProjectResolutionError(
-    [...listing, 'Not inside a git repository; pass --project <id> to pick one of these.'].join(
-      '\n',
-    ),
+    [
+      ...registered.map(registryLine),
+      'Not inside a git repository; pass --project <id> to pick one of these.',
+    ].join('\n'),
   );
 }
 

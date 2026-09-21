@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS projects (
   adapters TEXT NOT NULL DEFAULT '[]',
   baseline TEXT,
   origin_url TEXT,
+  dormant_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -132,6 +133,14 @@ const MIGRATIONS: { table: string; column: string; kind: 'add' | 'drop'; ddl: st
     column: 'origin_url',
     kind: 'add',
     ddl: 'ALTER TABLE projects ADD COLUMN origin_url TEXT',
+  },
+  {
+    // When the operator put the project to sleep, or null while it is active:
+    // the fleet views and the radar pass over a dormant project (decision 62).
+    table: 'projects',
+    column: 'dormant_at',
+    kind: 'add',
+    ddl: 'ALTER TABLE projects ADD COLUMN dormant_at TEXT',
   },
   {
     // Written on every insert and on merge, read by nothing. The backlog asks

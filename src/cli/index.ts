@@ -70,6 +70,7 @@ import {
   listBacklogTasks,
   listSessions,
   type SessionRow,
+  saveProjectDormantAt,
   transitionSession,
   updateTaskSpec,
 } from '../core/session.repository.js';
@@ -99,7 +100,7 @@ import {
   planTask,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { isTerminal } from '../core/session-state.utils.js';
+import { holdingStates, isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
@@ -111,9 +112,11 @@ import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
   enclosingProject,
   fleetProjects,
+  listRegisteredProjects,
   openRegistered,
   ProjectResolutionError,
   type ResolvedProject,
+  registryLine,
   resolveProject,
 } from './project.utils.js';
 import type { ActionDeps } from './ui/actions.service.js';
@@ -925,13 +928,107 @@ export function buildProgram(): Command {
     });
 
   program
+    .command('project <action> [id]')
+    .description(
+      'The registered projects: list them, or put one to sleep and wake it (list|dormant|wake)',
+    )
+    .action((action: string, id: string | undefined) => {
+      if (!['list', 'dormant', 'wake'].includes(action)) {
+        return refuse(
+          `Unknown project action \`${sanitizeReason(action)}\` (expected list|dormant|wake).`,
+        );
+      }
+      // The registry is every project's, and dormancy is what the fleet views
+      // and the radar read to pass a project over: a session could hide its
+      // own project from the operator, and the conductor could put the project
+      // it runs to sleep. Both are refused, on `list` too, by the variables
+      // alone and then by the session's own store, as every door to another
+      // project's store is (decisions 43, 62).
+      const own = enclosingProject(process.cwd());
+      try {
+        if (
+          process.env.PUP_SESSION_ID ||
+          callingConductor() ||
+          (own !== undefined && callingSession(own.db))
+        ) {
+          return refuse(`\`pup project ${action}\` is operator-only.`);
+        }
+      } finally {
+        own?.db.close();
+      }
+      const selected = program.opts().project as string | undefined;
+      if (action === 'list') {
+        if (id !== undefined) return refuse('`pup project list` takes no id; use --project <id>.');
+        const registered = listRegisteredProjects().filter(
+          (candidate) => selected === undefined || candidate.id === selected,
+        );
+        if (registered.length === 0) {
+          return refuse(
+            selected === undefined
+              ? 'No project registered; run pup init from the repo you want to control.'
+              : `No project ${sanitizeReason(selected)}; \`pup project list\` shows the registered ones.`,
+          );
+        }
+        for (const entry of registered) console.log(registryLine(entry));
+        return;
+      }
+      if (id !== undefined && selected !== undefined && id !== selected) {
+        return refuse(
+          `\`pup project ${action}\` was given two projects (${sanitizeReason(id)} and --project ${sanitizeReason(selected)}); name one.`,
+        );
+      }
+      const { repoPath, db } = resolveProject(process.cwd(), id ?? selected);
+      try {
+        const pid = projectId(repoPath);
+        const row = getProject(db, pid);
+        if (!row)
+          return refuse(
+            `No project at ${sanitizeReason(repoPath)}; run pup init from the repo you want to control.`,
+          );
+        if (action === 'wake') {
+          if (row.dormant_at === null) {
+            console.log(`Project ${pid} is already active.`);
+            return;
+          }
+          saveProjectDormantAt(db, pid, null);
+          console.log(`Project ${pid} is awake: the fleet views and the radar read it again.`);
+          return;
+        }
+        if (row.dormant_at !== null) {
+          console.log(`Project ${pid} is already dormant since ${sanitizeReason(row.dormant_at)}.`);
+          return;
+        }
+        // Named, not counted, like the brief's list of what runs on the old
+        // brief: each one is something the operator stops by name first. A
+        // project put to sleep with work in flight would hide that work from
+        // every view that would have shown it needing them (decision 62).
+        const live = [
+          ...(isConductorRunning(repoPath) ? [conductorName(pid)] : []),
+          ...listSessions(db, holdingStates()).map((session) => sanitizeReason(session.id)),
+        ];
+        if (live.length > 0) {
+          return refuse(
+            `Project ${pid} still has ${live.join(', ')} live; stop ${live.length === 1 ? 'it' : 'them'} (pup conductor stop, pup kill <session>, or merge) before putting it to sleep.`,
+          );
+        }
+        saveProjectDormantAt(db, pid, new Date().toISOString());
+        console.log(
+          `Project ${pid} is dormant: pup status, pup ui and the radar pass it over until \`pup project wake ${pid}\`.`,
+        );
+      } finally {
+        db.close();
+      }
+    });
+
+  program
     .command('status')
     .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
     .option(
       '--all',
       'every registered project, what needs you in each (the default outside a repo)',
     )
-    .action((opts: { all?: boolean }) => {
+    .option('--dormant', 'include dormant projects in the fleet view')
+    .action((opts: { all?: boolean; dormant?: boolean }) => {
       // Outside a repo, or with `--all`, the fleet view; `--project` names one
       // project's full table and so wins over `--all` (decision 60).
       const selected = program.opts().project as string | undefined;
@@ -942,7 +1039,7 @@ export function buildProgram(): Command {
       }
       if (selected === undefined) {
         refuseUnlessOperator(own);
-        printFleet(Date.now());
+        printFleet(Date.now(), opts.dormant === true);
         return;
       }
       const { repoPath, db } = project();
@@ -953,7 +1050,8 @@ export function buildProgram(): Command {
     .command('ui')
     .description('Live dashboard: the status table, backlog, debt and conflict radar, in place')
     .option('--all', 'every registered project in one table (the default outside a repo)')
-    .action((opts: { all?: boolean }) => {
+    .option('--dormant', 'include dormant projects in the fleet table')
+    .action((opts: { all?: boolean; dormant?: boolean }) => {
       // The bin the merge child is re-entered with — `process.argv[1]`, the
       // same path a session's environment carries as `PUP_BIN`.
       const pupBin = realpathSync(process.argv[1] ?? 'pup');
@@ -968,7 +1066,7 @@ export function buildProgram(): Command {
       // `pup status` would have printed and exits 0 — a `pup ui` in a script is
       // a reasonable thing to have typed, not an error (decision 52).
       if (!process.stdout.isTTY) {
-        if (!isSingleProject) return printFleet(Date.now());
+        if (!isSingleProject) return printFleet(Date.now(), opts.dormant === true);
         const { repoPath, db } = own ?? project();
         printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
         return;
@@ -990,7 +1088,7 @@ export function buildProgram(): Command {
       } else {
         // Only the operator gets here, refused above like `pup status --all`,
         // so the fleet is always driven and always shown the attach command.
-        props = { read: fleetReader(pupBin), showAttach: true };
+        props = { read: fleetReader(pupBin, opts.dormant === true), showAttach: true };
       }
       const instance = render(createElement(App, props), {
         // vim's and htop's buffer: the fleet is watched for a while and then
@@ -1020,11 +1118,12 @@ export function buildProgram(): Command {
    * `fleetRefusal` turns away, or whose store will not open, is a line of its
    * own and never opened again; one whose snapshot throws is that reading's line, and the
    * rest of the fleet still renders — `printFleet`'s isolation, per reading.
+   * A dormant project is left out, its store never opened, unless `--dormant`.
    */
-  function fleetReader(pupBin: string): () => DashboardReading {
+  function fleetReader(pupBin: string, showDormant: boolean): () => DashboardReading {
     const shut: string[] = [];
     const opened: { header: string; deps: ActionDeps }[] = [];
-    for (const registered of fleetProjects()) {
+    for (const registered of awakeFleet(showDormant).shown) {
       const header = fleetHeader(registered);
       const refusal = fleetRefusal(registered);
       if (refusal) {
@@ -1055,6 +1154,23 @@ export function buildProgram(): Command {
     };
   }
 
+  /**
+   * The fleet both readers draw: every registered project, less the dormant
+   * ones unless `--dormant` asks for them (decision 62). The dormant flag is
+   * read from each store's own row by the read-only registry scan, so a
+   * hidden project's store is never opened; `hidden` is how many were left out.
+   */
+  function awakeFleet(showDormant: boolean): {
+    shown: ReturnType<typeof fleetProjects>;
+    hidden: number;
+  } {
+    const registered = fleetProjects();
+    const shown = showDormant
+      ? registered
+      : registered.filter((project) => project.dormantAt === null);
+    return { shown, hidden: registered.length - shown.length };
+  }
+
   /** A fleet project's id and repo, as its `pup status` block and `pup ui` line lead. */
   function fleetHeader(registered: { id: string; repoPath: string }): string {
     return `${registered.id}  ${sanitizeReason(registered.repoPath)}`;
@@ -1067,9 +1183,12 @@ export function buildProgram(): Command {
    * its store left shut (`fleetRefusal`) — opening it would migrate a store
    * nobody can act on, or one a session planted. Each store is closed
    * before the next is opened, so a long fleet holds one handle at a time.
+   * Dormant projects are left out and counted on a last line, or shown with
+   * their header saying so under `--dormant` (decision 62).
    */
-  function printFleet(now: number): void {
-    fleetProjects().forEach((registered, index) => {
+  function printFleet(now: number, showDormant: boolean): void {
+    const { shown, hidden } = awakeFleet(showDormant);
+    shown.forEach((registered, index) => {
       if (index > 0) console.log('');
       const header = fleetHeader(registered);
       const refusal = fleetRefusal(registered);
@@ -1083,8 +1202,12 @@ export function buildProgram(): Command {
         db = opened.db;
         const snapshot = buildDashboardSnapshot(db, opened.repoPath, now);
         const summary = fleetSummary(snapshot);
+        const dormant =
+          registered.dormantAt === null
+            ? ''
+            : `  dormant since ${sanitizeReason(registered.dormantAt)}`;
         console.log(
-          `${header}  ${snapshot.conductor.running ? 'conductor running' : 'conductor stopped'}`,
+          `${header}  ${snapshot.conductor.running ? 'conductor running' : 'conductor stopped'}${dormant}`,
         );
         for (const entry of snapshot.overdueDebt) {
           console.log(
@@ -1105,6 +1228,12 @@ export function buildProgram(): Command {
         db?.close();
       }
     });
+    if (hidden > 0) {
+      if (shown.length > 0) console.log('');
+      console.log(
+        `${hidden} dormant ${hidden === 1 ? 'project' : 'projects'} not shown; --dormant shows ${hidden === 1 ? 'it' : 'them'}.`,
+      );
+    }
   }
 
   /** One session row, the same in the single-project table and the fleet view. */
