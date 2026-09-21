@@ -22,6 +22,8 @@ export interface ProjectPaths {
   handoffFile(sessionId: string): string;
   /** The conductor's compiled profile — one per project, beside the sessions (decision 47). */
   conductorCompiledDir: string;
+  /** The operator's free-Markdown brief for this project (decision 57). */
+  briefFile: string;
 }
 
 export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre')): ProjectPaths {
@@ -38,5 +40,6 @@ export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre'
     eventsFile: (sessionId) => join(sessionDir(sessionId), 'events.jsonl'),
     handoffFile: (sessionId) => join(sessionDir(sessionId), 'handoff.md'),
     conductorCompiledDir: join(root, 'conductor', 'compiled'),
+    briefFile: join(root, 'brief.md'),
   };
 }
