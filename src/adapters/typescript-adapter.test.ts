@@ -1,10 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { localContext } from './capability.utils.js';
 import type { DeadExport, DuplicationReport } from './types/adapter.types.js';
-import { typescriptAdapter } from './typescript.adapter.js';
+import type { IstanbulCoverageMap } from './types/istanbul.types.js';
+import { rootCoverageReport, typescriptAdapter } from './typescript.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-adapter-')));
@@ -197,12 +199,27 @@ describe('typescriptAdapter nested packages', () => {
     'tools/review/src/clone.ts': `${clone}\n`,
   };
 
-  function makeTree(files: Record<string, string>): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-nested-')));
+  const GIT_ENV: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+
+  function writeFiles(dir: string, files: Record<string, string>): void {
     for (const [name, content] of Object.entries(files)) {
       mkdirSync(dirname(join(dir, name)), { recursive: true });
       writeFileSync(join(dir, name), content);
     }
+  }
+
+  /** A checkout with `files` committed: markers are read from HEAD's tree. */
+  function makeTree(files: Record<string, string>): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-nested-')));
+    writeFiles(dir, files);
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, env: GIT_ENV });
+    git('init', '-q');
+    git('add', '-A');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
     return dir;
   }
 
@@ -245,6 +262,43 @@ describe('typescriptAdapter nested packages', () => {
     expect(duplication.duplicatedLines).toBeGreaterThan(0);
     expect(typescriptAdapter.coverableFiles?.(ctx, ['tools/review/src/r.ts'])).toEqual([
       'tools/review/src/r.ts',
+    ]);
+  });
+
+  it('ignores an untracked marker, even one present in both checkouts', () => {
+    // Nothing diffs or hashes an untracked file in the main checkout, so a
+    // marker a session drops there from its shell must buy nothing.
+    const { 'tools/review/package.json': _, ...unmarked } = tree;
+    const measurePath = makeTree(unmarked);
+    const configPath = makeTree(unmarked);
+    writeFiles(measurePath, { 'tools/review/package.json': '{}' });
+    writeFiles(configPath, { 'tools/review/package.json': '{}' });
+    const ctx = { measurePath, configPath };
+
+    const dead = typescriptAdapter.deadCode?.(ctx) as DeadExport[];
+    expect(dead).toContainEqual({ file: 'tools/review/src/r.ts', exportName: 'reviewDead' });
+    expect(typescriptAdapter.coverableFiles?.(ctx, ['tools/review/src/r.ts'])).toEqual([
+      'tools/review/src/r.ts',
+    ]);
+  });
+
+  it('drops exactly the nested entries from the coverage report', () => {
+    const repo = makeTree({ 'pkg/package.json': '{}', 'pkg/src/b.ts': '', 'pkgs/c.ts': '' });
+    const entry = {
+      statementMap: { '0': { start: { line: 1 }, end: { line: 1 } } },
+      s: { '0': 1 },
+    };
+    const raw: IstanbulCoverageMap = {
+      [join(repo, 'src/a.ts')]: entry,
+      [join(repo, 'pkg/src/b.ts')]: entry,
+      [join(repo, 'pkg/index.ts')]: entry,
+      // A sibling sharing the prefix is not inside the package.
+      [join(repo, 'pkgs/c.ts')]: entry,
+    };
+
+    expect(Object.keys(rootCoverageReport(raw, localContext(repo)).files).sort()).toEqual([
+      'pkgs/c.ts',
+      'src/a.ts',
     ]);
   });
 });

@@ -51,9 +51,11 @@ root that holds its own `package.json`, like a workspace member or a standalone 
 own lockfile and runner, is left out of the TypeScript adapter's source walk (and so its
 dependency graph, dead exports and duplication), its coverable files and its coverage report,
 the way `.worktrees/` is left out as another checkout. The root runner is not expected to cover
-it, and its exports are consumed by its own entry points. The marker must exist in both
-checkouts, so a session cannot exempt `src/core/` by writing `src/core/package.json`: a
-package it creates is counted at the root until it has merged. The Python adapter does not
+it, and its exports are consumed by its own entry points. The marker must be *committed* in
+both checkouts, read from `HEAD`'s tree: a file on disk or in the index is a session's to
+write, in the main checkout as well as its own, so neither counts. A package a session creates
+is counted at the root until it has merged. Nothing measures a nested package in its place
+yet; its own test and typecheck scripts are not run by the gate. The Python adapter does not
 apply the rule; its tools discover files themselves under the repo's own config.
 
 ## Degradation rules

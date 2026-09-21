@@ -24,8 +24,8 @@ import { findDeadExports, findDuplication, measureComplexity } from './typescrip
 import {
   isCoverageExcluded,
   isInNestedPackage,
-  isNestedPackageDir,
   isSourceFile,
+  nestedPackageDirs,
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
@@ -53,26 +53,26 @@ const SKIPPED_DIRS = new Set([
   '.claude',
 ]);
 
-/** The checkouts a nested package must exist in to be skipped (decision 58). */
-function checkouts({ measurePath, configPath }: CapabilityContext): string[] {
-  return [measurePath, configPath];
+/** Nested packages both checkouts commit, resolved once per capability call (decision 58). */
+function nestedPackages({ measurePath, configPath }: CapabilityContext): Set<string> {
+  return nestedPackageDirs([measurePath, configPath]);
 }
 
 function walkSourceFiles(
-  ctx: CapabilityContext,
-  dir = ctx.measurePath,
+  repoPath: string,
+  nested: Set<string>,
+  dir = repoPath,
   found: string[] = [],
 ): string[] {
-  const repoPath = ctx.measurePath;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (
         !SKIPPED_DIRS.has(entry.name) &&
         !entry.name.startsWith('.') &&
-        !isNestedPackageDir(relative(repoPath, path).split(sep).join('/'), checkouts(ctx))
+        !nested.has(relative(repoPath, path).split(sep).join('/'))
       ) {
-        walkSourceFiles(ctx, path, found);
+        walkSourceFiles(repoPath, nested, path, found);
       }
     } else if (isSourceFile(entry.name)) {
       found.push(relative(repoPath, path));
@@ -84,7 +84,7 @@ function walkSourceFiles(
 /** Repo-relative `/`-separated path -> content, sorted for deterministic metrics. */
 function readSources(ctx: CapabilityContext): Record<string, string> {
   const sources: Record<string, string> = {};
-  for (const file of walkSourceFiles(ctx).sort()) {
+  for (const file of walkSourceFiles(ctx.measurePath, nestedPackages(ctx)).sort()) {
     sources[file.split(sep).join('/')] = readFileSync(join(ctx.measurePath, file), 'utf8');
   }
   return sources;
@@ -141,6 +141,23 @@ function packageManager(repoPath: string): string {
   return 'npm';
 }
 
+/**
+ * The instrumented run's report, restricted to the root's own files. The include
+ * glob reaches into nested packages, whose own runner covers them; this drops
+ * them with the same predicate as `coverableFiles`, so report and expectation
+ * cannot drift (decisions 32, 58). Exported for its test: it is the one join a
+ * unit test can reach without an instrumented vitest run.
+ */
+export function rootCoverageReport(
+  raw: IstanbulCoverageMap,
+  ctx: CapabilityContext,
+): CoverageReport {
+  const nested = nestedPackages(ctx);
+  return withoutFiles(istanbulToCoverageReport(raw, ctx.measurePath), (file) =>
+    isInNestedPackage(file, nested),
+  );
+}
+
 export const typescriptAdapter: Adapter = {
   id: 'typescript',
 
@@ -185,7 +202,7 @@ export const typescriptAdapter: Adapter = {
    */
   depGraph(ctx: CapabilityContext): DepGraph {
     const repoPath = ctx.measurePath;
-    const files = walkSourceFiles(ctx).map((f) => f.split(sep).join('/'));
+    const files = walkSourceFiles(repoPath, nestedPackages(ctx)).map((f) => f.split(sep).join('/'));
     const fileSet = new Set(files);
     const modules: Record<string, string[]> = {};
     const edgeSet = new Set<string>();
@@ -236,11 +253,12 @@ export const typescriptAdapter: Adapter = {
   },
 
   coverableFiles(ctx: CapabilityContext, files: string[]): string[] {
+    const nested = nestedPackages(ctx);
     return files.filter(
       (file) =>
         isSourceFile(file) &&
         !isCoverageExcluded(file) &&
-        !isInNestedPackage(file, checkouts(ctx)) &&
+        !isInNestedPackage(file, nested) &&
         existsSync(join(ctx.measurePath, file)),
     );
   },
@@ -292,12 +310,7 @@ export const typescriptAdapter: Adapter = {
       const raw = JSON.parse(
         readFileSync(join(outDir, 'coverage-final.json'), 'utf8'),
       ) as IstanbulCoverageMap;
-      // The include glob reaches into nested packages, whose own runner covers
-      // them; the same predicate as `coverableFiles`, so report and expectation
-      // cannot drift (decisions 32, 58).
-      return withoutFiles(istanbulToCoverageReport(raw, measurePath), (file) =>
-        isInNestedPackage(file, checkouts(ctx)),
-      );
+      return rootCoverageReport(raw, ctx);
     } catch (error) {
       // A failed instrumented run (crash, timeout, threshold config) degrades to
       // "not measured" — the plain test stage has already gated correctness.
