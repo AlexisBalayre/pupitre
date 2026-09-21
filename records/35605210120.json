@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T13:35:37.642Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35605210120",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35605210120",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f901f16ff87fefe4fe2b20077b69f4e1280330b2",
+  "source": "pr",
+  "pr_number": 107,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "security",
+    "correctness",
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2995-2997",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 61 claims pup ui draws three foreign fields the fleet pup status never prints (backlog task id, radar's two session ids, overdue ledger id) — but printFleet prints entry.id unconditionally on its OVERDUE DEBT line, so the ledger id is not pup-ui-exclusive and this PR's sanitizeReason(String(entry.id)) change also closes a pre-existing gap in pup status --all.",
+      "body": "**Factual error in decision 61.** The text says:\n\n> `pup ui` draws three foreign fields the fleet `pup status` never prints: the backlog task id (also quoted in the launch prompt), the radar's two session ids, and the overdue ledger id.\n\nThis is wrong about the ledger id. `printFleet` in `src/cli/index.ts` prints it unconditionally:\n\n```js\nconsole.log(\n  `  OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,\n);\n```\n\nOnly the backlog task id and the radar's two session ids are actually exclusive to `pup ui`. The ledger id is drawn by `pup status`'s fleet view too — which means `sanitizeReason(String(entry.id))` in `src/core/dashboard.service.ts` also closes a sanitization gap in `pup status --all`, not something new-to-`pup ui`-only. A reader relying on this decision to understand the security boundary would misjudge which surfaces the fix actually protects.\n\nPermalink: https://github.com/AlexisBalayre/pupitre/blob/f901f16ff87fefe4fe2b20077b69f4e1280330b2/docs/09-decisions.md#L2995-L2997",
+      "suggestion": "    *Every id the dashboard draws is scrubbed where the snapshot is built.* `pup ui` draws\n    two foreign fields the fleet `pup status` never prints — the backlog task id (also\n    quoted in the launch prompt) and the radar's two session ids — plus the overdue ledger\n    id, which `pup status`'s fleet view prints too and was unsanitized there until now. The"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "79-82",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "This comment repeats decision 61's inaccurate claim that the fleet pup status never draws the ledger — printFleet prints entry.id a few lines below this very function, so the comment misdescribes the security boundary right next to the code it's about.",
+      "body": "**Same factual error, duplicated in code.** The comment says:\n\n```ts\n// The store is not always the caller's own since the fleet views\n// (decisions 60, 61), and `pup ui` draws the backlog, the ledger and\n// the radar, which the fleet `pup status` does not: every id is\n// scrubbed like the session row's.\nid: sanitizeReason(task.id),\n```\n\n\"the ledger … which the fleet `pup status` does not [draw]\" is false: `printFleet` (the fleet `pup status`) loops over `snapshot.overdueDebt` and prints `entry.id` directly, a few lines below this same function (`overdueDebt: listOverdueLedgerEntries(...).map((entry) => ({ id: sanitizeReason(String(entry.id)), ... }))`). This sits right next to the code it describes, making the inaccuracy easy to trip over when reasoning about which sanitization protects which command.\n\nPermalink: https://github.com/AlexisBalayre/pupitre/blob/f901f16ff87fefe4fe2b20077b69f4e1280330b2/src/core/dashboard.service.ts#L79-L82",
+      "suggestion": "        // The store is not always the caller's own since the fleet views\n        // (decisions 60, 61), and `pup ui` draws the backlog and the radar,\n        // which the fleet `pup status` does not (the ledger it draws too,\n        // unsanitized until now): every id is scrubbed like the session row's."
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2956-2957",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 61 says the missing/unreadable lines \"come from the same `fleetHeader` and `FLEET_MISSING` the fleet `pup status` prints,\" but no `FLEET_MISSING` symbol exists anywhere in the codebase — the actual mechanism is `fleetRefusal`, which returns inline string literals, not a named constant; a reader grepping for `FLEET_MISSING` finds nothing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/header.component.tsx",
+      "line": "50-56",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "FleetHeader's docstring says it's \"over more than one project,\" but app.component.tsx also renders it when projects.length === 0 (every project unreadable) — the doc is accurate for the common case but silent on the zero-project invocation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "422-424",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On a multi-project fleet with no row under the cursor, pressing `A` (conductor attach) says \"No conductor to attach to.\" rather than the \"Whose conductor?\" refusal its sibling `c` gives in the same state — decision 61 says both keys should refuse that way, and the operator can't tell \"no project selected\" from \"the conductor is down\" from this message. The action is correctly blocked either way (no attach fires), and the current test locks the existing string in, so this is a wording mismatch, not a behavior break.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "65-73",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "New exported interfaces SessionRow and TaskRow collide by name with pre-existing DB-row types of the same name in src/core/session.repository.ts (a raw DB row vs. this file's {session, project} on-screen row) — no file currently imports both, but cli/index.ts already imports the repository's SessionRow, and sessions.component.tsx adds a third overload (a React component named SessionRow) in the same subtree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "976-994",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The single/fleet branches build App's props via `let props: Parameters<typeof App>[0]` rather than importing App's own props type directly — a shape derived from another shape that would change silently if App's signature changed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "55-56",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The inline projectColumn helper takes a (SessionRow | TaskRow)[] union just because both incidentally expose .project.snapshot.projectId — a helper over ProjectReading[] or plain ids would decouple it from the row shapes. Minor.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "964",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/conventions/general.md requires boolean names to start with is/has/should/can, but this PR introduces `const single = ...` (src/cli/index.ts:964) and `const fleet = projects.length > 1` (src/cli/ui/app.component.tsx:41) without any such prefix. The rule isn't phrased as a hard MUST elsewhere in the doc and the codebase already has a pre-existing unprefixed boolean (readOnly), so this is drift consistent with existing practice rather than a novel pattern, but still worth naming isSingleProject / isFleet.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "cost_usd": 15.217991199999997,
+  "duration_ms": 745494,
+  "num_turns": 26,
+  "tokens": {
+    "input": 23,
+    "output": 33424,
+    "cache_read": 762593,
+    "cache_creation": 92013,
+    "total": 888053
+  }
+}
