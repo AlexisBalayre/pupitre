@@ -560,7 +560,7 @@ describe('dashboard controls', () => {
 
       expect(toggleConductor).not.toHaveBeenCalled();
       expect(conductorAttachTarget).not.toHaveBeenCalled();
-      expect(instance.lastFrame()).toContain('No conductor to attach to.');
+      expect(instance.lastFrame()).toContain('Whose conductor?');
       instance.unmount();
     });
 

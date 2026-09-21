@@ -77,9 +77,9 @@ export function buildDashboardSnapshot(
       const spec = parseJsonOr<Partial<TaskSpec>>(task.spec, {});
       return {
         // The store is not always the caller's own since the fleet views
-        // (decisions 60, 61), and `pup ui` draws the backlog, the ledger and
-        // the radar, which the fleet `pup status` does not: every id is
-        // scrubbed like the session row's.
+        // (decisions 60, 61), and `pup ui` draws the backlog and the radar,
+        // which the fleet `pup status` does not (the ledger it draws too,
+        // unsanitized until now): every id is scrubbed like the session row's.
         id: sanitizeReason(task.id),
         goal: goalHeadline(spec.goal),
         scope: asStringArray(spec.scopeIn).map(sanitizeReason),

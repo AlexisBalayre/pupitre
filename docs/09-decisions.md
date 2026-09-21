@@ -2953,7 +2953,7 @@ changes back into those docs is pending.
     gone is listed `missing: the repo no longer exists` and never opened, as in decision 60.
     A store that will not open is listed `unreadable: <reason>` once. A snapshot that throws is
     that reading's `unreadable` line, and the next reading tries again. Either way the other
-    projects still render. The lines come from the same `fleetHeader` and `FLEET_MISSING` the
+    projects still render. The lines come from the same `fleetHeader` and `fleetRefusal` the
     fleet `pup status` prints, and the fleet header's repo path goes through `sanitizeReason`,
     since a foreign store's `projects` row is session-writable (decision 29). A project
     registered after the dashboard opened appears at the next `pup ui`.
@@ -2993,8 +2993,9 @@ changes back into those docs is pending.
     is turned away, unless it was registered through a path that has since become a symlink.
     That project's fleet line says so, and its own repo still works.
     *Every id the dashboard draws is scrubbed where the snapshot is built.* `pup ui` draws
-    three foreign fields the fleet `pup status` never prints: the backlog task id (also
-    quoted in the launch prompt), the radar's two session ids, and the overdue ledger id. The
+    two foreign fields the fleet `pup status` never prints — the backlog task id (also
+    quoted in the launch prompt) and the radar's two session ids — plus the overdue ledger
+    id, which `pup status`'s fleet view prints too and was unsanitized there until now. The
     snapshot now passes all three through `sanitizeReason`, as it does a session row's id,
     state and branch. The ledger id becomes a string: pup's schema makes it an integer, but a
     planted store can create `ledger_entries` with a TEXT id before `openStore` runs, and

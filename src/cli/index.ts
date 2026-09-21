@@ -117,7 +117,7 @@ import {
   resolveProject,
 } from './project.utils.js';
 import type { ActionDeps } from './ui/actions.service.js';
-import { App } from './ui/app.component.js';
+import { App, type AppProps } from './ui/app.component.js';
 import {
   activityLabel,
   contextLabel,
@@ -961,20 +961,20 @@ export function buildProgram(): Command {
       // every project; `--project` names one and wins (decisions 60, 61).
       const selected = program.opts().project as string | undefined;
       const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
-      const single = selected !== undefined || (own !== undefined && !opts.all);
-      if (!single) refuseUnlessOperator(own);
+      const isSingleProject = selected !== undefined || (own !== undefined && !opts.all);
+      if (!isSingleProject) refuseUnlessOperator(own);
       // Piped, redirected or captured by a hook, there is no screen to hold in
       // place and no key to press, so the dashboard degrades to the one reading
       // `pup status` would have printed and exits 0 — a `pup ui` in a script is
       // a reasonable thing to have typed, not an error (decision 52).
       if (!process.stdout.isTTY) {
-        if (!single) return printFleet(Date.now());
+        if (!isSingleProject) return printFleet(Date.now());
         const { repoPath, db } = own ?? project();
         printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
         return;
       }
-      let props: Parameters<typeof App>[0];
-      if (single) {
+      let props: AppProps;
+      if (isSingleProject) {
         const { repoPath, db } = own ?? project();
         // The store and repo the keys write through.
         const deps: ActionDeps = { db, repoPath, pupBin };

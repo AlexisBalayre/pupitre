@@ -9,8 +9,8 @@ import { MergeLogPane } from './merge-log.component.js';
 import { Prompt } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
-import { type SessionRow, type TaskRow, useControls } from './use-controls.hook.js';
-import { type DashboardReading, useSnapshot } from './use-snapshot.hook.js';
+import { type LiveRow, type PlannedRow, useControls } from './use-controls.hook.js';
+import { type DashboardReading, type ProjectReading, useSnapshot } from './use-snapshot.hook.js';
 
 /**
  * `pup ui`'s whole layout. The two hooks below hold everything that changes:
@@ -25,35 +25,33 @@ import { type DashboardReading, useSnapshot } from './use-snapshot.hook.js';
  * drawn only when more than one project is on screen, which leaves a single
  * project's layout exactly as it was.
  */
-export function App({
-  read,
-  showAttach,
-  readOnlyReason,
-}: {
+export interface AppProps {
   /** One look at every store on screen, each with the deps its rows' keys write through. */
   read: () => DashboardReading;
   showAttach: boolean;
   /** Set for a session or the conductor: the dashboard, and no controls. */
   readOnlyReason?: string;
-}) {
+}
+
+export function App({ read, showAttach, readOnlyReason }: AppProps) {
   const { reading, readAt, refresh } = useSnapshot(read);
   const { projects, unreadable } = reading;
-  const fleet = projects.length > 1;
+  const isFleet = projects.length > 1;
   // Merged and killed sessions are counted, not listed, and the cursor never
   // lands on one: this view is for the work a person can still change, and
   // every action here acts on a session that is still running. Rows stay
   // grouped by project, each group in the order its snapshot sorted it.
-  const live: SessionRow[] = projects.flatMap((project) =>
+  const live: LiveRow[] = projects.flatMap((project) =>
     project.snapshot.sessions
       .filter((session) => !isTerminal(session.state))
       .map((session) => ({ session, project })),
   );
-  const planned: TaskRow[] = projects.flatMap((project) =>
+  const planned: PlannedRow[] = projects.flatMap((project) =>
     project.snapshot.backlog.map((task) => ({ task, project })),
   );
   const sessionCount = projects.reduce((sum, project) => sum + project.snapshot.sessions.length, 0);
-  const projectColumn = (rows: (SessionRow | TaskRow)[]) =>
-    fleet ? { projects: rows.map((row) => row.project.snapshot.projectId) } : {};
+  const projectColumn = (rows: { project: ProjectReading }[]) =>
+    isFleet ? { projects: rows.map((row) => row.project.snapshot.projectId) } : {};
   const { cursor, prompt, mergeLog, detail, status } = useControls({
     projects,
     live,
@@ -64,7 +62,7 @@ export function App({
   const [only] = projects;
   return (
     <Box flexDirection="column" paddingX={1}>
-      {fleet || !only ? (
+      {isFleet || !only ? (
         <FleetHeader snapshots={projects.map((project) => project.snapshot)} />
       ) : (
         <Header snapshot={only.snapshot} showAttach={showAttach} />
@@ -80,7 +78,7 @@ export function App({
             key={snapshot.projectId}
             overdueDebt={snapshot.overdueDebt}
             openDebtCount={snapshot.openDebtCount}
-            {...(fleet ? { project: snapshot.projectId } : {})}
+            {...(isFleet ? { project: snapshot.projectId } : {})}
           />
         ))}
       </Box>
@@ -113,7 +111,7 @@ export function App({
             key={snapshot.projectId}
             overlaps={snapshot.overlaps}
             radarStale={snapshot.radarStale}
-            {...(fleet ? { project: snapshot.projectId } : {})}
+            {...(isFleet ? { project: snapshot.projectId } : {})}
           />
         ))}
       </Box>

@@ -62,12 +62,12 @@ export type DetailRow =
  * through that project's store and repo, never through whichever store the
  * dashboard was opened in: with `--all` the rows come from several (decision 61).
  */
-export interface SessionRow {
+export interface LiveRow {
   session: DashboardSession;
   project: ProjectReading;
 }
 
-export interface TaskRow {
+export interface PlannedRow {
   task: DashboardSnapshot['backlog'][number];
   project: ProjectReading;
 }
@@ -109,9 +109,9 @@ export function useControls({
   /** Every project the reading holds, for the keys that need no row. */
   projects: ProjectReading[];
   /** The session rows on screen, in the order they are drawn. */
-  live: SessionRow[];
+  live: LiveRow[];
   /** The planned rows beneath them, likewise. */
-  planned: TaskRow[];
+  planned: PlannedRow[];
   refresh: () => void;
   /** A session or the conductor is watching: every mutating key is unbound. */
   readOnly: boolean;
@@ -420,7 +420,8 @@ export function useControls({
       case 'a':
         return onSession('attach', (id) => startAttach(sessionAttachTarget(id)));
       case 'A':
-        if (!project?.snapshot.conductor.running) return say('No conductor to attach to.', true);
+        if (!project) return say('Whose conductor? Put the cursor on a row of that project.', true);
+        if (!project.snapshot.conductor.running) return say('No conductor to attach to.', true);
         return startAttach(conductorAttachTarget(project.snapshot));
       case 'c':
         return startConductorToggle();

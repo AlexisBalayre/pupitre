@@ -48,8 +48,8 @@ export function Header({
 }
 
 /**
- * `pup ui --all`'s header over more than one project (decision 61): a line per
- * project, its id — the one the table's project column prints — its repo and
+ * `pup ui --all`'s header over more than one project, or over none when every
+ * store was unreadable (decision 61): a line per project, its id — the one the table's project column prints — its repo and
  * whether its conductor is up, as the fleet `pup status` heads each block. No
  * attach command and no baseline: both are per project and one `--project`
  * away, and a line each would push the table off the screen the fleet is for.
