@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T08:56:12.499Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35579311728",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35579311728",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cc13ad914ec1828e43e7b0806269f6190cb74cd3",
+  "source": "pr",
+  "pr_number": 103,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "3",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "typescript-source.utils.ts imports a .client.ts module and does impure execFileSync I/O, breaking the utils role's 'pure functions only' contract.",
+      "body": "`docs/conventions/naming.md` line 76 states the `utils` role's contract without exception: **\"Pure functions only. Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\"**\n\nThis PR adds [`import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';`](https://github.com/AlexisBalayre/pupitre/blob/cc13ad914ec1828e43e7b0806269f6190cb74cd3/src/adapters/typescript-source.utils.ts#L3) to `typescript-source.utils.ts`, and the new `committedPackageDirs` directly shells out via [`execFileSync('git', ...)`](https://github.com/AlexisBalayre/pupitre/blob/cc13ad914ec1828e43e7b0806269f6190cb74cd3/src/adapters/typescript-source.utils.ts#L100-L124) — genuine impure child-process I/O, not a pure function. Before this PR the file only imported `node:path` helpers and contained zero I/O; this diff is what introduces the violation (confirmed against the diff, not pre-existing code that moved).\n\n`src/cli/project.utils.ts` already does the same thing, but that's a pre-existing violation of the same rule elsewhere in the repo, not a documented exception — nothing in decision 31, 32, or the new decision 58 carves out an exception for adapters that need to shell out to git for trust-boundary reasons. The rule's own text names the fix: move `nestedPackageDirs`/`committedPackageDirs` into a differently-suffixed module (e.g. `.client.ts`), since a file that needs `client`-level capability isn't a util.",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-adapter.test.ts",
+      "line": "189-190",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This test comment ('Decision 58: a directory with its own package.json has its own runner...') restates nestedPackageDirs's own JSDoc and is immediately redundant with the two it() names right below it — nothing is lost if it's deleted, per AGENTS.md's rule against a call-site WHY comment duplicating the callee's seam.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-adapter.test.ts",
+      "line": "269-270",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This test comment ('Nothing diffs or hashes an untracked file in the main checkout...') is a near-verbatim duplicate of nestedPackageDirs's JSDoc in typescript-source.utils.ts ('an untracked src/core/package.json dropped into the main checkout from a session shell is diffed and hashed by nothing'), which AGENTS.md's comment rule treats as a duplicate to delete.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source-utils.test.ts",
+      "line": "58-59",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This test comment ('The main checkout's index is a session's to git add to...') is a near-verbatim duplicate of language in both nestedPackageDirs's JSDoc and decision 58's own text in docs/09-decisions.md — the seam already says it, so per AGENTS.md the call-site copy should be deleted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/coverage.utils.ts",
+      "line": "17",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "withoutFiles's JSDoc ('The report without the files `excluded` names.') restates the signature instead of carrying a WHY, unlike the sibling repoCoverageRatio doc two lines above it which states a genuine gotcha (undefined when nothing is instrumented) — general.md's JSDoc rule asks for the latter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": null,
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The second commit's message opens with 'Security review of 3aef43e', but 3aef43e isn't a resolvable object in this repo's history — the PR's actual first commit is b5c43be. Likely a stale hash left over from local iteration before squashing/rebasing; harmless but worth a glance before merge.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "correctness",
+      "description": "One correctness instance's sandbox blocked ad-hoc `node -e` spikes it wanted to run to double-check isInNestedPackage edge cases; it fell back to static reading only and reported no change to its conclusions."
+    },
+    {
+      "component": "conventions",
+      "description": "`gh pr diff 103` initially hit a sandbox output-redirection restriction for the conventions reviewer; it substituted `git diff <merge-base>..HEAD` and confirmed identical content, so the review itself was not degraded."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 11.677051050000001,
+  "duration_ms": 775928,
+  "num_turns": 36,
+  "tokens": {
+    "input": 33,
+    "output": 37473,
+    "cache_read": 1044741,
+    "cache_creation": 105156,
+    "total": 1187403
+  }
+}
