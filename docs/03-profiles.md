@@ -5,7 +5,7 @@ Compiles three layers into a session's worktree: `CLAUDE.md`, `.claude/settings.
 ## Layers
 
 1. Base — always applied, non-removable.
-   - Safety hooks: scope enforcement (PreToolUse), event logging (PostToolUse), format-on-write.
+   - Safety hooks: scope enforcement (PreToolUse), the Bash write re-check (around every Bash call), event logging (PostToolUse), format-on-write.
    - Core conventions: correct > simple > readable > fast; no abstraction until third use; no new dependency without approval; no unused config options.
    - Reviewer subagent (invoked by the gate before human review).
    - Budget: under 1500 tokens.
@@ -30,6 +30,39 @@ hooks: []            # additive only; base hooks cannot be removed
 mcp: []
 context_budget: 6000  # hard cap for the compiled result, tokens
 ```
+
+## Scope enforcement in a session (decisions 6, 63)
+
+Three compiled hooks, each reading the task's scope from the sidecar files `hooks/scope-in.pat`
+and `hooks/scope-out.pat` (`grep -E -f`), so no glob is ever interpolated into shell source. All
+three use the same order: `.claude/` first, then scope-out, then scope-in.
+
+- `scope-enforce.sh`, PreToolUse on `Edit|Write`, refuses a path outside scope-in or inside
+  scope-out before the edit happens.
+- `bash-guard.sh`, PreToolUse on `Bash`, is the cheap first line. It refuses command text that
+  plainly writes into `.claude/`. It reads text, so it cannot see a write made by an interpreter
+  (`python3` heredocs, `node -e`, `perl`, `dd`, a redirection inside a subshell), and its pattern
+  list is not meant to grow to cover them.
+- `bash-recheck.sh` runs on `Bash` at PreToolUse, PostToolUse and PostToolUseFailure. A command
+  that writes a file and then exits non-zero ends in PostToolUseFailure, which is why that event is
+  wired too. Before the call it snapshots the dirty paths outside the scope: `git status -z
+  --untracked-files=all`, one fingerprint per path, which is the `git hash-object --no-filters`
+  blob hash or `deleted`. The snapshot is written to `<compiled>/bash-snapshots/<tool_use_id>`.
+  After the call it takes the same listing again. Any line missing from the snapshot is a file
+  that was created, modified or deleted outside the scope during the call. For each one it appends
+  `{"type":"scope_violation","path","reason","command","pup_session_id"}` to the session's
+  `events.jsonl`, prints `SCOPE VIOLATION: <path> (<reason>) was written by: <command>` and exits 2.
+  At PostToolUse, exit 2 cannot undo the write. What it does is put the refusal in front of the
+  session straight away, which is decision 6's loud-backstop shape. A file that was already dirty
+  before the call and has not changed is not flagged again.
+- Paths from git never reach the shell as code. `-z` names each path raw. Before NUL becomes the
+  line separator, an embedded newline is mapped to `\001`, so every record is one line. Each name
+  is then handled only as a quoted variable, written out with `printf '%s'`, and passed to git
+  after `--`. A tool-use id is used as a file name only if it is `[A-Za-z0-9_-]`. With no usable
+  id the check compares against an empty snapshot, which flags every dirty path outside the scope.
+
+The merge gate's diff-vs-scope audit is still the authority. What the gate cannot see yet is
+listed in decision 63's ceilings.
 
 ## Project brief (decision 57)
 

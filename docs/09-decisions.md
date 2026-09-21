@@ -1282,7 +1282,9 @@ changes back into those docs is pending.
     as a stack trace rather than a named refusal. **A session-armed smudge filter still runs
     with the operator's environment** on `worktree add` and the gate's rebase, per the
     paragraph above (closed by decision 50). **Nothing re-checks after launch:** editing is
-    refused at admission only, so the radar remains the only after-the-fact check. **A session
+    refused at admission only, so the radar remains the only after-the-fact check (closed for a
+    session's own writes by decision 63: every Bash call is now re-checked against the
+    worktree after it runs; overlap between two live sessions is still the radar's). **A session
     can still deny launches:** `pup launch` is open, so a session can launch the broadest
     backlog task and every later operator launch overlapping it refuses; it is loud (a tmux
     window, a `pup status` row) and `--allow-overlap` is the operator's answer, so friction
@@ -3112,6 +3114,77 @@ changes back into those docs is pending.
     missing and never opened by the fleet readers, so its dormancy changes nothing they show;
     the place to deal with a gone project's row is the `pup init --forget <id>` decision 43
     already names.
+
+63. **Every Bash call is re-checked against the worktree after it runs (2026-09-21).** Seen live
+    on 2026-09-17 in session t-mtni8c6t. `src/cli/no-adapter-guard.utils.ts` and its test were
+    outside the session's scope-in, both as stored and as compiled into `scope-in.pat`. The
+    session changed both from Bash with a `python3` heredoc that called
+    `open(path, 'w').write(...)`. No `scope_violation` was recorded, the edit went into the
+    commit, and the merge gate's diff-vs-scope audit was the first thing that would have
+    noticed. `bash-guard.sh` matches command text that looks like a write, and decision 41
+    already stated the ceiling: editing is refused at admission only. No pattern list can name
+    every interpreter heredoc (`python3`, `node`, `perl`, `tee`, `dd`, a redirection inside a
+    subshell), so the list was left alone and the worktree is read instead.
+    *The mechanism.* A new compiled hook, `bash-recheck.sh`, is registered for `Bash` at
+    PreToolUse, next to `bash-guard.sh`, and at PostToolUse and PostToolUseFailure. A command
+    that writes and then exits non-zero ends in the second of those, which is why both are
+    wired. Before the call it writes a snapshot: one line
+    `<fingerprint> <reason> <path>` per dirty path outside the scope, taken from
+    `git status --porcelain=v1 -z --untracked-files=all --no-renames`. The fingerprint is the
+    blob hash from `git hash-object --no-filters`, or `deleted`. The snapshot is stored under
+    `<compiled>/bash-snapshots/<tool_use_id>`, so calls running in parallel each have their
+    own. After the call it lists again and `grep -vxF` keeps the lines the snapshot does not
+    have. That catches a file created, rewritten or deleted during the call, and leaves out a
+    file that was already dirty and did not change. Each such line appends
+    `{"type":"scope_violation", "path", "reason", "command", "pup_session_id"}` to the
+    session's `events.jsonl` and prints
+    `SCOPE VIOLATION: <path> (<reason>) was written by: <command>`. The hook then exits 2,
+    which is decision 6's loud-backstop shape: the write has already happened, and the refusal
+    is in front of the session on the same turn. The reasons are `protected-path` (`.claude/`,
+    matched case-insensitively), `scope-out` and `outside-scope-in`, checked in the Edit/Write
+    hook's order and against the same sidecar pattern files, so the Bash check cannot read a
+    scope more loosely than the Edit/Write check does. `bash-guard.sh` stays as the cheap first
+    line and was not changed.
+    *Worktree names are data, never code.* Any file name in the worktree is chosen by the
+    session. With `-z`, git gives each path raw. `tr` maps a newline inside a name to `\001`
+    before it turns NUL into the line separator, so one record is always one line and a name is
+    never split. From there a name is only ever a double-quoted variable: matched through
+    `grep -f` on stdin, printed with `printf '%s'` (sh's `echo` would interpret a backslash),
+    passed to git after `--`, and handed to `jq --arg`. It is never unquoted, never globbed and
+    never in `eval`. `--no-filters` and `-c core.fsmonitor=` mean the check does not run a
+    clean filter or an fsmonitor hook the session may have armed. A tool-use id that is not
+    `[A-Za-z0-9_-]` is dropped rather than used as a file name. With no id the check compares
+    against an empty snapshot, which is the loud direction. A payload that cannot be parsed is
+    refused.
+    *Tests,* in `profile-compiler.test.ts`, against the compiled hook on a real temp git
+    worktree, run as Claude Code runs it (pre hook, then the command, then post hook). A
+    `python3` heredoc that writes `src/cli/index.ts`, outside scope-in, is refused with exit 2,
+    the path and the command on stderr, and exactly one `scope_violation` line. The same heredoc
+    writing an in-scope file passes silently and records nothing. A new file in scope-out
+    written by a command that then fails is refused at PostToolUseFailure. A deletion and a
+    write into `.claude/` are refused with their reasons. A file dirty before the call passes an
+    unrelated call and is refused once the call changes it. A missing or hostile tool-use id
+    compares against nothing. A file named `-n $(touch pwned) ';x \ ` is refused and named in
+    full, and `pwned` appears in no directory. A name with a newline is refused too. Settings
+    wire the hook for Bash at all three events. *The discriminating mutations*, each run
+    against a backup copy of the service and restored from it: removing the post-check (an
+    `exit 0` ahead of it) fails six tests, including the heredoc one; ignoring the snapshot
+    fails two; dropping the PostToolUseFailure wiring fails one.
+    *Ceilings.* The violation is in the session's `events.jsonl`, not in the store's `events`
+    table: no code path folds hook lines into that table, so `pup review`'s scope-violation
+    count does not see it yet. That fold is a separate task in the CLI and the store, outside
+    this scope. The check reports and does not revert, and the merge gate's diff-vs-scope
+    audit is still the authority. The hooks and their snapshots are in the store, which a
+    session's shell can reach (decision 57), so a session that sets out to defeat the check can
+    do so. This closes the accidental route, not the adversarial one. A file whose name holds a
+    control character is fingerprinted `unhashable`, so once it is dirty a later rewrite of it
+    is not noticed; creating or deleting it still is. Untracked output that is not
+    gitignored and falls outside the scope (a coverage report, a cache) is refused like a write,
+    because `git add -A` would commit it. A call interrupted before PostToolUse, or refused by
+    `bash-guard.sh` after the snapshot has been taken (the two PreToolUse hooks run in
+    parallel), leaves its snapshot file behind. The check runs under the 5-second hook timeout,
+    and a worktree with thousands of dirty paths outside the scope could exceed it. The
+    conductor's profile has no scope and does not get the hook.
 
 ## Implementation notes
 

@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -178,6 +186,156 @@ describe('generated bash guard', () => {
         .status,
     ).toBe(0);
     expect(runHook('hooks/bash-guard.sh', { tool_input: { command: 'pnpm test' } }).status).toBe(0);
+  });
+});
+
+describe('generated bash re-check (decision 63)', () => {
+  // No inherited GIT_*: under the pre-commit hook GIT_INDEX_FILE names the real
+  // index, and a temp repo's `git add` would rewrite it.
+  const GIT_ENV: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  let root: string;
+  let worktree: string;
+  let events: string;
+
+  /** A real git worktree with one commit, and the session's profile compiled for it. */
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'pup-recheck-')));
+    worktree = join(root, 'wt');
+    events = join(root, 'events.jsonl');
+    mkdirSync(join(worktree, 'src/net'), { recursive: true });
+    mkdirSync(join(worktree, 'src/cli'), { recursive: true });
+    writeFileSync(join(worktree, 'src/net/client.ts'), 'export {};\n');
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'export {};\n');
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['add', '-A'],
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'],
+    ]) {
+      spawnSync('git', args, { cwd: worktree, env: GIT_ENV });
+    }
+    const outDir = join(root, 'compiled');
+    const compiled = ProfileCompiler.compileProfile(
+      makeInput({ worktreePath: worktree, eventsFile: events, outDir }),
+    );
+    ProfileCompiler.writeCompiledProfile(compiled, outDir);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function hook(phase: string, command: string, id = 'toolu_01abc') {
+    return spawnSync('sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {
+      input: JSON.stringify({ hook_event_name: phase, tool_use_id: id, tool_input: { command } }),
+      encoding: 'utf8',
+      env: { ...GIT_ENV, PUP_SESSION_ID: 's-1' },
+    });
+  }
+
+  /** The Bash call as Claude Code runs it: the pre hook, the command, the post hook. */
+  function bash(command: string, phase = 'PostToolUse') {
+    expect(hook('PreToolUse', command).status).toBe(0);
+    spawnSync('sh', ['-c', command], { cwd: worktree, env: GIT_ENV });
+    return hook(phase, command);
+  }
+
+  function violations(): Record<string, string>[] {
+    if (!existsSync(events)) return [];
+    return readFileSync(events, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, string>)
+      .filter((event) => event.type === 'scope_violation');
+  }
+
+  const heredoc = (path: string) =>
+    `python3 - <<'EOF'\nopen('${path}', 'w').write('changed\\n')\nEOF`;
+
+  it('refuses a python3 heredoc that wrote outside scope-in, and records the violation', () => {
+    const command = heredoc('src/cli/index.ts');
+    const result = bash(command);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('SCOPE VIOLATION: src/cli/index.ts (outside-scope-in)');
+    expect(result.stderr).toContain(command);
+    expect(violations()).toEqual([
+      {
+        type: 'scope_violation',
+        pup_session_id: 's-1',
+        path: 'src/cli/index.ts',
+        reason: 'outside-scope-in',
+        command,
+      },
+    ]);
+  });
+
+  it('passes a heredoc that wrote inside scope-in', () => {
+    const result = bash(heredoc('src/net/client.ts'));
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(violations()).toEqual([]);
+  });
+
+  it('refuses a new file in scope-out, written by a command that then failed', () => {
+    const result = bash(
+      'mkdir -p src/net/legacy && printf x > src/net/legacy/old.ts; exit 1',
+      'PostToolUseFailure',
+    );
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => [v.path, v.reason])).toEqual([
+      ['src/net/legacy/old.ts', 'scope-out'],
+    ]);
+  });
+
+  it('refuses a deletion and a write into .claude/', () => {
+    const result = bash('rm src/cli/index.ts; mkdir .claude && printf x > .claude/settings.json');
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => [v.path, v.reason])).toEqual([
+      ['src/cli/index.ts', 'outside-scope-in'],
+      ['.claude/settings.json', 'protected-path'],
+    ]);
+  });
+
+  it('holds a file dirty before the call against the call only once it changes', () => {
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'dirty before\n');
+    expect(bash('echo unrelated').status).toBe(0);
+    expect(bash(heredoc('src/cli/index.ts')).status).toBe(2);
+    expect(violations()).toHaveLength(1);
+  });
+
+  it('compares against nothing when the call has no usable snapshot id', () => {
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'dirty before\n');
+    expect(hook('PreToolUse', 'echo hi', 'bad/../id').status).toBe(0);
+    const result = hook('PostToolUse', 'echo hi', 'bad/../id');
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => v.path)).toEqual(['src/cli/index.ts']);
+  });
+
+  it('treats a hostile file name as data: never run, and named whole', () => {
+    // Relative, so it would land in the hook's cwd, the worktree or the root.
+    const name = `-n $(touch pwned) ';x \\ `;
+    const result = bash(`printf x > "${name.replace(/[$\\]/g, '\\$&')}"`);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(`SCOPE VIOLATION: ${name} (outside-scope-in)`);
+    for (const dir of [root, worktree, process.cwd()]) {
+      expect(existsSync(join(dir, 'pwned'))).toBe(false);
+    }
+    expect(violations().map((v) => v.path)).toEqual([name]);
+    expect(bash(`printf x > "$(printf 'a\\nb')"`).status).toBe(2);
+    expect(violations().map((v) => v.path)).toEqual([name, 'a\u0001b']);
+  });
+
+  it('wires the re-check before and after every Bash call, failures included', () => {
+    const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
+    for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
+      const bashHooks = (hooks[event] ?? [])
+        .filter((e) => e.matcher === 'Bash')
+        .flatMap((e) => e.hooks.map((h) => h.command));
+      expect(bashHooks.some((c) => c.endsWith('bash-recheck.sh'))).toBe(true);
+    }
   });
 });
 
