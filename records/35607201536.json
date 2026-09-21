@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T13:46:29.510Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35607201536",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35607201536",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4107f71e5d096d517fedcb31517d3d6488825232",
+  "source": "pr",
+  "pr_number": 107,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "f901f16ff87fefe4fe2b20077b69f4e1280330b2",
+  "prior_importants": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2995-2997",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "79-82",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/ui/header.component.tsx",
+      "line": "52",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Docstring line 52 is ~124 chars vs. ~78-80 for its neighbors in the same block — two sentences were merged during this fix (adding the zero-project clause) but not rewrapped to match the surrounding line width; purely cosmetic since biome/prettier doesn't rewrap comment prose, fixable by breaking after \"(decision 61):\" and reflowing the rest.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 2.6646847500000015,
+  "duration_ms": 270822,
+  "num_turns": 35,
+  "tokens": {
+    "input": 45,
+    "output": 14682,
+    "cache_read": 1108365,
+    "cache_creation": 58055,
+    "total": 1181147
+  }
+}
