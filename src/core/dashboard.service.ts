@@ -6,6 +6,7 @@ import { conductorName, conductorSocket } from '../claude/session-runtime.servic
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
 import { eventDetail } from './dashboard-events.utils.js';
+import type { SessionState } from './db.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
@@ -206,10 +207,10 @@ function dashboardSession(
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   return {
     // The store is session-writable and, since the fleet view (decision 60),
-    // not always the caller's own. `state` reaches the terminal only through
-    // equality against known literals; these two are printed as stored.
+    // not always the caller's own: all three print as stored, and no CHECK
+    // constraint holds `state` to its type, so it is scrubbed like the others.
     id: sanitizeReason(row.id),
-    state: row.state,
+    state: sanitizeReason(row.state) as SessionState,
     branch: sanitizeReason(row.branch),
     taskId: row.task_id,
     goal: goalHeadline(spec.goal),
