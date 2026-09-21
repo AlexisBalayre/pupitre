@@ -1399,7 +1399,8 @@ changes back into those docs is pending.
     store directory holding a `state.db` with no `projects` row — `pup status` in a repo that
     never ran `pup init` creates one — is not a project and is skipped. Nothing prunes stale
     projects; a `pup init --forget <id>` would be the place.
-    *Addendum, 2026-09-21: `pup status` and `pup ui` may read across stores; nothing else may.*
+    *Addendum, 2026-09-21: `pup status` reads across stores, and `pup ui` will with its next
+    task; nothing else may.*
     Outside any repo, `pup status` no longer picks the one live project or refuses with the
     listing: it prints the fleet view, one block per registered project, and `pup status --all`
     prints the same from anywhere (decision 60). Reading every store is a third door to
@@ -2896,11 +2897,12 @@ changes back into those docs is pending.
     prints `<id>  <repo_path>  unreadable: <reason>` and the fleet moves on to the next
     project, as `listRegisteredProjects` degrades an unreadable store rather than failing.
     *Operator-only, and status only for now.* The addendum to decision 43 records why only
-    `pup status` and `pup ui` may read across stores; `pup ui --all` is the next task. The
+    the two readers may cross stores: `pup status` now, `pup ui` with the next task, which
+    adds `pup ui --all`. The
     attach command is not in the header: it is one `--project` away, on the full table.
-    *Dormant projects* are hidden unless `--dormant` is given, per the design; no project can
-    be dormant yet, so the flag lands with the task that adds dormancy rather than as a no-op
-    option here.
+    *Dormant projects* are hidden unless `--dormant` is given, per the multi-project design
+    the backlog carries as task t-mu6vjmba (dormancy and `pup project`); no project can be
+    dormant yet, so the flag lands with that task rather than as a no-op option here.
     *Tests,* on temp stores under a stubbed HOME: two projects print their blocks with the
     need-you rows, debt and counts; `--all` inside a repo prints what outside prints while plain
     `pup status` there prints its own table; a gone repo whose bare store holds only its

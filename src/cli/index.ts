@@ -970,14 +970,6 @@ export function buildProgram(): Command {
     });
 
   /**
-   * The whole of `pup status`, printed from one snapshot — and the whole of
-   * `pup ui` when its stdout is not a terminal. A piped `pup ui` prints this
-   * rather than refusing, so a dashboard key in a script degrades to the text
-   * the operator would have read anyway; sharing the function is what keeps the
-   * two from drifting into two different accounts of the same store
-   * (decision 52).
-   */
-  /**
    * One block per registered project, from each store's own snapshot: its
    * header, then only what waits on the operator, then counts (decision 60).
    * A project whose repo is gone is marked missing and its store left shut —
@@ -1034,6 +1026,14 @@ export function buildProgram(): Command {
     );
   }
 
+  /**
+   * The whole of `pup status`, printed from one snapshot — and the whole of
+   * `pup ui` when its stdout is not a terminal. A piped `pup ui` prints this
+   * rather than refusing, so a dashboard key in a script degrades to the text
+   * the operator would have read anyway; sharing the function is what keeps the
+   * two from drifting into two different accounts of the same store
+   * (decision 52).
+   */
   function printDashboard(db: Database, snapshot: DashboardSnapshot): void {
     for (const entry of snapshot.overdueDebt) {
       console.log(

@@ -109,10 +109,7 @@ export function fleetSummary(snapshot: DashboardSnapshot): FleetSummary {
     snapshot.sessions.filter((session) => session.state === state).length;
   return {
     needsYou: snapshot.sessions.filter(
-      (session) =>
-        session.state === 'blocked' ||
-        session.state === 'awaiting-review' ||
-        session.stalledAgeMs !== undefined,
+      (session) => sortsFirst(session) || session.state === 'awaiting-review',
     ),
     running: count('running'),
     planned: snapshot.backlog.length,
@@ -209,7 +206,8 @@ function dashboardSession(
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   return {
     // The store is session-writable and, since the fleet view (decision 60),
-    // not always the caller's own; `state` is checked on write, these are not.
+    // not always the caller's own. `state` reaches the terminal only through
+    // equality against known literals; these two are printed as stored.
     id: sanitizeReason(row.id),
     state: row.state,
     branch: sanitizeReason(row.branch),

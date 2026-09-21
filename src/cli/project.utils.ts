@@ -183,8 +183,8 @@ function selectTheOnlyOne(registered: RegisteredProject[]): ResolvedProject {
  * its store; an empty fleet refuses, since there is nothing to show and the
  * fix is the operator's.
  */
-export function fleetProjects(base?: string): RegisteredProject[] {
-  const registered = listRegisteredProjects(base);
+export function fleetProjects(): RegisteredProject[] {
+  const registered = listRegisteredProjects();
   if (registered.length === 0)
     throw new ProjectResolutionError(`No project registered; ${INIT_HINT}`);
   return registered;

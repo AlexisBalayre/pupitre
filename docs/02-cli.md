@@ -74,8 +74,10 @@ exit 1. `pup status` is the one exception: outside any repo it prints every proj
   activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,
   and the conflict radar. Merged and killed sessions are a count, not rows — the screen is for
   work someone can still change, and `pup status` is where the whole history is listed.
-  Piped or redirected, it prints what `pup status` prints, once, and exits 0. Runs in the
-  terminal's alternate screen, so quitting gives the scrollback back untouched (decision 52).
+  Piped or redirected inside a repo, it prints what `pup status` prints there, once, and
+  exits 0; outside a repo `pup ui` still resolves through decision 43's single-project rule,
+  not the fleet `pup status` prints there — it has no fleet view yet (decision 60). Runs in
+  the terminal's alternate screen, so quitting gives the scrollback back untouched (decision 52).
 
   The cursor moves with `↑`/`↓` over the session rows and the planned rows beneath them — one
   list, so an action always acts on the row it is on. Every key below runs the same core
