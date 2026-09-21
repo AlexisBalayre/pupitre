@@ -186,8 +186,6 @@ describe('typescriptAdapter.depGraph', () => {
 });
 
 describe('typescriptAdapter nested packages', () => {
-  // Decision 58: a directory with its own package.json has its own runner, so
-  // the root counts none of it. tools/plain has no manifest and is still walked.
   const clone = Array.from({ length: 8 }, (_, i) => `export const v${i} = ${i} * 2;`).join('\n');
   const tree = {
     'package.json': '{}',
@@ -266,8 +264,6 @@ describe('typescriptAdapter nested packages', () => {
   });
 
   it('ignores an untracked marker, even one present in both checkouts', () => {
-    // Nothing diffs or hashes an untracked file in the main checkout, so a
-    // marker a session drops there from its shell must buy nothing.
     const { 'tools/review/package.json': _, ...unmarked } = tree;
     const measurePath = makeTree(unmarked);
     const configPath = makeTree(unmarked);

@@ -14,7 +14,11 @@ export function repoCoverageRatio(report: CoverageReport): number | undefined {
   return instrumented === 0 ? undefined : covered / instrumented;
 }
 
-/** The report without the files `excluded` names. */
+/**
+ * Drop files another runner owns from the report before the ratchet reads it:
+ * the report and `coverableFiles` must agree on what counts, or the repo ratio
+ * moves for files no gate stage expects to be covered (decisions 32, 58).
+ */
 export function withoutFiles(
   report: CoverageReport,
   excluded: (file: string) => boolean,

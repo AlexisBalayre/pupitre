@@ -5,6 +5,7 @@ import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
 import { runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
+import { nestedPackageDirs } from './git-tree.client.js';
 import type {
   Adapter,
   CapabilityContext,
@@ -25,7 +26,6 @@ import {
   isCoverageExcluded,
   isInNestedPackage,
   isSourceFile,
-  nestedPackageDirs,
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
