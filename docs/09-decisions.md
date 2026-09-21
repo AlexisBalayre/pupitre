@@ -2976,7 +2976,41 @@ changes back into those docs is pending.
     cannot be read, and a store `openStore` refuses (an `events` view that cannot be indexed)
     each become their line while the live project still reads. Piped, it prints the fleet
     block. A session outside every repo and the conductor are refused.
-    *Ceilings.* The first project's fall-back for `c` and `A` is by count, not by cwd. Inside a
+    *A project whose path is not its own is never opened.* The security review of the first
+    cut found that the fleet turned a planted store into execution. `listRegisteredProjects`
+    pins a store's directory only to the hash of whatever `repo_path` its row holds (decision
+    43), and decision 43 gave that scan read rights only. A session can write
+    `~/.pupitre/<hash of P>/state.db` where P is the operator's real repo path plus a trailing
+    slash. That path exists and hashes differently, and the store holds backlog rows the
+    session wrote. `pup ui --all` would list it as a near-twin of the real project, `l` would
+    run `launchTask` there on the session's spec, and `c` would start a conductor there. So
+    before a fleet reader opens a registered project, `fleetRefusal` in `src/cli/index.ts`
+    requires `realpathSync(repo_path) === repo_path`. `pup status`'s `printFleet` and
+    `pup ui`'s `fleetReader` both use it, so the piped `pup ui` is covered too. A trailing
+    slash, a symlink or a `..` reads `<id>  <path>  not its own path: a variant of a repo
+    path, never opened`, beside the gone repo's `missing` line, and the store stays shut. A
+    real registration always holds the canonical path `git` resolved, so no honest project
+    is turned away, unless it was registered through a path that has since become a symlink.
+    That project's fleet line says so, and its own repo still works.
+    *Every id the dashboard draws is scrubbed where the snapshot is built.* `pup ui` draws
+    three foreign fields the fleet `pup status` never prints: the backlog task id (also
+    quoted in the launch prompt), the radar's two session ids, and the overdue ledger id. The
+    snapshot now passes all three through `sanitizeReason`, as it does a session row's id,
+    state and branch. The ledger id becomes a string: pup's schema makes it an integer, but a
+    planted store can create `ledger_entries` with a TEXT id before `openStore` runs, and
+    `CREATE TABLE IF NOT EXISTS` keeps that table. The single-project header's repo path is
+    sanitized too, since `--project <id>` can name a planted store. Tests: a store keyed to the
+    real repo path plus a slash is listed and left holding only its `projects` table, in
+    `pup status` outside a repo, in the piped `pup ui --all` and in the dashboard's reading. A
+    snapshot over a store with a planted TEXT-id ledger, a task id and overlap ids carrying an
+    escape comes out scrubbed; removing each of the three new scrubs fails that test, and
+    accepting any path in `fleetRefusal` fails the planted-path test. The header strips an
+    escape from its path.
+    *Ceilings.* A separate repo that a session can write to, at a canonical path of its own,
+    can still be registered and is opened like any other project. The check belongs in
+    `listRegisteredProjects`, so that every reader of `~/.pupitre` inherits it. That move is
+    out of this task's scope and is a follow-up task the operator will plan. The first
+    project's fall-back for `c` and `A` is by count, not by cwd. Inside a
     repo with `--all`, an empty cursor on a fleet refuses even though the cwd names a project,
     because the point is that the keys never read the cwd. Dormant projects (task t-mu6vjmba)
     will be skipped here as in the fleet `pup status` when that task lands.

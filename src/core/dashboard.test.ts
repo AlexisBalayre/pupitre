@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Database } from 'better-sqlite3';
+import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The tmux boundary only: the store, the events files and the transcripts all
@@ -466,6 +466,44 @@ describe('buildDashboardSnapshot', () => {
         expect(recentEvents?.every((event) => Date.parse(event.at) > 0)).toBe(true);
       });
 
+      // A planted store under ~/.pupitre authors every id `pup ui --all` draws
+      // (decision 61): the backlog's, the ledger's and the radar's too. The
+      // ledger table is planted before `openStore` runs, as a session would
+      // plant it, so its id column has no INTEGER affinity to lean on.
+      it('strips what a terminal would obey out of task, ledger and overlap ids', () => {
+        const file = join(tempRepo(), 'state.db');
+        const planted = new BetterSqlite3(file);
+        planted.exec(
+          'CREATE TABLE ledger_entries (id TEXT, project_id TEXT, description TEXT, ' +
+            "files TEXT DEFAULT '[]', reason TEXT, accepted_by TEXT, review_by TEXT, " +
+            "status TEXT DEFAULT 'open', created_at TEXT)",
+        );
+        planted.close();
+        const store = openStore(file);
+        const pid = projectId(repo);
+        try {
+          ensureProject(store, pid, repo);
+          insertTask(store, { id: 't-\u001b[2Jplan', projectId: pid, spec: '{}' });
+          store
+            .prepare(
+              'INSERT INTO ledger_entries (id, project_id, description, reason, accepted_by, review_by) ' +
+                "VALUES (?, ?, 'd', 'r', 'human', '2020-01-01')",
+            )
+            .run('8\u001b[2J', pid);
+          replaceOverlaps(store, [
+            { sessionA: 's-\u001b[2Ja', sessionB: 's-\u001b[2Jb', files: [] },
+          ]);
+
+          const snapshot = buildDashboardSnapshot(store, repo, NOW);
+
+          expect(snapshot.backlog.map((task) => task.id)).toEqual(['t- [2Jplan']);
+          expect(snapshot.overdueDebt.map((entry) => entry.id)).toEqual(['8 [2J']);
+          expect(snapshot.overlaps[0]).toMatchObject({ sessionA: 's- [2Ja', sessionB: 's- [2Jb' });
+        } finally {
+          store.close();
+        }
+      });
+
       it("strips what a terminal would obey out of the row's id, state and branch", () => {
         seedSession(db, repo, 's1');
         db.prepare('UPDATE sessions SET branch = ?, state = ? WHERE id = ?').run(
@@ -576,7 +614,7 @@ describe('buildDashboardSnapshot', () => {
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
 
       expect(snapshot.overdueDebt).toEqual([
-        { id: overdue, description: 'skipped the coverage bar', reviewBy: '2026-09-01' },
+        { id: String(overdue), description: 'skipped the coverage bar', reviewBy: '2026-09-01' },
       ]);
       expect(snapshot.openDebtCount).toBe(2);
     });

@@ -138,7 +138,8 @@ interface DashboardBacklogTask {
 
 /** One open ledger entry whose review-by date has passed (docs/04). */
 interface DashboardDebt {
-  id: number;
+  /** The ledger id as text, sanitized like every field a foreign store holds (decision 61). */
+  id: string;
   description: string;
   reviewBy: string;
 }

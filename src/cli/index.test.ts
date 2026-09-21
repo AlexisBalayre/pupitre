@@ -1126,6 +1126,45 @@ describe('CLI commands', () => {
         ]);
       });
 
+      // A store keyed to the hash of the operator's repo path plus a slash:
+      // the path exists, the hash differs, and its rows are a session's own.
+      // Listed, never opened, in all three fleet readers (decision 61).
+      it('never opens a project whose path is a variant of a repo path', () => {
+        const real = initRepo();
+        registerProject(real);
+        const variant = `${real}/`;
+        const plantedId = projectId(variant);
+        const plantedStore = join(home, '.pupitre', plantedId, 'state.db');
+        mkdirSync(join(home, '.pupitre', plantedId), { recursive: true });
+        const bare = new Database(plantedStore);
+        bare.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+        bare.prepare('INSERT INTO projects VALUES (?, ?)').run(plantedId, variant);
+        bare.close();
+        const line = `${plantedId}  ${variant}  not its own path: a variant of a repo path, never opened`;
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        buildProgram().parse(['status'], { from: 'user' });
+        const status = [...logs];
+        logs.length = 0;
+        runUi(false, ['ui', '--all']);
+        const piped = [...logs];
+        runUi(true, ['ui', '--all']);
+        const reading = mountedProps().read();
+
+        expect(status).toContain(line);
+        expect(piped).toContain(line);
+        expect(status).toContain(`${projectId(real)}  ${real}  conductor stopped`);
+        expect(reading.unreadable).toEqual([line]);
+        expect(reading.projects.map((p) => p.deps.repoPath)).toEqual([real]);
+        const check = new Database(plantedStore, { readonly: true });
+        const tables = check
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .all() as { name: string }[];
+        check.close();
+        expect(tables.map((table) => table.name)).toEqual(['projects']);
+      });
+
       it('prints the fleet `pup status` prints when piped', () => {
         const repo = initRepo();
         seedBacklogTask(repo, 't-plan', 'planned here');

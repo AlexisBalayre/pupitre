@@ -83,8 +83,10 @@ instead (decisions 60, 61, addendum to decision 43).
   row starts with its project's id, the header has one `<id>  <repo_path>  conductor running|down`
   line per project, and each overdue debt, open-debt count and radar line starts with its
   project's id. With one project the layout is exactly what plain `pup ui` draws. A project
-  whose repo is gone reads `missing: the repo no longer exists`, and a store that will not
-  open or read reads `unreadable: <reason>`, above the table, while the other projects still
+  whose repo is gone reads `missing: the repo no longer exists`, one whose registered path is
+  not its own canonical path (a trailing slash, a symlink) reads `not its own path: a variant
+  of a repo path, never opened` and is never opened, in `pup status` too, and a store that
+  will not open or read reads `unreadable: <reason>`, above the table, while the other projects still
   render. Every key acts on the highlighted row's own project, through that project's store
   and repo, never the current directory's. `c` and `A` act on the conductor of the highlighted
   row's project, and with no row under the cursor they refuse unless only one project is

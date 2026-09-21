@@ -111,6 +111,17 @@ describe('dashboard components', () => {
       expect(frame.includes('tmux -L pup-conductor-ab12cd34ef56')).toBe(visible);
     });
 
+    // `--project <id>` can name a store a session planted, and its path is
+    // whatever that store's `projects` row says (decision 29).
+    it('strips what a terminal would obey out of the repo path', () => {
+      const snapshot = snapshotFixture({ repoPath: '/repo/\u001b[2Jpupitre' });
+
+      const frame = frameOf(createElement(Header, { snapshot, showAttach: true }));
+
+      expect(frame).toContain('/repo/ [2Jpupitre');
+      expect(frame).not.toContain('\u001b[2J');
+    });
+
     it('prints the baseline figures it was given and skips the ones it was not', () => {
       const snapshot = snapshotFixture({
         baseline: { capturedAt: '2026-09-01T09:00:00.000Z', coverageRatio: 0.82, deadExports: 3 },
@@ -323,7 +334,7 @@ describe('dashboard components', () => {
       const frame = frameOf(
         createElement(Debt, {
           overdueDebt: [
-            { id: 8, description: 'shortcut taken', reviewBy: 'before the next release' },
+            { id: '8', description: 'shortcut taken', reviewBy: 'before the next release' },
           ],
           openDebtCount: 3,
         }),
@@ -544,7 +555,7 @@ describe('dashboard components', () => {
           origin: 'conductor',
         },
       ],
-      overdueDebt: [{ id: 8, description: 'shortcut taken', reviewBy: 'next release' }],
+      overdueDebt: [{ id: '8', description: 'shortcut taken', reviewBy: 'next release' }],
       openDebtCount: 1,
       overlaps: [{ sessionA: 's-a-1', sessionB: 's-b-1', files: ['src/a.ts'] }],
       radarStale: true,
@@ -613,7 +624,7 @@ describe('dashboard components', () => {
         backlog: [
           { id: 't-other', goal: 'the other plan', scope: [], acceptance: [], origin: 'human' },
         ],
-        overdueDebt: [{ id: 8, description: 'the other shortcut', reviewBy: 'soon' }],
+        overdueDebt: [{ id: '8', description: 'the other shortcut', reviewBy: 'soon' }],
         openDebtCount: 1,
         overlaps: [{ sessionA: 's-x-1', sessionB: 's-y-1', files: ['src/x.ts'] }],
       });

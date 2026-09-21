@@ -22,7 +22,8 @@ export function Header({
       <Text>
         <Text bold>pupitre</Text>
         <Text> {snapshot.projectId} </Text>
-        <Text dimColor>{snapshot.repoPath}</Text>
+        {/* `--project <id>` can name a store a session planted (decision 29). */}
+        <Text dimColor>{sanitizeReason(snapshot.repoPath)}</Text>
       </Text>
       <Text>
         <Text color={conductor.running ? 'green' : 'gray'}>

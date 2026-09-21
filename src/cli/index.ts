@@ -299,10 +299,29 @@ const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
 /**
- * What a fleet project whose repo is gone reads, in `pup status` and `pup ui`
- * alike; its store is never opened (decision 60).
+ * Why a fleet project is listed but never opened, in `pup status` and `pup ui`
+ * alike, or undefined when it may be opened. A repo that is gone is decision
+ * 60's case. A `repo_path` that is not its own canonical path — a trailing
+ * slash, a symlink, a `..` — is decision 61's: the store's directory is only
+ * pinned to the hash of whatever string its row holds, so a session can plant
+ * `~/.pupitre/<hash of the operator's repo + '/'>/state.db` with tasks it
+ * wrote, and the fleet would list it as a near-twin of the real project whose
+ * `l` launches the session's spec there and whose `c` starts a conductor.
+ * The real registration is always the canonical path `git` resolved.
  */
-const FLEET_MISSING = 'missing: the repo no longer exists';
+function fleetRefusal(registered: { repoPath: string; repoExists: boolean }): string | undefined {
+  if (!registered.repoExists) return 'missing: the repo no longer exists';
+  let canonical: string;
+  try {
+    canonical = realpathSync(registered.repoPath);
+  } catch {
+    // Gone between the listing and here: decision 60's case after all.
+    return 'missing: the repo no longer exists';
+  }
+  return canonical === registered.repoPath
+    ? undefined
+    : 'not its own path: a variant of a repo path, never opened';
+}
 
 /**
  * The only way to move a recorded push target, and it exists because origin
@@ -997,9 +1016,9 @@ export function buildProgram(): Command {
   /**
    * `pup ui --all`'s reading (decision 61): every registered project's store,
    * opened once and held for the dashboard's life, since each row's keys write
-   * through its own project's store and repo — never the cwd's. A project whose
-   * repo is gone, or whose store will not open, is a line of its own and never
-   * opened again; one whose snapshot throws is that reading's line, and the
+   * through its own project's store and repo — never the cwd's. A project
+   * `fleetRefusal` turns away, or whose store will not open, is a line of its
+   * own and never opened again; one whose snapshot throws is that reading's line, and the
    * rest of the fleet still renders — `printFleet`'s isolation, per reading.
    */
   function fleetReader(pupBin: string): () => DashboardReading {
@@ -1007,8 +1026,9 @@ export function buildProgram(): Command {
     const opened: { header: string; deps: ActionDeps }[] = [];
     for (const registered of fleetProjects()) {
       const header = fleetHeader(registered);
-      if (!registered.repoExists) {
-        shut.push(`${header}  ${FLEET_MISSING}`);
+      const refusal = fleetRefusal(registered);
+      if (refusal) {
+        shut.push(`${header}  ${refusal}`);
         continue;
       }
       try {
@@ -1043,16 +1063,18 @@ export function buildProgram(): Command {
   /**
    * One block per registered project, from each store's own snapshot: its
    * header, then only what waits on the operator, then counts (decision 60).
-   * A project whose repo is gone is marked missing and its store left shut —
-   * opening it would migrate a store nobody can act on. Each store is closed
+   * A project whose repo is gone, or whose path is not its own, is a line and
+   * its store left shut (`fleetRefusal`) — opening it would migrate a store
+   * nobody can act on, or one a session planted. Each store is closed
    * before the next is opened, so a long fleet holds one handle at a time.
    */
   function printFleet(now: number): void {
     fleetProjects().forEach((registered, index) => {
       if (index > 0) console.log('');
       const header = fleetHeader(registered);
-      if (!registered.repoExists) {
-        console.log(`${header}  ${FLEET_MISSING}`);
+      const refusal = fleetRefusal(registered);
+      if (refusal) {
+        console.log(`${header}  ${refusal}`);
         return;
       }
       let db: Database | undefined;
