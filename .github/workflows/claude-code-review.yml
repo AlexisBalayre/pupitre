@@ -81,8 +81,12 @@ jobs:
         # third-party actions are pinned, not floated on a mutable tag.
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
-          # No root package.json: the pnpm version lives in the tooling package.
-          package_json_file: tools/review/package.json
+          # Pinned here, not read from a manifest: the tree at this step is the
+          # merge ref, so any package.json's `packageManager` is the head's and
+          # would choose the pnpm binary every later step runs. The action still
+          # checks the root manifest's field against this; a head that changes
+          # it fails the run, it does not pick the binary.
+          version: 10.34.5
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -130,13 +134,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        # --ignore-workspace here and on every run step: pnpm walks up from
+        # --dir to find a workspace root, which is the head's checkout, so a
+        # head-committed pnpm-workspace.yaml could list this directory and
+        # inject its own preinstall and nodeOptions into the token-carrying
+        # install and runs. `tar -x` never removes a file, so a head that
+        # commits the directory itself is refused rather than merged into.
         run: |
+          set -o pipefail
+          if git ls-files --error-unmatch .review-tooling >/dev/null 2>&1; then
+            echo "::error::the PR head commits .review-tooling; refusing to run tooling from it"
+            exit 1
+          fi
           base_ref=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)
           merge_base=$(git merge-base "origin/${base_ref}" HEAD)
           mkdir -p .git/info .review-tooling
           echo '/.review-tooling/' >> .git/info/exclude
           git archive "$merge_base" tools/review | tar -x --strip-components=2 -C .review-tooling
-          pnpm install --dir .review-tooling --frozen-lockfile
+          pnpm install --dir .review-tooling --ignore-workspace --frozen-lockfile
 
       # Deterministic preflight: head freshness, tree cleanliness, the merge
       # base, and the full/incremental mode decision, all run as a plain step so
@@ -158,13 +173,13 @@ jobs:
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_TRIGGER: ${{ github.event_name == 'issue_comment' && 'comment' || github.event.action }}
           REVIEW_FORCE_FULL: ${{ github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude review full') }}
-        run: pnpm --dir .review-tooling --silent run review:preflight
+        run: pnpm --dir .review-tooling --ignore-workspace --silent run review:preflight
 
       - name: Generate review schema
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: gen-schema
         run: |
-          schema=$(pnpm --dir .review-tooling --silent run review:print-schema)
+          schema=$(pnpm --dir .review-tooling --ignore-workspace --silent run review:print-schema)
           # Escape single quotes so the schema embeds safely in the single-quoted
           # --json-schema token below, whatever its descriptions contain.
           schema=${schema//\'/\'\\\'\'}
@@ -245,7 +260,7 @@ jobs:
           REVIEW_MERGE_BASE: ${{ steps.preflight.outputs.merge_base }}
           GH_TOKEN: ${{ github.token }}
           REVIEW_POSTED_OUTPUT: ${{ github.workspace }}/posted.json
-        run: pnpm --dir .review-tooling --silent run review:post
+        run: pnpm --dir .review-tooling --ignore-workspace --silent run review:post
 
       - name: Emit review metrics
         # No record for a merged-PR or already-reviewed skip: a review that never
@@ -261,7 +276,7 @@ jobs:
           REVIEW_POSTED_INPUT: ${{ github.workspace }}/posted.json
           # pnpm --dir runs the writer in the package dir, so anchor the output to the workspace root where upload-artifact resolves its path
           REVIEW_METRICS_OUTPUT: ${{ github.workspace }}/review-metrics.json
-        run: pnpm --dir .review-tooling --silent run review:metrics
+        run: pnpm --dir .review-tooling --ignore-workspace --silent run review:metrics
 
       - name: Upload review metrics
         if: always() && steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'

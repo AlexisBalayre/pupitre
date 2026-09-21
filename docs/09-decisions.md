@@ -2814,9 +2814,24 @@ changes back into those docs is pending.
     every script step from it. Restoring in place, as AGENTS.md is restored, would dirty the
     tree before the preflight, which refuses a dirty tree, and would hide the head's copy from
     the reviewers who are meant to read it; the directory is added to `.git/info/exclude` so
-    it never reads as dirt. The early install from the merge ref is gone, so a run that dies at
-    the head checkout now leaves no metrics record. The CI review only executes the workflow
-    on `main`, so this PR's own run cannot exercise the change.
+    it never reads as dirt. **The operator's security review of the first cut found it
+    bypassable,** and three guards now hold it. pnpm walks up from `--dir` to find a workspace
+    root, and `.review-tooling/` sits inside the head's checkout, so a head-committed root
+    `pnpm-workspace.yaml` listing the directory had its root `preinstall` run by the
+    token-carrying install and its `nodeOptions: --require` injected into every script step
+    (reproduced with the pinned pnpm 10.34.5); the install and all four run steps pass
+    `--ignore-workspace`, verified to suppress both. `tar -x` never removes a file the base
+    archive lacks, so a head that commits `.review-tooling` itself is refused before the
+    archive is unpacked. And the pnpm binary was chosen by `packageManager` in the merge ref's
+    `tools/review/package.json`, the head's copy; `pnpm/action-setup` now pins `version:
+    10.34.5` and reads no manifest for it (it still compares the root manifest's field, so a
+    head that changes it fails the run rather than choosing the binary). The restore runs
+    under `pipefail`, so a failed `git archive` is not masked by `tar`. The early install from
+    the merge ref is gone, so a run that dies at the head checkout now leaves no metrics
+    record. **The remaining ceiling:** on `pull_request` the head's own copy of this workflow
+    file is what runs, so a PR that edits the workflow can drop every guard above; those runs
+    are reviewed as workflow changes, not protected by them. An `@claude review` comment runs
+    `main`'s copy, which is the only run the guards bind.
     *Tests, and the mutation.* Unit tests on temp repos, never the gate run on itself (decision
     39): a nested test script that exits non-zero refuses the merge with its output in the
     detail; removing the stage loop from the gate fails five of the nested-package tests,

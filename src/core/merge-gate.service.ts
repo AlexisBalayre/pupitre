@@ -433,7 +433,7 @@ function gateAndMerge(
     }
     for (const stage of pkg.missing) {
       flaggedDebt.push({
-        description: `Nested package ${pkg.dir} changed with no ${stage} script, merged from session ${session.id}`,
+        description: `Nested package ${dir} changed with no ${stage} script, merged from session ${session.id}`,
         files: [...pkg.changedFiles].sort(),
       });
       stages.push({
