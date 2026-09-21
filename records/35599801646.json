@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-21T12:37:44.795Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35599801646",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35599801646",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cb39d3b5e8cea180624172018bf29c55cfc692c4",
+  "source": "pr",
+  "pr_number": 106,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "docs"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "245891d738cb8615cf38fb43b06c9c12feed27ba",
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "208-210",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "2892-2895",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 60 says `state` is left unsanitized because it is \"checked on write,\" but this PR's final commit sanitizes `state` and its own new comment says the opposite (no CHECK constraint exists) — the decision doc now contradicts the code the same PR ships.",
+      "body": "Decision 60 (added earlier in this PR by commit `4d85f8d`) records:\n\n> ...so the snapshot now passes a session row's `id` and `branch` through `sanitizeReason` like its other stored text (decision 29; `pup report` already did), leaving `state`, which is checked on write.\n\nThis commit's own new comment in `src/core/dashboard.service.ts` directly refutes that premise:\n\n> ...and no CHECK constraint holds `state` to its type, so it is scrubbed like the others.\n\n`sessions.state` in `src/core/db.client.ts` has no `CHECK` clause (contrast `ledger_entries.status`, which does) — the code comment is right, and decision 60's rationale for skipping `state` no longer holds now that `state` *is* sanitized (`state: sanitizeReason(row.state) as SessionState`). Since `AGENTS.md` designates `docs/09-decisions.md` as binding for future work (\"Read 09 before implementing anything it touches\"), an agent later touching this code would read decision 60 and conclude `state` doesn't need sanitizing — exactly the bug this PR just fixed. Decision 60 needs an addendum noting the \"checked on write\" premise didn't hold and `state` is now sanitized alongside `id`/`branch`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/cb39d3b5e8cea180624172018bf29c55cfc692c4/docs/09-decisions.md#L2892-L2895>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "213",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`state: sanitizeReason(row.state) as SessionState` force-casts an arbitrary sanitized string into the 7-member `SessionState` union with no runtime check that it's actually a member; a corrupted/foreign value (as the commit's own test proves: `'running [2J'` is not a `SessionState`) silently falls through `STATE_COLOURS[session.state]` as `undefined` rather than the type-promised `string`. Confirmed cosmetic-only today (no exhaustive switch over `SessionState`, no security-relevant equality gate reads this field), but the `as` assertion overstates what `sanitizeReason` can guarantee.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 2.358729099999999,
+  "duration_ms": 485077,
+  "num_turns": 32,
+  "tokens": {
+    "input": 39,
+    "output": 26245,
+    "cache_read": 1036561,
+    "cache_creation": 60858,
+    "total": 1123703
+  }
+}
