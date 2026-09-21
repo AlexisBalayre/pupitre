@@ -116,6 +116,7 @@ import {
   type ResolvedProject,
   resolveProject,
 } from './project.utils.js';
+import type { ActionDeps } from './ui/actions.service.js';
 import { App } from './ui/app.component.js';
 import {
   activityLabel,
@@ -124,6 +125,7 @@ import {
   originMarker,
   trailing,
 } from './ui/dashboard-text.utils.js';
+import type { DashboardReading } from './ui/use-snapshot.hook.js';
 
 /**
  * One-keystroke approval of the decision record a merge just drafted. TTY
@@ -295,6 +297,12 @@ const GATE_ENV_DESCRIPTION =
 
 const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
+
+/**
+ * What a fleet project whose repo is gone reads, in `pup status` and `pup ui`
+ * alike; its store is never opened (decision 60).
+ */
+const FLEET_MISSING = 'missing: the repo no longer exists';
 
 /**
  * The only way to move a recorded push target, and it exists because origin
@@ -925,35 +933,52 @@ export function buildProgram(): Command {
   program
     .command('ui')
     .description('Live dashboard: the status table, backlog, debt and conflict radar, in place')
-    .action(() => {
-      const { repoPath, db } = project();
-      const read = () => buildDashboardSnapshot(db, repoPath, Date.now());
+    .option('--all', 'every registered project in one table (the default outside a repo)')
+    .action((opts: { all?: boolean }) => {
+      // The bin the merge child is re-entered with — `process.argv[1]`, the
+      // same path a session's environment carries as `PUP_BIN`.
+      const pupBin = realpathSync(process.argv[1] ?? 'pup');
+      // Resolved as `pup status` resolves it: outside a repo, or with `--all`,
+      // every project; `--project` names one and wins (decisions 60, 61).
+      const selected = program.opts().project as string | undefined;
+      const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
+      const single = selected !== undefined || (own !== undefined && !opts.all);
+      if (!single) refuseUnlessOperator(own);
       // Piped, redirected or captured by a hook, there is no screen to hold in
       // place and no key to press, so the dashboard degrades to the one reading
       // `pup status` would have printed and exits 0 — a `pup ui` in a script is
       // a reasonable thing to have typed, not an error (decision 52).
       if (!process.stdout.isTTY) {
-        printDashboard(db, read());
+        if (!single) return printFleet(Date.now());
+        const { repoPath, db } = own ?? project();
+        printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
         return;
       }
-      const readOnlyReason = uiReadOnlyReason(db);
-      const instance = render(
-        createElement(App, {
-          read,
+      let props: Parameters<typeof App>[0];
+      if (single) {
+        const { repoPath, db } = own ?? project();
+        // The store and repo the keys write through.
+        const deps: ActionDeps = { db, repoPath, pupBin };
+        const readOnlyReason = uiReadOnlyReason(db);
+        props = {
+          read: () => ({
+            projects: [{ deps, snapshot: buildDashboardSnapshot(db, repoPath, Date.now()) }],
+            unreadable: [],
+          }),
           showAttach: showAttachCommand(db),
-          // The store and repo the keys write through, and the bin the merge
-          // child is re-entered with — `process.argv[1]`, the same path a
-          // session's environment carries as `PUP_BIN`.
-          deps: { db, repoPath, pupBin: realpathSync(process.argv[1] ?? 'pup') },
           ...(readOnlyReason ? { readOnlyReason } : {}),
-        }),
-        {
-          // vim's and htop's buffer: the fleet is watched for a while and then
-          // left, and the scrollback the operator was reading before is theirs
-          // to get back untouched.
-          alternateScreen: true,
-        },
-      );
+        };
+      } else {
+        // Only the operator gets here, refused above like `pup status --all`,
+        // so the fleet is always driven and always shown the attach command.
+        props = { read: fleetReader(pupBin), showAttach: true };
+      }
+      const instance = render(createElement(App, props), {
+        // vim's and htop's buffer: the fleet is watched for a while and then
+        // left, and the scrollback the operator was reading before is theirs
+        // to get back untouched.
+        alternateScreen: true,
+      });
       // Ink restores the primary screen on unmount, so every way out has to
       // reach unmount. `q` and Ctrl-C already do; a SIGINT or SIGTERM sent from
       // elsewhere would otherwise leave the operator's terminal on the
@@ -970,6 +995,52 @@ export function buildProgram(): Command {
     });
 
   /**
+   * `pup ui --all`'s reading (decision 61): every registered project's store,
+   * opened once and held for the dashboard's life, since each row's keys write
+   * through its own project's store and repo — never the cwd's. A project whose
+   * repo is gone, or whose store will not open, is a line of its own and never
+   * opened again; one whose snapshot throws is that reading's line, and the
+   * rest of the fleet still renders — `printFleet`'s isolation, per reading.
+   */
+  function fleetReader(pupBin: string): () => DashboardReading {
+    const shut: string[] = [];
+    const opened: { header: string; deps: ActionDeps }[] = [];
+    for (const registered of fleetProjects()) {
+      const header = fleetHeader(registered);
+      if (!registered.repoExists) {
+        shut.push(`${header}  ${FLEET_MISSING}`);
+        continue;
+      }
+      try {
+        const { db, repoPath } = openRegistered(registered);
+        opened.push({ header, deps: { db, repoPath, pupBin } });
+      } catch (error) {
+        shut.push(`${header}  unreadable: ${failureSummary(error)}`);
+      }
+    }
+    return () => {
+      const now = Date.now();
+      const reading: DashboardReading = { projects: [], unreadable: [...shut] };
+      for (const { header, deps } of opened) {
+        try {
+          reading.projects.push({
+            deps,
+            snapshot: buildDashboardSnapshot(deps.db, deps.repoPath, now),
+          });
+        } catch (error) {
+          reading.unreadable.push(`${header}  unreadable: ${failureSummary(error)}`);
+        }
+      }
+      return reading;
+    };
+  }
+
+  /** A fleet project's id and repo, as its `pup status` block and `pup ui` line lead. */
+  function fleetHeader(registered: { id: string; repoPath: string }): string {
+    return `${registered.id}  ${sanitizeReason(registered.repoPath)}`;
+  }
+
+  /**
    * One block per registered project, from each store's own snapshot: its
    * header, then only what waits on the operator, then counts (decision 60).
    * A project whose repo is gone is marked missing and its store left shut —
@@ -979,9 +1050,9 @@ export function buildProgram(): Command {
   function printFleet(now: number): void {
     fleetProjects().forEach((registered, index) => {
       if (index > 0) console.log('');
-      const header = `${registered.id}  ${sanitizeReason(registered.repoPath)}`;
+      const header = fleetHeader(registered);
       if (!registered.repoExists) {
-        console.log(`${header}  missing: the repo no longer exists`);
+        console.log(`${header}  ${FLEET_MISSING}`);
         return;
       }
       let db: Database | undefined;

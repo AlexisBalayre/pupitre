@@ -1,6 +1,11 @@
 import { Box, Text } from 'ink';
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
-import { ID_COLUMN_CHARS, STATE_COLOURS, STATE_COLUMN_CHARS } from './dashboard.constants.js';
+import {
+  ID_COLUMN_CHARS,
+  PROJECT_COLUMN_CHARS,
+  STATE_COLOURS,
+  STATE_COLUMN_CHARS,
+} from './dashboard.constants.js';
 import {
   activityLabel,
   contextLabel,
@@ -29,22 +34,38 @@ import {
  * the first time this rendered, which pushed the header, the radar and the
  * footer off a 40-row screen to show work nobody can act on. `pup status` is
  * still where the whole history is listed.
+ *
+ * With `pup ui --all` over more than one project, `projects` names each row's
+ * project and a column for it leads the row; a single project draws no such
+ * column, so its layout is the one it always had (decision 61).
  */
 export function Sessions({
   sessions,
+  projects,
   finishedCount,
   selectedIndex,
 }: {
   sessions: DashboardSession[];
+  /** Each row's project id, in `sessions`' order; absent for a single project. */
+  projects?: string[];
   finishedCount: number;
   selectedIndex: number;
 }) {
   return (
     <Box flexDirection="column">
       {sessions.length === 0 ? <Text dimColor>no live sessions</Text> : null}
-      {sessions.map((session, index) => (
-        <SessionRow key={session.id} session={session} selected={index === selectedIndex} />
-      ))}
+      {sessions.map((session, index) => {
+        const project = projects?.[index];
+        return (
+          // Session ids are unique within a store, not across a fleet.
+          <SessionRow
+            key={`${project ?? ''}/${session.id}`}
+            session={session}
+            {...(project === undefined ? {} : { project })}
+            selected={index === selectedIndex}
+          />
+        );
+      })}
       {finishedCount > 0 ? (
         <Text dimColor>{`  ${finishedCount} finished — \`pup status\` lists them`}</Text>
       ) : null}
@@ -52,10 +73,19 @@ export function Sessions({
   );
 }
 
-function SessionRow({ session, selected }: { session: DashboardSession; selected: boolean }) {
+function SessionRow({
+  session,
+  project,
+  selected,
+}: {
+  session: DashboardSession;
+  project?: string;
+  selected: boolean;
+}) {
   return (
     <Text wrap="truncate-end">
       <Text color="cyan">{selected ? '>' : ' '} </Text>
+      {project === undefined ? null : <Text dimColor>{project.padEnd(PROJECT_COLUMN_CHARS)}</Text>}
       <Text color={STATE_COLOURS[session.state]} bold={session.needsHuman}>
         {session.state.padEnd(STATE_COLUMN_CHARS)}
       </Text>

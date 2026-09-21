@@ -38,6 +38,7 @@ import {
   type MergeHandlers,
   respawnSelected,
   runMerge,
+  selectedBlockedReason,
   sessionAttachTarget,
   steerSelected,
   toggleConductor,
@@ -45,6 +46,7 @@ import {
 } from './actions.service.js';
 import { App } from './app.component.js';
 import { MERGE_LOG_LINES } from './dashboard.constants.js';
+import type { DashboardReading } from './use-snapshot.hook.js';
 
 const DEPS = { db: {}, repoPath: '/repo', pupBin: '/abs/pup.js' } as unknown as ActionDeps;
 
@@ -88,13 +90,17 @@ function snapshotFixture(overrides: Partial<DashboardSnapshot> = {}): DashboardS
   };
 }
 
+/** One project's reading, written through `DEPS`, as `pup ui` in a repo reads it. */
+function readingOf(snapshot: DashboardSnapshot): DashboardReading {
+  return { projects: [{ deps: DEPS, snapshot }], unreadable: [] };
+}
+
 /** The dashboard, mounted on one fixture reading, with the keys live. */
 function mount(snapshot: DashboardSnapshot = snapshotFixture(), readOnlyReason?: string) {
   return render(
     createElement(App, {
-      read: () => snapshot,
+      read: () => readingOf(snapshot),
       showAttach: true,
-      deps: DEPS,
       ...(readOnlyReason ? { readOnlyReason } : {}),
     }),
   );
@@ -451,6 +457,123 @@ describe('dashboard controls', () => {
     });
   });
 
+  // Decision 61: with `--all` the rows come from several stores, and every key
+  // acts on its row through that row's own project — the first project, the
+  // one a cwd would have resolved, is the wrong answer for all of them.
+  describe('across projects', () => {
+    const DEPS_B = { db: {}, repoPath: '/repo-b', pupBin: '/abs/pup.js' } as unknown as ActionDeps;
+    const projectA = snapshotFixture({ backlog: [] });
+    const projectB = snapshotFixture({
+      projectId: 'bbbbbbbbbbbb',
+      repoPath: '/repo-b',
+      conductor: { running: true, name: 'pup-conductor-bbbbbbbbbbbb', attachCommand: 'tmux …' },
+      sessions: [
+        sessionFixture({ id: 's-b-blocked', state: 'blocked' }),
+        sessionFixture({ id: 's-b-review', state: 'awaiting-review' }),
+      ],
+      backlog: [{ id: 't-b-plan', goal: 'B', scope: [], acceptance: [], origin: 'human' }],
+    });
+
+    function mountFleet(projects = [projectA, projectB]) {
+      const deps = [DEPS, DEPS_B];
+      return render(
+        createElement(App, {
+          read: () => ({
+            projects: projects.map((snapshot, index) => ({
+              deps: deps[index] as ActionDeps,
+              snapshot,
+            })),
+            unreadable: [],
+          }),
+          showAttach: true,
+        }),
+      );
+    }
+
+    // Rows: s-run-1 (A), s-b-blocked, s-b-review, t-b-plan (all B).
+    it.each([
+      ['steer', [DOWN, 's', 'g', 'o', ENTER], () => [steerSelected, DEPS_B, 's-b-blocked', 'go']],
+      ['interrupt', [DOWN, 'i'], () => [interruptSelected, DEPS_B, 's-b-blocked']],
+      ['kill', [DOWN, 'k', 'y'], () => [killSelected, DEPS_B, 's-b-blocked']],
+      ['unblock', [DOWN, 'u', 'y'], () => [unblockSelected, DEPS_B, 's-b-blocked']],
+      ['launch', [DOWN, DOWN, DOWN, 'l', ENTER], () => [launchSelected, DEPS_B, 't-b-plan', '']],
+      [
+        'conductor stop',
+        [DOWN, 'c'],
+        () => [toggleConductor, DEPS_B, true, { model: '', workerModel: '' }],
+      ],
+    ])('dispatches the %s with the row’s own project', async (_what, keys, expected) => {
+      const [action, ...args] = expected() as [(...a: unknown[]) => unknown, ...unknown[]];
+      const instance = mountFleet();
+
+      await press(instance, ...keys);
+
+      expect(action).toHaveBeenCalledWith(...args);
+      instance.unmount();
+    });
+
+    // Both leave the key handler before they act, so the row's project has to
+    // survive the wait — and the merge holds the keys until its child exits.
+    it.each([
+      ['merge', [DOWN, DOWN, 'm', 'y'], runMerge],
+      ['respawn', [DOWN, DOWN, 'R'], respawnSelected],
+    ])('starts the %s through the row’s own project', async (_what, keys, action) => {
+      const instance = mountFleet();
+
+      await press(instance, ...keys);
+
+      expect(vi.mocked(action).mock.calls[0]?.slice(0, 2)).toEqual([DEPS_B, 's-b-review']);
+      instance.unmount();
+    });
+
+    it('asks the row’s own project for the block reason and the conductor to attach', async () => {
+      const instance = mountFleet();
+
+      await press(instance, DOWN, 'u');
+      expect(selectedBlockedReason).toHaveBeenCalledWith(DEPS_B, 's-b-blocked');
+      await press(instance, ESC, 'A');
+
+      expect(conductorAttachTarget).toHaveBeenCalledWith(projectB);
+      instance.unmount();
+    });
+
+    it('still acts on the first project’s rows through the first project', async () => {
+      const instance = mountFleet();
+
+      await press(instance, 'k', 'y');
+
+      expect(killSelected).toHaveBeenCalledWith(DEPS, 's-run-1');
+      instance.unmount();
+    });
+
+    // A single project's conductor needs no row; a fleet's cannot be guessed.
+    it('refuses the conductor keys with no row to say whose', async () => {
+      const empty = { sessions: [], backlog: [] };
+      const instance = mountFleet([
+        snapshotFixture(empty),
+        snapshotFixture({ ...empty, projectId: 'bbbbbbbbbbbb' }),
+      ]);
+
+      await press(instance, 'c');
+      expect(instance.lastFrame()).toContain('Whose conductor?');
+      await press(instance, 'A');
+
+      expect(toggleConductor).not.toHaveBeenCalled();
+      expect(conductorAttachTarget).not.toHaveBeenCalled();
+      expect(instance.lastFrame()).toContain('No conductor to attach to.');
+      instance.unmount();
+    });
+
+    it('starts a lone project’s conductor from an empty screen', async () => {
+      const instance = mount(snapshotFixture({ sessions: [], backlog: [] }));
+
+      await press(instance, 'c', ENTER, ENTER);
+
+      expect(toggleConductor).toHaveBeenCalledWith(DEPS, false, { model: '', workerModel: '' });
+      instance.unmount();
+    });
+  });
+
   describe('the detail pane', () => {
     const detailed = snapshotFixture({
       sessions: [
@@ -617,10 +740,9 @@ describe('dashboard controls', () => {
         createElement(App, {
           read: () => {
             reads += 1;
-            return snapshotFixture();
+            return readingOf(snapshotFixture());
           },
           showAttach: false,
-          deps: DEPS,
           readOnlyReason: REASON,
         }),
       );

@@ -1,6 +1,33 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import type { ActionDeps } from './actions.service.js';
 import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
+
+/**
+ * One project's snapshot and the store its rows' keys write through. The two
+ * travel together because a row is only ever acted on through the project it
+ * was read from: `pup ui --all` puts several stores' rows in one table, and an
+ * action handed any other store's deps would drive a fleet the row is not in
+ * (decision 61).
+ */
+export interface ProjectReading {
+  deps: ActionDeps;
+  snapshot: DashboardSnapshot;
+}
+
+/**
+ * Everything one look at the store returns: one project for `pup ui` in a repo,
+ * every registered one for `pup ui --all` (decision 61).
+ */
+export interface DashboardReading {
+  projects: ProjectReading[];
+  /**
+   * A line each for the projects that could not be read — a repo that is gone,
+   * a store that would not open or snapshot — already sanitized, as the fleet
+   * `pup status` prints them. Empty for a single project, whose read throws.
+   */
+  unreadable: string[];
+}
 
 /**
  * One reading and when it was taken. Private to the hook: what a caller gets is
@@ -8,7 +35,7 @@ import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
  * separately only invites a second reader to build one of these by hand.
  */
 interface SnapshotReading {
-  snapshot: DashboardSnapshot;
+  reading: DashboardReading;
   /**
    * When the reading was taken. On screen so a dashboard that has stopped
    * refreshing — a dead interval, a store that will not open — is not read as a
@@ -20,16 +47,16 @@ interface SnapshotReading {
 
 /**
  * The dashboard's clock. The only thing in `pup ui` that decides *when* to look;
- * `read` decides what a look returns, and it is always `buildDashboardSnapshot`,
- * so every component below renders one store reading taken at one instant
- * (decision 52). `read` must be stable across renders — the interval is rebuilt
- * whenever it is not.
+ * `read` decides what a look returns, and it is always `buildDashboardSnapshot`
+ * on each store, so every component below renders one store reading taken at
+ * one instant (decision 52). `read` must be stable across renders — the
+ * interval is rebuilt whenever it is not.
  */
-export function useSnapshot(read: () => DashboardSnapshot): SnapshotReading & {
+export function useSnapshot(read: () => DashboardReading): SnapshotReading & {
   refresh: () => void;
 } {
   const take = useCallback(
-    (): SnapshotReading => ({ snapshot: read(), readAt: new Date() }),
+    (): SnapshotReading => ({ reading: read(), readAt: new Date() }),
     [read],
   );
   const [reading, setReading] = useState(take);

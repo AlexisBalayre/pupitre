@@ -6,13 +6,13 @@ outside any repo, the store under `~/.pupitre` decides only when exactly one pro
 registered — with several it lists them as `id  repo_path` (a deleted repo is marked `(missing)`)
 and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
 project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
-exit 1. `pup status` is the one exception: outside any repo it prints every project instead
-(decision 60, addendum to decision 43).
+exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
+instead (decisions 60, 61, addendum to decision 43).
 
 ## Global options
 
 - `--project <id>` — control a registered project by id; the ids are the directory names under
-  `~/.pupitre`, and `pup status` from outside any repo heads each project's block with its id.
+  `~/.pupitre`, and `pup status` and `pup ui` from outside any repo show each project's id.
   Operator-only, as is the store's auto-select outside a repo: a session reaches only the
   project around its cwd, whose store is where its guards live (decision 43).
 
@@ -74,10 +74,23 @@ exit 1. `pup status` is the one exception: outside any repo it prints every proj
   activity marker, rejections, gate verdict, context reading and steer, the backlog beneath them,
   and the conflict radar. Merged and killed sessions are a count, not rows — the screen is for
   work someone can still change, and `pup status` is where the whole history is listed.
-  Piped or redirected inside a repo, it prints what `pup status` prints there, once, and
-  exits 0; outside a repo `pup ui` still resolves through decision 43's single-project rule,
-  not the fleet `pup status` prints there — it has no fleet view yet (decision 60). Runs in
-  the terminal's alternate screen, so quitting gives the scrollback back untouched (decision 52).
+  Piped or redirected, it prints what `pup status` prints in the same place, once, and exits 0.
+  Runs in the terminal's alternate screen, so quitting gives the scrollback back untouched
+  (decision 52).
+
+  Outside any repo, or with `--all` from anywhere, it reads every registered project's store
+  into one table (decision 61). With more than one project on screen, every session and planned
+  row starts with its project's id, the header has one `<id>  <repo_path>  conductor running|down`
+  line per project, and each overdue debt, open-debt count and radar line starts with its
+  project's id. With one project the layout is exactly what plain `pup ui` draws. A project
+  whose repo is gone reads `missing: the repo no longer exists`, and a store that will not
+  open or read reads `unreadable: <reason>`, above the table, while the other projects still
+  render. Every key acts on the highlighted row's own project, through that project's store
+  and repo, never the current directory's. `c` and `A` act on the conductor of the highlighted
+  row's project, and with no row under the cursor they refuse unless only one project is
+  shown. The projects are the ones registered when the dashboard opened; a project `pup init`
+  registers later shows up at the next `pup ui`. `--project <id>` wins over `--all`.
+  Operator-only, like `pup status --all`.
 
   The cursor moves with `↑`/`↓` over the session rows and the planned rows beneath them — one
   list, so an action always acts on the row it is on. Every key below runs the same core
