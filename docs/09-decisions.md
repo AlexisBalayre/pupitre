@@ -3302,7 +3302,8 @@ changes back into those docs is pending.
     only registered project. The check sits in `project.utils.ts` and not in the service because
     that file already reads the filesystem (`existsSync`, `readdirSync`) and opens stores.
     `realpathSync` adds no service, client or repository import. The row type,
-    `RegisteredProject`, is owned by core and exported from `fleet.service.ts`, the reader
+    `RegisteredProject`, is owned by core and exported from `src/core/types/fleet.types.ts`
+    beside the other fleet types, as the conventions place exported types; the reader
     that consumes it. `listRegisteredProjects` in `src/cli` produces it and imports the type.
     `pup project list` marks such a row `(not its own path)`, next to `(missing)`, so a planted
     near-twin is no longer printed as a plain `active` line beside the real project. The path is now resolved once

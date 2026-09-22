@@ -3,8 +3,9 @@ import type { DashboardSnapshot, FleetSummary } from './dashboard.types.js';
 
 /**
  * A project `pup init` registered, read back from its own store under
- * `~/.pupitre`. Owned here, where the fleet reads it; `listRegisteredProjects`
- * in `src/cli/project.utils.ts` is its producer (decision 65).
+ * `~/.pupitre`. Owned by core, whose fleet reader consumes it;
+ * `listRegisteredProjects` in `src/cli/project.utils.ts` is its producer
+ * (decision 65).
  */
 export interface RegisteredProject {
   id: string;
