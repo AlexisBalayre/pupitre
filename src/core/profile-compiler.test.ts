@@ -417,6 +417,16 @@ describe('generated bash re-check (decision 63)', () => {
     expect(failing.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
   });
 
+  it('lets the call run but refuses after it when its scratch dir cannot be made', () => {
+    writeFileSync(join(root, 'compiled/bash-snapshots'), 'a file where the directory goes');
+    expect(hook('PreToolUse', 'echo hi').status).toBe(0);
+    const after = hook('PostToolUse', 'echo hi');
+    expect(after.status).toBe(2);
+    expect(after.stderr).toContain(
+      'SCOPE CHECK FAILED: bash re-check could not make its scratch dir',
+    );
+  });
+
   it('wires the re-check before and after every Bash call, failures included', () => {
     const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
     for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {

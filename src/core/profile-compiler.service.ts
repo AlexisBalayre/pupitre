@@ -268,9 +268,16 @@ EVENTS='${input.eventsFile}'
 # out-of-scope dirty path — the loud direction.
 ID=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // empty')
 case "$ID" in *[!A-Za-z0-9_-]*) ID= ;; esac
+SNAPSHOTS='${join(input.outDir, 'bash-snapshots')}'
 SNAPSHOT=
-[ -n "$ID" ] && SNAPSHOT='${join(input.outDir, 'bash-snapshots')}'/"$ID"
-WORK=$(mktemp -d) || { echo "BLOCKED: bash re-check could not make a temp dir." >&2; exit 2; }
+[ -n "$ID" ] && SNAPSHOT="$SNAPSHOTS/$ID"
+# Scratch beside the snapshots, never mktemp's default location: under the merge
+# gate's sandbox-exec, that resolved to the system temp dir, which the sandbox does
+# not let it write. Failing to make it never blocks a call before it runs, and
+# refuses after it.
+WORK=$(mkdir -p "$SNAPSHOTS" && mktemp -d "$SNAPSHOTS/work.XXXXXX") || {
+  [ "$PHASE" = PreToolUse ] && exit 0
+  echo "SCOPE CHECK FAILED: bash re-check could not make its scratch dir." >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
 
 # One line per dirty path outside this task's scope: "<fingerprint> <reason> <path>".
@@ -325,7 +332,7 @@ out_of_scope() {
 if [ "$PHASE" = PreToolUse ]; then
   # Never blocks the call: a missing snapshot only makes the check after it louder.
   [ -n "$SNAPSHOT" ] || exit 0
-  mkdir -p "\${SNAPSHOT%/*}" && out_of_scope > "$WORK/before" && mv "$WORK/before" "$SNAPSHOT"
+  out_of_scope > "$WORK/before" && mv "$WORK/before" "$SNAPSHOT"
   exit 0
 fi
 

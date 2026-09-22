@@ -58,8 +58,9 @@ three use the same order: `.claude/` first, then scope-out, then scope-in.
   `events.jsonl`, prints `SCOPE VIOLATION: <path> (<reason>) was written by: <command>` and exits 2.
   At PostToolUse, exit 2 cannot undo the write. What it does is put the refusal in front of the
   session straight away, which is decision 6's loud-backstop shape. A file that was already dirty
-  before the call and has not changed is not flagged again. If git is missing or fails, the check
-  after the call refuses. The check before the call never blocks it.
+  before the call and has not changed is not flagged again. If git is missing or fails, or its
+  scratch dir under `<compiled>/bash-snapshots/` cannot be made, the check after the call refuses.
+  The check before the call never blocks it.
 - The same hook runs at PostToolUse on `BashOutput|TaskOutput`, because a background shell writes
   after its own call's check has run. That read has no snapshot of its own, so every dirty path
   outside the scope is flagged again there.

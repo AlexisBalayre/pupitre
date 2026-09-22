@@ -3177,7 +3177,14 @@ changes back into those docs is pending.
     `Commit or clean the worktree`, failing closed. It already forked once per path, twice per
     call, under a timeout that fails open. The script also sets `LC_ALL=C`, so that BSD `tr`
     cannot drop a name that is not valid UTF-8. That line is defensive and untested: APFS
-    refuses such names, and GNU `tr` reads bytes in any locale.
+    refuses such names, and GNU `tr` reads bytes in any locale. The script's scratch
+    directory is made under `<compiled>/bash-snapshots/`, not at `mktemp -d`'s default
+    location. Under the merge gate's `sandbox-exec` that default was the system temp dir,
+    which the sandbox refuses to write, so every pre-check exited 2 and the gate's test
+    stage failed on the first run. That bug also showed the pre-check could block a call.
+    A scratch dir that cannot be made now lets the call run, and the post-check refuses
+    with `SCOPE CHECK FAILED`. The re-check tests were re-run inside a sandbox built with
+    the gate's own `writeProfile` and `gateChildEnv`.
     *Tests,* in `profile-compiler.test.ts`, against the compiled hook on a real temp git
     worktree, run as Claude Code runs it (pre hook, then the command, then post hook), under
     a UTF-8 locale and killed at 4 seconds, so a hang fails the test. A
@@ -3195,7 +3202,7 @@ changes back into those docs is pending.
     write made after a call's post-check is refused when background output is read. 201 new
     files refuse with no violation recorded. With `git` missing from PATH, or a `git` that exits
     128, the post-check refuses with `SCOPE CHECK FAILED` and the pre-check still lets the call
-    run. *The discriminating mutations*, each run against a backup copy of the service and
+    run. It does the same when its scratch dir cannot be made. *The discriminating mutations*, each run against a backup copy of the service and
     restored from it: removing the post-check (an `exit 0` ahead of it) fails six tests,
     including the heredoc one; ignoring the snapshot fails two; dropping the PostToolUseFailure
     wiring fails one. Hashing every entry again without the regular-file guard, dropping the
