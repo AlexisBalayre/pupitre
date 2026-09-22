@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -178,6 +186,265 @@ describe('generated bash guard', () => {
         .status,
     ).toBe(0);
     expect(runHook('hooks/bash-guard.sh', { tool_input: { command: 'pnpm test' } }).status).toBe(0);
+  });
+});
+
+describe('generated bash re-check (decision 63)', () => {
+  // No inherited GIT_*: under the pre-commit hook GIT_INDEX_FILE names the real
+  // index, and a temp repo's `git add` would rewrite it.
+  const GIT_ENV: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  let root: string;
+  let worktree: string;
+  let events: string;
+
+  /** A real git worktree with one commit, and the session's profile compiled for it. */
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'pup-recheck-')));
+    worktree = join(root, 'wt');
+    events = join(root, 'events.jsonl');
+    mkdirSync(join(worktree, 'src/net'), { recursive: true });
+    mkdirSync(join(worktree, 'src/cli'), { recursive: true });
+    writeFileSync(join(worktree, 'src/net/client.ts'), 'export {};\n');
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'export {};\n');
+    writeFileSync(join(worktree, 'src/cli/decoy.ts'), 'export {};\n');
+    for (const args of [
+      ['init', '-q', '-b', 'main'],
+      ['add', '-A'],
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'],
+    ]) {
+      spawnSync('git', args, { cwd: worktree, env: GIT_ENV });
+    }
+    const outDir = join(root, 'compiled');
+    const compiled = ProfileCompiler.compileProfile(
+      makeInput({ worktreePath: worktree, eventsFile: events, outDir }),
+    );
+    ProfileCompiler.writeCompiledProfile(compiled, outDir);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /**
+   * Run directly, not through Claude Code's hook harness, so the only thing that
+   * ends a hang is this call's own 4-second timeout: set under the hook's 5-second
+   * production budget so the test's kill wins the race and a hang reads as a
+   * null status. A UTF-8 locale, as a session's shell usually has, which the
+   * script must not depend on.
+   */
+  function run(payload: object, env: NodeJS.ProcessEnv = {}) {
+    return spawnSync('/bin/sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+      timeout: 4_000,
+      env: {
+        ...GIT_ENV,
+        LANG: 'en_US.UTF-8',
+        LC_ALL: 'en_US.UTF-8',
+        PUP_SESSION_ID: 's-1',
+        ...env,
+      },
+    });
+  }
+
+  function hook(phase: string, command: string, id = 'toolu_01abc') {
+    return run({ hook_event_name: phase, tool_use_id: id, tool_input: { command } });
+  }
+
+  /** The Bash call as Claude Code runs it: the pre hook, the command, the post hook. */
+  function bash(command: string, phase = 'PostToolUse') {
+    expect(hook('PreToolUse', command).status).toBe(0);
+    spawnSync('sh', ['-c', command], { cwd: worktree, env: GIT_ENV });
+    return hook(phase, command);
+  }
+
+  function violations(): Record<string, string>[] {
+    if (!existsSync(events)) return [];
+    return readFileSync(events, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, string>)
+      .filter((event) => event.type === 'scope_violation');
+  }
+
+  const heredoc = (path: string) =>
+    `python3 - <<'EOF'\nopen('${path}', 'w').write('changed\\n')\nEOF`;
+
+  it('refuses a python3 heredoc that wrote outside scope-in, and records the violation', () => {
+    const command = heredoc('src/cli/index.ts');
+    const result = bash(command);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('SCOPE VIOLATION: src/cli/index.ts (outside-scope-in)');
+    expect(result.stderr).toContain(command);
+    expect(violations()).toEqual([
+      {
+        type: 'scope_violation',
+        pup_session_id: 's-1',
+        path: 'src/cli/index.ts',
+        reason: 'outside-scope-in',
+        command,
+      },
+    ]);
+  });
+
+  it('passes a heredoc that wrote inside scope-in', () => {
+    const result = bash(heredoc('src/net/client.ts'));
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(violations()).toEqual([]);
+  });
+
+  it('refuses a new file in scope-out, written by a command that then failed', () => {
+    const result = bash(
+      'mkdir -p src/net/legacy && printf x > src/net/legacy/old.ts; exit 1',
+      'PostToolUseFailure',
+    );
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => [v.path, v.reason])).toEqual([
+      ['src/net/legacy/old.ts', 'scope-out'],
+    ]);
+  });
+
+  it('refuses a deletion and a write into .claude/', () => {
+    const result = bash('rm src/cli/index.ts; mkdir .claude && printf x > .claude/settings.json');
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => [v.path, v.reason])).toEqual([
+      ['src/cli/index.ts', 'outside-scope-in'],
+      ['.claude/settings.json', 'protected-path'],
+    ]);
+  });
+
+  it('holds a file dirty before the call against the call only once it changes', () => {
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'dirty before\n');
+    expect(bash('echo unrelated').status).toBe(0);
+    expect(bash(heredoc('src/cli/index.ts')).status).toBe(2);
+    expect(violations()).toHaveLength(1);
+  });
+
+  it('compares against nothing when the call has no usable snapshot id', () => {
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'dirty before\n');
+    expect(hook('PreToolUse', 'echo hi', 'bad/../id').status).toBe(0);
+    const result = hook('PostToolUse', 'echo hi', 'bad/../id');
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => v.path)).toEqual(['src/cli/index.ts']);
+  });
+
+  it('treats a hostile file name as data: never run, and named whole', () => {
+    // Relative, so it would land in the hook's cwd, the worktree or the root.
+    const name = `-n $(touch pwned) ';x \\ `;
+    const result = bash(`printf x > "${name.replace(/[$\\]/g, '\\$&')}"`);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(`SCOPE VIOLATION: ${name} (outside-scope-in)`);
+    for (const dir of [root, worktree, process.cwd()]) {
+      expect(existsSync(join(dir, 'pwned'))).toBe(false);
+    }
+    expect(violations().map((v) => v.path)).toEqual([name]);
+    expect(bash(`printf x > "$(printf 'a\\nb')"`).status).toBe(2);
+    expect(violations().map((v) => v.path)).toEqual([name, 'a\u0001b']);
+  });
+
+  it('refuses a write made beside a fifo, and never reads the fifo', () => {
+    const result = bash(
+      "rm src/cli/decoy.ts && mkfifo src/cli/decoy.ts && python3 -c \"open('src/cli/index.ts','w').write('pwned')\"",
+    );
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => v.path)).toContain('src/cli/index.ts');
+    // The fifo stays, and the next call is still checked, not hung on it.
+    expect(bash('echo later').status).toBe(0);
+    expect(bash(heredoc('src/cli/index.ts')).status).toBe(2);
+  });
+
+  it('sees a .claude/ write hidden by an exclude rule the command wrote itself', () => {
+    const result = bash(
+      "python3 - <<'EOF'\n" +
+        "open('.git/info/exclude', 'a').write('\\n.claude/\\n')\n" +
+        "import os; os.makedirs('.claude', exist_ok=True)\n" +
+        "open('.claude/settings.local.json', 'w').write('{}')\n" +
+        'EOF',
+    );
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => [v.path, v.reason])).toEqual([
+      ['.claude/settings.local.json', 'protected-path'],
+    ]);
+  });
+
+  it('re-checks when background output is read, catching a write made after its call', () => {
+    expect(bash('echo started in the background').status).toBe(0);
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'written later by the background shell\n');
+    const result = run({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'TaskOutput',
+      tool_use_id: 'toolu_02def',
+      tool_input: { task_id: 'b1' },
+    });
+    expect(result.status).toBe(2);
+    expect(violations()).toEqual([
+      expect.objectContaining({
+        path: 'src/cli/index.ts',
+        command: 'a read of background output {"task_id":"b1"}',
+      }),
+    ]);
+  });
+
+  it('refuses, without reading them, more dirty paths than it can check in time', () => {
+    const result = bash(
+      'mkdir src/net/gen && i=0; while [ $i -lt 201 ]; do : > src/net/gen/f$i.ts; i=$((i+1)); done',
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('over 200 dirty paths');
+    expect(violations()).toEqual([]);
+  });
+
+  it('refuses when git fails or is missing, and never blocks the call before it', () => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    for (const tool of ['jq', 'cat', 'tr', 'grep', 'mktemp', 'rm', 'mkdir', 'mv', 'wc']) {
+      const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
+      spawnSync('ln', ['-s', found.stdout.trim(), join(bin, tool)]);
+    }
+    const missing = { PATH: bin };
+    expect(
+      run({ hook_event_name: 'PreToolUse', tool_input: { command: 'x' } }, missing).status,
+    ).toBe(0);
+    const noGit = run({ hook_event_name: 'PostToolUse', tool_input: { command: 'x' } }, missing);
+    expect(noGit.status).toBe(2);
+    expect(noGit.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
+    writeFileSync(join(bin, 'git'), '#!/bin/sh\nexit 128\n', { mode: 0o755 });
+    const failing = run({ hook_event_name: 'PostToolUse', tool_input: { command: 'x' } }, missing);
+    expect(failing.status).toBe(2);
+    expect(failing.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
+  });
+
+  it('lets the call run but refuses after it when its scratch dir cannot be made', () => {
+    writeFileSync(join(root, 'compiled/bash-snapshots'), 'a file where the directory goes');
+    expect(hook('PreToolUse', 'echo hi').status).toBe(0);
+    const after = hook('PostToolUse', 'echo hi');
+    expect(after.status).toBe(2);
+    expect(after.stderr).toContain(
+      'SCOPE CHECK FAILED: bash re-check could not make its scratch dir',
+    );
+  });
+
+  it('wires the re-check before and after every Bash call, failures included', () => {
+    const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
+    for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
+      const bashHooks = (hooks[event] ?? [])
+        .filter((e) => e.matcher === 'Bash')
+        .flatMap((e) => e.hooks.map((h) => h.command));
+      expect(bashHooks.some((c) => c.endsWith('bash-recheck.sh'))).toBe(true);
+    }
+  });
+
+  it('wires the re-check on reading a background shell or task', () => {
+    const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
+    const entry = (hooks.PostToolUse ?? []).find((e) => e.matcher === 'TaskOutput');
+    expect(entry?.hooks.map((h) => h.command)).toEqual([
+      '/state/sessions/s-1/compiled/hooks/bash-recheck.sh',
+    ]);
   });
 });
 
