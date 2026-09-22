@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-22T15:42:34.611Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35747043665",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35747043665",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4fa6f70adba3fb3a4193968f9c52980fa1b34da2",
+  "source": "pr",
+  "pr_number": 111,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/fleet.service.ts",
+      "line": "12-38",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`RegisteredProject` (interface, lines 12-25) and `FleetBlock` (type, lines 31-38) are exported directly from `fleet.service.ts`, a `.service.ts` file, instead of living in `src/core/types/`.",
+      "body": "`docs/conventions/general.md` (lines 64-69): \"Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`, `src/adapters/types/`. **Never inline an exported `type`/`interface` in a `*.service.ts` or `*.routes.ts` file** — the spot-check hook warns on this. Re-export from the consumer if you want a stable call-site path.\"\n\n`src/core/fleet.service.ts` exports `RegisteredProject` and `FleetBlock` directly from this new service file rather than from `src/core/types/`. `docs/09-decisions.md` decision 65 explains the placement choice (\"owned by core and exported from `fleet.service.ts`, the reader that consumes it\"), but decision 65's precedence clause only overrides docs/00–08, not `docs/conventions/*`, so it doesn't excuse this. `src/core/types/` already exists with 12 files, and `fleet.service.ts` already imports from `./types/dashboard.types.js`, so moving these two types there (and re-exporting to `project.utils.ts`/`dashboard-text.utils.ts` as needed) is a small, mechanical move.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4fa6f70adba3fb3a4193968f9c52980fa1b34da2/src/core/fleet.service.ts#L12-L25\nhttps://github.com/AlexisBalayre/pupitre/blob/4fa6f70adba3fb3a4193968f9c52980fa1b34da2/src/core/fleet.service.ts#L31-L38",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/project.service.ts",
+      "line": "21-24",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`listProjects<T extends { id: string; repoPath: string }>(...)` uses a bare `T` generic parameter, which the naming convention forbids.",
+      "body": "`docs/conventions/general.md` line 86: \"**Generics are descriptive** — `TConfig`, `TResponse`. Never bare `T` / `U`.\"\n\n`listProjects` in `src/core/project.service.ts:21` uses a bare `T`. Two pre-existing files (`src/core/report-data.utils.ts:6`, `src/cli/no-adapter-guard.utils.ts:4`) already do this, but they predate this PR and the rule's \"Never\" wording doesn't grandfather new code repeating it. Biome's configured preset (`recommended`) doesn't include `useNamingConvention`, so `LINT_CMD` won't catch this — it's a genuine gap only a convention-aware reviewer catches.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4fa6f70adba3fb3a4193968f9c52980fa1b34da2/src/core/project.service.ts#L21",
+      "suggestion": "export function listProjects<TProject extends { id: string; repoPath: string }>(\n  registered: TProject[],\n  selected: string | undefined,\n): { refusal: string } | { projects: { project: TProject; isConductorRunning: boolean }[] } {"
+    },
+    {
+      "file": "src/core/fleet.service.ts",
+      "line": "40-54, 131-135",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fleet.service.ts`'s new `FleetStore`/`FleetReading` interfaces are hand-maintained structural duplicates of `ActionDeps`/`DashboardReading` in `src/cli/ui/actions.service.ts` and `use-snapshot.hook.ts`, which `AppProps.read` actually expects — they compile today only via structural typing, so a future field rename on either side won't propagate to the other; a shared `*.types.ts` importable from both `src/cli/ui` and `src/core` would remove the hand-sync burden.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "132-164",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fleetLines`/`fleetBlockLines`, newly added here, assemble a whole multi-project report (separators, pluralized hidden-count line, refusal-vs-snapshot branching) from a core-service-shaped `FleetBlock[]`, a different responsibility level than this file's other nine single-session label exports; the file's own header comment (\"Nothing here decides anything\") no longer holds for these two functions, which are the only exports here consumed solely by `index.ts` and the only ones importing a core-service type.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/project.utils.ts",
+      "line": "97",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc above `canonicalPath` (\"Where `path` resolves to on disk, or undefined when nothing is there.\") paraphrases the signature rather than giving a WHY — no invariant or gotcha about why a thrown `realpathSync` should be treated as \"nothing,\" unlike the neighboring `RegisteredProject.repoExists` doc which does explain that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3312",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 65's caveat paragraph is labeled \"**The ceiling.**\" (bold, singular), breaking this file's own established convention of \"*Ceilings.*\" (italic, plural) used consistently in all 10 other instances in this file — a reader scanning for the recurring marker won't recognize this one as the same kind of section.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "9-11",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The clause appended to the intro paragraph — \"...is refused as `not its own path: a variant of a repo path, never opened` — the fleet views' refusal, on `--project <id>` too (decision 65).\" — tacks \"on `--project <id>` too (decision 65)\" onto an em-dash appositive with no governing verb, reading as a dangling fragment; something like \"— the fleet views' refusal since decision 61, now firing on `--project <id>` too (decision 65)\" would state plainly that the refusal now also covers `--project <id>`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "228-231",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `pup project list` bullet documenting the line format (`<id>  <repo_path>  active|dormant since <when>  conductor running|stopped`, with `(missing)` when the repo is gone) wasn't updated to mention the new `(not its own path)` suffix this PR adds to `registryLine`'s output, leaving the CLI reference silent about a marker this exact PR introduces.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/project.service.ts",
+      "line": "51-58",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"named, not counted, like the brief's list...\" rationale, which in `index.ts` sat as an inline comment directly above the `const live = [...]` array it explains, is now folded into `putProjectToSleep`'s top-of-function JSDoc; the reader hits this explanation before two unrelated early-return branches and has to carry it forward several lines to the `live` array it actually justifies.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "cost_usd": 13.175608050000006,
+  "duration_ms": 1087885,
+  "num_turns": 26,
+  "tokens": {
+    "input": 35,
+    "output": 33507,
+    "cache_read": 1072511,
+    "cache_creation": 109657,
+    "total": 1215710
+  }
+}
