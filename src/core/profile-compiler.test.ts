@@ -210,6 +210,7 @@ describe('generated bash re-check (decision 63)', () => {
     mkdirSync(join(worktree, 'src/cli'), { recursive: true });
     writeFileSync(join(worktree, 'src/net/client.ts'), 'export {};\n');
     writeFileSync(join(worktree, 'src/cli/index.ts'), 'export {};\n');
+    writeFileSync(join(worktree, 'src/cli/decoy.ts'), 'export {};\n');
     for (const args of [
       ['init', '-q', '-b', 'main'],
       ['add', '-A'],
@@ -228,12 +229,28 @@ describe('generated bash re-check (decision 63)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  function hook(phase: string, command: string, id = 'toolu_01abc') {
-    return spawnSync('sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {
-      input: JSON.stringify({ hook_event_name: phase, tool_use_id: id, tool_input: { command } }),
+  /**
+   * Killed under the hook's own 5-second timeout, so a hang reads as a null
+   * status. A UTF-8 locale, as a session's shell usually has, which the script
+   * must not depend on.
+   */
+  function run(payload: object, env: NodeJS.ProcessEnv = {}) {
+    return spawnSync('/bin/sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {
+      input: JSON.stringify(payload),
       encoding: 'utf8',
-      env: { ...GIT_ENV, PUP_SESSION_ID: 's-1' },
+      timeout: 4_000,
+      env: {
+        ...GIT_ENV,
+        LANG: 'en_US.UTF-8',
+        LC_ALL: 'en_US.UTF-8',
+        PUP_SESSION_ID: 's-1',
+        ...env,
+      },
     });
+  }
+
+  function hook(phase: string, command: string, id = 'toolu_01abc') {
+    return run({ hook_event_name: phase, tool_use_id: id, tool_input: { command } });
   }
 
   /** The Bash call as Claude Code runs it: the pre hook, the command, the post hook. */
@@ -328,6 +345,78 @@ describe('generated bash re-check (decision 63)', () => {
     expect(violations().map((v) => v.path)).toEqual([name, 'a\u0001b']);
   });
 
+  it('refuses a write made beside a fifo, and never reads the fifo', () => {
+    const result = bash(
+      "rm src/cli/decoy.ts && mkfifo src/cli/decoy.ts && python3 -c \"open('src/cli/index.ts','w').write('pwned')\"",
+    );
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => v.path)).toContain('src/cli/index.ts');
+    // The fifo stays, and the next call is still checked, not hung on it.
+    expect(bash('echo later').status).toBe(0);
+    expect(bash(heredoc('src/cli/index.ts')).status).toBe(2);
+  });
+
+  it('sees a .claude/ write hidden by an exclude rule the command wrote itself', () => {
+    const result = bash(
+      "python3 - <<'EOF'\n" +
+        "open('.git/info/exclude', 'a').write('\\n.claude/\\n')\n" +
+        "import os; os.makedirs('.claude', exist_ok=True)\n" +
+        "open('.claude/settings.local.json', 'w').write('{}')\n" +
+        'EOF',
+    );
+    expect(result.status).toBe(2);
+    expect(violations().map((v) => [v.path, v.reason])).toEqual([
+      ['.claude/settings.local.json', 'protected-path'],
+    ]);
+  });
+
+  it('re-checks when background output is read, catching a write made after its call', () => {
+    expect(bash('echo started in the background').status).toBe(0);
+    writeFileSync(join(worktree, 'src/cli/index.ts'), 'written later by the background shell\n');
+    const result = run({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'BashOutput',
+      tool_use_id: 'toolu_02def',
+      tool_input: { bash_id: 'bash_1' },
+    });
+    expect(result.status).toBe(2);
+    expect(violations()).toEqual([
+      expect.objectContaining({
+        path: 'src/cli/index.ts',
+        command: 'a read of background output {"bash_id":"bash_1"}',
+      }),
+    ]);
+  });
+
+  it('refuses, without reading them, more dirty paths than it can check in time', () => {
+    const result = bash(
+      'mkdir src/net/gen && i=0; while [ $i -lt 201 ]; do : > src/net/gen/f$i.ts; i=$((i+1)); done',
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('over 200 dirty paths');
+    expect(violations()).toEqual([]);
+  });
+
+  it('refuses when git fails or is missing, and never blocks the call before it', () => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    for (const tool of ['jq', 'cat', 'tr', 'grep', 'mktemp', 'rm', 'mkdir', 'mv', 'wc']) {
+      const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
+      spawnSync('ln', ['-s', found.stdout.trim(), join(bin, tool)]);
+    }
+    const missing = { PATH: bin };
+    expect(
+      run({ hook_event_name: 'PreToolUse', tool_input: { command: 'x' } }, missing).status,
+    ).toBe(0);
+    const noGit = run({ hook_event_name: 'PostToolUse', tool_input: { command: 'x' } }, missing);
+    expect(noGit.status).toBe(2);
+    expect(noGit.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
+    writeFileSync(join(bin, 'git'), '#!/bin/sh\nexit 128\n', { mode: 0o755 });
+    const failing = run({ hook_event_name: 'PostToolUse', tool_input: { command: 'x' } }, missing);
+    expect(failing.status).toBe(2);
+    expect(failing.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
+  });
+
   it('wires the re-check before and after every Bash call, failures included', () => {
     const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
     for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
@@ -336,6 +425,14 @@ describe('generated bash re-check (decision 63)', () => {
         .flatMap((e) => e.hooks.map((h) => h.command));
       expect(bashHooks.some((c) => c.endsWith('bash-recheck.sh'))).toBe(true);
     }
+  });
+
+  it('wires the re-check on reading a background shell or task', () => {
+    const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
+    const entry = (hooks.PostToolUse ?? []).find((e) => e.matcher === 'BashOutput|TaskOutput');
+    expect(entry?.hooks.map((h) => h.command)).toEqual([
+      '/state/sessions/s-1/compiled/hooks/bash-recheck.sh',
+    ]);
   });
 });
 

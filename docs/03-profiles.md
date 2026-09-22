@@ -46,15 +46,27 @@ three use the same order: `.claude/` first, then scope-out, then scope-in.
 - `bash-recheck.sh` runs on `Bash` at PreToolUse, PostToolUse and PostToolUseFailure. A command
   that writes a file and then exits non-zero ends in PostToolUseFailure, which is why that event is
   wired too. Before the call it snapshots the dirty paths outside the scope: `git status -z
-  --untracked-files=all`, one fingerprint per path, which is the `git hash-object --no-filters`
-  blob hash or `deleted`. The snapshot is written to `<compiled>/bash-snapshots/<tool_use_id>`.
+  --untracked-files=all`, plus a second pass that lists the files under `.claude/` hidden by an
+  ignore rule, since the session can write that rule itself in `.git/info/exclude`. Each path gets
+  one fingerprint: the `git hash-object --no-filters` blob hash for a regular file, `large-<bytes>`
+  over 64 MiB, `special` for a fifo, device or symlink (never opened, since reading a fifo would
+  hang the hook past its timeout), or `deleted`. Past 200 dirty paths it reads none of them and
+  refuses every call until the worktree is committed or cleaned. The snapshot is written to `<compiled>/bash-snapshots/<tool_use_id>`.
   After the call it takes the same listing again. Any line missing from the snapshot is a file
   that was created, modified or deleted outside the scope during the call. For each one it appends
   `{"type":"scope_violation","path","reason","command","pup_session_id"}` to the session's
   `events.jsonl`, prints `SCOPE VIOLATION: <path> (<reason>) was written by: <command>` and exits 2.
   At PostToolUse, exit 2 cannot undo the write. What it does is put the refusal in front of the
   session straight away, which is decision 6's loud-backstop shape. A file that was already dirty
-  before the call and has not changed is not flagged again.
+  before the call and has not changed is not flagged again. If git is missing or fails, the check
+  after the call refuses. The check before the call never blocks it.
+- The same hook runs at PostToolUse on `BashOutput|TaskOutput`, because a background shell writes
+  after its own call's check has run. That read has no snapshot of its own, so every dirty path
+  outside the scope is flagged again there.
+- **What it cannot see:** a write that lands between one post-check and the next pre-check becomes
+  part of the next snapshot's baseline and is never flagged. That covers a background shell whose
+  output is never read, MCP write tools and subagent writes. The merge gate is the only check on
+  those.
 - Paths from git never reach the shell as code. `-z` names each path raw. Before NUL becomes the
   line separator, an embedded newline is mapped to `\001`, so every record is one line. Each name
   is then handled only as a quoted variable, written out with `printf '%s'`, and passed to git
