@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-22T08:11:06.816Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35701971523",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35701971523",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d483891e00ce223d0c8c0e33e229c2d989242584",
+  "source": "pr",
+  "pr_number": 109,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "443",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "PostToolUseFailure is wired as a hook-event key with zero in-repo corroboration that it is a real Claude Code hook lifecycle event; the hooks object is an open string-keyed record with no type-level validation, and this PR's own tests invoke the compiled script directly (spawnSync) rather than through real Claude Code hook dispatch, so a wrong event name would pass every test while silently never firing in production.",
+      "body": "`compileProfile()` wires a new hook array under the key `PostToolUseFailure`:\n\n```ts\nPostToolUseFailure: [...securityPostBash, ...(layerHooks.PostToolUseFailure ?? [])],\n```\n\nDecision 63's entire premise for wiring this event is: \"A command that writes and then exits non-zero ends in PostToolUseFailure, which is why that event is wired too.\" A validator searched this repo (`grep -rn PostToolUseFailure`) and found every reference — in `profile-compiler.service.ts`, `profile-compiler.test.ts`, `docs/03-profiles.md`, and `docs/09-decisions.md` — was introduced by this PR itself; nothing predates it. The project's own real, in-production `.claude/settings.json` wires only `Stop`, `PreToolUse`, `PreCompact`. `HookMatcherEntry`'s container is `Record<string, HookMatcherEntry[]>` — an open string-keyed map, so a typo'd or invented event name compiles without error. The new tests invoke `bash-recheck.sh` directly via `spawnSync`, never through a real Claude Code session, so they cannot catch a wiring mistake here.\n\nIf `PostToolUseFailure` is not a real Claude Code hook event, the \"write-then-fail\" backstop decision 63 is built around silently never fires, with nothing in this codebase or its test suite able to detect that.\n\nSee <https://github.com/AlexisBalayre/pupitre/blob/d483891e00ce223d0c8c0e33e229c2d989242584/src/core/profile-compiler.service.ts#L443>\n\nVerify against Claude Code's current hooks reference before merge. If it doesn't exist, the failed-command case needs a different mechanism.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "424-426",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "TaskOutput (in the 'BashOutput|TaskOutput' matcher) has zero in-repo corroboration as a real Claude Code tool name, unlike BashOutput which is independently well-corroborated; decision 63's own ceilings text is internally inconsistent about whether subagent writes are ever caught by this wiring.",
+      "body": "```ts\nconst securityPostBackground: HookMatcherEntry[] = [\n  { matcher: 'BashOutput|TaskOutput', hooks: [bashRecheck] },\n];\n```\n\n`BashOutput` is well-corroborated: it's a documented tool that reads output of a `run_in_background` Bash shell, and this PR's own test shapes `tool_input` as `{ bash_id: 'bash_1' }`, matching that real schema. `TaskOutput` has no such corroboration — a repo-wide grep finds it only in this PR's own new code (`profile-compiler.service.ts`, `docs/03-profiles.md`, `docs/09-decisions.md`), never independently explained.\n\nWorse, decision 63's own ceilings paragraph (`docs/09-decisions.md`, ~L3217-3224) is internally inconsistent about it:\n\n> \"A write that lands between one post-check and the next pre-check is never flagged... That covers a Bash call with `run_in_background`... unless its output is read, which is what the `BashOutput|TaskOutput` wiring catches. It also covers a background shell whose output is never read, writes from MCP tools **and writes from subagents**.\"\n\nThe \"unless its output is read\" exception is textually scoped only to the Bash/`run_in_background` case, yet \"writes from subagents\" is listed immediately after as categorically never flagged — with no carve-out for a Task-output read. If `TaskOutput` means reading a subagent's (Task tool's) output, as its name and pairing with `BashOutput` suggest, this directly contradicts the same paragraph's claim that subagent writes are never caught. If it means something else, its purpose here is unexplained.\n\nSee <https://github.com/AlexisBalayre/pupitre/blob/d483891e00ce223d0c8c0e33e229c2d989242584/src/core/profile-compiler.service.ts#L424-L426>\n\nVerify `TaskOutput` is a real Claude Code tool name before merge, and resolve the ceilings-paragraph contradiction about subagent writes.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "36-38",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The section's intro claims all three compiled scope hooks read the sidecar scope-in/scope-out pattern files in the same precedence order, but bash-guard.sh does neither — it only regex-matches command text for .claude/ writes — directly contradicted by the doc's own next bullet a few lines below.",
+      "body": "The new section opens:\n\n> \"Three compiled hooks, each reading the task's scope from the sidecar files `hooks/scope-in.pat` and `hooks/scope-out.pat` (`grep -E -f`)... All three use the same order: `.claude/` first, then scope-out, then scope-in.\"\n\nThis is false for `bash-guard.sh`. `buildBashGuardScript()` (`src/core/profile-compiler.service.ts`, ~L212-226) generates a script that only does `grep -qiE '(>>?|\\btee\\b|...)[^|]*\\.claude/'` against the raw command text — it never opens or greps `scope-in.pat`/`scope-out.pat`, and has no scope-in/scope-out check at all. The doc's own very next bullet confirms the narrower reality: \"`bash-guard.sh`... refuses command text that plainly writes into `.claude/`. It reads text, so it cannot see a write made by an interpreter...\" — with no mention of the pattern files. A reader relying on the intro paragraph alone would wrongly believe `bash-guard.sh` enforces scope-in/scope-out.\n\nSee <https://github.com/AlexisBalayre/pupitre/blob/d483891e00ce223d0c8c0e33e229c2d989242584/docs/03-profiles.md#L36-L38>",
+      "suggestion": "Scope the \"reads the sidecar files / same order\" claim in the intro to `scope-enforce.sh` and `bash-recheck.sh` only, and describe `bash-guard.sh` as the `.claude/`-only, text-matching exception it is."
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "48-54",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The 200-dirty-path cap description reads naturally as counting only out-of-scope dirty paths, but the code counts every dirty path in the worktree before scope classification runs, and decision 63 states this explicitly ('however many of them are in scope') while docs/03-profiles.md omits that clarification.",
+      "body": "The doc says: \"Before the call it snapshots the dirty paths outside the scope... Past 200 dirty paths it reads none of them and refuses every call...\" Read naturally, \"200 dirty paths\" refers back to \"the dirty paths outside the scope\" just introduced.\n\nBut in `out_of_scope()` (`src/core/profile-compiler.service.ts`), `COUNT` is computed from the raw, unfiltered `git status` output across both listings *before* the per-entry `.claude/`/scope-out/scope-in classification loop runs — so an in-scope dirty file is counted too, even though it's later skipped (`continue`). `docs/09-decisions.md` decision 63's Ceilings paragraph says this outright: \"More than 200 dirty paths refuse every Bash call... however many of them are in scope.\" `docs/03-profiles.md` has no equivalent clarification anywhere in the section (confirmed by grep across the whole file). A reader could wrongly conclude a task with many in-scope changes plus a few out-of-scope ones is safe from the cap.\n\nSee <https://github.com/AlexisBalayre/pupitre/blob/d483891e00ce223d0c8c0e33e229c2d989242584/docs/03-profiles.md#L48-L54>",
+      "suggestion": "Add the same clarification decision 63 has: the cap counts every dirty path in the worktree, in-scope included, not just out-of-scope ones."
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "232-241",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The run() helper's docstring says the test is 'killed under the hook's own 5-second timeout,' but the spawnSync call two lines below actually uses timeout: 4_000 (4 seconds) — the docstring conflates the production hook-registration timeout (HOOK_TIMEOUT_SECONDS=5, enforced by Claude Code's harness, which this test bypasses entirely) with the test's own local kill mechanism.",
+      "body": "```ts\n/**\n * Killed under the hook's own 5-second timeout, so a hang reads as a null\n * status. A UTF-8 locale, as a session's shell usually has, which the script\n * must not depend on.\n */\nfunction run(payload: object, env: NodeJS.ProcessEnv = {}) {\n  return spawnSync('/bin/sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {\n    ...\n    timeout: 4_000,\n```\n\n`HOOK_TIMEOUT_SECONDS` (`src/core/profile.constants.ts`) is indeed `5`, and it's the timeout Claude Code's settings.json registers for the compiled `bash-recheck.sh` hook — enforced by Claude Code's own hook harness. This test invokes the compiled script directly via `spawnSync`, bypassing that harness entirely; the only thing that actually kills a hang in this test is `spawnSync`'s own `timeout: 4_000` (4 seconds). The docstring gives a reader the wrong number for what protects this specific test from hanging, and nothing in the file explains the 4s/5s gap as deliberate margin.\n\nSee <https://github.com/AlexisBalayre/pupitre/blob/d483891e00ce223d0c8c0e33e229c2d989242584/src/core/profile-compiler.test.ts#L232-L241>",
+      "suggestion": "Reconcile the docstring with the actual 4_000ms value, e.g. state that the test's own timeout is set below the hook's 5s production timeout so the test's kill wins the race, not the hook's."
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "67-70",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'What it cannot see' bullet lists only the accidental gaps (unread background output, MCP tools, subagent writes) and omits the adversarial ceiling decision 63 names explicitly (a session can reach and overwrite its own snapshot file under <compiled>/bash-snapshots/ to defeat the check); the section's closing line does defer to decision 63's ceilings list for what the merge gate can't see, so this is a disclosed division of labor rather than a silent gap, but naming the adversarial case inline would be more honest about the mechanism's actual guarantees.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "299",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "RECHECK_MAX_DIRTY_PATHS's COUNT sums NUL-separated records across both the status and .claude/-protected listings before the '^!! ' filter is applied to the second, so a tracked-modified .claude/ path is counted in both listings and every ignored .claude/ file inflates the count beyond what's actually processed; this fails closed (over-refuses sooner than the documented 200), so it has no security impact, just a stricter-than-documented cap in worktrees with a large ignored .claude/ subtree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "228-242",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The function-level JSDoc for buildBashRecheckScript, originally placed directly above the function, got stranded above RECHECK_MAX_DIRTY_PATHS once a later commit inserted the two new constants between them, so it now reads as documenting the constant instead of the function it describes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "306-309",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The .claude/ -> scope-out -> scope-in precedence order is now written independently in both buildScopeHookScript (~L200-207) and buildBashRecheckScript (~L306-309); the two agree today, and decision 63 relies on that agreement ('cannot read a scope more loosely than the Edit/Write check does'), but nothing structural forces them to stay in sync if one is edited without the other.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "240,242",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "RECHECK_MAX_DIRTY_PATHS and RECHECK_HASH_MAX_BYTES are declared locally in profile-compiler.service.ts instead of src/core/profile.constants.ts, where this same file's other threshold/timeout constants (HOOK_TIMEOUT_SECONDS, EVENT_HOOK_TIMEOUT_SECONDS, DEFAULT_CONTEXT_BUDGET_TOKENS, CHARS_PER_TOKEN) already live, per docs/conventions/general.md's no-hardcoded-values rule that thresholds go in the area's *.constants.ts file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "34-78",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/03-profiles.md's new section and decision 63's mechanism paragraphs in docs/09-decisions.md describe the snapshot/fingerprint/cap mechanism at nearly the same implementation-detail level (fingerprint vocabulary, the 200-path cap, the .claude/ ignore-rule second pass, event wiring rationale) with no cross-check forcing both to move together, so a future threshold or wiring change has two independent places to update.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3205",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "'*The discriminating mutations*' starts mid-line, appended right after the prior sentence, instead of on its own line like every other subsection marker in this ~120-line decision entry (*The mechanism.*, *Worktree names are data...*, *Hardened after...*, *Tests,*, *Ceilings.*), making the entry slightly harder to visually scan for its own section boundaries.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "399-403",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "bash-recheck.sh reuses HOOK_TIMEOUT_SECONDS (5s), the same budget as the much cheaper single-pass bash-guard.sh/scope-enforce.sh, despite running two git status invocations (one with --ignored=traditional) plus a per-dirty-path hash-object fork for up to 200 paths; the tradeoff is self-documented and fails open before the call / closed after it, so this is worth confirming against a realistically dirty tree rather than a hidden bug.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "297-318",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A session could silently bypass .claude/ protection on the second and later write once .claude/ becomes a stable git-ignored directory, because --ignored=traditional was believed to collapse a fully-ignored directory into one static '!! .claude/' snapshot line whose fingerprint never changes, so grep -vxF -f BEFORE would filter out any later write into .claude/ as 'already seen'.",
+      "refutation": "git's --ignored=traditional, when combined with --untracked-files=all (which this script passes on line 297), lists individual files inside an ignored directory rather than collapsing it to one directory-level entry — confirmed directly from git status --help: 'traditional: Show ignored files and directories, unless --untracked-files=all is specified, in which case individual files in ignored directories are displayed.' Each file under .claude/ therefore gets its own '!! .claude/<file>' record and its own git hash-object fingerprint, so a new file written into .claude/ on a later call produces a new snapshot line that fails the grep -vxF -f BEFORE filter and is flagged as a scope_violation exactly as intended. The claimed bypass does not occur."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 5,
+  "is_error": false,
+  "cost_usd": 12.467851249999999,
+  "duration_ms": 964859,
+  "num_turns": 35,
+  "tokens": {
+    "input": 27,
+    "output": 60889,
+    "cache_read": 970231,
+    "cache_creation": 162405,
+    "total": 1193552
+  }
+}
