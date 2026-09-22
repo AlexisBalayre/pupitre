@@ -3303,8 +3303,9 @@ changes back into those docs is pending.
     that file already reads the filesystem (`existsSync`, `readdirSync`) and opens stores.
     `realpathSync` adds no service, client or repository import. The row type,
     `RegisteredProject`, is owned by core and exported from `src/core/types/fleet.types.ts`
-    beside the other fleet types, as the conventions place exported types; the reader
-    that consumes it. `listRegisteredProjects` in `src/cli` produces it and imports the type.
+    beside the other fleet types, as the conventions place exported types; `fleet.service.ts`
+    is the reader that consumes it. `listRegisteredProjects` in `src/cli` produces it and
+    imports the type.
     `pup project list` marks such a row `(not its own path)`, next to `(missing)`, so a planted
     near-twin is no longer printed as a plain `active` line beside the real project. The path is now resolved once
     per scan, not a second time just before the read. A repo deleted in the milliseconds between
