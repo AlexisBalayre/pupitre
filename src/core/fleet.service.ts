@@ -5,16 +5,22 @@ import { openStore } from './db.client.js';
 import type { DashboardSnapshot, FleetSummary } from './types/dashboard.types.js';
 
 /**
- * A registered project as the registry scan reads it — `listRegisteredProjects`'
- * rows, which answer whether the repo is still there and whether its path is
- * its own without opening the store.
+ * A project `pup init` registered, read back from its own store under
+ * `~/.pupitre`. Owned here, where the fleet reads it; `listRegisteredProjects`
+ * in `src/cli/project.utils.ts` is its producer (decision 65).
  */
-interface FleetProject {
+export interface RegisteredProject {
   id: string;
   repoPath: string;
   dbFile: string;
+  /** False when the repo was deleted or moved since it registered — reported, never used. */
   repoExists: boolean;
+  /**
+   * False when `repoPath` is not its own canonical path — a trailing slash, a
+   * symlink, a `..` — reported, never opened (decision 61, checked by the scan since 65).
+   */
   isOwnPath: boolean;
+  /** When the operator put the project to sleep, or null while it is active (decision 62). */
   dormantAt: string | null;
 }
 
@@ -54,14 +60,14 @@ interface FleetReading {
  * listed as a near-twin of the real project, whose `l` would launch the
  * session's spec there and whose `c` would start a conductor.
  */
-function fleetRefusal(project: FleetProject): string | undefined {
+function fleetRefusal(project: RegisteredProject): string | undefined {
   if (!project.repoExists) return 'missing: the repo no longer exists';
   if (!project.isOwnPath) return 'not its own path: a variant of a repo path, never opened';
   return undefined;
 }
 
 /** A fleet project's id and repo, as its `pup status` block and `pup ui` line lead. */
-function fleetHeader(project: FleetProject): string {
+function fleetHeader(project: RegisteredProject): string {
   return `${project.id}  ${sanitizeReason(project.repoPath)}`;
 }
 
@@ -72,9 +78,9 @@ function fleetHeader(project: FleetProject): string {
  * project's store is never opened; `hidden` is how many were left out.
  */
 function awakeFleet(
-  registered: FleetProject[],
+  registered: RegisteredProject[],
   shouldShowDormant: boolean,
-): { shown: FleetProject[]; hidden: number } {
+): { shown: RegisteredProject[]; hidden: number } {
   const shown = shouldShowDormant
     ? registered
     : registered.filter((project) => project.dormantAt === null);
@@ -91,7 +97,7 @@ function awakeFleet(
  * one handle at a time.
  */
 export function readFleet(
-  registered: FleetProject[],
+  registered: RegisteredProject[],
   now: number,
   shouldShowDormant: boolean,
 ): { blocks: FleetBlock[]; hidden: number } {
@@ -123,7 +129,7 @@ export function readFleet(
  * of the fleet still renders — `readFleet`'s isolation, per reading.
  */
 export function fleetReading(
-  registered: FleetProject[],
+  registered: RegisteredProject[],
   shouldShowDormant: boolean,
   pupBin: string,
 ): () => FleetReading {

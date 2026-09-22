@@ -5,28 +5,13 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { openStore } from '../core/db.client.js';
+import type { RegisteredProject } from '../core/fleet.service.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 
 export interface ResolvedProject {
   repoPath: string;
   db: Database.Database;
-}
-
-/** A project `pup init` registered, read back from its own store under `~/.pupitre`. */
-interface RegisteredProject {
-  id: string;
-  repoPath: string;
-  dbFile: string;
-  /** False when the repo was deleted or moved since it registered — reported, never used. */
-  repoExists: boolean;
-  /**
-   * False when `repoPath` is not its own canonical path — a trailing slash, a
-   * symlink, a `..` — reported, never opened (decision 61, moved here by 65).
-   */
-  isOwnPath: boolean;
-  /** When the operator put the project to sleep, or null while it is active (decision 62). */
-  dormantAt: string | null;
 }
 
 /**
@@ -172,7 +157,8 @@ export function registryLine(project: RegisteredProject, isConductorRunning?: bo
         ? '  conductor running'
         : '  conductor stopped';
   const missing = project.repoExists ? '' : '  (missing)';
-  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}${conductor}${missing}`;
+  const variant = project.repoExists && !project.isOwnPath ? '  (not its own path)' : '';
+  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}${conductor}${missing}${variant}`;
 }
 
 /**

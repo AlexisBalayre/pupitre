@@ -197,7 +197,24 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
     console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
     if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
   }
+  printBaselineTail(db, report, repoPath);
+}
+
+/**
+ * What `pup init` and `pup audit` both end on: the debt baseline, with the
+ * audit's per-metric moves under it, then the sandbox, codegraph and push
+ * target lines and the findings. The audit prints the same findings, so a
+ * stage that cannot measure says why on the repeat path too, or that is where
+ * the gap goes quiet (decision 29).
+ */
+function printBaselineTail(
+  db: Database,
+  report: InitReport,
+  repoPath: string,
+  debtTransitions: readonly string[] = [],
+): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
+  for (const t of debtTransitions) console.log(`  ${t}`);
   console.log(`sandbox: ${report.sandbox}`);
   printCodegraphLine(repoPath);
   printPushTargetLine(db, report.projectId);
@@ -1805,17 +1822,7 @@ export function buildProgram(): Command {
         const detail = fresh.get(t.stage)?.detail;
         if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
       }
-      console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
-      for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
-      console.log(`sandbox: ${report.sandbox}`);
-      printCodegraphLine(repoPath);
-      printPushTargetLine(db, report.projectId);
-      // Same findings `pup init` prints: a stage that cannot measure says why
-      // here too, or the repeat path is where the gap goes quiet (decision 29).
-      if (report.findings.length > 0) {
-        console.log('findings:');
-        for (const f of report.findings) console.log(`  - ${f}`);
-      }
+      printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
       console.log('Baseline refreshed.');
       if (report.hasRegression) process.exitCode = 1;
     });

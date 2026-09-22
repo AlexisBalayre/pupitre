@@ -12,6 +12,7 @@ import {
   fleetProjects,
   listRegisteredProjects,
   ProjectResolutionError,
+  registryLine,
   resolveProject,
 } from './project.utils.js';
 
@@ -212,6 +213,29 @@ describe('listRegisteredProjects', () => {
     expect(listRegisteredProjects(base)).toEqual([
       expect.objectContaining({ repoPath: variant, repoExists: true, isOwnPath: false }),
     ]);
+  });
+});
+
+describe('registryLine', () => {
+  // Every door that opens a project refuses a near-twin, so the listing must
+  // not print it as a plain `active` line beside the real one.
+  it('marks a project whose path is a variant of a repo path, and a gone one only as missing', () => {
+    const base = tempDir('pup-proj-base-');
+    const repo = initRepo();
+    const variant = plantVariant(base, repo);
+    const gone = initRepo();
+    register(base, gone);
+    rmSync(gone, { recursive: true });
+    const byPath = new Map(
+      listRegisteredProjects(base).map((project) => [project.repoPath, project]),
+    );
+    const planted = byPath.get(variant);
+    const missing = byPath.get(gone);
+
+    expect(planted && registryLine(planted, false)).toBe(
+      `${projectId(variant)}  ${variant}  active  conductor stopped  (not its own path)`,
+    );
+    expect(missing && registryLine(missing)).toBe(`${projectId(gone)}  ${gone}  active  (missing)`);
   });
 });
 

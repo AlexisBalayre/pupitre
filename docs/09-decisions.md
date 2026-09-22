@@ -3301,7 +3301,11 @@ changes back into those docs is pending.
     the refusal the fleet readers have had since decision 61, and so does the auto-select of the
     only registered project. The check sits in `project.utils.ts` and not in the service because
     that file already reads the filesystem (`existsSync`, `readdirSync`) and opens stores.
-    `realpathSync` adds no service, client or repository import. The path is now resolved once
+    `realpathSync` adds no service, client or repository import. The row type,
+    `RegisteredProject`, is owned by core and exported from `fleet.service.ts`, the reader
+    that consumes it. `listRegisteredProjects` in `src/cli` produces it and imports the type.
+    `pup project list` marks such a row `(not its own path)`, next to `(missing)`, so a planted
+    near-twin is no longer printed as a plain `active` line beside the real project. The path is now resolved once
     per scan, not a second time just before the read. A repo deleted in the milliseconds between
     the two inside one command has its store read as it was, since the store lives under
     `~/.pupitre` and not in the repo. The next scan marks it missing.
@@ -3311,9 +3315,11 @@ changes back into those docs is pending.
     project. It is not a near-twin of the operator's repo, which is the case decision 61 closed.
     *Complexity*, measured by driving the TypeScript adapter's `complexity` capability (the
     function the gate's complexity stage calls) directly from a script, not through the gate:
-    `src/cli/index.ts` has **317** decision points on main at c31fb7e and **290** on this branch.
+    `src/cli/index.ts` has **317** decision points on main at c31fb7e and **288** on this branch
+    (290 before the gate review asked for `printBaselineTail`, which `pup init` and `pup audit`
+    now share for their report tail).
     The new `fleet.service.ts` and `project.service.ts` have 10 each.
-    `dashboard-text.utils.ts` went from 19 to 28 and `project.utils.ts` from 19 to 21.
+    `dashboard-text.utils.ts` went from 19 to 28 and `project.utils.ts` from 19 to 23.
     *Tests.* `fleet.test.ts` and `project.test.ts` run on temp stores. `project-utils.test.ts`
     checks that the scan flags a variant and that `resolveProject` by id refuses it and leaves
     the planted store with its one `projects` table. `index.test.ts` gains
