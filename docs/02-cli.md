@@ -27,13 +27,16 @@ instead (decisions 60, 61, addendum to decision 43).
   `pup merge --pr` pushes to, and it refuses when the repo's config no longer says the same
   thing. The record is held back, with a finding, rather than written when the configured URL
   carries control characters or when sessions have already run for the project; `--origin-moved`
-  is how the operator confirms one. A run from inside a session records nothing: naming the target is the operator's act
-  (decision 56).
+  is how the operator confirms one. Operator-only, like `pup audit`, and refused before
+  anything measures: it re-stamps the debt baseline through the same capture the audit runs,
+  and naming the push target is the operator's act, so a session running it would choose when
+  its own bar moves and where its work is pushed. The conductor may run it, as it may audit
+  (decisions 48, 56, 64).
 - `pup init --origin-moved` — record the push target from the repo's current
   `remote.origin.url` when pup will not do it on its own: origin legitimately moved (a rename, a
   fork promoted), or this is a first record on a project whose sessions have already had the
-  shared config to write. The only way to move it. Operator-only, like `pup audit`: it is the
-  value a session's merge is held to (decision 56).
+  shared config to write. The only way to move it. Operator-only with the rest of `pup init`: it
+  is the value a session's merge is held to (decisions 56, 64).
 - `pup plan add "<goal>" --scope <glob>...` — record a task with no session. `pup plan` lists the
   backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
   rewrites one. A task is in the backlog until a session claims it (decision 40).
@@ -232,9 +235,10 @@ worktree both refuse — so a session reports only its own state (decision 44).
   the project it runs to sleep (decision 62).
 - `pup audit` — re-run the baseline stages and report drift against the stored baseline,
   refreshing it. Prints the same `codegraph:` and `push target:` lines `pup init` does, so both
-  are reported on the repeat path too and not only the first run. Operator-only: outside a merge this is the only thing that re-stamps the
-  debt baseline, and on a `--pr` repo it is the only thing at all, so a session running it
-  from its worktree would choose when its own bar moves (decisions 26, 39, 48).
+  are reported on the repeat path too and not only the first run. Operator-only: outside a merge
+  this and `pup init` are the only things that re-stamp the debt baseline, and on a `--pr` repo
+  they are the only things at all, so a session running either from its worktree would choose
+  when its own bar moves (decisions 26, 39, 48, 64).
 - `pup audit --sweep` — spawn a deletion-only session (dead code, unused deps) from the latest audit findings. Operator-only for the same reason `pup launch` is, on top of the baseline one (decision 42).
 
 ## Risk score (used by `pup review`)
