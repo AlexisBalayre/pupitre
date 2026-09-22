@@ -230,9 +230,11 @@ describe('generated bash re-check (decision 63)', () => {
   });
 
   /**
-   * Killed under the hook's own 5-second timeout, so a hang reads as a null
-   * status. A UTF-8 locale, as a session's shell usually has, which the script
-   * must not depend on.
+   * Run directly, not through Claude Code's hook harness, so the only thing that
+   * ends a hang is this call's own 4-second timeout: set under the hook's 5-second
+   * production budget so the test's kill wins the race and a hang reads as a
+   * null status. A UTF-8 locale, as a session's shell usually has, which the
+   * script must not depend on.
    */
   function run(payload: object, env: NodeJS.ProcessEnv = {}) {
     return spawnSync('/bin/sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {
@@ -375,15 +377,15 @@ describe('generated bash re-check (decision 63)', () => {
     writeFileSync(join(worktree, 'src/cli/index.ts'), 'written later by the background shell\n');
     const result = run({
       hook_event_name: 'PostToolUse',
-      tool_name: 'BashOutput',
+      tool_name: 'TaskOutput',
       tool_use_id: 'toolu_02def',
-      tool_input: { bash_id: 'bash_1' },
+      tool_input: { task_id: 'b1' },
     });
     expect(result.status).toBe(2);
     expect(violations()).toEqual([
       expect.objectContaining({
         path: 'src/cli/index.ts',
-        command: 'a read of background output {"bash_id":"bash_1"}',
+        command: 'a read of background output {"task_id":"b1"}',
       }),
     ]);
   });
@@ -439,7 +441,7 @@ describe('generated bash re-check (decision 63)', () => {
 
   it('wires the re-check on reading a background shell or task', () => {
     const { hooks } = ProfileCompiler.compileProfile(makeInput()).settings;
-    const entry = (hooks.PostToolUse ?? []).find((e) => e.matcher === 'BashOutput|TaskOutput');
+    const entry = (hooks.PostToolUse ?? []).find((e) => e.matcher === 'TaskOutput');
     expect(entry?.hooks.map((h) => h.command)).toEqual([
       '/state/sessions/s-1/compiled/hooks/bash-recheck.sh',
     ]);

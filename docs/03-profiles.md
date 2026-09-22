@@ -33,9 +33,11 @@ context_budget: 6000  # hard cap for the compiled result, tokens
 
 ## Scope enforcement in a session (decisions 6, 63)
 
-Three compiled hooks, each reading the task's scope from the sidecar files `hooks/scope-in.pat`
-and `hooks/scope-out.pat` (`grep -E -f`), so no glob is ever interpolated into shell source. All
-three use the same order: `.claude/` first, then scope-out, then scope-in.
+Three compiled hooks. Two of them, `scope-enforce.sh` and `bash-recheck.sh`, read the task's
+scope from the sidecar files `hooks/scope-in.pat` and `hooks/scope-out.pat` (`grep -E -f`), so no
+glob is ever interpolated into shell source, and both use the same order: `.claude/` first, then
+scope-out, then scope-in. The third, `bash-guard.sh`, is the exception: it matches command text
+for a plain write into `.claude/` and reads no scope file at all.
 
 - `scope-enforce.sh`, PreToolUse on `Edit|Write`, refuses a path outside scope-in or inside
   scope-out before the edit happens.
@@ -50,8 +52,9 @@ three use the same order: `.claude/` first, then scope-out, then scope-in.
   ignore rule, since the session can write that rule itself in `.git/info/exclude`. Each path gets
   one fingerprint: the `git hash-object --no-filters` blob hash for a regular file, `large-<bytes>`
   over 64 MiB, `special` for a fifo, device or symlink (never opened, since reading a fifo would
-  hang the hook past its timeout), or `deleted`. Past 200 dirty paths it reads none of them and
-  refuses every call until the worktree is committed or cleaned. The snapshot is written to `<compiled>/bash-snapshots/<tool_use_id>`.
+  hang the hook past its timeout), or `deleted`. Past 200 dirty paths in the worktree, in-scope
+  ones counted too, it reads none of them and refuses every call until the worktree is committed
+  or cleaned. The snapshot is written to `<compiled>/bash-snapshots/<tool_use_id>`.
   After the call it takes the same listing again. Any line missing from the snapshot is a file
   that was created, modified or deleted outside the scope during the call. For each one it appends
   `{"type":"scope_violation","path","reason","command","pup_session_id"}` to the session's
@@ -61,13 +64,17 @@ three use the same order: `.claude/` first, then scope-out, then scope-in.
   before the call and has not changed is not flagged again. If git is missing or fails, or its
   scratch dir under `<compiled>/bash-snapshots/` cannot be made, the check after the call refuses.
   The check before the call never blocks it.
-- The same hook runs at PostToolUse on `BashOutput|TaskOutput`, because a background shell writes
+- The same hook runs at PostToolUse on `TaskOutput`, because a background shell or task writes
   after its own call's check has run. That read has no snapshot of its own, so every dirty path
-  outside the scope is flagged again there.
+  outside the scope is flagged again there. Claude Code also hands background output back as a
+  file the session `Read`s, and that route is not re-checked: the write waits for the next Bash
+  call's snapshot, which absorbs it.
 - **What it cannot see:** a write that lands between one post-check and the next pre-check becomes
   part of the next snapshot's baseline and is never flagged. That covers a background shell whose
-  output is never read, MCP write tools and subagent writes. The merge gate is the only check on
-  those.
+  output is read through `Read` or never, MCP write tools, and a subagent's writes unless its
+  output is read through `TaskOutput`. The snapshots sit in the store, which
+  a session's shell can reach, so a session that rewrites its own snapshot defeats the check for
+  that call (decision 63's ceilings). The merge gate is the only check on those.
 - Paths from git never reach the shell as code. `-z` names each path raw. Before NUL becomes the
   line separator, an embedded newline is mapped to `\001`, so every record is one line. Each name
   is then handled only as a quoted variable, written out with `printf '%s'`, and passed to git

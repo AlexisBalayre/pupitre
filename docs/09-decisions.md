@@ -3168,8 +3168,11 @@ changes back into those docs is pending.
     worktree path. So a second pass lists `.claude/` (`:(icase)`) with
     `--ignored=traditional` and keeps only its `!!` records, which are fingerprinted like any
     dirty path. Third, the re-check was not wired where a background shell's writes surface.
-    It now also runs at PostToolUse on `BashOutput|TaskOutput`, since reading a background
-    shell's output is the next point the session looks at it. That read has no snapshot of its
+    It now also runs at PostToolUse on `TaskOutput`, since reading a background shell's or
+    task's output is the next point the session looks at it. Claude Code's hooks reference
+    confirms `PostToolUseFailure` (after a tool call fails, same `tool_use_id` as the pre
+    call) and `TaskOutput` (deprecated in favour of `Read` on the task's output file, which
+    this hook does not see; `BashOutput` no longer exists). That read has no snapshot of its
     own, so it compares against nothing: every dirty path outside the scope is flagged again,
     and the command is recorded as `a read of background output <tool_input>`. The budget is
     capped. More than 200 status records across both passes (`RECHECK_MAX_DIRTY_PATHS`) are
@@ -3202,11 +3205,12 @@ changes back into those docs is pending.
     write made after a call's post-check is refused when background output is read. 201 new
     files refuse with no violation recorded. With `git` missing from PATH, or a `git` that exits
     128, the post-check refuses with `SCOPE CHECK FAILED` and the pre-check still lets the call
-    run. It does the same when its scratch dir cannot be made. *The discriminating mutations*, each run against a backup copy of the service and
+    run. It does the same when its scratch dir cannot be made.
+    *The discriminating mutations*, each run against a backup copy of the service and
     restored from it: removing the post-check (an `exit 0` ahead of it) fails six tests,
     including the heredoc one; ignoring the snapshot fails two; dropping the PostToolUseFailure
     wiring fails one. Hashing every entry again without the regular-file guard, dropping the
-    ignored `.claude/` pass, dropping the `BashOutput|TaskOutput` wiring, dropping the cap and
+    ignored `.claude/` pass, dropping the `TaskOutput` wiring, dropping the cap and
     exiting 0 on a git failure each fail exactly their own test.
     *Ceilings.* The violation is in the session's `events.jsonl`, not in the store's `events`
     table: no code path folds hook lines into that table, so `pup review`'s scope-violation
@@ -3217,9 +3221,11 @@ changes back into those docs is pending.
     **A write that lands between one post-check and the next pre-check is never flagged**:
     the next snapshot takes it in as the baseline. That covers a Bash call with
     `run_in_background` (the tool returns at launch, so its post-check runs before the shell
-    writes) unless its output is read, which is what the `BashOutput|TaskOutput` wiring
-    catches. It also covers a background shell whose output is never read, writes from MCP
-    tools and writes from subagents. The hooks and their snapshots are in the store, which a
+    writes) unless its output is read through `TaskOutput`, which the wiring catches; read
+    through `Read` on the output file, the route Claude Code now prefers, or never read, it is
+    not. The same holds for a subagent: its writes are re-checked only when its output is read
+    through `TaskOutput`, and otherwise never. Writes from MCP tools are never re-checked. The
+    hooks and their snapshots are in the store, which a
     session's shell can reach (decision 57), so a session that sets out to defeat the check can
     do so. This closes the accidental route, not the adversarial one. A file whose name holds a
     control character is fingerprinted `unhashable`, and a fifo, device or symlink is
