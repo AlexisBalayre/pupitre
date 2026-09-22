@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-22T16:00:15.977Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35750230314",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35750230314",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c4e92105b976a38e932de7e82f4b0b1d29a7cf98",
+  "source": "pr",
+  "pr_number": 111,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4fa6f70adba3fb3a4193968f9c52980fa1b34da2",
+  "prior_importants": [
+    {
+      "file": "src/core/fleet.service.ts",
+      "line": "12-38",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/project.service.ts",
+      "line": "21-24",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/ui/use-snapshot.hook.ts",
+      "line": "14-18",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Collapsing `DashboardReading` into `export type DashboardReading = FleetReading;` dropped the field-level doc that used to sit on `unreadable` (\"Empty for a single project, whose read throws\"). In single-project `pup ui`, a snapshot failure throws rather than degrading into an `unreadable` line the way the fleet (`--all`) path does per-project — that gotcha isn't restated anywhere, including on `FleetReading.unreadable` in the new `src/core/types/fleet.types.ts`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The checked-out working tree (HEAD c4e92105b976a38e932de7e82f4b0b1d29a7cf98) was one commit behind the PR's true head (0ee5b00404508e17b236b9aca97c5d09269b34dd) at review start — a push (commit 0ee5b00, \"Finish the sentence on who consumes RegisteredProject\") landed after the preflight checkout. Worked around by fetching the true head SHA directly and diffing against it explicitly rather than the symbolic HEAD; git checkout to the true head was blocked under the CI read-only git-verb restriction. The delta reviewed correctly includes all 3 commits (eec52eb, c4e9210, 0ee5b00) since 4fa6f70."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 1.6781497000000003,
+  "duration_ms": 412335,
+  "num_turns": 21,
+  "tokens": {
+    "input": 39,
+    "output": 17146,
+    "cache_read": 911563,
+    "cache_creation": 52742,
+    "total": 981490
+  }
+}
