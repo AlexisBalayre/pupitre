@@ -1457,38 +1457,49 @@ describe('CLI commands', () => {
       );
     });
 
-    // Nominating the push target is the operator's act: a session that could
-    // write it would be choosing where its own work is pushed, which is the
-    // hole the recorded copy exists to close (decision 56). Discriminating on
-    // the write, not only the message — the row is still unrecorded after.
-    it('records nothing when a session runs `init`, so a session cannot name the target', () => {
+    // `init` stamps the debt baseline exactly as `audit` does, and records the
+    // push target the gate holds a `--pr` merge to, so a session running it
+    // would pick the moment its own bar moved and where its work is pushed
+    // (decisions 48, 56, 64). Discriminating on the writes, not only the
+    // message: the baseline and the push target are both still null after.
+    it.each([
+      ['', []],
+      [' --origin-moved', ['--origin-moved']],
+    ])('refuses `init%s` when a session is calling', (_label, flags) => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
       seedSession(repo, 's1');
       vi.stubEnv('PUP_SESSION_ID', 's1');
 
-      buildProgram().parse(['init'], { from: 'user' });
+      buildProgram().parse(['init', ...flags], { from: 'user' });
 
-      expect(recordedOrigin(repo)).toBeNull();
-      expect(logs).toContain(
-        'push target: not recorded — `pup merge --pr` refuses until `pup init` records one',
-      );
-    });
-
-    it('refuses `init --origin-moved` when a session is calling', () => {
-      const repo = initRepoWithOrigin();
-      useCwd(repo);
-      seedSession(repo, 's1');
-      vi.stubEnv('PUP_SESSION_ID', 's1');
-
-      buildProgram().parse(['init', '--origin-moved'], { from: 'user' });
-
-      expect(errors).toEqual([
-        '`pup init --origin-moved` is operator-only; sessions cannot move the push target.',
-      ]);
+      expect(errors).toEqual(['`pup init` is operator-only; sessions cannot move the baseline.']);
       expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
       expect(recordedOrigin(repo)).toBeNull();
+      const { db } = resolveProject(repo);
+      expect(db.prepare('SELECT baseline FROM projects WHERE id = ?').get(projectId(repo))).toEqual(
+        { baseline: null },
+      );
+      db.close();
+    });
+
+    // The conductor is the operator's delegate for setup, as it is for the
+    // audit (decision 48): the guard asks for a session and nothing else.
+    it('lets the conductor run `init`', () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      expect(errors).toEqual([]);
+      expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
+      const { db } = resolveProject(repo);
+      expect(
+        db.prepare('SELECT baseline FROM projects WHERE id = ?').get(projectId(repo)),
+      ).not.toEqual({ baseline: null });
+      db.close();
     });
 
     it('prints a recorded push target through the sanitizer', () => {

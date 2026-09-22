@@ -565,20 +565,16 @@ export function buildProgram(): Command {
     .option('--origin-moved', ORIGIN_MOVED_DESCRIPTION)
     .action((opts: { gateEnv?: string; originMoved?: boolean }) => {
       const { repoPath, db } = project();
-      // Recording the push target is the operator's act: it is the value the
-      // gate holds a session's `--pr` merge to, so a session that could write
-      // it — on a first record as much as on a re-record — would be choosing
-      // where its own work is pushed (decision 56). A session's `pup init`
-      // leaves the record alone and the merge refuses, which is loud; asking
-      // for the flag is refused outright, because it is a considered override
-      // and the consideration is not the session's to make (decisions 41, 48).
-      const session = callingSession(db);
-      if (opts.originMoved && session) {
-        return refuse(
-          '`pup init --origin-moved` is operator-only; sessions cannot move the push target.',
-        );
+      // `pup init` stamps the debt baseline through the same `initProject` the
+      // audit does, and records the push target the gate holds a session's
+      // `--pr` merge to — so a session running it would choose the moment its
+      // own bar moves, and where its own work is pushed (decisions 48, 56, 64).
+      // Refused before anything measures; `--origin-moved` needs no refusal of
+      // its own.
+      if (callingSession(db)) {
+        return refuse('`pup init` is operator-only; sessions cannot move the baseline.');
       }
-      const recording = session ? 'skip' : opts.originMoved ? 're-record' : 'record';
+      const recording = opts.originMoved ? 're-record' : 'record';
       const report = withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
           initProject(

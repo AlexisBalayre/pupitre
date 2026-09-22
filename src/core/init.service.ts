@@ -90,11 +90,10 @@ export function readOriginUrl(repoPath: string): string | undefined {
  * What a `pup init` run may do to the recorded push target (decision 56):
  * `'record'` writes it when nothing is recorded yet and reports a value that
  * disagrees rather than overwriting it, `'re-record'` is the operator's word
- * that origin moved (`pup init --origin-moved`), and `'skip'` is a session's
- * own `pup init` — the record is what the gate holds a session's merge to, so
- * a session must not be able to nominate it.
+ * that origin moved (`pup init --origin-moved`). Both are the operator's: a
+ * session cannot reach `pup init` at all (decision 64).
  */
-export type OriginRecording = 'record' | 're-record' | 'skip';
+export type OriginRecording = 'record' | 're-record';
 
 /**
  * Store origin's URL as this checkout has it, and return the finding when it
@@ -110,7 +109,6 @@ function recordOriginUrl(
   repoPath: string,
   recording: OriginRecording,
 ): string | undefined {
-  if (recording === 'skip') return undefined;
   const configured = readOriginUrl(repoPath);
   if (!configured) return undefined;
   const recorded = getProject(db, pid)?.origin_url ?? undefined;

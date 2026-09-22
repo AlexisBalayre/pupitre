@@ -194,14 +194,6 @@ describe('initProject', () => {
     expect(report.findings).toEqual([]);
   });
 
-  it("records nothing on a session's own run: the push target is not a session's to name", () => {
-    addOrigin(repo);
-
-    initProject(db, repo, [makeAdapter()], undefined, 'skip');
-
-    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
-  });
-
   it('refreshes the baseline on re-run', () => {
     initProject(db, repo, [
       makeAdapter({ gateCommands: () => [{ stage: 'build', command: 'false', args: [] }] }),
