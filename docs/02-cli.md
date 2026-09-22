@@ -5,8 +5,10 @@ wins from anywhere, even inside another repo; otherwise the repo around the curr
 outside any repo, the store under `~/.pupitre` decides only when exactly one project is
 registered — with several it lists them the way `pup project list` prints them, less the
 conductor column (a deleted repo is marked `(missing)`), and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
-project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
-exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
+project whose repo no longer exists on disk is reported, never used, and one whose registered
+path is not its own canonical path (a trailing slash, a symlink, a `..`) is refused as `not its
+own path: a variant of a repo path, never opened` — the fleet views' refusal, on `--project <id>`
+too (decision 65). Each refusal is one line, exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
 instead (decisions 60, 61, addendum to decision 43).
 
 ## Global options

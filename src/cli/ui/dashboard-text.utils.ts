@@ -1,4 +1,5 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
+import type { FleetBlock } from '../../core/fleet.service.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
@@ -114,4 +115,50 @@ export function steerLabel(session: DashboardSession): string {
  */
 export function trailing(label: string): string {
   return label ? `  ${label}` : '';
+}
+
+/** One session row, the same in the single-project table and the fleet view. */
+export function sessionLine(session: DashboardSession): string {
+  const marker =
+    session.state === 'blocked'
+      ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
+      : '';
+  return (
+    `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
+    `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`
+  );
+}
+
+/**
+ * `pup status`'s fleet view (decision 60): per project its header, then only
+ * what waits on the operator, then counts; a project that was not read is its
+ * header and why. Dormant projects shown under `--dormant` say so in their
+ * header, and the ones left out are counted on a last line (decision 62).
+ */
+export function fleetLines({ blocks, hidden }: { blocks: FleetBlock[]; hidden: number }): string[] {
+  const lines = blocks.flatMap((block, index) => [
+    ...(index > 0 ? [''] : []),
+    ...('reason' in block ? [`${block.header}  ${block.reason}`] : fleetBlockLines(block)),
+  ]);
+  if (hidden > 0) {
+    if (blocks.length > 0) lines.push('');
+    lines.push(
+      `${hidden} dormant ${hidden === 1 ? 'project' : 'projects'} not shown; --dormant shows ${hidden === 1 ? 'it' : 'them'}.`,
+    );
+  }
+  return lines;
+}
+
+function fleetBlockLines(block: Exclude<FleetBlock, { reason: string }>): string[] {
+  const { header, snapshot, summary, dormantAt } = block;
+  const dormant = dormantAt === null ? '' : `  dormant since ${sanitizeReason(dormantAt)}`;
+  return [
+    `${header}  ${snapshot.conductor.running ? 'conductor running' : 'conductor stopped'}${dormant}`,
+    ...snapshot.overdueDebt.map(
+      (entry) =>
+        `  OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
+    ),
+    ...summary.needsYou.map((session) => `  ${sessionLine(session)}`),
+    `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
+  ];
 }

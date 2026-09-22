@@ -3639,6 +3639,38 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    // The fleet readers' refusal, on the door that names one project: a store
+    // keyed to the operator's repo path plus a slash is never opened, and so
+    // never migrated or read as the real project (decisions 61, 65).
+    it('refuses a planted project whose path is a variant of a registered repo', () => {
+      const real = initRepo();
+      registerProject(real);
+      const variant = `${real}/`;
+      const plantedId = projectId(variant);
+      const plantedStore = join(home, '.pupitre', plantedId, 'state.db');
+      mkdirSync(join(home, '.pupitre', plantedId), { recursive: true });
+      const bare = new Database(plantedStore);
+      bare.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+      bare.prepare('INSERT INTO projects VALUES (?, ?)').run(plantedId, variant);
+      bare.close();
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['--project', plantedId, 'status'], { from: 'user' }),
+      ).toThrow(
+        new ProjectResolutionError(
+          `Project ${plantedId} is registered at ${variant}, which is not its own path: a variant of a repo path, never opened.`,
+        ),
+      );
+      expect(logs).toEqual([]);
+      const check = new Database(plantedStore, { readonly: true });
+      const tables = check.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+        name: string;
+      }[];
+      check.close();
+      expect(tables.map((table) => table.name)).toEqual(['projects']);
+    });
+
     it('reaches commands that read the project dir, not only the store', () => {
       const id = registerProject(initRepo());
       useCwd(tempDir('pup-cli-noproj-'));

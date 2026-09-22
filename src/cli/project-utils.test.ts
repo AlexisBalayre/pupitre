@@ -40,6 +40,31 @@ function register(base: string, repoPath: string): string {
   return id;
 }
 
+/**
+ * Plants a bare store under `base` for `repo` plus a trailing slash, keyed as a
+ * session could key it: the directory and row id are that variant's hash. Bare,
+ * so that anything opening it through `openStore` leaves its migrations behind.
+ */
+function plantVariant(base: string, repo: string): string {
+  const variant = `${repo}/`;
+  mkdirSync(join(base, projectId(variant)), { recursive: true });
+  const planted = new Database(projectPaths(variant, base).dbFile);
+  planted.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL)');
+  planted.prepare('INSERT INTO projects VALUES (?, ?)').run(projectId(variant), variant);
+  planted.close();
+  return variant;
+}
+
+/** The tables a store holds, read without migrating it. */
+function tablesOf(dbFile: string): string[] {
+  const db = new Database(dbFile, { readonly: true });
+  const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+    name: string;
+  }[];
+  db.close();
+  return rows.map((row) => row.name);
+}
+
 let errors: string[];
 let originalConsoleError: typeof console.error;
 /** The store under the stubbed HOME, for the cases that resolve through homedir(). */
@@ -79,6 +104,7 @@ describe('listRegisteredProjects', () => {
         repoPath: repo,
         dbFile: projectPaths(repo, base).dbFile,
         repoExists: true,
+        isOwnPath: true,
         dormantAt: null,
       },
     ]);
@@ -173,6 +199,19 @@ describe('listRegisteredProjects', () => {
     rmSync(repo, { recursive: true });
 
     expect(listRegisteredProjects(base)).toEqual([expect.objectContaining({ repoExists: false })]);
+  });
+
+  // A store keyed to the hash of a repo path plus a slash: the path exists and
+  // resolves to the real repo, but it is not the path `git` would register
+  // (decision 61, checked here since decision 65).
+  it('flags a project whose repo path is a variant of a repo path', () => {
+    const base = tempDir('pup-proj-base-');
+    const repo = initRepo();
+    const variant = plantVariant(base, repo);
+
+    expect(listRegisteredProjects(base)).toEqual([
+      expect.objectContaining({ repoPath: variant, repoExists: true, isOwnPath: false }),
+    ]);
   });
 });
 
@@ -377,6 +416,19 @@ describe('resolveProject', () => {
       expect(() => resolveProject(tempDir('pup-proj-nowhere-'), 'ghost')).toThrow(
         'No project ghost; no project registered, run pup init from the repo you want to control.',
       );
+    });
+
+    it('refuses a selected project whose path is a variant of a repo path, and never opens it', () => {
+      const repo = initRepo();
+      register(base, repo);
+      const variant = plantVariant(base, repo);
+
+      expect(() => resolveProject(tempDir('pup-proj-nowhere-'), projectId(variant))).toThrow(
+        new ProjectResolutionError(
+          `Project ${projectId(variant)} is registered at ${variant}, which is not its own path: a variant of a repo path, never opened.`,
+        ),
+      );
+      expect(tablesOf(projectPaths(variant, base).dbFile)).toEqual(['projects']);
     });
 
     it('reports a selected project whose repo is gone instead of using it', () => {

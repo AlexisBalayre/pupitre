@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -20,6 +20,11 @@ interface RegisteredProject {
   dbFile: string;
   /** False when the repo was deleted or moved since it registered — reported, never used. */
   repoExists: boolean;
+  /**
+   * False when `repoPath` is not its own canonical path — a trailing slash, a
+   * symlink, a `..` — reported, never opened (decision 61, moved here by 65).
+   */
+  isOwnPath: boolean;
   /** When the operator put the project to sleep, or null while it is active (decision 62). */
   dormantAt: string | null;
 }
@@ -104,6 +109,15 @@ function keyedTo(dirName: string, row: ProjectRow): boolean {
   return [row.id, projectId(row.repo_path)].every((id) => id === dirName);
 }
 
+/** Where `path` resolves to on disk, or undefined when nothing is there. */
+function canonicalPath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Every project registered in the store, one directory per project id under
  * `~/.pupitre` (the base `projectPaths` defaults to), each holding its own
@@ -118,16 +132,24 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
     .flatMap(({ name, dbFile }) =>
       readProjectRows(dbFile)
         .filter((row) => keyedTo(name, row))
-        .map((row) => ({
-          id: row.id,
-          repoPath: row.repo_path,
-          dbFile,
-          repoExists: existsSync(row.repo_path),
-          // A session can write a BLOB into its own row, which TEXT affinity
-          // keeps and the driver returns as bytes; every reader takes a string
-          // (decision 62, as decision 61 did for the planted ledger id).
-          dormantAt: row.dormant_at === null ? null : String(row.dormant_at),
-        })),
+        .map((row) => {
+          const canonical = canonicalPath(row.repo_path);
+          return {
+            id: row.id,
+            repoPath: row.repo_path,
+            dbFile,
+            repoExists: canonical !== undefined,
+            // A store's directory is only pinned to the hash of whatever string
+            // its row holds, so a session can plant `~/.pupitre/<hash of the
+            // operator's repo + '/'>/state.db` with tasks it wrote. The real
+            // registration is always the canonical path `git` resolved.
+            isOwnPath: canonical === row.repo_path,
+            // A session can write a BLOB into its own row, which TEXT affinity
+            // keeps and the driver returns as bytes; every reader takes a string
+            // (decision 62, as decision 61 did for the planted ledger id).
+            dormantAt: row.dormant_at === null ? null : String(row.dormant_at),
+          };
+        }),
     );
 }
 
@@ -159,10 +181,15 @@ export function registryLine(project: RegisteredProject, isConductorRunning?: bo
  * `--project` argument is whatever argv says; both reach the operator's
  * terminal only through here (decision 29).
  */
-export function openRegistered(project: RegisteredProject): ResolvedProject {
+function openRegistered(project: RegisteredProject): ResolvedProject {
   if (!project.repoExists) {
     throw new ProjectResolutionError(
       `Project ${project.id} is registered at ${sanitizeReason(project.repoPath)}, which no longer exists; ${INIT_HINT}`,
+    );
+  }
+  if (!project.isOwnPath) {
+    throw new ProjectResolutionError(
+      `Project ${project.id} is registered at ${sanitizeReason(project.repoPath)}, which is not its own path: a variant of a repo path, never opened.`,
     );
   }
   return { repoPath: project.repoPath, db: openStore(project.dbFile) };
