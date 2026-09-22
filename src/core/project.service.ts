@@ -18,10 +18,10 @@ type DormancyOutcome = { said: string } | { refusal: string };
  * registry, or a `--project` id nobody registered. `selected` narrows the
  * listing to that one id.
  */
-export function listProjects<T extends { id: string; repoPath: string }>(
-  registered: T[],
+export function listProjects<TProject extends { id: string; repoPath: string }>(
+  registered: TProject[],
   selected: string | undefined,
-): { refusal: string } | { projects: { project: T; isConductorRunning: boolean }[] } {
+): { refusal: string } | { projects: { project: TProject; isConductorRunning: boolean }[] } {
   const listed = registered.filter(
     (candidate) => selected === undefined || candidate.id === selected,
   );
@@ -51,10 +51,7 @@ function unregistered(repoPath: string): DormancyOutcome {
 /**
  * Put the project in `repoPath` to sleep: the fleet views and the radar pass it
  * over until it is woken (decision 62). Refused while its conductor or any
- * session that holds files is live, each named, not counted, like the brief's
- * list of what runs on the old brief: each one is something the operator stops
- * by name first. A project put to sleep with work in flight would hide that
- * work from every view that would have shown it needing the operator.
+ * session that holds files is live.
  */
 export function putProjectToSleep(db: Database, repoPath: string, now: Date): DormancyOutcome {
   const pid = projectId(repoPath);
@@ -65,6 +62,10 @@ export function putProjectToSleep(db: Database, repoPath: string, now: Date): Do
       said: `Project ${pid} is already dormant since ${sanitizeReason(String(row.dormant_at))}.`,
     };
   }
+  // Named, not counted, like the brief's list of what runs on the old brief:
+  // each one is something the operator stops by name first. A project put to
+  // sleep with work in flight would hide that work from every view that would
+  // have shown it needing the operator.
   const live = [
     ...(isConductorRunning(repoPath) ? [conductorName(pid)] : []),
     ...listSessions(db, holdingStates()).map((session) => sanitizeReason(session.id)),

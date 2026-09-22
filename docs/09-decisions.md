@@ -3309,7 +3309,7 @@ changes back into those docs is pending.
     per scan, not a second time just before the read. A repo deleted in the milliseconds between
     the two inside one command has its store read as it was, since the store lives under
     `~/.pupitre` and not in the repo. The next scan marks it missing.
-    **The ceiling.** The check proves that a path is canonical. It does not prove that the
+    *Ceilings.* The check proves that a path is canonical. It does not prove that the
     operator registered it. A wholly separate repo at its own canonical path, with a store under
     `~/.pupitre` keyed to that path, is still registerable and is listed and opened like any
     project. It is not a near-twin of the operator's repo, which is the case decision 61 closed.

@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { openStore } from '../core/db.client.js';
-import type { RegisteredProject } from '../core/fleet.service.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
+import type { RegisteredProject } from '../core/types/fleet.types.js';
 
 export interface ResolvedProject {
   repoPath: string;
@@ -94,7 +94,10 @@ function keyedTo(dirName: string, row: ProjectRow): boolean {
   return [row.id, projectId(row.repo_path)].every((id) => id === dirName);
 }
 
-/** Where `path` resolves to on disk, or undefined when nothing is there. */
+/**
+ * Where `path` resolves to on disk. A throw means nothing is there (or a link
+ * loops), which is decision 60's missing repo: reported, never opened.
+ */
 function canonicalPath(path: string): string | undefined {
   try {
     return realpathSync(path);

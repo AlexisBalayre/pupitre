@@ -2,56 +2,12 @@ import type { Database } from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { buildDashboardSnapshot, fleetSummary } from './dashboard.service.js';
 import { openStore } from './db.client.js';
-import type { DashboardSnapshot, FleetSummary } from './types/dashboard.types.js';
-
-/**
- * A project `pup init` registered, read back from its own store under
- * `~/.pupitre`. Owned here, where the fleet reads it; `listRegisteredProjects`
- * in `src/cli/project.utils.ts` is its producer (decision 65).
- */
-export interface RegisteredProject {
-  id: string;
-  repoPath: string;
-  dbFile: string;
-  /** False when the repo was deleted or moved since it registered — reported, never used. */
-  repoExists: boolean;
-  /**
-   * False when `repoPath` is not its own canonical path — a trailing slash, a
-   * symlink, a `..` — reported, never opened (decision 61, checked by the scan since 65).
-   */
-  isOwnPath: boolean;
-  /** When the operator put the project to sleep, or null while it is active (decision 62). */
-  dormantAt: string | null;
-}
-
-/**
- * One fleet project as `pup status` prints it: a line saying why it was not
- * read, or its snapshot and what in it waits on the operator (decision 60).
- */
-export type FleetBlock =
-  | { header: string; reason: string }
-  | {
-      header: string;
-      snapshot: DashboardSnapshot;
-      summary: FleetSummary;
-      dormantAt: string | null;
-    };
-
-/** One fleet project's open store and repo, and the bin its keys re-enter pup with. */
-interface FleetStore {
-  db: Database;
-  repoPath: string;
-  pupBin: string;
-}
-
-/**
- * One look at the fleet: `pup ui`'s `DashboardReading`, the unreadable lines
- * already sanitized as `pup status` prints them.
- */
-interface FleetReading {
-  projects: { deps: FleetStore; snapshot: DashboardSnapshot }[];
-  unreadable: string[];
-}
+import type {
+  FleetBlock,
+  FleetReading,
+  FleetStore,
+  RegisteredProject,
+} from './types/fleet.types.js';
 
 /**
  * Why a fleet project is listed but never opened, or undefined when it may be

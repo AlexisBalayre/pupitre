@@ -1,16 +1,17 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
-import type { FleetBlock } from '../../core/fleet.service.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
+import type { FleetBlock } from '../../core/types/fleet.types.js';
 
 /**
  * The words both dashboard renderers print. `pup status` and `pup ui` read one
  * snapshot so they cannot disagree about what is running (decision 52); they
  * share these so they cannot disagree about what to call it either — a session
  * reading `STALLED (12m)` on one screen and `stalled 12 min` on the other is
- * the same split one layer up. Nothing here decides anything: every value is
- * already on the session the caller hands in.
+ * the same split one layer up. Nothing here decides anything about a session:
+ * every value is already on the session the caller hands in; the two fleet
+ * assemblers at the end only lay a core `FleetBlock` out as lines.
  */
 
 /**
