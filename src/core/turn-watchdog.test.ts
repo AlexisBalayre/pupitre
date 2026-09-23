@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -279,6 +279,27 @@ describe('sweepDeadTurns', () => {
 
     expect(deadTurnError).not.toHaveBeenCalled();
     expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+  });
+
+  // A store a session wrote an id like this into: the sweep asks the store
+  // which sessions are stalled, and that question must not send it up out of
+  // the project's sessions directory (decision 66).
+  it('passes over a running row whose id is a path, without throwing', () => {
+    const escapingId = '../../marker';
+    seedRunningSession(db, repo, escapingId);
+    // The marker two levels up, aged well past the stall bar: a sweep that
+    // stat'ed it would read this row as stalled and type a resume into the
+    // pane the row names.
+    const escaped = join(projectPaths(repo).sessionsDir, escapingId, 'events.jsonl');
+    mkdirSync(dirname(escaped), { recursive: true });
+    writeFileSync(escaped, `${JSON.stringify({ hook_event_name: 'Stop' })}\n`);
+    const at = new Date(now() - STALL_AGE_MS);
+    utimesSync(escaped, at, at);
+    vi.mocked(deadTurnError).mockReturnValue(API_ERROR);
+
+    expect(sweepDeadTurns(db, repo, now())).toEqual([]);
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(eventsOfType(db, escapingId, 'turn_died')).toEqual([]);
   });
 
   describe('the conductor', () => {
