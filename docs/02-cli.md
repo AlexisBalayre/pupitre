@@ -5,8 +5,10 @@ wins from anywhere, even inside another repo; otherwise the repo around the curr
 outside any repo, the store under `~/.pupitre` decides only when exactly one project is
 registered — with several it lists them the way `pup project list` prints them, less the
 conductor column (a deleted repo is marked `(missing)`), and refuses until `--project <id>` picks one, with none it says so and points at `pup init`. A
-project whose repo no longer exists on disk is reported, never used. Each refusal is one line,
-exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
+project whose repo no longer exists on disk is reported, never used, and one whose registered
+path is not its own canonical path (a trailing slash, a symlink, a `..`) is refused as `not its
+own path: a variant of a repo path, never opened` — the fleet views' refusal since decision 61,
+now firing on `--project <id>` too (decision 65). Each refusal is one line, exit 1. `pup status` and `pup ui` are the exceptions: outside any repo they show every project
 instead (decisions 60, 61, addendum to decision 43).
 
 ## Global options
@@ -225,7 +227,8 @@ worktree both refuse — so a session reports only its own state (decision 44).
   shell can reach; the sandbox is the instrument for that (decision 57).
 - `pup project list | dormant [<id>] | wake [<id>]` — the registry. `list` prints one line per
   registered project, `<id>  <repo_path>  active|dormant since <when>  conductor running|stopped`,
-  with `(missing)` when the repo is gone; decision 43's refusal outside a repo lists the same
+  with `(missing)` when the repo is gone and `(not its own path)` when its registered path is a
+  variant of a real one (decision 65); decision 43's refusal outside a repo lists the same
   lines. `dormant` puts a project to sleep: `pup status`, `pup ui` and the radar's watchdog pass
   it over until `wake` clears it. It is refused while the project's conductor or any session not
   yet merged or killed is live, naming each one to stop first. The project is `<id>`, or

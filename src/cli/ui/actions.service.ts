@@ -1,7 +1,6 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import {
   conductorSocket,
@@ -24,6 +23,7 @@ import {
   steerSession,
 } from '../../core/session-lifecycle.service.js';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import type { FleetStore } from '../../core/types/fleet.types.js';
 
 /**
  * Every write `pup ui` can make, and the only place it makes one. Each function
@@ -40,16 +40,7 @@ import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
  * action answers with a line, and a line that reports a failure says so.
  */
 
-export interface ActionDeps {
-  db: Database;
-  repoPath: string;
-  /**
-   * Absolute path to the `pup` entry script — `process.argv[1]`, the same value
-   * a session's environment carries as `PUP_BIN`. Only the merge uses it, and
-   * only because the merge runs as a child (see `runMerge`).
-   */
-  pupBin: string;
-}
+export type ActionDeps = FleetStore;
 
 export interface ActionResult {
   message: string;

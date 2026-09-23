@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -7,21 +7,11 @@ import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js'
 import { openStore } from '../core/db.client.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
+import type { RegisteredProject } from '../core/types/fleet.types.js';
 
 export interface ResolvedProject {
   repoPath: string;
   db: Database.Database;
-}
-
-/** A project `pup init` registered, read back from its own store under `~/.pupitre`. */
-interface RegisteredProject {
-  id: string;
-  repoPath: string;
-  dbFile: string;
-  /** False when the repo was deleted or moved since it registered — reported, never used. */
-  repoExists: boolean;
-  /** When the operator put the project to sleep, or null while it is active (decision 62). */
-  dormantAt: string | null;
 }
 
 /**
@@ -105,6 +95,18 @@ function keyedTo(dirName: string, row: ProjectRow): boolean {
 }
 
 /**
+ * Where `path` resolves to on disk. A throw means nothing is there (or a link
+ * loops), which is decision 60's missing repo: reported, never opened.
+ */
+function canonicalPath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Every project registered in the store, one directory per project id under
  * `~/.pupitre` (the base `projectPaths` defaults to), each holding its own
  * `state.db` with its own `projects` row. A directory with no store — one
@@ -118,16 +120,24 @@ export function listRegisteredProjects(base = join(homedir(), '.pupitre')): Regi
     .flatMap(({ name, dbFile }) =>
       readProjectRows(dbFile)
         .filter((row) => keyedTo(name, row))
-        .map((row) => ({
-          id: row.id,
-          repoPath: row.repo_path,
-          dbFile,
-          repoExists: existsSync(row.repo_path),
-          // A session can write a BLOB into its own row, which TEXT affinity
-          // keeps and the driver returns as bytes; every reader takes a string
-          // (decision 62, as decision 61 did for the planted ledger id).
-          dormantAt: row.dormant_at === null ? null : String(row.dormant_at),
-        })),
+        .map((row) => {
+          const canonical = canonicalPath(row.repo_path);
+          return {
+            id: row.id,
+            repoPath: row.repo_path,
+            dbFile,
+            repoExists: canonical !== undefined,
+            // A store's directory is only pinned to the hash of whatever string
+            // its row holds, so a session can plant `~/.pupitre/<hash of the
+            // operator's repo + '/'>/state.db` with tasks it wrote. The real
+            // registration is always the canonical path `git` resolved.
+            isOwnPath: canonical === row.repo_path,
+            // A session can write a BLOB into its own row, which TEXT affinity
+            // keeps and the driver returns as bytes; every reader takes a string
+            // (decision 62, as decision 61 did for the planted ledger id).
+            dormantAt: row.dormant_at === null ? null : String(row.dormant_at),
+          };
+        }),
     );
 }
 
@@ -150,7 +160,8 @@ export function registryLine(project: RegisteredProject, isConductorRunning?: bo
         ? '  conductor running'
         : '  conductor stopped';
   const missing = project.repoExists ? '' : '  (missing)';
-  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}${conductor}${missing}`;
+  const variant = project.repoExists && !project.isOwnPath ? '  (not its own path)' : '';
+  return `${project.id}  ${sanitizeReason(project.repoPath)}  ${state}${conductor}${missing}${variant}`;
 }
 
 /**
@@ -159,10 +170,15 @@ export function registryLine(project: RegisteredProject, isConductorRunning?: bo
  * `--project` argument is whatever argv says; both reach the operator's
  * terminal only through here (decision 29).
  */
-export function openRegistered(project: RegisteredProject): ResolvedProject {
+function openRegistered(project: RegisteredProject): ResolvedProject {
   if (!project.repoExists) {
     throw new ProjectResolutionError(
       `Project ${project.id} is registered at ${sanitizeReason(project.repoPath)}, which no longer exists; ${INIT_HINT}`,
+    );
+  }
+  if (!project.isOwnPath) {
+    throw new ProjectResolutionError(
+      `Project ${project.id} is registered at ${sanitizeReason(project.repoPath)}, which is not its own path: a variant of a repo path, never opened.`,
     );
   }
   return { repoPath: project.repoPath, db: openStore(project.dbFile) };

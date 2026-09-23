@@ -36,7 +36,6 @@ import {
   blockedReason,
   buildDashboardSnapshot,
   findStalledSessions,
-  fleetSummary,
   goalHeadline,
 } from '../core/dashboard.service.js';
 import {
@@ -46,6 +45,7 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
@@ -58,6 +58,7 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
+import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
@@ -70,7 +71,6 @@ import {
   listBacklogTasks,
   listSessions,
   type SessionRow,
-  saveProjectDormantAt,
   transitionSession,
   updateTaskSpec,
 } from '../core/session.repository.js';
@@ -100,11 +100,11 @@ import {
   planTask,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { holdingStates, isTerminal } from '../core/session-state.utils.js';
+import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
-import type { DashboardSession, DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
@@ -113,7 +113,6 @@ import {
   enclosingProject,
   fleetProjects,
   listRegisteredProjects,
-  openRegistered,
   ProjectResolutionError,
   type ResolvedProject,
   registryLine,
@@ -122,13 +121,12 @@ import {
 import type { ActionDeps } from './ui/actions.service.js';
 import { App, type AppProps } from './ui/app.component.js';
 import {
-  activityLabel,
-  contextLabel,
+  fleetLines,
   goalColumn,
   originMarker,
+  sessionLine,
   trailing,
 } from './ui/dashboard-text.utils.js';
-import type { DashboardReading } from './ui/use-snapshot.hook.js';
 
 /**
  * One-keystroke approval of the decision record a merge just drafted. TTY
@@ -199,7 +197,24 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
     console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
     if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
   }
+  printBaselineTail(db, report, repoPath);
+}
+
+/**
+ * What `pup init` and `pup audit` both end on: the debt baseline, with the
+ * audit's per-metric moves under it, then the sandbox, codegraph and push
+ * target lines and the findings. The audit prints the same findings, so a
+ * stage that cannot measure says why on the repeat path too, or that is where
+ * the gap goes quiet (decision 29).
+ */
+function printBaselineTail(
+  db: Database,
+  report: InitReport,
+  repoPath: string,
+  debtTransitions: readonly string[] = [],
+): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
+  for (const t of debtTransitions) console.log(`  ${t}`);
   console.log(`sandbox: ${report.sandbox}`);
   printCodegraphLine(repoPath);
   printPushTargetLine(db, report.projectId);
@@ -300,31 +315,6 @@ const GATE_ENV_DESCRIPTION =
 
 const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
-
-/**
- * Why a fleet project is listed but never opened, in `pup status` and `pup ui`
- * alike, or undefined when it may be opened. A repo that is gone is decision
- * 60's case. A `repo_path` that is not its own canonical path — a trailing
- * slash, a symlink, a `..` — is decision 61's: the store's directory is only
- * pinned to the hash of whatever string its row holds, so a session can plant
- * `~/.pupitre/<hash of the operator's repo + '/'>/state.db` with tasks it
- * wrote, and the fleet would list it as a near-twin of the real project whose
- * `l` launches the session's spec there and whose `c` starts a conductor.
- * The real registration is always the canonical path `git` resolved.
- */
-function fleetRefusal(registered: { repoPath: string; repoExists: boolean }): string | undefined {
-  if (!registered.repoExists) return 'missing: the repo no longer exists';
-  let canonical: string;
-  try {
-    canonical = realpathSync(registered.repoPath);
-  } catch {
-    // Gone between the listing and here: decision 60's case after all.
-    return 'missing: the repo no longer exists';
-  }
-  return canonical === registered.repoPath
-    ? undefined
-    : 'not its own path: a variant of a repo path, never opened';
-}
 
 /**
  * The only way to move a recorded push target, and it exists because origin
@@ -943,18 +933,10 @@ export function buildProgram(): Command {
       const selected = program.opts().project as string | undefined;
       if (action === 'list') {
         if (id !== undefined) return refuse('`pup project list` takes no id; use --project <id>.');
-        const registered = listRegisteredProjects().filter(
-          (candidate) => selected === undefined || candidate.id === selected,
-        );
-        if (registered.length === 0) {
-          return refuse(
-            selected === undefined
-              ? 'No project registered; run pup init from the repo you want to control.'
-              : `No project ${sanitizeReason(selected)}; \`pup project list\` shows the registered ones.`,
-          );
-        }
-        for (const entry of registered) {
-          console.log(registryLine(entry, isConductorRunning(entry.repoPath)));
+        const listed = listProjects(listRegisteredProjects(), selected);
+        if ('refusal' in listed) return refuse(listed.refusal);
+        for (const entry of listed.projects) {
+          console.log(registryLine(entry.project, entry.isConductorRunning));
         }
         return;
       }
@@ -965,44 +947,12 @@ export function buildProgram(): Command {
       }
       const { repoPath, db } = resolveProject(process.cwd(), id ?? selected);
       try {
-        const pid = projectId(repoPath);
-        const row = getProject(db, pid);
-        if (!row)
-          return refuse(
-            `No project at ${sanitizeReason(repoPath)}; run pup init from the repo you want to control.`,
-          );
-        if (action === 'wake') {
-          if (row.dormant_at === null) {
-            console.log(`Project ${pid} is already active.`);
-            return;
-          }
-          saveProjectDormantAt(db, pid, null);
-          console.log(`Project ${pid} is awake: the fleet views and the radar read it again.`);
-          return;
-        }
-        if (row.dormant_at !== null) {
-          console.log(
-            `Project ${pid} is already dormant since ${sanitizeReason(String(row.dormant_at))}.`,
-          );
-          return;
-        }
-        // Named, not counted, like the brief's list of what runs on the old
-        // brief: each one is something the operator stops by name first. A
-        // project put to sleep with work in flight would hide that work from
-        // every view that would have shown it needing the operator (decision 62).
-        const live = [
-          ...(isConductorRunning(repoPath) ? [conductorName(pid)] : []),
-          ...listSessions(db, holdingStates()).map((session) => sanitizeReason(session.id)),
-        ];
-        if (live.length > 0) {
-          return refuse(
-            `Project ${pid} still has ${live.join(', ')} live; stop ${live.length === 1 ? 'it' : 'them'} (pup conductor stop, pup kill <session>, or merge) before putting it to sleep.`,
-          );
-        }
-        saveProjectDormantAt(db, pid, new Date().toISOString());
-        console.log(
-          `Project ${pid} is dormant: pup status, pup ui and the radar pass it over until \`pup project wake ${pid}\`.`,
-        );
+        const outcome =
+          action === 'wake'
+            ? wakeProject(db, repoPath)
+            : putProjectToSleep(db, repoPath, new Date());
+        if ('refusal' in outcome) refuse(outcome.refusal);
+        else console.log(outcome.said);
       } finally {
         db.close();
       }
@@ -1027,7 +977,7 @@ export function buildProgram(): Command {
       }
       if (selected === undefined) {
         refuseUnlessOperator(own);
-        printFleet(Date.now(), opts.dormant === true);
+        printFleet(opts.dormant === true);
         return;
       }
       const { repoPath, db } = project();
@@ -1054,7 +1004,7 @@ export function buildProgram(): Command {
       // `pup status` would have printed and exits 0 — a `pup ui` in a script is
       // a reasonable thing to have typed, not an error (decision 52).
       if (!process.stdout.isTTY) {
-        if (!isSingleProject) return printFleet(Date.now(), opts.dormant === true);
+        if (!isSingleProject) return printFleet(opts.dormant === true);
         const { repoPath, db } = own ?? project();
         printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
         return;
@@ -1076,7 +1026,10 @@ export function buildProgram(): Command {
       } else {
         // Only the operator gets here, refused above like `pup status --all`,
         // so the fleet is always driven and always shown the attach command.
-        props = { read: fleetReader(pupBin, opts.dormant === true), showAttach: true };
+        props = {
+          read: fleetReading(fleetProjects(), opts.dormant === true, pupBin),
+          showAttach: true,
+        };
       }
       const instance = render(createElement(App, props), {
         // vim's and htop's buffer: the fleet is watched for a while and then
@@ -1099,140 +1052,11 @@ export function buildProgram(): Command {
       });
     });
 
-  /**
-   * `pup ui --all`'s reading (decision 61): every registered project's store,
-   * opened once and held for the dashboard's life, since each row's keys write
-   * through its own project's store and repo — never the cwd's. A project
-   * `fleetRefusal` turns away, or whose store will not open, is a line of its
-   * own and never opened again; one whose snapshot throws is that reading's line, and the
-   * rest of the fleet still renders — `printFleet`'s isolation, per reading.
-   */
-  function fleetReader(pupBin: string, shouldShowDormant: boolean): () => DashboardReading {
-    const shut: string[] = [];
-    const opened: { header: string; deps: ActionDeps }[] = [];
-    for (const registered of awakeFleet(shouldShowDormant).shown) {
-      const header = fleetHeader(registered);
-      const refusal = fleetRefusal(registered);
-      if (refusal) {
-        shut.push(`${header}  ${refusal}`);
-        continue;
-      }
-      try {
-        const { db, repoPath } = openRegistered(registered);
-        opened.push({ header, deps: { db, repoPath, pupBin } });
-      } catch (error) {
-        shut.push(`${header}  unreadable: ${failureSummary(error)}`);
-      }
+  /** `pup status`'s fleet view, and a piped `pup ui --all`'s (decisions 60, 65). */
+  function printFleet(shouldShowDormant: boolean): void {
+    for (const line of fleetLines(readFleet(fleetProjects(), Date.now(), shouldShowDormant))) {
+      console.log(line);
     }
-    return () => {
-      const now = Date.now();
-      const reading: DashboardReading = { projects: [], unreadable: [...shut] };
-      for (const { header, deps } of opened) {
-        try {
-          reading.projects.push({
-            deps,
-            snapshot: buildDashboardSnapshot(deps.db, deps.repoPath, now),
-          });
-        } catch (error) {
-          reading.unreadable.push(`${header}  unreadable: ${failureSummary(error)}`);
-        }
-      }
-      return reading;
-    };
-  }
-
-  /**
-   * The fleet both readers draw: every registered project, less the dormant
-   * ones unless `--dormant` asks for them (decision 62). The dormant flag is
-   * read from each store's own row by the read-only registry scan, so a
-   * hidden project's store is never opened; `hidden` is how many were left out.
-   */
-  function awakeFleet(shouldShowDormant: boolean): {
-    shown: ReturnType<typeof fleetProjects>;
-    hidden: number;
-  } {
-    const registered = fleetProjects();
-    const shown = shouldShowDormant
-      ? registered
-      : registered.filter((project) => project.dormantAt === null);
-    return { shown, hidden: registered.length - shown.length };
-  }
-
-  /** A fleet project's id and repo, as its `pup status` block and `pup ui` line lead. */
-  function fleetHeader(registered: { id: string; repoPath: string }): string {
-    return `${registered.id}  ${sanitizeReason(registered.repoPath)}`;
-  }
-
-  /**
-   * One block per registered project, from each store's own snapshot: its
-   * header, then only what waits on the operator, then counts (decision 60).
-   * A project whose repo is gone, or whose path is not its own, is a line and
-   * its store left shut (`fleetRefusal`) — opening it would migrate a store
-   * nobody can act on, or one a session planted. Each store is closed
-   * before the next is opened, so a long fleet holds one handle at a time.
-   * Dormant projects are left out and counted on a last line, or shown with
-   * their header saying so under `--dormant` (decision 62).
-   */
-  function printFleet(now: number, shouldShowDormant: boolean): void {
-    const { shown, hidden } = awakeFleet(shouldShowDormant);
-    shown.forEach((registered, index) => {
-      if (index > 0) console.log('');
-      const header = fleetHeader(registered);
-      const refusal = fleetRefusal(registered);
-      if (refusal) {
-        console.log(`${header}  ${refusal}`);
-        return;
-      }
-      let db: Database | undefined;
-      try {
-        const opened = openRegistered(registered);
-        db = opened.db;
-        const snapshot = buildDashboardSnapshot(db, opened.repoPath, now);
-        const summary = fleetSummary(snapshot);
-        const dormant =
-          registered.dormantAt === null
-            ? ''
-            : `  dormant since ${sanitizeReason(registered.dormantAt)}`;
-        console.log(
-          `${header}  ${snapshot.conductor.running ? 'conductor running' : 'conductor stopped'}${dormant}`,
-        );
-        for (const entry of snapshot.overdueDebt) {
-          console.log(
-            `  OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
-          );
-        }
-        for (const session of summary.needsYou) console.log(`  ${sessionLine(session)}`);
-        console.log(
-          `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
-        );
-      } catch (error) {
-        // One store that fails to migrate or holds a torn row is that
-        // project's line, not the fleet's end, as `listRegisteredProjects`
-        // degrades an unreadable store. Nothing of the block has printed yet:
-        // the snapshot is read whole before its header.
-        console.log(`${header}  unreadable: ${failureSummary(error)}`);
-      } finally {
-        db?.close();
-      }
-    });
-    if (hidden > 0) {
-      if (shown.length > 0) console.log('');
-      console.log(
-        `${hidden} dormant ${hidden === 1 ? 'project' : 'projects'} not shown; --dormant shows ${hidden === 1 ? 'it' : 'them'}.`,
-      );
-    }
-  }
-
-  /** One session row, the same in the single-project table and the fleet view. */
-  function sessionLine(session: DashboardSession): string {
-    const marker =
-      session.state === 'blocked'
-        ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
-        : '';
-    return (
-      `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
-      `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`
-    );
   }
 
   /**
@@ -1998,17 +1822,7 @@ export function buildProgram(): Command {
         const detail = fresh.get(t.stage)?.detail;
         if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
       }
-      console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
-      for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
-      console.log(`sandbox: ${report.sandbox}`);
-      printCodegraphLine(repoPath);
-      printPushTargetLine(db, report.projectId);
-      // Same findings `pup init` prints: a stage that cannot measure says why
-      // here too, or the repeat path is where the gap goes quiet (decision 29).
-      if (report.findings.length > 0) {
-        console.log('findings:');
-        for (const f of report.findings) console.log(`  - ${f}`);
-      }
+      printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
       console.log('Baseline refreshed.');
       if (report.hasRegression) process.exitCode = 1;
     });

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from './actions.service.js';
+import type { FleetReading } from '../../core/types/fleet.types.js';
 import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
 
 /**
@@ -10,24 +9,13 @@ import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
  * action handed any other store's deps would drive a fleet the row is not in
  * (decision 61).
  */
-export interface ProjectReading {
-  deps: ActionDeps;
-  snapshot: DashboardSnapshot;
-}
+export type ProjectReading = FleetReading['projects'][number];
 
 /**
  * Everything one look at the store returns: one project for `pup ui` in a repo,
  * every registered one for `pup ui --all` (decision 61).
  */
-export interface DashboardReading {
-  projects: ProjectReading[];
-  /**
-   * A line each for the projects that could not be read — a repo that is gone,
-   * a store that would not open or snapshot — already sanitized, as the fleet
-   * `pup status` prints them. Empty for a single project, whose read throws.
-   */
-  unreadable: string[];
-}
+export type DashboardReading = FleetReading;
 
 /**
  * One reading and when it was taken. Private to the hook: what a caller gets is
