@@ -55,10 +55,6 @@ export function activityLabel(session: DashboardSession): string {
     return deadTurnLabel(session) || `STALLED (${formatStaleAge(session.stalledAgeMs)})`;
   }
   if (session.activity.kind === 'awaiting-input') {
-    // The detail is a Notification hook's own `message`, copied through
-    // classification untouched, and this is where it reaches a terminal: what
-    // the hook wrote is scrubbed at the fold like every other foreign string
-    // printed here (decision 29).
     const detail = session.activity.detail;
     return `WAITING ON INPUT${detail ? ` (${sanitizeReason(detail)})` : ''}`;
   }

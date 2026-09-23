@@ -139,14 +139,6 @@ function seedTranscript(dir: string, tokens: number): string {
   return dir;
 }
 
-/**
- * Where `pup` stamps a session's `transcript_path` at launch: the munged
- * transcript directory of the worktree `seedSession` gives the row.
- */
-function stampedTranscriptDir(repo: string, sessionId: string): string {
-  return transcriptDir(join(repo, '.worktrees', sessionId));
-}
-
 describe('buildDashboardSnapshot', () => {
   let db: Database;
   let repo: string;
@@ -425,7 +417,8 @@ describe('buildDashboardSnapshot', () => {
 
     it('reads the context a running session carried into its last turn', () => {
       seedSession(db, repo, 's1', {
-        transcriptPath: seedTranscript(stampedTranscriptDir(repo, 's1'), 90_000),
+        // The directory pup stamps at launch: `seedSession`'s worktree, munged.
+        transcriptPath: seedTranscript(transcriptDir(join(repo, '.worktrees', 's1')), 90_000),
       });
       transitionSession(db, 's1', 'running');
 

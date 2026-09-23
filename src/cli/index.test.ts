@@ -66,6 +66,14 @@ vi.mock('../core/conductor.service.js', () => ({
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
 }));
+vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../core/git-diff.client.js')>()),
+  // The review queue diffs each seeded branch against main. The seeded
+  // sessions' branches are store rows, not refs, in a repo with no commits, so
+  // the real diff would refuse them: the queue sees no changed paths instead.
+  gitDiffPaths: vi.fn(() => []),
+  gitDiffNumstat: vi.fn(() => []),
+}));
 vi.mock('../core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
