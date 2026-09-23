@@ -903,7 +903,9 @@ export function buildProgram(): Command {
       // Named, not counted: the windows listed here are running on the brief as
       // it was when they opened, and the operator is the only one who can
       // decide whether that is worth a restart (decision 57).
-      const running = listSessions(db, ['running']).map((session) => session.id);
+      // Scrubbed like every other store-read id printed here (decisions 29, 61):
+      // this line names rows a session wrote, on the operator's terminal.
+      const running = listSessions(db, ['running']).map((session) => sanitizeReason(session.id));
       const conductor = isConductorRunning(repoPath) ? [conductorName(projectId(repoPath))] : [];
       const already = [...conductor, ...running];
       console.log(

@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
-vi.mock('../claude/session-runtime.service.js', () => ({
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   SessionPaneMissingError: class SessionPaneMissingError extends Error {
     readonly sessionId: string;
     constructor(sessionId: string, paneId: string) {
@@ -48,6 +48,11 @@ vi.mock('../claude/session-runtime.service.js', () => ({
   killWatcher: vi.fn(),
   launchWatcher: vi.fn(),
   steerPane: vi.fn(),
+  // Not a boundary but a path rule, and the real one: the dashboard checks a
+  // stored `transcript_path` against `transcriptDir(worktree)` before reading
+  // it (decision 67), so a fake rule here would only agree with itself.
+  transcriptDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .transcriptDir,
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -96,6 +101,7 @@ import {
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
@@ -742,7 +748,10 @@ describe('CLI commands', () => {
         seedSession(broken, 's1');
         // A transcript directory whose newest .jsonl cannot be read: the
         // snapshot throws on it, as it would on a store that fails to migrate.
-        const transcripts = tempDir('pup-cli-tx-');
+        // At the path pup stamps for that worktree, since the snapshot reads no
+        // other (decision 67).
+        const transcripts = transcriptDir(join(broken, '.worktrees', 's1'));
+        mkdirSync(transcripts, { recursive: true });
         const unreadable = join(transcripts, 'session.jsonl');
         writeFileSync(unreadable, '{}\n');
         chmodSync(unreadable, 0o000);
@@ -1136,8 +1145,10 @@ describe('CLI commands', () => {
         const broken = initRepo();
         seedSession(broken, 's1');
         // A transcript that cannot be read makes the snapshot throw, as a
-        // store that fails to migrate would.
-        const transcripts = tempDir('pup-cli-tx-');
+        // store that fails to migrate would — at the path pup stamps for that
+        // worktree, since the snapshot reads no other (decision 67).
+        const transcripts = transcriptDir(join(broken, '.worktrees', 's1'));
+        mkdirSync(transcripts, { recursive: true });
         const unreadable = join(transcripts, 'session.jsonl');
         writeFileSync(unreadable, '{}\n');
         const { db } = resolveProject(broken);
@@ -2189,6 +2200,23 @@ describe('CLI commands', () => {
       expect(line).toContain(`pup-conductor-${projectId(repo)}`);
       expect(line).toContain('s1');
       expect(line).toContain('are already running on the brief as it was');
+    });
+
+    // The ids come out of a store the sessions themselves write, and this line
+    // puts them on the operator's terminal (decisions 29, 61).
+    it('strips what a terminal would obey out of a session id it names', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, '\u001b[2Js1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, '\u001b[2Js1', 'running');
+      db.close();
+      stubEditor();
+
+      buildProgram().parse(['brief', 'edit'], { from: 'user' });
+
+      expect(logs.at(-1)).toContain('[2Js1 is already running on the brief as it was');
+      expect(logs.at(-1)).not.toContain('\u001b');
     });
 
     it('says only that it takes effect later when nothing is running', () => {

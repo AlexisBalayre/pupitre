@@ -3404,7 +3404,59 @@ changes back into those docs is pending.
     the planted marker read through the escaped path.
     *Ceilings.* The pattern bounds an id as a path fragment and nothing more: it does not say
     the id names a session pup launched. A store row whose id is a plausible slug still gets its
-    events file read, which is the store's own trust boundary and not this decision's.
+    events file read, which is the store's own trust boundary and not this decision's. The one
+    store-controlled path these same readers still followed, `sessions.transcript_path`, is
+    closed by decision 67.
+67. **The transcript directory is derived and the stored column only confirmed, and the last two
+    raw store strings are scrubbed at the fold (2026-09-23).** Decision 66 closed `sessions.id`
+    as a path fragment and named `sessions.transcript_path` as the ceiling left: the same hole
+    one column over. `pup` stamps that column at launch as `transcriptDir(worktreePath)`, under
+    `~/.claude/projects`, but `dashboard.service.ts` read it back out of a store the sessions
+    write and handed it to `latestContextTokens`, which `readdirSync`s, `statSync`s and
+    `readFileSync`s it. Since decisions 60-62 that sweep runs over *every* registered project's
+    store, so one row could point the operator's own `pup status` or `pup ui` at any directory
+    on disk and have the newest `.jsonl` in it opened and parsed.
+    *Derive, then compare.* `transcriptDirOf` sits beside `eventsFileOf` in
+    `dashboard.service.ts` and has its shape — store text in, a path or nothing out. It derives
+    `transcriptDir(row.worktree_path)` and returns it only when the stored column is exactly
+    that string; otherwise nothing, and the row reads the way a row whose column is null
+    already reads: context unknown, no directory listed and no file opened for it. Confirming
+    the column rather than replacing it keeps the store the record of where a session's
+    transcript went, and keeps a row pup did not stamp from being read as one it did.
+    *The munge is what makes the derivation a guard.* `worktree_path` is session-writable too,
+    so deriving from it would be no better than trusting the column — except that
+    `transcriptDir` munges with a closed allowlist, every character outside `[a-zA-Z0-9]`
+    becoming `-`, which leaves one segment directly under `~/.claude/projects` whatever the
+    column held. Separators and dots are not escaped, they stop existing, as decision 66's
+    charset does for an id. `session-runtime.test.ts` pins that on a worktree path carrying
+    `..` and `/`: the parent is `~/.claude/projects` and the segment holds neither.
+    *The last two raw sinks, scrubbed at the fold (decision 29).* `pup brief edit` names the
+    windows running on the brief as it was (decision 57) by joining `listSessions` ids into a
+    printed line; they are store-read ids on the operator's terminal, so they go through
+    `sanitizeReason` as decision 61's do. `activityLabel`'s awaiting-input branch prints a
+    Notification hook's own `message`, which `classifySessionActivity` carries through
+    untouched, and now scrubs it where it prints it: the classifier stays a classifier, and the
+    surface that folds foreign text into a row is the one that sanitizes, as everywhere else.
+    *Tests,* on temp stores with a throwaway `HOME`, as the suites around them already run.
+    `dashboard.test.ts` plants a transcript holding a 90k token count in a directory outside
+    `~/.claude/projects` and points a running row's `transcript_path` at it: the row reports no
+    context, which is only true if nothing listed or opened it. Its pair points a row at the
+    directory `transcriptDir` derives for that row's worktree and reads the 90k back.
+    `dashboard-text-utils.test.ts` is new — `activityLabel` had only the Ink frame in
+    `dashboard-components.test.ts` — and drives the label with a control character in the hook's
+    message. `index.test.ts` runs `brief edit` over a running session whose id carries one.
+    The two existing `index.test.ts` cases that make a reading fail on an unreadable transcript
+    now plant it at the derived path, since no other is read; nothing else changed.
+    *The discriminating mutations*, each run against a backup copy and restored from it.
+    Returning the stored column instead of comparing it fails the planted-transcript test on
+    `expected 90000 to be undefined`, which is the planted file read. Widening the munge to
+    `[^a-zA-Z0-9/.]` fails the traversal test. Dropping either `sanitizeReason` fails its own
+    test and nothing else.
+    *Ceilings.* The comparison proves the directory is the one pup would stamp for that row's
+    worktree. It does not prove pup stamped it, and it says nothing about what is inside: a
+    session can write any `.jsonl` it likes into its own transcript directory, and the context
+    reading it produces is the session's own number. That is the same store-and-agent trust
+    boundary decision 66 left, and no path leaves `~/.claude/projects` for it.
 
 ## Implementation notes
 

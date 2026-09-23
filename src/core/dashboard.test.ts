@@ -19,7 +19,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
 }));
 
-import { hasConductorWindow } from '../claude/session-runtime.service.js';
+import { hasConductorWindow, transcriptDir } from '../claude/session-runtime.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -129,13 +129,21 @@ function seedEscapedMarker(repo: string): string {
 }
 
 /** A transcript directory whose newest assistant entry carries `tokens`. */
-function seedTranscript(tokens: number): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-tx-')));
+function seedTranscript(dir: string, tokens: number): string {
+  mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'session.jsonl'),
     `${JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: tokens } } })}\n`,
   );
   return dir;
+}
+
+/**
+ * Where `pup` stamps a session's `transcript_path` at launch: the munged
+ * transcript directory of the worktree `seedSession` gives the row.
+ */
+function stampedTranscriptDir(repo: string, sessionId: string): string {
+  return transcriptDir(join(repo, '.worktrees', sessionId));
 }
 
 describe('buildDashboardSnapshot', () => {
@@ -415,10 +423,31 @@ describe('buildDashboardSnapshot', () => {
     });
 
     it('reads the context a running session carried into its last turn', () => {
-      seedSession(db, repo, 's1', { transcriptPath: seedTranscript(90_000) });
+      seedSession(db, repo, 's1', {
+        transcriptPath: seedTranscript(stampedTranscriptDir(repo, 's1'), 90_000),
+      });
       transitionSession(db, 's1', 'running');
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
+    });
+
+    /**
+     * `transcript_path` is stamped by pup but read back out of a store the
+     * sessions write, and every registered store is swept here (decisions
+     * 60-62), so a row pointing anywhere else is a row that would have the
+     * operator's own `pup status` list and read a directory of the session's
+     * choosing (decision 67). The planted transcript holds a token count, so
+     * the row reporting none is the proof that nothing opened it.
+     */
+    it('reads no transcript from a row pointing outside the directory pup stamps', () => {
+      const planted = seedTranscript(
+        realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-planted-'))),
+        90_000,
+      );
+      seedSession(db, repo, 's1', { transcriptPath: planted });
+      transitionSession(db, 's1', 'running');
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
 
     it('reports the newest steer with its kind and its sender', () => {

@@ -202,6 +202,11 @@ every row — the dashboard snapshot, the stall rule and the turn watchdog — s
 events file instead, showing the session with no events rather than following its id out of the
 sessions directory, and `pup report` gives it no dossier file (decision 66).
 
+The `ctx ~Nk` reading on a session row comes from the transcript directory `pup` stamped for that
+session at launch, and only from there: the stored `transcript_path` is read when it equals the
+directory derived from the row's own worktree path, and a row naming any other directory reads
+with no context at all, nothing having been listed or opened for it (decision 67).
+
 - `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
   session to `awaiting-review` (decision 3).
 - `pup session handoff-done` — the handoff `pup respawn` asked for is written (decision 18).

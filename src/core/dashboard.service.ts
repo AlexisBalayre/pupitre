@@ -2,7 +2,11 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { conductorName, conductorSocket } from '../claude/session-runtime.service.js';
+import {
+  conductorName,
+  conductorSocket,
+  transcriptDir,
+} from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
 import { eventDetail } from './dashboard-events.utils.js';
@@ -163,6 +167,24 @@ function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefine
 }
 
 /**
+ * The transcript directory a session row names, or nothing when it is not the
+ * one pup itself would have written for that row's worktree (decision 67).
+ * `sessions.transcript_path` is stamped at launch as `transcriptDir(worktree)`,
+ * but it is read back out of a store the sessions write and every registered
+ * store is swept here, so the column is checked against the derivation rather
+ * than followed: a row that does not match reads as one with no transcript —
+ * context unknown, no directory listed, no file opened — exactly as a row whose
+ * column is null already does. `worktree_path` is session-writable too, so this
+ * is only a guard because `transcriptDir` munges every non-alphanumeric
+ * character away: whatever the column holds, the derivation is one segment
+ * directly under `~/.claude/projects`.
+ */
+function transcriptDirOf(worktreePath: string, transcriptPath: string | null): string | undefined {
+  const expected = transcriptDir(worktreePath);
+  return transcriptPath === expected ? expected : undefined;
+}
+
+/**
  * Running sessions whose events file has gone quiet past `STALLED_AFTER_MS`
  * (decision 35). Lives beside the snapshot that reports it because `pup watch`
  * asks the same question on its own sweep, where there is no snapshot to build.
@@ -218,10 +240,9 @@ function dashboardSession(
   const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
   // transcript is history, and reading it is I/O per row for nothing.
+  const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path);
   const contextTokens =
-    row.state === 'running' && row.transcript_path
-      ? latestContextTokens(row.transcript_path)
-      : undefined;
+    row.state === 'running' && transcripts ? latestContextTokens(transcripts) : undefined;
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);

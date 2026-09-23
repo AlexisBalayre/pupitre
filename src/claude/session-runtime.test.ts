@@ -7,8 +7,8 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Fakes `tmux`/`which` so this suite never spawns a real tmux pane or shells
@@ -68,6 +68,7 @@ import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
   steerPane,
+  transcriptDir,
 } from './session-runtime.service.js';
 
 beforeEach(() => {
@@ -423,6 +424,22 @@ describe('killSession', () => {
       ['kill-session', '-t', '=pup-s-1:'],
       ['kill-session', '-t', '=pup-s-1:'],
     ]);
+  });
+});
+
+describe('transcriptDir', () => {
+  /**
+   * The worktree path is `sessions.worktree_path`, which the sessions write,
+   * and the dashboard reads the directory this derives before trusting a
+   * stored `transcript_path` against it (decision 67). So the munge has to be
+   * closed: `..` and separators are not escaped, they stop existing.
+   */
+  it('munges a traversing worktree path into one segment under ~/.claude/projects', () => {
+    const dir = transcriptDir('/repo/../.worktrees/t-1');
+
+    expect(dirname(dir)).toBe(join(homedir(), '.claude', 'projects'));
+    expect(basename(dir)).toBe('-repo-----worktrees-t-1');
+    expect(basename(dir)).not.toMatch(/[/.]/);
   });
 });
 
