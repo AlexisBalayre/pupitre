@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-23T14:45:01.722Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35875906042",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35875906042",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7919d1ecc321fbe059b6b791bd64697d7c4279e3",
+  "source": "pr",
+  "pr_number": 112,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "25939875fe8a8830f9bb3a76baac7a19a4ad243c",
+  "prior_importants": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3349-3351",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3346-3347",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "Decision 66's own narrative still misattributes dossierFileName's closed allowlist to decision 51 (\"dossierFileName had solved the same problem for the report's file names with a closed allowlist (decision 51)\"), three lines above the sentence this commit just fixed. Decision 51 (line 2076) is about the session code-graph/MCP index, not dossier file names — the same class of error the commit's own title claims to drop, and it was independently corrected in src/core/paths.constants.ts:8's docstring in this same commit but left standing here.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 0.9663398999999998,
+  "duration_ms": 237848,
+  "num_turns": 20,
+  "tokens": {
+    "input": 27,
+    "output": 10021,
+    "cache_read": 579398,
+    "cache_creation": 36024,
+    "total": 625470
+  }
+}
