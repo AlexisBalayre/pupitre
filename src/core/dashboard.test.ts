@@ -7,7 +7,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +19,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
 }));
 
-import { hasConductorWindow } from '../claude/session-runtime.service.js';
+import { hasConductorWindow, transcriptDir } from '../claude/session-runtime.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -83,6 +83,7 @@ function seedSession(
     goal?: string;
     origin?: string;
     transcriptPath?: string;
+    worktreePath?: string;
     spec?: Partial<TaskSpec>;
   } = {},
 ): void {
@@ -91,7 +92,7 @@ function seedSession(
   insertSession(db, {
     id: sessionId,
     taskId,
-    worktreePath: join(repo, '.worktrees', sessionId),
+    worktreePath: options.worktreePath ?? join(repo, '.worktrees', sessionId),
     branch: `pup/${sessionId}`,
     profileHash: 'hash',
     ...(options.transcriptPath ? { transcriptPath: options.transcriptPath } : {}),
@@ -129,8 +130,8 @@ function seedEscapedMarker(repo: string): string {
 }
 
 /** A transcript directory whose newest assistant entry carries `tokens`. */
-function seedTranscript(tokens: number): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-tx-')));
+function seedTranscript(dir: string, tokens: number): string {
+  mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'session.jsonl'),
     `${JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: tokens } } })}\n`,
@@ -415,10 +416,47 @@ describe('buildDashboardSnapshot', () => {
     });
 
     it('reads the context a running session carried into its last turn', () => {
-      seedSession(db, repo, 's1', { transcriptPath: seedTranscript(90_000) });
+      seedSession(db, repo, 's1', {
+        // The directory pup stamps at launch: `seedSession`'s worktree, munged.
+        transcriptPath: seedTranscript(transcriptDir(join(repo, '.worktrees', 's1')), 90_000),
+      });
       transitionSession(db, 's1', 'running');
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
+    });
+
+    /**
+     * `transcript_path` is stamped by pup but read back out of a store the
+     * sessions write, and every registered store is swept here (decisions
+     * 60-62), so a row pointing anywhere else is a row that would have the
+     * operator's own `pup status` list and read a directory of the session's
+     * choosing (decision 67). The planted transcript holds a token count, so
+     * the row reporting none is the proof that nothing opened it.
+     */
+    it('reads no transcript from a row pointing outside the directory pup stamps', () => {
+      const planted = seedTranscript(
+        realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-planted-'))),
+        90_000,
+      );
+      seedSession(db, repo, 's1', { transcriptPath: planted });
+      transitionSession(db, 's1', 'running');
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
+    });
+
+    /**
+     * `join` drops an empty segment, so the derivation from an empty
+     * `worktree_path` — which `TEXT NOT NULL` accepts — is the projects
+     * directory itself rather than one segment under it, and a row naming it
+     * would have the operator's own transcripts listed and the newest of them
+     * read (decision 67).
+     */
+    it('reads no transcript from a row whose worktree path is empty', () => {
+      const projects = seedTranscript(join(homedir(), '.claude', 'projects'), 90_000);
+      seedSession(db, repo, 's1', { worktreePath: '', transcriptPath: projects });
+      transitionSession(db, 's1', 'running');
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
 
     it('reports the newest steer with its kind and its sender', () => {

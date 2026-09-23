@@ -55,7 +55,8 @@ export function activityLabel(session: DashboardSession): string {
     return deadTurnLabel(session) || `STALLED (${formatStaleAge(session.stalledAgeMs)})`;
   }
   if (session.activity.kind === 'awaiting-input') {
-    return `WAITING ON INPUT${session.activity.detail ? ` (${session.activity.detail})` : ''}`;
+    const detail = session.activity.detail;
+    return `WAITING ON INPUT${detail ? ` (${sanitizeReason(detail)})` : ''}`;
   }
   if (session.activity.kind === 'idle') return 'idle (turn ended, no done signal)';
   return '';

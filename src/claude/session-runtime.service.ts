@@ -822,7 +822,16 @@ function killTarget(target: string, socket?: string): void {
   }
 }
 
-/** Transcript directory Claude Code uses for a given worktree (munged real path). */
+/**
+ * Transcript directory Claude Code uses for a given worktree (munged real
+ * path). The munge is a closed allowlist — every character outside
+ * `[a-zA-Z0-9]` becomes `-` — so the result is always one segment directly
+ * under `~/.claude/projects`, whatever the path held. `pup` stamps a session's
+ * `transcript_path` with this at launch, and the dashboard checks the stored
+ * column against this derivation before reading it (decision 67), so the
+ * guarantee is load-bearing: a munge that let a separator or a `..` through
+ * would let a store row aim the operator's reader anywhere on disk.
+ */
 export function transcriptDir(worktreePath: string): string {
   const munged = worktreePath.replace(/[^a-zA-Z0-9]/g, '-');
   return join(homedir(), '.claude', 'projects', munged);

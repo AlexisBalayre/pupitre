@@ -7,6 +7,10 @@ import type { SessionActivity } from './types/session-activity.types.js';
  * The latest classifiable event wins: a Notification followed by tool activity
  * means the input arrived and the session is working again. Malformed lines are
  * skipped — hooks append concurrently, so a torn tail line is expected.
+ *
+ * A Notification's `message` is carried through as the hook wrote it: this is a
+ * classifier, not a renderer, and the surface that prints it (`activityLabel`)
+ * scrubs it at the fold, where decision 29 puts that work.
  */
 export function classifySessionActivity(eventsJsonl: string): SessionActivity {
   const lines = eventsJsonl.split('\n');
