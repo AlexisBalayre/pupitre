@@ -1441,22 +1441,33 @@ export function buildProgram(): Command {
         }
         console.log('RISK   SESSION                      ±LINES  FILES  REJ  VIOL  OVERLAP  GOAL');
         for (const e of queue) {
+          // The id and the goal are store text — the row is a session's own,
+          // and with the conductor the goal is a string an agent chose — on
+          // their way to the operator's terminal, and a goal runs to a
+          // paragraph, so it is a headline here as it is everywhere a queue
+          // lists one (decisions 29, 41).
           console.log(
-            `${e.risk.toFixed(1).padStart(5)}  ${e.sessionId.padEnd(28)} ${String(e.changedLines).padStart(5)}  ${String(e.filesChanged).padStart(5)}  ${String(e.rejectCount).padStart(3)}  ${String(e.scopeViolations).padStart(4)}  ${String(e.overlaps).padStart(7)}  ${e.goal}`,
+            `${e.risk.toFixed(1).padStart(5)}  ${sanitizeReason(e.sessionId).padEnd(28)} ${String(e.changedLines).padStart(5)}  ${String(e.filesChanged).padStart(5)}  ${String(e.rejectCount).padStart(3)}  ${String(e.scopeViolations).padStart(4)}  ${String(e.overlaps).padStart(7)}  ${goalHeadline(e.goal)}`,
           );
         }
         return;
       }
       const detail = buildSessionReview(db, repoPath, session);
-      console.log(`${detail.entry.sessionId}  (${detail.state}, risk ${detail.entry.risk})`);
-      console.log(`branch: ${detail.entry.branch}  worktree: ${detail.worktreePath}`);
-      // Sanitized like every other goal print: with the conductor, a goal is
-      // a string an agent chose (decisions 29, 47).
+      // Every string on this page is read out of the store — the session row,
+      // the spec the conductor may have written, the gate report the events
+      // hold — so every one of them is scrubbed on the way out, as the
+      // dashboard's reading of the same rows is (decisions 29, 47).
+      console.log(
+        `${sanitizeReason(detail.entry.sessionId)}  (${sanitizeReason(detail.state)}, risk ${detail.entry.risk})`,
+      );
+      console.log(
+        `branch: ${sanitizeReason(detail.entry.branch)}  worktree: ${sanitizeReason(detail.worktreePath)}`,
+      );
       console.log(`goal: ${sanitizeReason(detail.spec.goal)}`);
       console.log(`scope-in: ${sanitizeReason(detail.spec.scopeIn.join(', '))}`);
       if (detail.spec.scopeOut?.length)
-        console.log(`scope-out: ${detail.spec.scopeOut.join(', ')}`);
-      console.log(`acceptance: ${detail.spec.acceptance.join('; ')}`);
+        console.log(`scope-out: ${sanitizeReason(detail.spec.scopeOut.join(', '))}`);
+      console.log(`acceptance: ${sanitizeReason(detail.spec.acceptance.join('; '))}`);
       console.log(
         `rejections: ${detail.entry.rejectCount}  scope violations: ${detail.entry.scopeViolations}  overlaps: ${detail.entry.overlaps}`,
       );
@@ -1470,7 +1481,7 @@ export function buildProgram(): Command {
         console.log('last gate report:');
         for (const s of detail.lastGateReport.stages) {
           console.log(
-            `  ${s.stage.padEnd(16)} ${s.status.toUpperCase()}${s.detail ? `  ${s.detail}` : ''}`,
+            `  ${sanitizeReason(s.stage).padEnd(16)} ${sanitizeReason(s.status).toUpperCase()}${s.detail ? `  ${sanitizeReason(s.detail)}` : ''}`,
           );
         }
       }

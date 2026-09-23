@@ -177,9 +177,16 @@ function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefine
  * column is null already does. `worktree_path` is session-writable too, so this
  * is only a guard because `transcriptDir` munges every non-alphanumeric
  * character away: whatever the column holds, the derivation is one segment
- * directly under `~/.claude/projects`.
+ * directly under `~/.claude/projects` — except for the empty string, which is
+ * refused here before the derivation is taken at all.
  */
 function transcriptDirOf(worktreePath: string, transcriptPath: string | null): string | undefined {
+  // `join` drops an empty segment, so `transcriptDir('')` is the projects
+  // directory itself, one segment short of the guarantee above. `worktree_path`
+  // is TEXT NOT NULL, which `''` satisfies, so a row could hold it and name the
+  // projects root as its transcript directory — and have the operator's own
+  // transcripts listed and the newest of them read.
+  if (!worktreePath) return undefined;
   const expected = transcriptDir(worktreePath);
   return transcriptPath === expected ? expected : undefined;
 }

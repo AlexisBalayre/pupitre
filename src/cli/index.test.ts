@@ -68,6 +68,9 @@ vi.mock('../core/conductor.service.js', () => ({
 }));
 vi.mock('../core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
+  // The review queue scores each branch with it. The seeded sessions' branches
+  // are rows in a store and not real branches, so there is nothing to count.
+  countChangedLines: vi.fn(() => ({ lines: 0, forged: [] })),
 }));
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
@@ -101,7 +104,6 @@ import {
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
-  transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
@@ -289,6 +291,19 @@ function seedEventsFile(repoPath: string, sessionId: string, ageMs: number): voi
   writeFileSync(eventsFile, `${JSON.stringify({ hook_event_name: 'PostToolUse' })}\n`);
   const time = new Date(Date.now() - ageMs);
   utimesSync(eventsFile, time, time);
+}
+
+/**
+ * A session's events file with its permissions taken away, which is what makes
+ * a whole snapshot throw: the reader stats it, finds it, and cannot read it.
+ * Returns the path, for the caller to give its mode back.
+ */
+function unreadableEventsFile(repoPath: string, sessionId: string, mode = 0o000): string {
+  const eventsFile = projectPaths(repoPath).eventsFile(sessionId);
+  mkdirSync(projectPaths(repoPath).sessionDir(sessionId), { recursive: true });
+  writeFileSync(eventsFile, `${JSON.stringify({ hook_event_name: 'PostToolUse' })}\n`);
+  chmodSync(eventsFile, mode);
+  return eventsFile;
 }
 
 /**
@@ -746,17 +761,12 @@ describe('CLI commands', () => {
         const broken = initRepo();
         const fine = initRepo();
         seedSession(broken, 's1');
-        // A transcript directory whose newest .jsonl cannot be read: the
-        // snapshot throws on it, as it would on a store that fails to migrate.
-        // At the path pup stamps for that worktree, since the snapshot reads no
-        // other (decision 67).
-        const transcripts = transcriptDir(join(broken, '.worktrees', 's1'));
-        mkdirSync(transcripts, { recursive: true });
-        const unreadable = join(transcripts, 'session.jsonl');
-        writeFileSync(unreadable, '{}\n');
-        chmodSync(unreadable, 0o000);
+        // An events file the snapshot cannot read: it throws on it, as it
+        // would on a store that fails to migrate. Not a transcript — an
+        // unreadable one is a context reading that degrades to unknown
+        // (decision 67), and this case needs a snapshot that fails whole.
+        const unreadable = unreadableEventsFile(broken, 's1');
         const { db } = resolveProject(broken);
-        db.prepare('UPDATE sessions SET transcript_path = ? WHERE id = ?').run(transcripts, 's1');
         transitionSession(db, 's1', 'running');
         db.close();
         seedBacklogTask(fine, 't-plan', 'still here');
@@ -1144,15 +1154,12 @@ describe('CLI commands', () => {
         rmSync(gone, { recursive: true });
         const broken = initRepo();
         seedSession(broken, 's1');
-        // A transcript that cannot be read makes the snapshot throw, as a
-        // store that fails to migrate would — at the path pup stamps for that
-        // worktree, since the snapshot reads no other (decision 67).
-        const transcripts = transcriptDir(join(broken, '.worktrees', 's1'));
-        mkdirSync(transcripts, { recursive: true });
-        const unreadable = join(transcripts, 'session.jsonl');
-        writeFileSync(unreadable, '{}\n');
+        // An events file that cannot be read makes the snapshot throw, as a
+        // store that fails to migrate would; an unreadable transcript no
+        // longer does (decision 67). Left readable until the reading is
+        // mounted, as this case has always done.
+        const unreadable = unreadableEventsFile(broken, 's1', 0o600);
         const { db } = resolveProject(broken);
-        db.prepare('UPDATE sessions SET transcript_path = ? WHERE id = ?').run(transcripts, 's1');
         transitionSession(db, 's1', 'running');
         db.close();
         useCwd(tempDir('pup-cli-noproj-'));
@@ -1176,7 +1183,7 @@ describe('CLI commands', () => {
             new RegExp(`^${projectId(broken)}  ${broken}  unreadable: .*EACCES`),
           ),
         );
-        // The next reading finds the transcript readable again.
+        // The next reading finds the events file readable again.
         expect(mountedProps().read().projects).toHaveLength(2);
       });
 
@@ -2132,6 +2139,81 @@ describe('CLI commands', () => {
       expect(stopConductor).not.toHaveBeenCalled();
       expect(errors).toEqual([`\`pup conductor ${verb}\` is operator-only.`]);
       expect(process.exitCode).toBe(1);
+    });
+  });
+
+  /**
+   * `pup review` prints a whole page out of the store on the operator's
+   * terminal: the session row, the spec the conductor may have written, and the
+   * gate report the events hold. Every string on it is scrubbed (decision 67).
+   */
+  describe('review', () => {
+    const NOISY_ID = '\u001b[2Js1';
+
+    /** One reviewable session whose every stored string carries an escape. */
+    function seedReviewable(repoPath: string): void {
+      seedSession(repoPath, NOISY_ID);
+      const { db } = resolveProject(repoPath);
+      db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+        JSON.stringify({
+          id: `t-${NOISY_ID}`,
+          goal: '\u001b[2Jheadline\nsecond line of the goal',
+          scopeIn: ['\u001b[2Jsrc/**'],
+          scopeOut: ['\u001b[2Jdocs/**'],
+          acceptance: ['\u001b[2Jit works'],
+        }),
+        `t-${NOISY_ID}`,
+      );
+      db.prepare('UPDATE sessions SET worktree_path = ? WHERE id = ?').run(
+        '\u001b[2J/wt',
+        NOISY_ID,
+      );
+      transitionSession(db, NOISY_ID, 'running');
+      transitionSession(db, NOISY_ID, 'awaiting-review');
+      appendEvent(db, NOISY_ID, 'gate_result', {
+        report: {
+          sessionId: NOISY_ID,
+          passed: false,
+          sandbox: 'none',
+          stages: [{ stage: '\u001b[2Jlint', status: 'fail', detail: '\u001b[2Jboom' }],
+        },
+      });
+      db.close();
+    }
+
+    it('scrubs the queue row, and prints the goal as one headline', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedReviewable(repo);
+
+      buildProgram().parse(['review'], { from: 'user' });
+
+      const row = logs.at(-1) ?? '';
+      expect(row).toContain('[2Js1');
+      expect(row).toContain('[2Jheadline');
+      // A goal runs to a paragraph; the queue is one line per session.
+      expect(row).not.toContain('second line of the goal');
+      expect(row).not.toContain('\u001b');
+    });
+
+    it("scrubs every stored string on one branch's page", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedReviewable(repo);
+
+      buildProgram().parse(['review', NOISY_ID], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('[2Js1  (awaiting-review');
+      // An escape is replaced by a space, so a branch that opens with one
+      // reads `pup/ [2Js1` rather than losing a character.
+      expect(page).toContain('branch: pup/ [2Js1  worktree: [2J/wt');
+      expect(page).toContain('scope-in: [2Jsrc/**');
+      expect(page).toContain('scope-out: [2Jdocs/**');
+      expect(page).toContain('acceptance: [2Jit works');
+      expect(page).toContain('[2Jlint');
+      expect(page).toContain('[2Jboom');
+      expect(page).not.toContain('\u001b');
     });
   });
 

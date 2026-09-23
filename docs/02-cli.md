@@ -204,8 +204,10 @@ sessions directory, and `pup report` gives it no dossier file (decision 66).
 
 The `ctx ~Nk` reading on a session row comes from the transcript directory `pup` stamped for that
 session at launch, and only from there: the stored `transcript_path` is read when it equals the
-directory derived from the row's own worktree path, and a row naming any other directory reads
-with no context at all, nothing having been listed or opened for it (decision 67).
+directory derived from the row's own worktree path, and a row naming any other directory — or one
+whose worktree path is empty — reads with no context at all, nothing having been listed or opened
+for it. A transcript that is there but cannot be read reads the same way, rather than failing the
+whole reading (decision 67).
 
 - `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
   session to `awaiting-review` (decision 3).

@@ -7,7 +7,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -83,6 +83,7 @@ function seedSession(
     goal?: string;
     origin?: string;
     transcriptPath?: string;
+    worktreePath?: string;
     spec?: Partial<TaskSpec>;
   } = {},
 ): void {
@@ -91,7 +92,7 @@ function seedSession(
   insertSession(db, {
     id: sessionId,
     taskId,
-    worktreePath: join(repo, '.worktrees', sessionId),
+    worktreePath: options.worktreePath ?? join(repo, '.worktrees', sessionId),
     branch: `pup/${sessionId}`,
     profileHash: 'hash',
     ...(options.transcriptPath ? { transcriptPath: options.transcriptPath } : {}),
@@ -445,6 +446,21 @@ describe('buildDashboardSnapshot', () => {
         90_000,
       );
       seedSession(db, repo, 's1', { transcriptPath: planted });
+      transitionSession(db, 's1', 'running');
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
+    });
+
+    /**
+     * `join` drops an empty segment, so the derivation from an empty
+     * `worktree_path` — which `TEXT NOT NULL` accepts — is the projects
+     * directory itself rather than one segment under it, and a row naming it
+     * would have the operator's own transcripts listed and the newest of them
+     * read (decision 67).
+     */
+    it('reads no transcript from a row whose worktree path is empty', () => {
+      const projects = seedTranscript(join(homedir(), '.claude', 'projects'), 90_000);
+      seedSession(db, repo, 's1', { worktreePath: '', transcriptPath: projects });
       transitionSession(db, 's1', 'running');
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();

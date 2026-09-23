@@ -27,7 +27,18 @@ function newestTranscript(transcriptDir: string): string | undefined {
 export function latestContextTokens(transcriptDir: string): number | undefined {
   const transcript = newestTranscript(transcriptDir);
   if (!transcript) return undefined;
-  const lines = readFileSync(transcript, 'utf8').trim().split('\n');
+  let lines: string[];
+  try {
+    lines = readFileSync(transcript, 'utf8').trim().split('\n');
+  } catch {
+    // Same answer as a directory with no transcript in it, and for the same
+    // reason: a reading that cannot be taken is unknown, not fatal. The
+    // listing only matched a name, so `<anything>.jsonl` may be a directory
+    // (EISDIR), a file whose mode changed since the stat, or a dangling
+    // symlink — and every caller here is sweeping rows a session wrote, where
+    // one unreadable file must not take the whole surface down.
+    return undefined;
+  }
   for (let i = lines.length - 1; i >= 0; i--) {
     let entry: { type?: string; message?: { usage?: TranscriptUsage } };
     try {
