@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-23T16:29:28.905Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35886062118",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35886062118",
+  "actor": "AlexisBalayre",
+  "commit_sha": "851459f5b3836915b3ea8e8b94f07ebfb1fe9ecd",
+  "source": "pr",
+  "pr_number": 113,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "security",
+    "correctness",
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "2150-2218",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "New `pup review` CLI tests seed sessions via DB rows only (`initRepo()` makes zero commits; `seedSession()` never creates a real git branch), but the command's real `gitDiffPaths`/`gitDiffNumstat` calls run unmocked against `main...pup/<id>`, where neither side resolves to a commit — both tests should throw before their `expect()` assertions run.",
+      "body": "**Concern:** The two new `pup review` tests in `describe('review', ...)` seed their fixtures with DB rows only: `initRepo()` (`src/cli/index.test.ts:174-178`) runs `git init -b main` with zero commits, and `seedSession()` (`src/cli/index.test.ts:212-225`) inserts a `sessions.branch = 'pup/<id>'` row without ever creating that ref in git. `pup review`'s handler calls `buildReviewQueue`/`buildSessionReview` (`src/core/review.service.ts:79,109,146`), which run unmocked `gitDiffPaths`/`gitDiffNumstat` (`src/core/git-diff.client.ts:72-90`) as `git diff ... main...pup/<id>`. Since `main` has no commits (unborn) and `pup/<id>` was never created, `git diff` should exit non-zero and `execFileSync` throws — the error propagates straight out of `buildProgram().parse(...)` (commander's `exitOverride()` at `src/cli/index.ts:513` doesn't swallow it) before either test's assertions run. `src/cli/index.test.ts` mocks `../core/merge-gate.service.js`'s `countChangedLines` but never mocks `../core/git-diff.client.js`, `../core/review.service.js`, or `node:child_process`. The established pattern for exercising this exact call chain for real — `src/core/review.test.ts:29-36,61` — makes an actual commit and runs `git worktree add -b pup/<id> ... HEAD` for precisely this reason; the new CLI-level tests skip both steps.\n\n**Why it matters:** these are the first tests `pup review` has ever had, written specifically to prove the new sanitization on this command's queue and detail output (decision 67). If they throw before their assertions run, that sanitization is not actually verified by the suite, despite the PR's self-reported gate report claiming `test: PASS`.\n\n**Suggested fix:** either mock `../core/git-diff.client.js` (`gitDiffPaths`/`gitDiffNumstat` returning empty arrays, alongside the existing `countChangedLines` mock — neither test's assertions depend on diff-stat values) or give `seedReviewable` a real commit plus a real `git worktree add -b pup/<id>` branch, matching `src/core/review.test.ts`'s pattern.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/851459f5b3836915b3ea8e8b94f07ebfb1fe9ecd/src/cli/index.test.ts#L2150-L2218",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1492",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`printGateReport` (called from `pup merge`, line 1580) prints `stage.stage`, `stage.status`, `stage.detail` and `report.sandbox` raw. The gate report is produced by the just-ran adapters on a session's worktree — `stage.detail` in particular is typically a failing test's stderr — which is exactly decision 29's threat model for `sanitizeReason`. Outside this PR's declared scope (which covers only `brief edit`, `activityLabel`, and `pup review`) and not among the three sinks decision 67 explicitly defers (`pup watch`, `pup ledger`, `pup log`), so noting it here as a pre-existing gap rather than a PR blocker. The `pup review` detail branch, which prints the SAME gate report out of the stored events, now goes through `sanitizeReason` at line 1484 — the merge command's live-report path is what remains raw.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "218",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`printBaselineTail` (called from `pup init` / `pup audit`) prints `report.sandbox` raw at line 218 and each finding string in `report.findings` raw at line 223. Findings come from adapter probes that ran against the local checkout, i.e., adversary-influenced text under decision 29. Same status as the merge-report finding above: outside this PR's declared scope and not in decision 67's deferred list. Flagged as pre-existing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.test.ts",
+      "line": "146",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`stampedTranscriptDir(repo, sessionId)` is a single-caller helper (only line 428 uses it). Per this repo's Altitude / YAGNI convention (\"No new file, helper, wrapper, param, option, interface, or generic with a single caller, unless a second caller exists today\"), the two-argument body — `transcriptDir(join(repo, '.worktrees', sessionId))` — could be inlined at the one call site. Testing conventions do license test-only helpers \"because it makes the tests clearer,\" so this is defensible; but there is no second caller to lean on and the inlined form is short. If a future test needs the same derivation it will be easy to extract then. Flagging as a nit only.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "58",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 4-line inline comment above `sanitizeReason(detail)` in `activityLabel` largely restates what the new JSDoc paragraph on `classifySessionActivity` (`src/core/session-activity.utils.ts:11-13`) now says — \"the surface that prints it (`activityLabel`) scrubs it at the fold, where decision 29 puts that work.\" The general conventions' seam-duplication test says: \"if it already says it, delete the call-site copy.\" One of the two comments could go; if the load-bearing sentence is \"the classifier stays a classifier, the renderer sanitizes,\" the classifier's JSDoc is arguably the better home (a maintainer touching either end sees it). Nit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "170-171",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`docs/conventions/general.md:114` states, under JSDoc: \"Summary is an imperative verb phrase, ≤120 chars.\" The new `transcriptDirOf` JSDoc's opening sentence — \"The transcript directory a session row names, or nothing when it is not the one pup itself would have written for that row's worktree (decision 67).\" — runs 148 characters, exceeding that bound. The sibling docstring it explicitly mirrors, `eventsFileOf` (`src/core/dashboard.service.ts:159-160`, \"The events file a session row names, or nothing when its id fails `SESSION_ID_PATTERN`.\"), stays at 87 characters. This is guidance-grade prose (not phrased as MUST/NEVER), so it caps at nit; noting it since the sibling this function is deliberately modeled on does observe the limit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "169-192",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`transcriptDirOf`'s empty-string handling is explained three times over: once in `docs/09-decisions.md`'s new decision 67 (\"the empty string is refused before the derivation\" paragraph — `join` drops an empty segment, `worktree_path` is `TEXT NOT NULL`, consequence of listing the operator's own transcripts), again compressed into the JSDoc's closing sentence directly above the function (lines 180-181), and again in full mechanical detail in a 5-line inline comment immediately above the one-line guard it documents (lines 184-188), which near-verbatim restates the decision-doc paragraph's reasoning. A reader gets the same WHY three times; if any of the three drifts from the code later (e.g. `join`'s behavior or the schema constraint), there are three places to keep in sync instead of one. Suggest keeping the decision-67 paragraph and the JSDoc's closing sentence, and dropping the inline comment at lines 184-188.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 20.718427200000008,
+  "duration_ms": 1522009,
+  "num_turns": 48,
+  "tokens": {
+    "input": 81,
+    "output": 46956,
+    "cache_read": 3642416,
+    "cache_creation": 140320,
+    "total": 3829773
+  }
+}
