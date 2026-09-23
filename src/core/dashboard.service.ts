@@ -10,7 +10,7 @@ import type { SessionState } from './db.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
-import { projectId, projectPaths } from './paths.utils.js';
+import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStageArray, asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
   type EventRow,
@@ -22,6 +22,7 @@ import {
   type SessionRow,
   type TaskRow,
 } from './session.repository.js';
+import { SESSION_ID_PATTERN } from './session-activity.constants.js';
 import { classifySessionActivity, isSessionStalled } from './session-activity.utils.js';
 import type {
   DashboardBaseline,
@@ -57,7 +58,13 @@ export function buildDashboardSnapshot(
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
   const sessions = listSessions(db).map((row) =>
-    dashboardSession(db, row, tasks.get(row.task_id), paths.eventsFile(row.id), stalls.get(row.id)),
+    dashboardSession(
+      db,
+      row,
+      tasks.get(row.task_id),
+      eventsFileOf(paths, row.id),
+      stalls.get(row.id),
+    ),
   );
   const beat = getWatcherBeat(db, pid);
   const baseline = baselineOf(db, pid);
@@ -145,6 +152,22 @@ interface StalledSession {
 }
 
 /**
+ * The events file a session row names, or nothing when its id is not a usable
+ * path fragment. Both readers here sweep every row of a store, and since the
+ * fleet views (decisions 60-62) that store is not always the operator's own —
+ * so a row whose id is `../../x` must cost the sweep nothing, not throw and
+ * not send the reader outside the project's sessions directory. It reads as a
+ * row with no events file, which is already a state both handle: no activity,
+ * never stalled, and no filesystem touched for it at all. The row itself still
+ * renders, id sanitized, as decision 61 leaves it — dropping a session because
+ * of the shape of its id would hide it from the operator who has to clean it
+ * up (decision 66).
+ */
+function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefined {
+  return SESSION_ID_PATTERN.test(sessionId) ? paths.eventsFile(sessionId) : undefined;
+}
+
+/**
  * Running sessions whose events file has gone quiet past `STALLED_AFTER_MS`
  * (decision 35). Lives beside the snapshot that reports it because `pup watch`
  * asks the same question on its own sweep, where there is no snapshot to build.
@@ -153,8 +176,8 @@ export function findStalledSessions(db: Database, repoPath: string, now: number)
   const paths = projectPaths(repoPath);
   const stalled: StalledSession[] = [];
   for (const row of listSessions(db, ['running'])) {
-    const eventsFile = paths.eventsFile(row.id);
-    if (!existsSync(eventsFile)) continue;
+    const eventsFile = eventsFileOf(paths, row.id);
+    if (!eventsFile || !existsSync(eventsFile)) continue;
     const mtimeMs = statSync(eventsFile).mtimeMs;
     const ageMs = now - mtimeMs;
     if (isSessionStalled(ageMs))
@@ -187,14 +210,14 @@ function dashboardSession(
   db: Database,
   row: SessionRow,
   task: TaskRow | undefined,
-  eventsFile: string,
+  eventsFile: string | undefined,
   stall: StalledSession | undefined,
 ): DashboardSession {
   const spec = task ? parseJsonOr<Partial<TaskSpec>>(task.spec, {}) : {};
   // Decision 2: hook events, never pane contents. Nothing to classify for a
   // session that is not running, or has yet to fire a hook.
   const activity =
-    row.state === 'running' && existsSync(eventsFile)
+    row.state === 'running' && eventsFile !== undefined && existsSync(eventsFile)
       ? classifySessionActivity(readFileSync(eventsFile, 'utf8'))
       : undefined;
   const stalledAgeMs = stall?.ageMs;

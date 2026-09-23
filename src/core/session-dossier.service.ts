@@ -13,6 +13,7 @@ import {
   toIsoUtc,
 } from './report-data.utils.js';
 import { type EventRow, listEvents, listTasks, type SessionRow } from './session.repository.js';
+import { SESSION_ID_PATTERN } from './session-activity.constants.js';
 import type { GateReport } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
@@ -65,12 +66,14 @@ export function renderSessionDossierHtml(
 
 /**
  * Session ids are pup-generated, but the store is session-writable, so an id
- * is untrusted as a path fragment. Only ids from this closed allowlist get a
+ * is untrusted as a path fragment. Only ids from the shared allowlist get a
  * dossier file (and a link from the index); anything else — separators, dots,
- * a hostile `../` — stays unlinked instead of escaping the project dir.
+ * a hostile `../` — stays unlinked instead of escaping the project dir. The
+ * report renders a file name, so it degrades to no link; the store's own paths
+ * throw on the same ids (decision 66).
  */
 export function dossierFileName(sessionId: string): string | null {
-  return /^[A-Za-z0-9_-]{1,64}$/.test(sessionId) ? `session-${sessionId}.html` : null;
+  return SESSION_ID_PATTERN.test(sessionId) ? `session-${sessionId}.html` : null;
 }
 
 /**

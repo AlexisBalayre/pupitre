@@ -1,6 +1,14 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -97,6 +105,27 @@ function seedEventsFile(repo: string, sessionId: string, event: object, ageMs = 
   writeFileSync(paths.eventsFile(sessionId), `${JSON.stringify(event)}\n`);
   const at = new Date(NOW - ageMs);
   utimesSync(paths.eventsFile(sessionId), at, at);
+}
+
+/**
+ * A session id that is a relative path, and the events file it would reach if
+ * anything joined it into `<store>/sessions/<id>` — two levels up, beside the
+ * project directories rather than inside this project's sessions (decision 66).
+ */
+const ESCAPING_ID = '../../marker';
+
+/**
+ * Plant a marker events file where `ESCAPING_ID` would land: aged past the
+ * stall bar and carrying a hook event that classifies, so a reader that opens
+ * or stats it says so in the snapshot it returns.
+ */
+function seedEscapedMarker(repo: string): string {
+  const escaped = join(projectPaths(repo).sessionsDir, ESCAPING_ID, 'events.jsonl');
+  mkdirSync(dirname(escaped), { recursive: true });
+  writeFileSync(escaped, `${JSON.stringify({ hook_event_name: 'PostToolUse' })}\n`);
+  const at = new Date(NOW - STALLED_AFTER_MS - 60_000);
+  utimesSync(escaped, at, at);
+  return escaped;
 }
 
 /** A transcript directory whose newest assistant entry carries `tokens`. */
@@ -267,6 +296,29 @@ describe('buildDashboardSnapshot', () => {
 
       expect(session?.stalledAgeMs).toBe(STALLED_AFTER_MS + 60_000);
       expect(session?.needsHuman).toBe(true);
+    });
+
+    it('never reads outside the sessions dir for a row whose id is a path (decision 66)', () => {
+      // The fleet views read every registered project's store (decisions
+      // 60-62), and a session can write its own store: an id like `../../x`
+      // would otherwise have `pup status` and `pup ui` stat and read a file
+      // two levels above this project's sessions directory.
+      seedSession(db, repo, ESCAPING_ID);
+      transitionSession(db, ESCAPING_ID, 'running');
+      const marker = seedEscapedMarker(repo);
+
+      const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+      // The row is still there for the operator who has to clean it up, id
+      // printed through decision 61's sanitizing.
+      expect(session?.id).toBe(ESCAPING_ID);
+      // Nothing was opened: the marker would classify as `working`.
+      expect(session?.activity).toBeUndefined();
+      // Nothing was stat'ed: the marker's mtime is an hour past the stall bar.
+      expect(session?.stalledAgeMs).toBeUndefined();
+      expect(session?.needsHuman).toBe(false);
+      // And the file the reader must not have touched is still where it was.
+      expect(existsSync(marker)).toBe(true);
     });
 
     // The watchdog's record, read back off the store — not off the pane it
@@ -730,6 +782,16 @@ describe('findStalledSessions', () => {
     seedSession(db, repo, 's-silent');
     transitionSession(db, 's-silent', 'running');
 
+    expect(findStalledSessions(db, repo, NOW)).toEqual([]);
+  });
+
+  it('skips a running row whose id is a path, marker and all (decision 66)', () => {
+    seedSession(db, repo, ESCAPING_ID);
+    transitionSession(db, ESCAPING_ID, 'running');
+    seedEscapedMarker(repo);
+
+    // The marker is an hour past the stall bar: a sweep that stat'ed it would
+    // report the row as stalled, and the watchdog would type into its pane.
     expect(findStalledSessions(db, repo, NOW)).toEqual([]);
   });
 

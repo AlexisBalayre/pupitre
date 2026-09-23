@@ -192,6 +192,16 @@ Run by the agent, never by the operator. Each takes its session from `PUP_SESSIO
 refused unless cwd is inside that session's own worktree — the repo root and another session's
 worktree both refuse — so a session reports only its own state (decision 44).
 
+A session id is minted by pup from the task id — letters, digits, `_` and `-`, at most 64
+characters — and it is a path fragment: the session's events file, compiled profile and handoff
+all live at `~/.pupitre/<project>/sessions/<id>/`. Everything that reads one gets it back out of
+a store the sessions themselves can write, and `pup status` and `pup ui` read *every* registered
+project's store (decisions 60–62), so the shape is enforced rather than assumed. Building any
+per-session path from an id outside that charset throws, naming the id; the readers that sweep
+every row — the dashboard snapshot, the stall rule and the turn watchdog — skip such a row's
+events file instead, showing the session with no events rather than following its id out of the
+sessions directory, and `pup report` gives it no dossier file (decision 66).
+
 - `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
   session to `awaiting-review` (decision 3).
 - `pup session handoff-done` — the handoff `pup respawn` asked for is written (decision 18).
