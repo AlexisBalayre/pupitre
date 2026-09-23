@@ -3375,8 +3375,10 @@ changes back into those docs is pending.
     the id is pup's own and always passes. The throw is still the right behaviour: a slug that
     failed would mean the minting broke, and the launch would otherwise write a compiled profile
     and point a session's hooks outside the sessions directory. It also closes one real hole —
-    a task id with no alphanumeric character at all slugs to the empty string, which would make
-    `compiledDir` the shared `<store>/sessions/compiled`. `session-handoff.service.ts`'s
+    a task id that is itself the empty string slugs to the empty string too (a run of
+    non-alphanumeric characters instead collapses to a single `-`, which still passes the
+    charset) — `sessionFragment` now refuses that case rather than letting `compiledDir` become
+    the shared `<store>/sessions/compiled`. `session-handoff.service.ts`'s
     `requestHandoff`, `isHandoffReady`, `markHandoffReady`, `respawnSession` and
     `hardRespawnSession` call `handoffFile` and `compiledDir` on a store-read id: the operator
     typed it into `pup respawn <session>` or the agent's `PUP_SESSION_ID` carries it, and each

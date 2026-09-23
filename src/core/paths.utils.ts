@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { SESSION_ID_PATTERN } from './session-activity.constants.js';
+import { SESSION_ID_PATTERN } from './paths.constants.js';
 
 /**
  * A stable project id from its repo path. Sessions and state for one repo live
@@ -30,15 +30,12 @@ export interface ProjectPaths {
 }
 
 /**
- * Every per-session path is built from this, so the check that an id is a
- * usable path fragment belongs here and nowhere else: no caller can compose a
- * path outside `sessionsDir` without going through it. A throw rather than a
- * silent fallback because the pup-minted id of a live session always passes —
- * an id that fails came out of a store someone wrote by hand, and the callers
- * that name one session (`pup respawn`, the launch) have nothing to do but
- * refuse. The readers that sweep every row check the id themselves instead,
- * and skip (decision 66). The offending id is sanitized into the message: it
- * is store-written text on its way to a terminal (decision 29).
+ * Every per-session path is built from this, so no caller can compose a path
+ * outside `sessionsDir` without passing `SESSION_ID_PATTERN` here. A throw, not
+ * a fallback: a minted id always passes, so a failing one came out of a store
+ * written by hand, and the callers that name one session have nothing to do
+ * but refuse; the readers that sweep every row check first and skip
+ * (decision 66). The id is sanitized into the message (decision 29).
  */
 function sessionFragment(sessionId: string): string {
   if (!SESSION_ID_PATTERN.test(sessionId)) {

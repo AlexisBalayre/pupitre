@@ -10,6 +10,7 @@ import type { SessionState } from './db.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
+import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStageArray, asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
@@ -22,7 +23,6 @@ import {
   type SessionRow,
   type TaskRow,
 } from './session.repository.js';
-import { SESSION_ID_PATTERN } from './session-activity.constants.js';
 import { classifySessionActivity, isSessionStalled } from './session-activity.utils.js';
 import type {
   DashboardBaseline,
@@ -152,16 +152,11 @@ interface StalledSession {
 }
 
 /**
- * The events file a session row names, or nothing when its id is not a usable
- * path fragment. Both readers here sweep every row of a store, and since the
- * fleet views (decisions 60-62) that store is not always the operator's own —
- * so a row whose id is `../../x` must cost the sweep nothing, not throw and
- * not send the reader outside the project's sessions directory. It reads as a
- * row with no events file, which is already a state both handle: no activity,
- * never stalled, and no filesystem touched for it at all. The row itself still
- * renders, id sanitized, as decision 61 leaves it — dropping a session because
- * of the shape of its id would hide it from the operator who has to clean it
- * up (decision 66).
+ * The events file a session row names, or nothing when its id fails
+ * `SESSION_ID_PATTERN`. Both readers here sweep every row of every registered
+ * store, so a bad id must cost the sweep nothing: the row reads as one with no
+ * events file — no activity, never stalled, no filesystem touched — and still
+ * renders, id sanitized, for the operator who has to clean it up (decision 66).
  */
 function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefined {
   return SESSION_ID_PATTERN.test(sessionId) ? paths.eventsFile(sessionId) : undefined;

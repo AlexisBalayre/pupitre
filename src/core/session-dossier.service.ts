@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
+import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectId } from './paths.utils.js';
 import {
   asStageArray,
@@ -13,7 +14,6 @@ import {
   toIsoUtc,
 } from './report-data.utils.js';
 import { type EventRow, listEvents, listTasks, type SessionRow } from './session.repository.js';
-import { SESSION_ID_PATTERN } from './session-activity.constants.js';
 import type { GateReport } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
