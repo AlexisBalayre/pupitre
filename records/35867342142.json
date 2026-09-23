@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-23T13:37:24.957Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "35867342142",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/35867342142",
+  "actor": "AlexisBalayre",
+  "commit_sha": "228ec3455689c38e83755890fb9aa4c5978c58e4",
+  "source": "pr",
+  "pr_number": 112,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3377-3379",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 66 claims a task id with no alphanumeric character at all slugs to the empty string via sessionSlug, but the regex collapses any such run to a single '-', not ''.",
+      "body": "Decision 66 argues the throw \"closes one real hole\": *\"a task id with no alphanumeric character at all slugs to the empty string, which would make `compiledDir` the shared `<store>/sessions/compiled`.\"*\n\nThis is inaccurate against `sessionSlug` in [`src/core/session-lifecycle.service.ts`](https://github.com/AlexisBalayre/pupitre/blob/228ec3455689c38e83755890fb9aa4c5978c58e4/src/core/session-lifecycle.service.ts#L51-L54):\n```ts\nfunction sessionSlug(taskId: string, existing: number): string {\n  const stem = taskId.replace(/[^a-zA-Z0-9]+/g, '-').slice(0, 24);\n  return existing === 0 ? stem : `${stem}-${existing}`;\n}\n```\n`[^a-zA-Z0-9]+` is a **run** of non-alphanumeric characters replaced by a **single** `-`. So a task id with zero alphanumeric characters (e.g. `\"!!!\"`, `\"---\"`, a lone space) slugs to `\"-\"`, not `\"\"` — and `\"-\"` passes `SESSION_ID_PATTERN` fine, so it doesn't trigger the collision the doc describes at all. Only a task id that is *itself already the empty string* produces an empty stem (since `.replace()` is a no-op on `\"\"`).\n\nThe stated trigger condition is strictly broader than, and distinct from, the real one. A reader auditing whether this fix's edge-case coverage is complete would be misled about what input actually produces the described collision. Since `docs/09-decisions.md` is this repo's authoritative record (it \"wins over 00-08 where they conflict\" per AGENTS.md), the technical claim it makes about its own fix should be correct.\n\nPermalink: https://github.com/AlexisBalayre/pupitre/blob/228ec3455689c38e83755890fb9aa4c5978c58e4/docs/09-decisions.md#L3377-L3379",
+      "suggestion": "a task id that is itself the empty string slugs to the empty string too (a run of non-alphanumeric characters instead collapses to a single `-`, which still passes the charset) — `sessionFragment` now refuses that case rather than letting `compiledDir` become the shared `<store>/sessions/compiled`."
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3336-3410 (decision 66) / session-activity.constants.ts L12-22 / paths.utils.ts L32-42 / dashboard.service.ts L154-165 / docs/02-cli.md L195-203",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same two rationales (closed-allowlist-vs-'..'-check, and readers-skip-so-the-row-still-renders-sanitized) are restated near-verbatim across the decision doc, the CLI doc, and two source docstrings — each is a legitimate WHY in isolation but the shared narrative will need to be kept in sync across four+ places on any future change to this mechanism.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/paths.utils.ts",
+      "line": "6 (import) / session-activity.constants.ts L12-23",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "SESSION_ID_PATTERN's natural owner is paths.utils.ts (which session-dossier.service.ts already imports from), not the narrower session-activity.constants.ts — housing it there makes the foundational paths.utils.ts reach into a module meant for stall/activity-classification constants, a cohesion/placement mismatch with no behavioral consequence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "220-228",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "row.transcript_path is read and passed to latestContextTokens with no shape check; since decisions 60-62 the dashboard reads every registered project's store, so a hostile row could set transcript_path to an arbitrary path — the same attacker-controlled-column-into-filesystem-path class decision 66 just closed for id, left open here and out of this PR's declared scope.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 9.0447351,
+  "duration_ms": 482890,
+  "num_turns": 36,
+  "tokens": {
+    "input": 35,
+    "output": 26155,
+    "cache_read": 1032275,
+    "cache_creation": 103422,
+    "total": 1161887
+  }
+}
