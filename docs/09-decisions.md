@@ -3347,8 +3347,8 @@ changes back into those docs is pending.
     problem for the report's file names with a closed allowlist (decision 51), and the compiled
     bash-recheck hook applies the same class to `tool_use_id` (decision 63).
     *One pattern.* `SESSION_ID_PATTERN` — `/^[A-Za-z0-9_-]{1,64}$/` — is exported from
-    `src/core/session-activity.constants.ts`, beside `STALLED_AFTER_MS`, the other rule both the
-    readers and the watchdog share. `dossierFileName` now tests against it instead of its own
+    `src/core/paths.constants.ts`, the rule the readers, the watchdog and `sessionFragment` all
+    share. `dossierFileName` now tests against it instead of its own
     copy of the same regex; its tests are unchanged. A closed allowlist, not a `..` check:
     separators and dots are not in the charset at all, so no combination of them composes into
     an escape.
