@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-24T17:36:43.492Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36034172061",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36034172061",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b65a9d165f7386686e129fd55ade535d4643bf8d",
+  "source": "pr",
+  "pr_number": 116,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": null,
+      "line": null,
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "First commit (ebb84c5) bundles two unrelated hygiene items — print-site scrubbing and the two generic renames — into a single commit, touching src/cli/no-adapter-guard.utils.ts and src/core/report-data.utils.ts alongside the scrubbing changes in src/cli/index.ts; the follow-up commit b65a9d1 is scrub-only. Minor: the bundling is intentional per the PR body, and the second commit is already isolated.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "30-41, 381-384",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "parseProfileLayer only validates `name` and the three list fields, so `extends`/`contextBudget` pass through as whatever the YAML held even though ProfileLayer's type claims string/number. This PR's String() coercion fixes only the crash that caused at the profile-list print site (sanitizeReason throwing on a non-string). The same untyped value still reaches compileProfile's budget check (`tokenEstimate > (merged.contextBudget ?? DEFAULT_CONTEXT_BUDGET_TOKENS)`), where a non-numeric contextBudget (e.g. `contextBudget: nine` in a layer YAML) makes that comparison `number > NaN`, which is always false — silently defeating the context-budget-exceeded check on `pup launch`. Pre-existing; profile-compiler.service.ts is untouched by this diff.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "914",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Comment's trailing clause \"The call is idempotent on the composed name\" misuses \"idempotent\" (f(f(x))=f(x)) to mean \"harmless for an already-clean name\" — imprecise terminology that adds little beyond the WHY already given in the preceding lines (chasing a local's provenance is the carve-out decision 68 dropped).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4096",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc above the plantLayer(repoPath, fileName, yaml) test helper documents the security threat model motivating the tests that follow but never states what the helper itself does (writes yaml under profilesDir/fileName) — a reader looking up its contract gets rationale, not behavior.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "476",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The WHY comment above refuse(sanitizeLines(...)) in launchOrRefuse (\"a ScopeConflictError names the live session a task collides with and the files it claimed\") is near-verbatim restated in the test comment at src/cli/index.test.ts:2034. Not a strict callee-JSDoc duplicate, but the same WHY is spelled out twice across implementation and test, so the two can drift if only one is updated.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1851",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The WHY comment above the InvalidProfileError refusal (\"quotes the layer file's name and the source line the YAML parser choked on, both of them a session's text\") duplicates the JSDoc above the corresponding test at src/cli/index.test.ts:4169-4173. Same drift risk as the launchOrRefuse comment duplicate.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 6.8921627,
+  "duration_ms": 655240,
+  "num_turns": 33,
+  "tokens": {
+    "input": 55,
+    "output": 26201,
+    "cache_read": 1461760,
+    "cache_creation": 73711,
+    "total": 1561727
+  }
+}
