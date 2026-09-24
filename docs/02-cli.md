@@ -209,6 +209,21 @@ whose worktree path is empty — reads with no context at all, nothing having be
 for it. A transcript that is there but cannot be read reads the same way, rather than failing the
 whole reading (decision 67).
 
+Every string a command prints out of a store, out of a repo file, or out of a child process's
+output goes through the same sanitizer where it prints it — control characters flattened to
+spaces, whitespace collapsed, capped at 300 characters — and a multi-line goal is printed as its
+first line only. That is the rule for `pup watch`'s overlap and stall lines, `pup debt`'s ledger
+entries, `pup log`'s decision records and the copy of them a merge offers for review, the gate
+report `pup merge` prints live, and the findings and `sandbox:` lines `pup init` and `pup audit`
+end on (`pup init` adds an `adapters:` line, and both open on the project's repo path). A session, a hook, the conductor or an adapter probe wrote every one of those
+strings, and `pup status` and `pup ui` read *every* registered project's store (decisions 60-62),
+so none of it repaints the operator's terminal. A detail that runs to several lines — `scope-audit`
+prints one path per line — is scrubbed line by line and keeps its lines; a single line over 300
+characters is cut with no marker. A test in `src/cli/index.test.ts` reads `src/cli/index.ts` itself
+and fails when a `console.log` interpolates one of the named store fields without the sanitizer on
+the same expression; decision 68 enumerates exactly what that scan does and does not guard
+(decisions 29, 68).
+
 - `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
   session to `awaiting-review` (decision 3).
 - `pup session handoff-done` — the handoff `pup respawn` asked for is written (decision 18).
