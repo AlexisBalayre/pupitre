@@ -237,7 +237,15 @@ the same expression; decision 68 enumerates exactly what that scan does and does
 
 ## Configuration
 
-- `pup profile list | show <name> | edit <name>` — manage base and role layers.
+- `pup profile list | show <name> | edit <name>` — manage base and role layers. Both readers
+  scrub what they print, and so does the refusal when a layer will not parse: a layer is a YAML
+  file under `~/.pupitre/<id>/profiles/`, which a session's shell reaches through its HOME, so
+  `list` sanitizes the `name`, `extends` and `contextBudget` it puts in each row, `show`
+  sanitizes the dump line by line, and a malformed layer's refusal — which quotes the file's own
+  name and the source line the parser choked on — is sanitized the same way. Line by line rather
+  than whole, which keeps the lines and the indentation that is a layer's nesting and a parser's
+  caret; `show` is therefore a scrubbed dump and not a faithful one, since sanitizing a line also
+  collapses its inner space runs and cuts it at 300 characters (decision 69).
 - `pup profile stale` — running sessions whose profile version is behind current.
 - `pup brief [show] | pup brief edit` — the project brief: free Markdown at
   `~/.pupitre/<id>/brief.md` carrying the operator's direction into the conductor and every

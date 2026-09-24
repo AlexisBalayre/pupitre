@@ -2031,6 +2031,21 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('scrubs the refusal a launch error prints', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new ScopeConflictError('t-1', [
+          { sessionId: '\u001b[2Js1', files: ['src/\u001b[2Ja.ts'] },
+        ]);
+      });
+
+      buildProgram().parse(['launch', 't-1'], { from: 'user' });
+
+      expect(errors.join('\n')).not.toContain('\u001b');
+      expect(errors.join('\n')).toContain('holds: [2Js1 (src/ [2Ja.ts).');
+      expect(process.exitCode).toBe(1);
+    });
+
     it('fails loudly when the kickoff context never lands whole in the new window', () => {
       // kickoff() delivers the compiled context through the same paste, so a
       // launch whose context arrived as a tail is a launch that failed, not a
@@ -4074,6 +4089,105 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual(['Unknown profile action `bogus` (expected list|show|edit|stale).']);
     });
+
+    /**
+     * Writes `yaml` as `profiles/<fileName>` in the repo's store: a layer file
+     * under `~/.pupitre/<id>/profiles/`, which a session's shell reaches through
+     * decision 28's HOME — so every field of one is text a session can write
+     * and the operator's terminal then renders (decision 69).
+     */
+    function plantLayer(repoPath: string, fileName: string, yaml: string): void {
+      const { profilesDir } = projectPaths(repoPath);
+      mkdirSync(profilesDir, { recursive: true });
+      writeFileSync(join(profilesDir, fileName), yaml);
+    }
+
+    it('scrubs the layer fields `profile list` prints in its row', () => {
+      const repo = initRepo();
+      plantLayer(
+        repo,
+        'evil.yml',
+        'name: "ev\u001b[2Jil"\nextends: "ba\u001b[2Jse"\ncontextBudget: "60\u001b[2J00"\n',
+      );
+      useCwd(repo);
+
+      buildProgram().parse(['profile', 'list'], { from: 'user' });
+
+      const row = logs.find((line) => line.startsWith('ev'));
+      expect(row).toBe(`${'ev [2Jil'.padEnd(18)}${'ba [2Jse'.padEnd(18)}60 [2J00`);
+      expect(row).not.toContain('\u001b');
+    });
+
+    // `ProfileLayer` says `extends?: string` and `contextBudget?: number`, but
+    // `parseProfileLayer` only checks `name` and the three list fields — every
+    // other value is whatever the YAML held. Both go through `String` before
+    // the sanitizer, which takes a string and would throw on a number.
+    it('prints a layer row whose fields are not the types the interface claims', () => {
+      const repo = initRepo();
+      plantLayer(repo, 'odd.yml', 'name: odd\nextends: 5\ncontextBudget: nine\n');
+      useCwd(repo);
+
+      buildProgram().parse(['profile', 'list'], { from: 'user' });
+
+      expect(logs).toContain(`${'odd'.padEnd(18)}${'5'.padEnd(18)}nine`);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    /**
+     * `yaml.stringify` escapes C0 controls itself — a planted `\u001b` comes
+     * out as a literal `\e` — but it emits DEL and the C1 block raw, and
+     * `\u009b` is the 8-bit CSI, an escape sequence on its own. So this plants
+     * one of those: without the scrub it reaches the terminal intact.
+     */
+    it('scrubs `profile show` line by line, keeping the dump multi-line', () => {
+      const repo = initRepo();
+      plantLayer(
+        repo,
+        'evil.yml',
+        'name: evil\nextends: "ba\u009b2Jse"\nconventions: |-\n  first line\n  second line\n',
+      );
+      useCwd(repo);
+
+      buildProgram().parse(['profile', 'show', 'evil'], { from: 'user' });
+
+      // One call carrying the whole dump, so the lines and the indentation
+      // that is a YAML layer's nesting have to survive inside it.
+      expect(logs).toEqual([
+        [
+          'name: evil',
+          'extends: "ba 2Jse"',
+          'conventions: |-',
+          '  first line',
+          '  second line',
+        ].join('\n'),
+      ]);
+      expect(logs.join('\n')).not.toContain('\u009b');
+    });
+
+    /**
+     * The file name reaches the refusal too, and a file name is not a field any
+     * producer ever saw, so the source scan cannot stand in for this test.
+     */
+    it('scrubs a malformed layer refusal line by line, keeping its lines', () => {
+      const repo = initRepo();
+      plantLayer(repo, 'e\u001b[31m.yml', 'name: [x\u001b[2Jy');
+      useCwd(repo);
+
+      buildProgram().parse(['profile', 'list'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toHaveLength(1);
+      const [refusal = ''] = errors;
+      expect(refusal).not.toContain('\u001b');
+      // The parser's report keeps its shape: the offending line under the
+      // message, and the caret still under the column it names.
+      expect(refusal.split('\n')).toEqual([
+        expect.stringContaining('e [31m.yml: '),
+        '',
+        'name: [x [2Jy',
+        '         ^',
+      ]);
+    });
   });
 
   describe('session', () => {
@@ -4686,15 +4800,18 @@ const STORE_WRITTEN_FIELDS = [
   'adapters',
   'alternatives',
   'branch',
+  'contextBudget',
   'conventions',
   'created_at',
   'description',
   'detail',
+  'extends',
   'files',
   'finding',
   'goal',
   'id',
   'move',
+  'name',
   'path',
   'reason',
   'repo_path',
@@ -4861,12 +4978,19 @@ describe('the raw-sink guard over the CLI source', () => {
       `console.error(\`  reason: \${entry.reason}\`);`,
       `console.log(\`  files: \${sanitizeReason(record.files)}\`);`,
       `console.log(\`    \${detail.split('\\n').at(-1)}\`);`,
+      // `pup profile list`'s row, raw and scrubbed: three layer fields off a
+      // YAML file a session's shell can write (decision 69).
+      `console.log(\`\${layer.name.padEnd(18)}\${(layer.extends ?? '-').padEnd(18)}\${layer.contextBudget ?? '-'}\`);`,
+      `console.log(\`\${sanitizeReason(layer.name).padEnd(18)}\${sanitizeReason(String(layer.extends ?? '-'))}\`);`,
     ].join('\n');
 
     expect(rawStoreSinks(source)).toEqual([
       `index.ts:1: \${entry.reason}`,
       `index.ts:5: \${task.summary}`,
       `index.ts:13: \${detail.split('\\n').at(-1)}`,
+      `index.ts:14: \${layer.name.padEnd(18)}`,
+      `index.ts:14: \${(layer.extends ?? '-').padEnd(18)}`,
+      `index.ts:14: \${layer.contextBudget ?? '-'}`,
     ]);
   });
 });

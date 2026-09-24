@@ -3,10 +3,10 @@
  * column — the store is session-writable, and one bad row must degrade to the
  * page's empty copy, not kill `pup report` with a stack trace.
  */
-export function parseJsonOr<T>(text: string, fallback: T): T {
+export function parseJsonOr<TParsed>(text: string, fallback: TParsed): TParsed {
   try {
     const value = JSON.parse(text) as unknown;
-    return value !== null && typeof value === 'object' ? (value as T) : fallback;
+    return value !== null && typeof value === 'object' ? (value as TParsed) : fallback;
   } catch {
     return fallback;
   }
