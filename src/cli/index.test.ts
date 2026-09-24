@@ -4577,11 +4577,7 @@ describe('CLI commands', () => {
       expect(page).not.toContain('\u001b');
     });
 
-    // `plainDetail` keeps newlines and 2000 characters on purpose: `scope-audit`
-    // prints one path per line and `worktree-clean` one file per line.
-    // `sanitizeReason` collapses whitespace and cuts at 300, so scrubbing a
-    // detail whole reached the operator as six paths on one line with nothing
-    // to say the rest was dropped (decision 68).
+    // Why per line and not whole: `printGateStage`'s doc (decision 68).
     it('scrubs a multi-line stage detail line by line, keeping every line', () => {
       useCwd(initRepoWithAdapter());
       const paths = Array.from({ length: 12 }, (_, i) => `\u001b[2Jsrc/out-of-scope-${i}.ts`);
@@ -4701,6 +4697,8 @@ const STORE_WRITTEN_FIELDS = [
   'move',
   'path',
   'reason',
+  'repo_path',
+  'repoPath',
   'review_by',
   'reviewBy',
   'sandbox',
@@ -4725,7 +4723,7 @@ const CONSTANT_INTERPOLATIONS = [
   "'sandbox'.padEnd(16)",
   "blockedReason(db, session) ?? '(no reason recorded)'",
   // `pup review`'s four counters, reached through a local called `detail`:
-  // integers off the risk row, not text anything wrote.
+  // numbers off the risk row (risk keeps one decimal), not text anything wrote.
   'detail.entry.risk',
   'detail.entry.rejectCount',
   'detail.entry.scopeViolations',
@@ -4735,6 +4733,11 @@ const CONSTANT_INTERPOLATIONS = [
   'entry.id',
   'record.id',
   'c.id',
+  // Derivations of the repo path, not the path: a label pup composes, a hex
+  // socket name, and a store path pup built. The path itself prints scrubbed.
+  'codegraphLabel(repoPath)',
+  'conductorSocket(projectId(repoPath))',
+  'briefPath(repoPath)',
 ];
 
 type Interpolation = { line: number; expression: string };
@@ -4853,6 +4856,8 @@ describe('the raw-sink guard over the CLI source', () => {
       `console.log(\`  rejections: \${detail.entry.rejectCount}\`);`,
       `console.log(\`was blocked: \${blockedReason(db, session) ?? '(no reason recorded)'}\`);`,
       `console.log(\`#\${entry.id}  \${sanitizeReason(entry.created_at)}\`);`,
+      `console.log(\`#\${record.id}  session \${sanitizeReason(record.session_id)}\`);`,
+      `console.log(\`open debt #\${c.id} (\${sanitizeReason(c.description)})\`);`,
       `console.error(\`  reason: \${entry.reason}\`);`,
       `console.log(\`  files: \${sanitizeReason(record.files)}\`);`,
       `console.log(\`    \${detail.split('\\n').at(-1)}\`);`,
@@ -4861,7 +4866,7 @@ describe('the raw-sink guard over the CLI source', () => {
     expect(rawStoreSinks(source)).toEqual([
       `index.ts:1: \${entry.reason}`,
       `index.ts:5: \${task.summary}`,
-      `index.ts:11: \${detail.split('\\n').at(-1)}`,
+      `index.ts:13: \${detail.split('\\n').at(-1)}`,
     ]);
   });
 });

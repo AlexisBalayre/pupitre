@@ -242,7 +242,7 @@ function readKeystroke(): string {
 }
 
 function printInitReport(db: Database, report: InitReport, repoPath: string): void {
-  console.log(`Project ${report.projectId} (${repoPath})`);
+  console.log(`Project ${report.projectId} (${sanitizeReason(repoPath)})`);
   console.log(`adapters: ${sanitizeReason(report.baseline.adapters.join(', '))}`);
   for (const s of report.baseline.stages) {
     console.log(
@@ -1877,7 +1877,7 @@ export function buildProgram(): Command {
         printInitReport(db, report, repoPath);
         return;
       }
-      console.log(`Project ${report.projectId} (${repoPath})`);
+      console.log(`Project ${report.projectId} (${sanitizeReason(repoPath)})`);
       const fresh = new Map(report.baseline.stages.map((s) => [s.stage, s]));
       for (const t of report.transitions) {
         const move =

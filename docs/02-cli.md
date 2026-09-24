@@ -214,8 +214,8 @@ output goes through the same sanitizer where it prints it — control characters
 spaces, whitespace collapsed, capped at 300 characters — and a multi-line goal is printed as its
 first line only. That is the rule for `pup watch`'s overlap and stall lines, `pup debt`'s ledger
 entries, `pup log`'s decision records and the copy of them a merge offers for review, the gate
-report `pup merge` prints live, and the findings, `sandbox:` and `adapters:` lines `pup init` and
-`pup audit` end on. A session, a hook, the conductor or an adapter probe wrote every one of those
+report `pup merge` prints live, and the findings and `sandbox:` lines `pup init` and `pup audit`
+end on (`pup init` adds an `adapters:` line, and both open on the project's repo path). A session, a hook, the conductor or an adapter probe wrote every one of those
 strings, and `pup status` and `pup ui` read *every* registered project's store (decisions 60-62),
 so none of it repaints the operator's terminal. A detail that runs to several lines — `scope-audit`
 prints one path per line — is scrubbed line by line and keeps its lines; a single line over 300

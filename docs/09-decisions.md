@@ -3554,22 +3554,26 @@ changes back into those docs is pending.
     template — and a pattern that stops at the first `}` reads half of one. It collects every
     top-level `${…}` of every template literal a `console.log` takes, and fails the suite when one
     names `description`, `reason`, `review_by`, `accepted_by`, `summary`, `alternatives`,
-    `conventions`, `detail`, `sandbox`, `sessionA`, `sessionB` and twenty more — `id`, `files`,
+    `conventions`, `detail`, `sandbox`, `sessionA`, `sessionB` and nineteen more — `id`, `files`,
     `path`, `stage`, `status`, `move`, `state`, `branch`, `goal`, `acceptance`, `adapters`,
     `finding`, `created_at`, `session_id`, `sessionId`, `reviewBy`, `worktreePath` among them —
     and carries neither `sanitizeReason` nor `goalHeadline`. Only a name followed by `(` is
     skipped, as a function rather than a field. The first cut skipped a name followed by `.` as
     well, on the theory that it was an object being walked through, and that silently exempted
     the two sinks spelled `detail.split('\n')`: removing their sanitizer returned no findings.
-    *Seven interpolations are allowlisted, whole and by name*, in two groups. Two name a listed
+    *Twelve interpolations are allowlisted, whole and by name*, in three groups. Two name a listed
     field only inside a quoted constant: `'sandbox'.padEnd(16)`, the column label on the sandbox
     line, and `blockedReason(db, session) ?? '(no reason recorded)'` on `pup unblock`'s, whose
-    function sanitizes what it returns. Five print an integer rather than text: `pup review`'s
+    function sanitizes what it returns. Seven print a number rather than text: `pup review`'s
     four counters reached through a local called `detail` (`.risk`, `.rejectCount`,
     `.scopeViolations`, `.overlaps`), and `entry.id`, `record.id` and `c.id`, which are
     `INTEGER PRIMARY KEY AUTOINCREMENT` — a rowid alias SQLite refuses a non-integer for, whatever
-    wrote the row. Listed whole rather than by pattern, so a sink that grows out of one stops
-    matching and is flagged again.
+    wrote the row. Three print a derivation of the repo path rather than the path:
+    `codegraphLabel(repoPath)`, a label pup composes; `conductorSocket(projectId(repoPath))`, a
+    hex socket name; and `briefPath(repoPath)`, a store path pup built — the path itself, in the
+    `Project <id> (<repo>)` header `pup init` and `pup audit` open on, prints scrubbed, and
+    `repoPath`/`repo_path` are on the field list so the header cannot regress. Listed whole
+    rather than by pattern, so a sink that grows out of one stops matching and is flagged again.
     *Tests,* on temp stores with a throwaway `HOME`, one per sink, each planting a control
     character in the field and asserting no `\u001b` reaches stdout: an overlapping pair for
     `pup watch`, a ledger row for `pup debt`, a decision record for `pup log`, a mocked gate
@@ -3601,7 +3605,7 @@ changes back into those docs is pending.
     *Ceilings, enumerated rather than claimed.* What the scan guards is narrow and exact: a
     `${…}` inside a template literal passed to `console.log`, in `src/cli/index.ts`, whose text
     contains one of the listed field names not followed by `(`. Everything else is outside it,
-    and the thirty-mutant run is what measures the gap rather than argues it away. It does not
+    and the thirty-five-mutant run is what measures the gap rather than argues it away. It does not
     see a value precomputed into a local before the template — `flagged` is the live example, and
     any `const x = row.reason` ahead of a print is the same shape. It does not see `console.error`
     or `process.stdout.write`. It does not see a field whose name is not on the list, and the
@@ -3614,7 +3618,7 @@ changes back into those docs is pending.
     what is printed — it would pass a whole multi-line detail folded into one line, which is
     exactly the regression this decision's first cut shipped and its own tests, not the scan,
     caught. What *is* closed is narrower than decision 67's ceiling and wider than nothing: every
-    sink decision 67 listed, every sink the scan found beside them, and twenty-nine of the thirty
+    sink decision 67 listed, every sink the scan found beside them, and thirty-four of the thirty-five
     ways a reviewer could take a sanitizer back out of `index.ts` today.
 
 ## Implementation notes
