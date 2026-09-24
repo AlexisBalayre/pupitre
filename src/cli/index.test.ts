@@ -115,11 +115,13 @@ import {
 } from '../claude/session-runtime.service.js';
 import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
+import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { gitDiffPaths } from '../core/git-diff.client.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
-import { recordWatcherBeat } from '../core/overlap.repository.js';
+import { recordWatcherBeat, replaceOverlaps } from '../core/overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
@@ -350,7 +352,10 @@ function seedWatcherBeat(repoPath: string, ageMs: number): void {
 }
 
 /** Inserts one open ledger entry (real, unmocked repository) and returns its id. */
-function seedLedgerEntry(repoPath: string): number {
+function seedLedgerEntry(
+  repoPath: string,
+  overrides: { description?: string; reason?: string; acceptedBy?: string; reviewBy?: string } = {},
+): number {
   const { db } = resolveProject(repoPath);
   const pid = projectId(repoPath);
   ensureProject(db, pid, repoPath);
@@ -361,6 +366,7 @@ function seedLedgerEntry(repoPath: string): number {
     reason: 'ship the demo',
     acceptedBy: 'human',
     reviewBy: 'before the next release',
+    ...overrides,
   });
   db.close();
   return id;
@@ -762,6 +768,45 @@ describe('CLI commands', () => {
 
         const row = logs.find((line) => line.includes('s-blocked')) ?? '';
         expect(row).toContain('pup/ [2Jhijack');
+        expect(row).not.toContain('\u001b');
+      });
+
+      // Both lines are printed straight from the snapshot rather than through
+      // `sessionLine`, so both sanitize again at the print site (decision 68).
+      it('strips control characters out of an overdue debt line', () => {
+        const repo = initRepo();
+        seedLedgerEntry(repo, {
+          description: '\u001b[2Jshortcut',
+          reviewBy: '2020-01-01T00:00:00.000Z',
+        });
+        useCwd(repo);
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        const row = logs.find((line) => line.includes('OVERDUE DEBT')) ?? '';
+        expect(row).toContain('[2Jshortcut');
+        expect(row).not.toContain('\u001b');
+      });
+
+      it('strips control characters out of a radar overlap line', () => {
+        const repo = initRepo();
+        for (const id of ['\u001b[2Js1', '\u001b[2Js2']) {
+          seedSession(repo, id);
+          const { db } = resolveProject(repo);
+          transitionSession(db, id, 'running');
+          db.close();
+        }
+        const { db } = resolveProject(repo);
+        replaceOverlaps(db, [
+          { sessionA: '\u001b[2Js1', sessionB: '\u001b[2Js2', files: ['src/a.ts'] },
+        ]);
+        db.close();
+        useCwd(repo);
+
+        buildProgram().parse(['status'], { from: 'user' });
+
+        const row = logs.find((line) => line.includes('OVERLAP')) ?? '';
+        expect(row).toContain('[2Js1 <-> [2Js2');
         expect(row).not.toContain('\u001b');
       });
 
@@ -1392,6 +1437,27 @@ describe('CLI commands', () => {
       );
       expect(process.exitCode).toBeUndefined();
     });
+
+    // The radar prints the pair itself rather than through the snapshot the
+    // dashboard scrubs, so the ids get the sanitizer here too (decision 68).
+    it('scrubs both session ids of an overlapping pair', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      for (const id of ['\u001b[2Js1', '\u001b[2Js2']) {
+        seedSession(repo, id);
+        const { db } = resolveProject(repo);
+        transitionSession(db, id, 'running');
+        db.close();
+      }
+      vi.mocked(gitDiffPaths).mockReturnValue(['src/a.ts']);
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      const line = logs.find((l) => l.includes('OVERLAP')) ?? '';
+      expect(line).toContain('[2Js1');
+      expect(line).toContain('[2Js2');
+      expect(line).not.toContain('\u001b');
+    });
   });
 
   describe('init', () => {
@@ -1585,6 +1651,42 @@ describe('CLI commands', () => {
       expect(logs).toEqual([`push target: ${ORIGIN_URL}`]);
     });
 
+    /** Writes `.pupitre/adapter.yml`, the one way a test repo names its commands. */
+    function writeCustomAdapter(repoPath: string, yaml: string): void {
+      mkdirSync(join(repoPath, '.pupitre'), { recursive: true });
+      writeFileSync(join(repoPath, '.pupitre', 'adapter.yml'), yaml);
+    }
+
+    // A finding names the adapter that could not measure, and a custom
+    // adapter's id comes out of `.pupitre/adapter.yml` — a file the repo
+    // carries, not a constant pup owns (decision 68).
+    it('scrubs the findings and the sandbox line of the tail', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      writeCustomAdapter(repo, 'id: "fa\\e[2Jke"\ncoverage: exit 3\n');
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('adapters: fa [2Jke');
+      expect(page).toContain('fa [2Jke: coverage not measured');
+      expect(page).not.toContain('\u001b');
+    });
+
+    // The stage detail is the last line of a failing command's own output,
+    // written by whatever the repo's build script runs (decision 68).
+    it("scrubs a failing stage's output", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      writeCustomAdapter(repo, 'build: \'printf "bo\\033[2Jom" >&2; exit 1\'\n');
+
+      buildProgram().parse(['init'], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('bo [2Jom');
+      expect(page).not.toContain('\u001b');
+    });
+
     it('re-records a moved origin when the operator says it moved', () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
@@ -1637,6 +1739,28 @@ describe('CLI commands', () => {
       buildProgram().parse(['audit'], { from: 'user' });
 
       expect(logs).toContain('codegraph: not installed');
+    });
+
+    // The repeat path prints its own stage lines rather than `pup init`'s, and
+    // a regressed stage carries the failing command's output with it
+    // (decision 68).
+    it('scrubs the transition lines and the regressed stage output', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const adapterYml = join(repo, '.pupitre', 'adapter.yml');
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\n');
+      buildProgram().parse(['init'], { from: 'user' });
+      writeFileSync(adapterYml, 'build: \'printf "bo\\033[2Jom" >&2; exit 1\'\n');
+      logs.length = 0;
+
+      buildProgram().parse(['audit'], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('build    PASS -> FAIL');
+      expect(page).toContain('bo [2Jom');
+      expect(page).not.toContain('\u001b');
+      expect(process.exitCode).toBe(1);
     });
 
     // A sweep is scoped to the whole repo, so it collides with every live
@@ -3617,6 +3741,28 @@ describe('CLI commands', () => {
       ).toBe(true);
     });
 
+    // Every column is a string the merge that accepted the debt wrote, and
+    // `--accept-debt "<reason>"` is a session-reachable argument (decision 68).
+    it('scrubs every stored string of an entry it prints', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedLedgerEntry(repo, {
+        description: '\u001b[2Jshortcut',
+        reason: '\u001b[2Jship it',
+        reviewBy: '\u001b[2Jnext release',
+        acceptedBy: '\u001b[2Jhuman',
+      });
+
+      buildProgram().parse(['debt'], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('[2Jshortcut');
+      expect(page).toContain(
+        'reason: [2Jship it  review by: [2Jnext release  accepted by: [2Jhuman',
+      );
+      expect(page).not.toContain('\u001b');
+    });
+
     describe('close', () => {
       it('closes an open ledger entry', () => {
         const repo = initRepo();
@@ -3637,6 +3783,34 @@ describe('CLI commands', () => {
         expect(errors).toEqual(['No open ledger entry #999.']);
         expect(process.exitCode).toBe(1);
       });
+    });
+  });
+
+  // A decision record is prose the merging session drafted about its own work,
+  // and the merge stores it verbatim: `pup log` is where it reaches a terminal.
+  describe('log', () => {
+    it('scrubs every stored string of a record it prints', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, '\u001b[2Js1');
+      const { db } = resolveProject(repo);
+      insertDecisionRecord(db, {
+        sessionId: '\u001b[2Js1',
+        summary: '\u001b[2Jtook the short path',
+        alternatives: '\u001b[2Jthe long one',
+        conventions: '\u001b[2Jnone broken',
+        files: ['src/a.ts'],
+      });
+      db.close();
+
+      buildProgram().parse(['log'], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('session [2Js1');
+      expect(page).toContain('[2Jtook the short path');
+      expect(page).toContain('alternatives: [2Jthe long one');
+      expect(page).toContain('conventions: [2Jnone broken');
+      expect(page).not.toContain('\u001b');
     });
   });
 
@@ -4279,6 +4453,47 @@ describe('CLI commands', () => {
       );
     });
 
+    // The merge's own review of the draft prints the same three fields
+    // `pup log` does, through the same printer, so both scrub them (decision
+    // 68). Only the print is exercised: the keystroke after it wants a real
+    // tty, and the stub raises the ENOTTY a stdin that is not one raises.
+    it('scrubs the decision record it offers for review', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      const id = insertDecisionRecord(db, {
+        sessionId: 's1',
+        summary: '\u001b[2Jtook the short path',
+        alternatives: '\u001b[2Jthe long one',
+        conventions: '\u001b[2Jnone broken',
+        files: ['src/a.ts'],
+      });
+      db.close();
+      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome({ decisionRecordId: id }));
+      vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: unknown };
+      const wasTty = stdin.isTTY;
+      const wasRawMode = stdin.setRawMode;
+      stdin.isTTY = true;
+      stdin.setRawMode = () => {
+        throw new Error('ENOTTY: inappropriate ioctl for device');
+      };
+
+      try {
+        expect(() => buildProgram().parse(['merge', 's1'], { from: 'user' })).toThrow('ENOTTY');
+      } finally {
+        stdin.isTTY = wasTty;
+        stdin.setRawMode = wasRawMode;
+      }
+
+      const page = logs.join('\n');
+      expect(page).toContain('[2Jtook the short path');
+      expect(page).toContain('alternatives: [2Jthe long one');
+      expect(page).toContain('conventions: [2Jnone broken');
+      expect(page).not.toContain('\u001b');
+    });
+
     it('does not crash when a decision record id has no matching row', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue(mergedOutcome({ decisionRecordId: 999 }));
@@ -4309,6 +4524,32 @@ describe('CLI commands', () => {
           '"<condition>", or steer the session to address the flags.',
       );
       expect(process.exitCode).toBe(1);
+    });
+
+    // The live report is the one the operator reads while the gate runs, and a
+    // stage detail is a failing command's stderr out of the session's worktree.
+    // `pup review`'s copy of the same report has been scrubbed since decision
+    // 67; this one had not (decision 68).
+    it('scrubs the gate report it prints', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockReturnValue({
+        status: 'refused',
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: '\u001b[2Jnone',
+          stages: [{ stage: '\u001b[2Jdiff-size', status: 'flagged', detail: '\u001b[2Jbig diff' }],
+        },
+        rejectCount: 0,
+      });
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      const page = logs.join('\n');
+      expect(page).toContain('[2Jdiff-size');
+      expect(page).toContain('[2Jbig diff');
+      expect(page).toContain('sandbox          [2Jnone');
+      expect(page).not.toContain('\u001b');
     });
 
     it('reports a rejected gate and exits 1', () => {
@@ -4381,5 +4622,160 @@ describe('executable entry point', () => {
     });
 
     expect(out).toContain('Usage:');
+  });
+});
+
+/**
+ * Store- and adapter-written fields: their text was written by a session, a
+ * hook, the conductor or an adapter probe, so none of it may reach the
+ * operator's terminal without decision 29's sanitizer (decision 68).
+ */
+const STORE_WRITTEN_FIELDS = [
+  'description',
+  'reason',
+  'review_by',
+  'accepted_by',
+  'summary',
+  'alternatives',
+  'conventions',
+  'detail',
+  'sandbox',
+  'sessionA',
+  'sessionB',
+] as const;
+
+/**
+ * The two interpolations where a listed name appears only inside a quoted
+ * constant — a column label and a fallback sentence — and so is printed rather
+ * than read out of a store. Listed whole rather than by a pattern: a sink that
+ * grows out of one stops matching and is flagged again.
+ */
+const CONSTANT_INTERPOLATIONS = [
+  "'sandbox'.padEnd(16)",
+  "blockedReason(db, session) ?? '(no reason recorded)'",
+];
+
+type Interpolation = { line: number; expression: string };
+
+/** The 1-based line `at` falls on. */
+function lineOf(source: string, at: number): number {
+  return source.slice(0, at).split('\n').length;
+}
+
+/** Past the closing `quote`, over backslash escapes. */
+function skipQuoted(source: string, at: number, quote: string): number {
+  for (let i = at; i < source.length; i += 1) {
+    if (source[i] === '\\') i += 1;
+    else if (source[i] === quote) return i + 1;
+  }
+  return source.length;
+}
+
+/**
+ * Past the closing backtick, pushing each top-level `${…}` onto `found`. A
+ * nested template is walked with no collector, so an interpolation is reported
+ * once, whole, rather than also in pieces.
+ */
+function skipTemplate(source: string, at: number, found?: Interpolation[]): number {
+  let i = at;
+  while (i < source.length) {
+    if (source[i] === '\\') {
+      i += 2;
+    } else if (source[i] === '`') {
+      return i + 1;
+    } else if (source.startsWith('${', i)) {
+      const end = skipBalanced(source, i + 2, '}');
+      found?.push({ line: lineOf(source, i), expression: source.slice(i + 2, end - 1) });
+      i = end;
+    } else {
+      i += 1;
+    }
+  }
+  return i;
+}
+
+/**
+ * Past the `close` that balances the bracket already opened at `at`, stepping
+ * over string, template and comment bodies so a `)` inside one never ends the
+ * call early. Hand-rolled rather than a regex: these expressions nest — a
+ * ternary whose branch is another template — and a regex that stops at the
+ * first `}` reads half of one.
+ */
+function skipBalanced(source: string, at: number, close: string, found?: Interpolation[]): number {
+  let i = at;
+  while (i < source.length) {
+    const char = source[i];
+    if (char === close) return i + 1;
+    if (char === "'" || char === '"') i = skipQuoted(source, i + 1, char);
+    else if (char === '`') i = skipTemplate(source, i + 1, found);
+    else if (char === '(') i = skipBalanced(source, i + 1, ')', found);
+    else if (char === '{') i = skipBalanced(source, i + 1, '}', found);
+    else if (source.startsWith('//', i)) i = source.indexOf('\n', i) + 1 || source.length;
+    else if (source.startsWith('/*', i)) i = source.indexOf('*/', i) + 2;
+    else i += 1;
+  }
+  return i;
+}
+
+/** Every top-level `${…}` of every template literal a `console.log` call takes. */
+function loggedInterpolations(source: string): Interpolation[] {
+  const found: Interpolation[] = [];
+  const call = 'console.log(';
+  for (let at = source.indexOf(call); at !== -1; at = source.indexOf(call, at + 1)) {
+    skipBalanced(source, at + call.length, ')', found);
+  }
+  return found;
+}
+
+/** Those that print a store-written field with neither sanitizer on them. */
+function rawStoreSinks(source: string): string[] {
+  return (
+    loggedInterpolations(source)
+      .filter(({ expression }) => !CONSTANT_INTERPOLATIONS.includes(expression))
+      // `(?![.(])` is what tells a field being printed from an object being
+      // walked through on the way to one: `stage.detail` is the adapter's text,
+      // `detail.entry.risk` is a number reached through a local named `detail`.
+      .filter(({ expression }) =>
+        STORE_WRITTEN_FIELDS.some((field) => new RegExp(`\\b${field}\\b(?![.(])`).test(expression)),
+      )
+      .filter(({ expression }) => !/sanitizeReason\(|goalHeadline\(/.test(expression))
+      .map(({ line, expression }) => `index.ts:${line}: \${${expression}}`)
+  );
+}
+
+/**
+ * Decision 67 left the raw sinks a ceiling rather than a rule, and the ceiling
+ * was re-breached twice by ordinary print statements. This reads the CLI's own
+ * source so the next one fails the suite instead of shipping (decision 68).
+ */
+describe('the raw-sink guard over the CLI source', () => {
+  it('finds no console.log printing a store-written field raw', () => {
+    const source = readFileSync(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf8');
+
+    expect(rawStoreSinks(source)).toEqual([]);
+  });
+
+  // Removing a `sanitizeReason` from index.ts is how this was proven by hand;
+  // the synthetic source keeps the proof in the suite, and pins what the scan
+  // must not flag as well as what it must.
+  it('flags a raw interpolation, and leaves the sanitized and constant ones alone', () => {
+    // Escaped `\${` throughout: these lines are CLI source under scan, not
+    // interpolations of this test's own.
+    const source = [
+      `console.log(\`  reason: \${entry.reason}\`);`,
+      `console.log(\`  reason: \${sanitizeReason(entry.reason)}\`);`,
+      `console.log(\`  \${'sandbox'.padEnd(16)} \${sanitizeReason(report.sandbox)}\`);`,
+      `console.log(\`  \${stage.detail ? \`  \${sanitizeReason(stage.detail)}\` : ''}\`);`,
+      `console.log(\`  goal: \${goalHeadline(spec.goal)} (\${task.summary})\`);`,
+      `console.log(\`  rejections: \${detail.entry.rejectCount}\`);`,
+      `console.log(\`was blocked: \${blockedReason(db, session) ?? '(no reason recorded)'}\`);`,
+      `console.error(\`  reason: \${entry.reason}\`);`,
+      `console.log(\`  files: \${sanitizeReason(record.files)}\`);`,
+    ].join('\n');
+
+    expect(rawStoreSinks(source)).toEqual([
+      `index.ts:1: \${entry.reason}`,
+      `index.ts:5: \${task.summary}`,
+    ]);
   });
 });

@@ -39,6 +39,7 @@ import {
   goalHeadline,
 } from '../core/dashboard.service.js';
 import {
+  type DecisionRecordRow,
   deleteDecisionRecord,
   getDecisionRecord,
   listDecisionRecords,
@@ -129,6 +130,19 @@ import {
 } from './ui/dashboard-text.utils.js';
 
 /**
+ * The three prose fields of a decision record, under whichever heading the
+ * reader printed. The merging session wrote every one of them, so every one
+ * goes through the sanitizer (decision 68) — in one place, because the two
+ * readers printing the same fields two different ways is how one of them came
+ * to be scrubbed and the other not.
+ */
+function printDecisionRecordBody(record: DecisionRecordRow): void {
+  console.log(`  ${sanitizeReason(record.summary)}`);
+  if (record.alternatives) console.log(`  alternatives: ${sanitizeReason(record.alternatives)}`);
+  if (record.conventions) console.log(`  conventions: ${sanitizeReason(record.conventions)}`);
+}
+
+/**
  * One-keystroke approval of the decision record a merge just drafted. TTY
  * only — scripted/CI merges keep the draft untouched, same as before this
  * existed, so nothing interactive ever blocks automation.
@@ -137,9 +151,7 @@ function reviewDecisionRecord(db: Database, recordId: number): void {
   const record = getDecisionRecord(db, recordId);
   if (!record || !process.stdin.isTTY) return;
   console.log(`\nDecision record #${record.id}:`);
-  console.log(`  ${record.summary}`);
-  if (record.alternatives) console.log(`  alternatives: ${record.alternatives}`);
-  if (record.conventions) console.log(`  conventions: ${record.conventions}`);
+  printDecisionRecordBody(record);
   process.stdout.write('[Enter/k] keep   [e] edit summary   [d] discard > ');
   const key = readKeystroke();
   console.log('');
@@ -192,10 +204,11 @@ function readKeystroke(): string {
 
 function printInitReport(db: Database, report: InitReport, repoPath: string): void {
   console.log(`Project ${report.projectId} (${repoPath})`);
-  console.log(`adapters: ${report.baseline.adapters.join(', ')}`);
+  console.log(`adapters: ${sanitizeReason(report.baseline.adapters.join(', '))}`);
   for (const s of report.baseline.stages) {
     console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
-    if (s.status === 'fail' && s.detail) console.log(`    ${s.detail.split('\n').at(-1)}`);
+    if (s.status === 'fail' && s.detail)
+      console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
   }
   printBaselineTail(db, report, repoPath);
 }
@@ -215,12 +228,12 @@ function printBaselineTail(
 ): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   for (const t of debtTransitions) console.log(`  ${t}`);
-  console.log(`sandbox: ${report.sandbox}`);
+  console.log(`sandbox: ${sanitizeReason(report.sandbox)}`);
   printCodegraphLine(repoPath);
   printPushTargetLine(db, report.projectId);
   if (report.findings.length > 0) {
     console.log('findings:');
-    for (const f of report.findings) console.log(`  - ${f}`);
+    for (const f of report.findings) console.log(`  - ${sanitizeReason(f)}`);
   }
 }
 
@@ -1072,7 +1085,7 @@ export function buildProgram(): Command {
   function printDashboard(db: Database, snapshot: DashboardSnapshot): void {
     for (const entry of snapshot.overdueDebt) {
       console.log(
-        `OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
+        `OVERDUE DEBT #${entry.id}  ${sanitizeReason(entry.description)}  (review by: ${sanitizeReason(entry.reviewBy)})`,
       );
     }
     if (snapshot.conductor.running) {
@@ -1141,7 +1154,7 @@ export function buildProgram(): Command {
     for (const pair of snapshot.overlaps) {
       const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
       console.log(
-        `OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${pair.files[0] ?? ''}${extra}${snapshot.radarStale ? '  (stale)' : ''}`,
+        `OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${pair.files[0] ?? ''}${extra}${snapshot.radarStale ? '  (stale)' : ''}`,
       );
     }
     if (live.length >= 2 && snapshot.radarStale) {
@@ -1192,7 +1205,7 @@ export function buildProgram(): Command {
           for (const turn of sweepDeadTurns(db, repoPath, Date.now())) {
             const outcome = turn.refusal ? `resume REFUSED (${turn.refusal})` : 'resumed';
             console.log(
-              `${new Date().toISOString()}  TURN DIED  ${turn.id}  ${outcome}  ${turn.reason}`,
+              `${new Date().toISOString()}  TURN DIED  ${sanitizeReason(turn.id)}  ${outcome}  ${sanitizeReason(turn.reason)}`,
             );
           }
         } catch (error) {
@@ -1214,11 +1227,11 @@ export function buildProgram(): Command {
           }
           for (const pair of pairs) {
             console.log(
-              `${stamp}  OVERLAP  ${pair.sessionA} <-> ${pair.sessionB}  ${sanitizeReason(pair.files.join(', '))}`,
+              `${stamp}  OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${sanitizeReason(pair.files.join(', '))}`,
             );
           }
           for (const s of stalled) {
-            console.log(`${stamp}  STALLED  ${s.id}  ${formatStaleAge(s.ageMs)}`);
+            console.log(`${stamp}  STALLED  ${sanitizeReason(s.id)}  ${formatStaleAge(s.ageMs)}`);
           }
           previous = snapshot;
         }
@@ -1489,12 +1502,12 @@ export function buildProgram(): Command {
   function printGateReport(report: GateReport): void {
     for (const stage of report.stages) {
       console.log(
-        `  ${stage.stage.padEnd(16)} ${stage.status.toUpperCase()}${stage.detail ? `  ${stage.detail}` : ''}`,
+        `  ${sanitizeReason(stage.stage).padEnd(16)} ${sanitizeReason(stage.status).toUpperCase()}${stage.detail ? `  ${sanitizeReason(stage.detail)}` : ''}`,
       );
     }
     // Printed on every run, pass or fail: an operator who never sees this line
     // cannot tell a confined gate from an unconfined one (decision 36).
-    console.log(`  ${'sandbox'.padEnd(16)} ${report.sandbox}`);
+    console.log(`  ${'sandbox'.padEnd(16)} ${sanitizeReason(report.sandbox)}`);
   }
 
   program
@@ -1591,7 +1604,7 @@ export function buildProgram(): Command {
             }
             for (const c of outcome.debtCandidates ?? []) {
               console.log(
-                `This merge touched files of open debt #${c.id} (${c.description}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,
+                `This merge touched files of open debt #${c.id} (${sanitizeReason(c.description)}) — if the shortcut is gone, run \`pup debt close ${c.id}\`.`,
               );
             }
             if (outcome.decisionRecordId !== undefined) {
@@ -1601,7 +1614,7 @@ export function buildProgram(): Command {
           case 'refused': {
             const flagged = outcome.report.stages
               .filter((s) => s.status === 'flagged')
-              .map((s) => s.stage)
+              .map((s) => sanitizeReason(s.stage))
               .join(', ');
             console.log(
               `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address the flags.`,
@@ -1686,9 +1699,11 @@ export function buildProgram(): Command {
       return;
     }
     for (const entry of entries) {
-      console.log(`#${entry.id}  ${entry.created_at}  ${entry.description}`);
       console.log(
-        `  reason: ${entry.reason}  review by: ${entry.review_by}  accepted by: ${entry.accepted_by}`,
+        `#${entry.id}  ${sanitizeReason(entry.created_at)}  ${sanitizeReason(entry.description)}`,
+      );
+      console.log(
+        `  reason: ${sanitizeReason(entry.reason)}  review by: ${sanitizeReason(entry.review_by)}  accepted by: ${sanitizeReason(entry.accepted_by)}`,
       );
     }
   });
@@ -1722,10 +1737,10 @@ export function buildProgram(): Command {
         return;
       }
       for (const record of records) {
-        console.log(`#${record.id}  ${record.created_at}  session ${record.session_id}`);
-        console.log(`  ${record.summary}`);
-        if (record.alternatives) console.log(`  alternatives: ${record.alternatives}`);
-        if (record.conventions) console.log(`  conventions: ${record.conventions}`);
+        console.log(
+          `#${record.id}  ${sanitizeReason(record.created_at)}  session ${sanitizeReason(record.session_id)}`,
+        );
+        printDecisionRecordBody(record);
         console.log(
           `  files: ${sanitizeReason((JSON.parse(record.files) as string[]).join(', '))}`,
         );
@@ -1831,9 +1846,12 @@ export function buildProgram(): Command {
             ? t.after.toUpperCase()
             : `${t.before.toUpperCase()} -> ${t.after.toUpperCase()}`;
         const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
-        console.log(`  ${t.stage.padEnd(8)} ${move.padEnd(16)}${marker}`);
+        console.log(
+          `  ${sanitizeReason(t.stage).padEnd(8)} ${sanitizeReason(move).padEnd(16)}${marker}`,
+        );
         const detail = fresh.get(t.stage)?.detail;
-        if (t.delta === 'regressed' && detail) console.log(`    ${detail.split('\n').at(-1)}`);
+        if (t.delta === 'regressed' && detail)
+          console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
       }
       printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
       console.log('Baseline refreshed.');
@@ -1849,7 +1867,7 @@ export function buildProgram(): Command {
       const sessionId = ownSession(db, 'done');
       if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
-      console.log(`Session ${sessionId} marked done: ${summary}`);
+      console.log(`Session ${sessionId} marked done: ${sanitizeReason(summary)}`);
     });
   session
     .command('handoff-done')
