@@ -130,6 +130,26 @@ import {
 } from './ui/dashboard-text.utils.js';
 
 /**
+ * A multi-line string scrubbed line by line, for the three surfaces that hand
+ * one over whole: the YAML dump `pup profile show` prints, and the refusals
+ * `pup profile` and a launch answer with. `sanitizeReason` collapses
+ * whitespace, so one call over the lot folds the block onto a single row
+ * (decision 68's per-line rule).
+ *
+ * Each line's leading spaces and tabs are re-applied because the sanitizer
+ * trims, and in these blocks the indentation is meaning: the nesting of a YAML
+ * layer, and the column a YAML parser's `^` points at. Only ` ` and `\t` ride
+ * through, so nothing the text wrote itself prints in front of a scrubbed line.
+ */
+function sanitizeLines(text: string): string {
+  return text
+    .trimEnd()
+    .split('\n')
+    .map((line) => `${/^[ \t]*/.exec(line)?.[0] ?? ''}${sanitizeReason(line)}`)
+    .join('\n');
+}
+
+/**
  * One prose field of a decision record, scrubbed line by line under its label
  * so a field the session wrote across several lines stays several lines
  * (decision 68). A single line over 300 characters is still cut, which the
@@ -453,7 +473,13 @@ function launchOrRefuse(
       return undefined;
     }
     if (!expected.some((type) => error instanceof type)) throw error;
-    refuse((error as Error).message);
+    // Every expected launch error prints through here, and their messages
+    // quote what the store holds — a `ScopeConflictError` names the live
+    // session a task collides with and the files it claimed. Scrubbed line by
+    // line like every other block (decision 69); a launch compiles from
+    // `DEFAULT_BASE_PROFILE` rather than a layer file today, so the multi-line
+    // shape is the helper's to keep rather than a case reachable from here.
+    refuse(sanitizeLines((error as Error).message));
     return undefined;
   }
 }
@@ -1800,7 +1826,7 @@ export function buildProgram(): Command {
             console.log('NAME              EXTENDS           BUDGET');
             for (const layer of listProfileLayers(profilesDir)) {
               console.log(
-                `${sanitizeReason(layer.name).padEnd(18)}${sanitizeReason(layer.extends ?? '-').padEnd(18)}${sanitizeReason(String(layer.contextBudget ?? '-'))}`,
+                `${sanitizeReason(layer.name).padEnd(18)}${sanitizeReason(String(layer.extends ?? '-')).padEnd(18)}${sanitizeReason(String(layer.contextBudget ?? '-'))}`,
               );
             }
             return;
@@ -1809,22 +1835,9 @@ export function buildProgram(): Command {
             if (!name) {
               return refuse('Usage: pup profile show <name>');
             }
-            // Line by line, never whole: the dump is multi-line YAML and
-            // `sanitizeReason` collapses whitespace, so one call over the lot
-            // would fold the layer onto a single row (decision 68's per-line
-            // rule). The source scan cannot see this one — the field names are
-            // gone by the time the lines exist — so the tests carry it.
-            //
-            // The leading spaces and tabs are re-applied because `sanitizeReason`
-            // trims, and in YAML the indentation is the nesting: scrubbed away,
-            // a layer with `skills` or `hooks` prints as something that no
-            // longer parses. Only ` ` and `\t` are copied through, so nothing a
-            // layer wrote rides along in front of the scrubbed text.
-            for (const line of stringify(getProfileLayer(profilesDir, name))
-              .trimEnd()
-              .split('\n')) {
-              console.log(`${/^[ \t]*/.exec(line)?.[0] ?? ''}${sanitizeReason(line)}`);
-            }
+            // The source scan cannot see this sink — the field names are gone
+            // by the time `sanitizeLines` has the dump — so the tests carry it.
+            console.log(sanitizeLines(stringify(getProfileLayer(profilesDir, name))));
             return;
           }
           case 'edit':
@@ -1835,7 +1848,10 @@ export function buildProgram(): Command {
         }
       } catch (error) {
         if (error instanceof UnknownProfileError || error instanceof InvalidProfileError) {
-          return refuse(error.message);
+          // `InvalidProfileError` quotes the layer file's name and the source
+          // line the YAML parser choked on, both of them a session's text, and
+          // it is several lines long (decision 69).
+          return refuse(sanitizeLines(error.message));
         }
         throw error;
       }

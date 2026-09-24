@@ -2031,6 +2031,24 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    // Every expected launch error is printed through one refusal, and their
+    // messages quote what the store holds — a conflicting session's id and the
+    // files it claimed here (decision 69).
+    it('scrubs the refusal a launch error prints', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new ScopeConflictError('t-1', [
+          { sessionId: '\u001b[2Js1', files: ['src/\u001b[2Ja.ts'] },
+        ]);
+      });
+
+      buildProgram().parse(['launch', 't-1'], { from: 'user' });
+
+      expect(errors.join('\n')).not.toContain('\u001b');
+      expect(errors.join('\n')).toContain('holds: [2Js1 (src/ [2Ja.ts).');
+      expect(process.exitCode).toBe(1);
+    });
+
     it('fails loudly when the kickoff context never lands whole in the new window', () => {
       // kickoff() delivers the compiled context through the same paste, so a
       // launch whose context arrived as a tail is a launch that failed, not a
@@ -4102,6 +4120,21 @@ describe('CLI commands', () => {
       expect(row).not.toContain('\u001b');
     });
 
+    // `ProfileLayer` says `extends?: string` and `contextBudget?: number`, but
+    // `parseProfileLayer` only checks `name` and the three list fields — every
+    // other value is whatever the YAML held. Both go through `String` before
+    // the sanitizer, which takes a string and would throw on a number.
+    it('prints a layer row whose fields are not the types the interface claims', () => {
+      const repo = initRepo();
+      plantLayer(repo, 'odd.yml', 'name: odd\nextends: 5\ncontextBudget: nine\n');
+      useCwd(repo);
+
+      buildProgram().parse(['profile', 'list'], { from: 'user' });
+
+      expect(logs).toContain(`${'odd'.padEnd(18)}${'5'.padEnd(18)}nine`);
+      expect(process.exitCode).toBeUndefined();
+    });
+
     /**
      * `yaml.stringify` escapes C0 controls itself — a planted `\u001b` comes
      * out as a literal `\e` — but it emits DEL and the C1 block raw, and
@@ -4119,14 +4152,45 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['profile', 'show', 'evil'], { from: 'user' });
 
+      // One call carrying the whole dump, so the lines and the indentation
+      // that is a YAML layer's nesting have to survive inside it.
       expect(logs).toEqual([
-        'name: evil',
-        'extends: "ba 2Jse"',
-        'conventions: |-',
-        '  first line',
-        '  second line',
+        [
+          'name: evil',
+          'extends: "ba 2Jse"',
+          'conventions: |-',
+          '  first line',
+          '  second line',
+        ].join('\n'),
       ]);
       expect(logs.join('\n')).not.toContain('\u009b');
+    });
+
+    /**
+     * The error path, which carries more of a layer than either reader does:
+     * `InvalidProfileError` quotes the file's own name and the source line the
+     * YAML parser choked on. Both are a session's text, and both arrive raw —
+     * a file name is not a field any producer ever saw.
+     */
+    it('scrubs a malformed layer refusal line by line, keeping its lines', () => {
+      const repo = initRepo();
+      plantLayer(repo, 'e\u001b[31m.yml', 'name: [x\u001b[2Jy');
+      useCwd(repo);
+
+      buildProgram().parse(['profile', 'list'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toHaveLength(1);
+      const [refusal = ''] = errors;
+      expect(refusal).not.toContain('\u001b');
+      // The parser's report keeps its shape: the offending line under the
+      // message, and the caret still under the column it names.
+      expect(refusal.split('\n')).toEqual([
+        expect.stringContaining('e [31m.yml: '),
+        '',
+        'name: [x [2Jy',
+        '         ^',
+      ]);
     });
   });
 
@@ -4921,7 +4985,7 @@ describe('the raw-sink guard over the CLI source', () => {
       // `pup profile list`'s row, raw and scrubbed: three layer fields off a
       // YAML file a session's shell can write (decision 69).
       `console.log(\`\${layer.name.padEnd(18)}\${(layer.extends ?? '-').padEnd(18)}\${layer.contextBudget ?? '-'}\`);`,
-      `console.log(\`\${sanitizeReason(layer.name).padEnd(18)}\${sanitizeReason(layer.extends ?? '-').padEnd(18)}\`);`,
+      `console.log(\`\${sanitizeReason(layer.name).padEnd(18)}\${sanitizeReason(String(layer.extends ?? '-'))}\`);`,
     ].join('\n');
 
     expect(rawStoreSinks(source)).toEqual([
