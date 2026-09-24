@@ -107,7 +107,7 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
-import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
+import type { GateReport, GateStageResult, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -130,6 +130,23 @@ import {
 } from './ui/dashboard-text.utils.js';
 
 /**
+ * One prose field of a decision record, scrubbed line by line under its label
+ * so a field the session wrote across several lines stays several lines
+ * (decision 68). A single line over 300 characters is still cut, which the
+ * mechanical summary a merge drafts — the goal and the commit subjects joined
+ * by `|` — routinely is.
+ */
+function printRecordField(label: string, value: string): void {
+  // One print site, and the field it prints is named on it: a first line lifted
+  // out into a `head` of its own would be a line the source scan cannot see.
+  let prefix = label;
+  for (const detail of value.split('\n')) {
+    console.log(`  ${prefix}${sanitizeReason(detail)}`);
+    prefix = ' '.repeat(label.length);
+  }
+}
+
+/**
  * The three prose fields of a decision record, under whichever heading the
  * reader printed. The merging session wrote every one of them, so every one
  * goes through the sanitizer (decision 68) — in one place, because the two
@@ -137,9 +154,31 @@ import {
  * to be scrubbed and the other not.
  */
 function printDecisionRecordBody(record: DecisionRecordRow): void {
-  console.log(`  ${sanitizeReason(record.summary)}`);
-  if (record.alternatives) console.log(`  alternatives: ${sanitizeReason(record.alternatives)}`);
-  if (record.conventions) console.log(`  conventions: ${sanitizeReason(record.conventions)}`);
+  printRecordField('', record.summary);
+  if (record.alternatives) printRecordField('alternatives: ', record.alternatives);
+  if (record.conventions) printRecordField('conventions: ', record.conventions);
+}
+
+/**
+ * One stage of a gate report on the operator's terminal, for the live report
+ * `pup merge` prints and `pup review`'s copy of the stored one alike — they
+ * printed the same stage two different ways, which is how one of them came to
+ * be scrubbed and the other not (decision 68).
+ *
+ * The detail is scrubbed line by line, never whole: `plainDetail` keeps
+ * newlines and 2000 characters of output on purpose, because `scope-audit`
+ * prints one path per line and `worktree-clean` one file per line, and
+ * `sanitizeReason` collapses whitespace and cuts at 300 characters. Scrubbed
+ * in one piece, a twelve-path audit would reach the operator as six paths on
+ * one line with nothing to say the rest was dropped. A single line still over
+ * 300 characters is still cut, as every other scrubbed string is.
+ */
+function printGateStage(stage: GateStageResult): void {
+  const [head = '', ...rest] = (stage.detail ?? '').split('\n');
+  console.log(
+    `  ${sanitizeReason(stage.stage).padEnd(16)} ${sanitizeReason(stage.status).toUpperCase()}${stage.detail ? `  ${sanitizeReason(head)}` : ''}`,
+  );
+  for (const detail of rest) console.log(`    ${sanitizeReason(detail)}`);
 }
 
 /**
@@ -206,7 +245,9 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
   console.log(`Project ${report.projectId} (${repoPath})`);
   console.log(`adapters: ${sanitizeReason(report.baseline.adapters.join(', '))}`);
   for (const s of report.baseline.stages) {
-    console.log(`  ${s.stage.padEnd(8)} ${s.status.toUpperCase().padEnd(8)} ${s.durationMs}ms`);
+    console.log(
+      `  ${sanitizeReason(s.stage).padEnd(8)} ${sanitizeReason(s.status).toUpperCase().padEnd(8)} ${s.durationMs}ms`,
+    );
     if (s.status === 'fail' && s.detail)
       console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
   }
@@ -233,7 +274,7 @@ function printBaselineTail(
   printPushTargetLine(db, report.projectId);
   if (report.findings.length > 0) {
     console.log('findings:');
-    for (const f of report.findings) console.log(`  - ${sanitizeReason(f)}`);
+    for (const finding of report.findings) console.log(`  - ${sanitizeReason(finding)}`);
   }
 }
 
@@ -419,8 +460,12 @@ function launchOrRefuse(
 
 /** How every launch reports the window it opened. */
 function reportLaunched(sessionId: string, what = 'session'): void {
-  console.log(`Launched ${what} ${sessionId} (tmux: pup-${sessionId}).`);
-  console.log(`Attach with: tmux attach -t pup-${sessionId}`);
+  // Sanitized on each interpolation rather than once into a local: a local is
+  // a name the source scan can no longer see the field through (decision 68).
+  console.log(
+    `Launched ${what} ${sanitizeReason(sessionId)} (tmux: pup-${sanitizeReason(sessionId)}).`,
+  );
+  console.log(`Attach with: tmux attach -t pup-${sanitizeReason(sessionId)}`);
 }
 
 /**
@@ -666,7 +711,7 @@ export function buildProgram(): Command {
             const spec = JSON.parse(row.spec) as TaskSpec;
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
             console.log(
-              `${row.id.padEnd(14)}${goalColumn(goalHeadline(spec.goal))}  ${scope}${originMarker(row.origin)}`,
+              `${sanitizeReason(row.id).padEnd(14)}${goalColumn(goalHeadline(spec.goal))}  ${scope}${originMarker(row.origin)}`,
             );
           }
           return;
@@ -692,7 +737,9 @@ export function buildProgram(): Command {
             if (!(error instanceof InvalidProfileError)) throw error;
             return refuse(error.message);
           }
-          console.log(`Planned ${id}. Launch it with \`pup launch ${id}\`.`);
+          console.log(
+            `Planned ${sanitizeReason(id)}. Launch it with \`pup launch ${sanitizeReason(id)}\`.`,
+          );
           return;
         }
         case 'drop': {
@@ -912,7 +959,7 @@ export function buildProgram(): Command {
           : `exited ${edit.status ?? 'on a signal'}`;
         return refuse(`\`${editor} ${path}\` ${why}. The brief is there to edit by hand.`);
       }
-      if (created) console.log(`Created ${path} from the template.`);
+      if (created) console.log(`Created ${sanitizeReason(path)} from the template.`);
       // Named, not counted: the windows listed here are running on the brief as
       // it was when they opened, and the operator is the only one who can
       // decide whether that is worth a restart (decision 57).
@@ -1110,7 +1157,7 @@ export function buildProgram(): Command {
     // (decision 41).
     for (const task of snapshot.backlog) {
       console.log(
-        `${'planned'.padEnd(16)} ${task.id.padEnd(28)} ${goalColumn(task.goal)}${trailing(originMarker(task.origin))}`,
+        `${'planned'.padEnd(16)} ${sanitizeReason(task.id).padEnd(28)} ${goalColumn(goalHeadline(task.goal))}${trailing(originMarker(task.origin))}`,
       );
     }
     printConflictRadar(snapshot);
@@ -1154,7 +1201,7 @@ export function buildProgram(): Command {
     for (const pair of snapshot.overlaps) {
       const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
       console.log(
-        `OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${pair.files[0] ?? ''}${extra}${snapshot.radarStale ? '  (stale)' : ''}`,
+        `OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${sanitizeReason(pair.files[0] ?? '')}${extra}${snapshot.radarStale ? '  (stale)' : ''}`,
       );
     }
     if (live.length >= 2 && snapshot.radarStale) {
@@ -1492,19 +1539,11 @@ export function buildProgram(): Command {
       }
       if (detail.lastGateReport) {
         console.log('last gate report:');
-        for (const s of detail.lastGateReport.stages) {
-          console.log(
-            `  ${sanitizeReason(s.stage).padEnd(16)} ${sanitizeReason(s.status).toUpperCase()}${s.detail ? `  ${sanitizeReason(s.detail)}` : ''}`,
-          );
-        }
+        for (const s of detail.lastGateReport.stages) printGateStage(s);
       }
     });
   function printGateReport(report: GateReport): void {
-    for (const stage of report.stages) {
-      console.log(
-        `  ${sanitizeReason(stage.stage).padEnd(16)} ${sanitizeReason(stage.status).toUpperCase()}${stage.detail ? `  ${sanitizeReason(stage.detail)}` : ''}`,
-      );
-    }
+    for (const stage of report.stages) printGateStage(stage);
     // Printed on every run, pass or fail: an operator who never sees this line
     // cannot tell a confined gate from an unconfined one (decision 36).
     console.log(`  ${'sandbox'.padEnd(16)} ${sanitizeReason(report.sandbox)}`);
@@ -1721,7 +1760,7 @@ export function buildProgram(): Command {
         );
       }
       if (closeLedgerEntry(db, Number(id))) {
-        console.log(`Closed ledger entry #${id}.`);
+        console.log(`Closed ledger entry #${sanitizeReason(id)}.`);
       } else {
         refuse(`No open ledger entry #${id}.`);
       }
@@ -1867,7 +1906,7 @@ export function buildProgram(): Command {
       const sessionId = ownSession(db, 'done');
       if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
-      console.log(`Session ${sessionId} marked done: ${sanitizeReason(summary)}`);
+      console.log(`Session ${sanitizeReason(sessionId)} marked done: ${sanitizeReason(summary)}`);
     });
   session
     .command('handoff-done')
@@ -1886,7 +1925,9 @@ export function buildProgram(): Command {
         if (!(error instanceof HandoffMissingError)) throw error;
         return refuse(error.message);
       }
-      console.log(`Session ${sessionId} handoff recorded; Pupitre will respawn you shortly.`);
+      console.log(
+        `Session ${sanitizeReason(sessionId)} handoff recorded; Pupitre will respawn you shortly.`,
+      );
     });
 
   return program;

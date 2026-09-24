@@ -3523,33 +3523,53 @@ changes back into those docs is pending.
     `.pupitre/adapter.yml` unvalidated. Producers were not touched: the fold is the surface, as
     decision 29 has it, because a producer has other readers and a sanitized value is no longer
     the value they compare against.
-    *Five more the scan found once it was written*, which is the whole argument for writing it:
-    `pup merge`'s open-debt line (`c.description`, straight off a ledger row), its refusal line
-    (the flagged stage names), `pup init`'s and `pup audit`'s failing-stage tails
-    (`detail.split('\n').at(-1)`, the adapter's own stderr), `pup audit`'s transition lines
-    (`t.stage` and the `before -> after` move, both read back out of the stored baseline),
-    `pup status`'s overdue-debt and radar lines (already scrubbed by the snapshot producer, and
-    now scrubbed where they print as well), and `pup session done`'s echo of the summary the
-    agent passed it.
-    *The rule the scan encodes:* a string read out of a store, out of a repo file, or out of a
-    child process's output is sanitized where it is printed; a value pup computed in the same
-    process is not. So `s.stage` and `s.status` off a `runBaselineStage` that just returned, and
-    the `t.delta` `compareBaselines` just derived, stay as they are, while `t.stage` and the move
-    beside them — read back out of the stored baseline — do not.
+    *A dozen more the scan found once it was written*, which is the whole argument for writing
+    it: `pup merge`'s open-debt line (`c.description`, straight off a ledger row) and its refusal
+    line (the flagged stage names), `pup init`'s and `pup audit`'s failing-stage tails
+    (`detail.split('\n').at(-1)`, the adapter's own stderr), `pup init`'s `adapters:` line and
+    per-stage lines, `pup audit`'s transition lines (`t.stage` and the `before -> after` move,
+    both read back out of the stored baseline), `pup status`'s overdue-debt, radar and backlog
+    lines and `pup plan list`'s rows (each already scrubbed by its producer, and now scrubbed
+    where they print as well), `pup brief edit`'s created-file line, and the ids `pup session
+    done`, `pup session handoff-done`, `pup plan`, `pup debt close` and every launch echo back.
+    *The rule the scan encodes:* every named field a `console.log` interpolates is sanitized where
+    it prints, whatever its provenance. The first cut carved out values pup had computed in the
+    same process — a stage name `runBaselineStage` had just returned, the `t.delta`
+    `compareBaselines` had just derived — and the carve-out cost more than it saved: it is a rule
+    a reader has to re-derive per line, and a field that becomes store-read later changes
+    provenance without changing shape. Scrubbing a `'build'` literal costs one idempotent call.
+    *Details are scrubbed line by line, never whole.* `plainDetail` in `merge-gate.service.ts`
+    keeps newlines and `GATE_OUTPUT_TAIL_CHARS` (2000) on purpose, because `scope-audit` prints
+    one path per line and `worktree-clean` one file per line, while `sanitizeReason` collapses
+    whitespace and cuts at 300 characters. The first cut of this decision passed a whole detail
+    through it, which turned a twelve-path scope audit into about six paths on one line with
+    nothing to say the rest had been dropped — a behaviour regression on every terminal surface,
+    caught by the security review. `printGateStage` now prints the first line beside the stage
+    and the rest indented under it, each scrubbed on its own, and `printRecordField` does the
+    same for a decision record's prose. A single line still over 300 characters is still cut,
+    with no marker: the mechanical summary a merge drafts — the goal and the commit subjects
+    joined by `|` — is routinely that long, and `pup log` cuts it.
     *The scan itself* lives in `index.test.ts`, reads `src/cli/index.ts`, and walks it rather than
     matching it with a regex: these interpolations nest — a ternary whose branch is another
     template — and a pattern that stops at the first `}` reads half of one. It collects every
     top-level `${…}` of every template literal a `console.log` takes, and fails the suite when one
     names `description`, `reason`, `review_by`, `accepted_by`, `summary`, `alternatives`,
-    `conventions`, `detail`, `sandbox`, `sessionA` or `sessionB` and carries neither
-    `sanitizeReason` nor `goalHeadline`. A name followed by `.` or `(` is a thing walked through
-    on the way to a value rather than the value — `detail.entry.risk` is a number reached through
-    a local called `detail` — so those do not count.
-    *Two interpolations are allowlisted, whole and by name*, both because the only listed name in
-    them sits inside a quoted constant: `'sandbox'.padEnd(16)`, the column label on
-    `printGateReport`'s sandbox line, and `blockedReason(db, session) ?? '(no reason recorded)'`
-    on `pup unblock`'s, whose function sanitizes what it returns. Listed whole rather than by
-    pattern, so a sink that grows out of either stops matching and is flagged again.
+    `conventions`, `detail`, `sandbox`, `sessionA`, `sessionB` and twenty more — `id`, `files`,
+    `path`, `stage`, `status`, `move`, `state`, `branch`, `goal`, `acceptance`, `adapters`,
+    `finding`, `created_at`, `session_id`, `sessionId`, `reviewBy`, `worktreePath` among them —
+    and carries neither `sanitizeReason` nor `goalHeadline`. Only a name followed by `(` is
+    skipped, as a function rather than a field. The first cut skipped a name followed by `.` as
+    well, on the theory that it was an object being walked through, and that silently exempted
+    the two sinks spelled `detail.split('\n')`: removing their sanitizer returned no findings.
+    *Seven interpolations are allowlisted, whole and by name*, in two groups. Two name a listed
+    field only inside a quoted constant: `'sandbox'.padEnd(16)`, the column label on the sandbox
+    line, and `blockedReason(db, session) ?? '(no reason recorded)'` on `pup unblock`'s, whose
+    function sanitizes what it returns. Five print an integer rather than text: `pup review`'s
+    four counters reached through a local called `detail` (`.risk`, `.rejectCount`,
+    `.scopeViolations`, `.overlaps`), and `entry.id`, `record.id` and `c.id`, which are
+    `INTEGER PRIMARY KEY AUTOINCREMENT` — a rowid alias SQLite refuses a non-integer for, whatever
+    wrote the row. Listed whole rather than by pattern, so a sink that grows out of one stops
+    matching and is flagged again.
     *Tests,* on temp stores with a throwaway `HOME`, one per sink, each planting a control
     character in the field and asserting no `\u001b` reaches stdout: an overlapping pair for
     `pup watch`, a ledger row for `pup debt`, a decision record for `pup log`, a mocked gate
@@ -3560,23 +3580,42 @@ changes back into those docs is pending.
     a merge offers for review — that last one printed with `isTTY` forced and `setRawMode`
     raising the `ENOTTY` a stdin that is not a terminal raises, because the keystroke that
     follows the print cannot be fed under vitest (`readSync(0, …)` returns `EAGAIN` forever).
-    *The discriminating mutation*, run against a backup copy and restored from it: taking
-    `sanitizeReason` off `pup debt`'s reason line fails the scan on
-    `index.ts:1694: ${entry.reason}` and nothing else. The scan's own behaviour is pinned by a
-    second test that runs it over a synthetic source holding a raw sink, a sanitized one, both
-    allowlisted shapes, a nested ternary, an object walked through, and a `console.error`, and
-    expects exactly the raw ones back.
-    *One small deduplication:* `printDecisionRecordBody` now prints the three prose fields for
-    both readers. The two printed the same fields two different ways, which is how one of them
-    came to be scrubbed and the other not.
-    *Ceilings.* The scan covers `console.log` template literals in `src/cli/index.ts` and that
-    file only — not `console.error`, not a value passed to `console.log` as a bare variable, not
-    an expression that sanitizes one field and prints another raw beside it, and not the Ink
-    surfaces under `src/cli/ui`, whose text goes through `dashboard.service.ts`'s producers
-    instead. The field list is the names that exist today; a new column gets a new sink until it
-    is added. What is closed is the claim decision 67 could not make: nothing a session, a hook,
-    the conductor or an adapter wrote reaches the operator's terminal through `pup`'s CLI
-    unscrubbed, and the next one that would fails the suite instead of shipping.
+    *Thirty-five mutants, each applied to a backup copy and restored from it*, one per sanitized
+    sink: the scan catches thirty-four. The one it misses is `pup merge`'s refusal line, whose
+    stage names are joined into a local called `flagged` before the template sees them — the
+    field name is gone by the time the interpolation is written, which is the limit of the
+    approach rather than a gap to patch. Two sinks were rewritten because the harness showed the
+    same shape creeping in: `reportLaunched` sanitizes on each interpolation instead of once into
+    a local, and `printRecordField` prints every line from one site rather than lifting the first
+    into a `head` the scan cannot see through. An earlier run of the harness is what found the
+    `detail.split` exemption and the whole-detail regression. The scan's own behaviour is pinned by a second
+    test over a synthetic source holding a raw sink, a sanitized one, both constant shapes, an
+    integer key, a nested ternary, a raw `detail.split`, and a `console.error`, and expects
+    exactly the raw ones back.
+    *Two small deduplications,* both of a block that had already drifted: `printDecisionRecordBody`
+    prints the three prose fields for both readers of a record, and `printGateStage` prints one
+    stage for both the live report and `pup review`'s copy of the stored one. Each pair printed
+    the same fields two different ways, which is how one of each came to be scrubbed and the
+    other not — and, once both were scrubbed the same wrong way, how the whole-detail regression
+    landed on two surfaces at once.
+    *Ceilings, enumerated rather than claimed.* What the scan guards is narrow and exact: a
+    `${…}` inside a template literal passed to `console.log`, in `src/cli/index.ts`, whose text
+    contains one of the listed field names not followed by `(`. Everything else is outside it,
+    and the thirty-mutant run is what measures the gap rather than argues it away. It does not
+    see a value precomputed into a local before the template — `flagged` is the live example, and
+    any `const x = row.reason` ahead of a print is the same shape. It does not see `console.error`
+    or `process.stdout.write`. It does not see a field whose name is not on the list, and the
+    list is the columns that exist today: a new one is unguarded until it is added, and a name
+    that does not survive a `.join`, a `.map` or a rename is unguarded for good. It does not see
+    an expression that sanitizes one field and prints another raw beside it, since one
+    `sanitizeReason` anywhere in the expression clears it. It does not see any other file: the
+    Ink surfaces under `src/cli/ui` are covered by `dashboard.service.ts`'s producers instead,
+    which is a different guarantee with no scan behind it. And it says nothing about the shape of
+    what is printed — it would pass a whole multi-line detail folded into one line, which is
+    exactly the regression this decision's first cut shipped and its own tests, not the scan,
+    caught. What *is* closed is narrower than decision 67's ceiling and wider than nothing: every
+    sink decision 67 listed, every sink the scan found beside them, and twenty-nine of the thirty
+    ways a reviewer could take a sanitizer back out of `index.ts` today.
 
 ## Implementation notes
 

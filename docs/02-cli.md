@@ -217,10 +217,12 @@ entries, `pup log`'s decision records and the copy of them a merge offers for re
 report `pup merge` prints live, and the findings, `sandbox:` and `adapters:` lines `pup init` and
 `pup audit` end on. A session, a hook, the conductor or an adapter probe wrote every one of those
 strings, and `pup status` and `pup ui` read *every* registered project's store (decisions 60-62),
-so none of it repaints the operator's terminal. Values pup computed in the same process — a stage
-name it just ran, a delta it just derived — are printed as they are. A test in
-`src/cli/index.test.ts` reads `src/cli/index.ts` itself and fails when a `console.log` interpolates
-one of the named store fields without the sanitizer on the same expression (decisions 29, 68).
+so none of it repaints the operator's terminal. A detail that runs to several lines — `scope-audit`
+prints one path per line — is scrubbed line by line and keeps its lines; a single line over 300
+characters is cut with no marker. A test in `src/cli/index.test.ts` reads `src/cli/index.ts` itself
+and fails when a `console.log` interpolates one of the named store fields without the sanitizer on
+the same expression; decision 68 enumerates exactly what that scan does and does not guard
+(decisions 29, 68).
 
 - `pup session done "<summary>"` — acceptance criteria met and all work committed; moves the
   session to `awaiting-review` (decision 3).

@@ -3812,6 +3812,31 @@ describe('CLI commands', () => {
       expect(page).toContain('conventions: [2Jnone broken');
       expect(page).not.toContain('\u001b');
     });
+
+    // A record's prose is whatever the merging session wrote, newlines
+    // included, so it is scrubbed line by line and indented under its label
+    // rather than folded into one line (decision 68).
+    it('keeps a record field that runs to several lines on several lines', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      insertDecisionRecord(db, {
+        sessionId: 's1',
+        summary: 'took the short path\n\u001b[2Jand said why',
+        alternatives: 'the long one\n\u001b[2Jand the longer one',
+        files: ['src/a.ts'],
+      });
+      db.close();
+
+      buildProgram().parse(['log'], { from: 'user' });
+
+      expect(logs).toContain('  took the short path');
+      expect(logs).toContain('  [2Jand said why');
+      expect(logs).toContain('  alternatives: the long one');
+      expect(logs).toContain('                [2Jand the longer one');
+      expect(logs.join('\n')).not.toContain('\u001b');
+    });
   });
 
   describe('--project', () => {
@@ -4552,6 +4577,35 @@ describe('CLI commands', () => {
       expect(page).not.toContain('\u001b');
     });
 
+    // `plainDetail` keeps newlines and 2000 characters on purpose: `scope-audit`
+    // prints one path per line and `worktree-clean` one file per line.
+    // `sanitizeReason` collapses whitespace and cuts at 300, so scrubbing a
+    // detail whole reached the operator as six paths on one line with nothing
+    // to say the rest was dropped (decision 68).
+    it('scrubs a multi-line stage detail line by line, keeping every line', () => {
+      useCwd(initRepoWithAdapter());
+      const paths = Array.from({ length: 12 }, (_, i) => `\u001b[2Jsrc/out-of-scope-${i}.ts`);
+      vi.mocked(runMergeGate).mockReturnValue({
+        status: 'refused',
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'none',
+          stages: [{ stage: 'scope-audit', status: 'flagged', detail: paths.join('\n') }],
+        },
+        rejectCount: 0,
+      });
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      const shown = logs.filter((line) => line.includes('[2Jsrc/out-of-scope-'));
+      expect(shown).toHaveLength(12);
+      // The first path rides the stage line; the rest are indented under it.
+      expect(shown[0]).toContain('scope-audit');
+      expect(shown.at(-1)).toBe('    [2Jsrc/out-of-scope-11.ts');
+      expect(logs.join('\n')).not.toContain('\u001b');
+    });
+
     it('reports a rejected gate and exits 1', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue({
@@ -4631,17 +4685,34 @@ describe('executable entry point', () => {
  * operator's terminal without decision 29's sanitizer (decision 68).
  */
 const STORE_WRITTEN_FIELDS = [
+  'accepted_by',
+  'acceptance',
+  'adapters',
+  'alternatives',
+  'branch',
+  'conventions',
+  'created_at',
   'description',
+  'detail',
+  'files',
+  'finding',
+  'goal',
+  'id',
+  'move',
+  'path',
   'reason',
   'review_by',
-  'accepted_by',
-  'summary',
-  'alternatives',
-  'conventions',
-  'detail',
+  'reviewBy',
   'sandbox',
+  'session_id',
   'sessionA',
   'sessionB',
+  'sessionId',
+  'stage',
+  'state',
+  'status',
+  'summary',
+  'worktreePath',
 ] as const;
 
 /**
@@ -4653,6 +4724,17 @@ const STORE_WRITTEN_FIELDS = [
 const CONSTANT_INTERPOLATIONS = [
   "'sandbox'.padEnd(16)",
   "blockedReason(db, session) ?? '(no reason recorded)'",
+  // `pup review`'s four counters, reached through a local called `detail`:
+  // integers off the risk row, not text anything wrote.
+  'detail.entry.risk',
+  'detail.entry.rejectCount',
+  'detail.entry.scopeViolations',
+  'detail.entry.overlaps',
+  // Integer primary keys, not text: `id INTEGER PRIMARY KEY AUTOINCREMENT` is a
+  // rowid alias, and SQLite refuses a non-integer for one whatever wrote the row.
+  'entry.id',
+  'record.id',
+  'c.id',
 ];
 
 type Interpolation = { line: number; expression: string };
@@ -4732,11 +4814,12 @@ function rawStoreSinks(source: string): string[] {
   return (
     loggedInterpolations(source)
       .filter(({ expression }) => !CONSTANT_INTERPOLATIONS.includes(expression))
-      // `(?![.(])` is what tells a field being printed from an object being
-      // walked through on the way to one: `stage.detail` is the adapter's text,
-      // `detail.entry.risk` is a number reached through a local named `detail`.
+      // `(?!\()` only: a name followed by `(` is a function, not a field, but a
+      // name followed by `.` is often the field itself — `detail.split('\\n')`
+      // is the adapter's own text, and an earlier `(?![.(])` here let both of
+      // its sinks regress silently.
       .filter(({ expression }) =>
-        STORE_WRITTEN_FIELDS.some((field) => new RegExp(`\\b${field}\\b(?![.(])`).test(expression)),
+        STORE_WRITTEN_FIELDS.some((field) => new RegExp(`\\b${field}\\b(?!\\()`).test(expression)),
       )
       .filter(({ expression }) => !/sanitizeReason\(|goalHeadline\(/.test(expression))
       .map(({ line, expression }) => `index.ts:${line}: \${${expression}}`)
@@ -4769,13 +4852,16 @@ describe('the raw-sink guard over the CLI source', () => {
       `console.log(\`  goal: \${goalHeadline(spec.goal)} (\${task.summary})\`);`,
       `console.log(\`  rejections: \${detail.entry.rejectCount}\`);`,
       `console.log(\`was blocked: \${blockedReason(db, session) ?? '(no reason recorded)'}\`);`,
+      `console.log(\`#\${entry.id}  \${sanitizeReason(entry.created_at)}\`);`,
       `console.error(\`  reason: \${entry.reason}\`);`,
       `console.log(\`  files: \${sanitizeReason(record.files)}\`);`,
+      `console.log(\`    \${detail.split('\\n').at(-1)}\`);`,
     ].join('\n');
 
     expect(rawStoreSinks(source)).toEqual([
       `index.ts:1: \${entry.reason}`,
       `index.ts:5: \${task.summary}`,
+      `index.ts:11: \${detail.split('\\n').at(-1)}`,
     ]);
   });
 });
