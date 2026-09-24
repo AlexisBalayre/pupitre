@@ -3621,6 +3621,38 @@ changes back into those docs is pending.
     sink decision 67 listed, every sink the scan found beside them, and thirty-four of the thirty-five
     ways a reviewer could take a sanitizer back out of `index.ts` today.
 
+69. **The profile readers scrub what they print, and the scan learned the layer fields
+    (2026-09-24).** Two hygiene items reviews had pushed out of scope. `pup profile list` printed
+    `layer.name`, `layer.extends` and `layer.contextBudget` raw in its row, and `pup profile show`
+    printed the whole YAML dump raw — and a layer is a file under `~/.pupitre/<id>/profiles/`,
+    which a session's shell reaches through decision 28's HOME, so every field of one is text a
+    session can write and the operator's terminal then renders. Fixed at the print site, as
+    decision 68 has it: the row sanitizes its three fields, the dump is sanitized line by line.
+    *The dump keeps its indentation as well as its lines.* Whole-string scrubbing would fold the
+    layer onto one row, which is decision 68's per-line rule; but `sanitizeReason` also trims, and
+    in YAML the indentation is the nesting, so a layer with `skills` or `hooks` would have printed
+    as something that no longer parses. The leading spaces and tabs are re-applied around the
+    scrubbed line — only ` ` and `\t`, so nothing the layer wrote rides along in front.
+    *What `show` is actually defended against is not `\u001b`.* `yaml.stringify` escapes the C0
+    block itself — a planted escape comes out as a literal `\e` — but it emits DEL and the C1
+    block raw, and `\u009b` is the 8-bit CSI, an escape sequence on its own. So the `show` test
+    plants a C1 character rather than the `\u001b` every other scrub test plants, and says why;
+    a `\u001b` assertion there would have passed with the sanitizer taken back out.
+    *The scan's field list gained `name`, `extends` and `contextBudget`*, and that immediately
+    flagged two sinks nobody was looking for: `pup conductor`'s running line and its attach line,
+    both printing `handle.name`. Scrubbed rather than allowlisted beside `conductorSocket(...)`'s
+    entry — the name is composed the same way, but it arrives as a local, and chasing a local's
+    provenance per line is exactly the carve-out decision 68 dropped.
+    *Three mutants, applied to a backup copy and restored from it.* Taking the sanitizers off the
+    list row is caught by the scan and by the row test; printing the dump lines raw is caught by
+    the `show` test; scrubbing them without re-applying the indentation is caught by the same
+    test's line assertions. The scan cannot see the `show` sink at all — the field names are gone
+    by the time the lines exist — which is the ceiling decision 68 already enumerated, so the test
+    carries that one. Its synthetic self-test now holds a raw layer row and a scrubbed one.
+    *And two bare generics,* pre-existing violations of docs/conventions/general.md: `parseJsonOr<T>`
+    is `parseJsonOr<TParsed>` and `runOrReportNoAdapter<T>` is `runOrReportNoAdapter<TResult>`. No
+    behaviour change, no call site touched, every existing test passing unchanged.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

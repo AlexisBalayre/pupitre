@@ -882,12 +882,16 @@ export function buildProgram(): Command {
             'delivered and the window was killed. Re-run `pup conductor`.',
         );
       }
-      console.log(`Conductor running (tmux: ${handle.name}).`);
+      // Scrubbed like every other named field a print interpolates, rather
+      // than allowlisted as another derivation of the repo path: `handle.name`
+      // is a local, and chasing its provenance per line is the carve-out
+      // decision 68 dropped. The call is idempotent on the composed name.
+      console.log(`Conductor running (tmux: ${sanitizeReason(handle.name)}).`);
       // Its own socket, so the attach names it: a plain `tmux attach` asks the
       // default server, which the conductor's window is deliberately not on
       // (decision 47).
       console.log(
-        `Attach with: tmux -L ${conductorSocket(projectId(repoPath))} attach -t ${handle.name}`,
+        `Attach with: tmux -L ${conductorSocket(projectId(repoPath))} attach -t ${sanitizeReason(handle.name)}`,
       );
       // The radar is the turn watchdog's host, and the conductor is the thing
       // the watchdog exists to keep going: its own waiting turn dies with the
@@ -1796,7 +1800,7 @@ export function buildProgram(): Command {
             console.log('NAME              EXTENDS           BUDGET');
             for (const layer of listProfileLayers(profilesDir)) {
               console.log(
-                `${layer.name.padEnd(18)}${(layer.extends ?? '-').padEnd(18)}${layer.contextBudget ?? '-'}`,
+                `${sanitizeReason(layer.name).padEnd(18)}${sanitizeReason(layer.extends ?? '-').padEnd(18)}${sanitizeReason(String(layer.contextBudget ?? '-'))}`,
               );
             }
             return;
@@ -1805,7 +1809,22 @@ export function buildProgram(): Command {
             if (!name) {
               return refuse('Usage: pup profile show <name>');
             }
-            console.log(stringify(getProfileLayer(profilesDir, name)).trimEnd());
+            // Line by line, never whole: the dump is multi-line YAML and
+            // `sanitizeReason` collapses whitespace, so one call over the lot
+            // would fold the layer onto a single row (decision 68's per-line
+            // rule). The source scan cannot see this one — the field names are
+            // gone by the time the lines exist — so the tests carry it.
+            //
+            // The leading spaces and tabs are re-applied because `sanitizeReason`
+            // trims, and in YAML the indentation is the nesting: scrubbed away,
+            // a layer with `skills` or `hooks` prints as something that no
+            // longer parses. Only ` ` and `\t` are copied through, so nothing a
+            // layer wrote rides along in front of the scrubbed text.
+            for (const line of stringify(getProfileLayer(profilesDir, name))
+              .trimEnd()
+              .split('\n')) {
+              console.log(`${/^[ \t]*/.exec(line)?.[0] ?? ''}${sanitizeReason(line)}`);
+            }
             return;
           }
           case 'edit':
