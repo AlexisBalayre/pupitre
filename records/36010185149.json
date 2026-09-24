@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-24T14:14:23.100Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36010185149",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36010185149",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f304243a656ec7becdb94b88b5d80aca37e61b93",
+  "source": "pr",
+  "pr_number": 114,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7fbeed644907d189357dcbba2a3bd2991de514f5",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "245,1880",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3583-3618",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3555-3559",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3564-3572",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/02-cli.md",
+      "line": "217-218",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The reworded parenthetical `(`pup init` adds an `adapters:` line, and both open on the project's repo path)` implies `pup audit` never prints an `adapters:` line, but on a project's first-ever `pup audit` (no stored baseline yet) it falls back to the same `printInitReport` call `pup init` uses (src/cli/index.ts ~L1874-1878) and does print one — the fix swapped the prior round's \"always has it\" overstatement for a \"never has it\" one.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 3.2032276999999985,
+  "duration_ms": 506157,
+  "num_turns": 31,
+  "tokens": {
+    "input": 33,
+    "output": 27333,
+    "cache_read": 895338,
+    "cache_creation": 74361,
+    "total": 997065
+  }
+}
