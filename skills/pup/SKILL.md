@@ -20,10 +20,13 @@ the ones refused to sessions and conductors. Explain before you act on anything 
   human in one or two lines: blocked and stalled first, then awaiting-review, then planned.
 - `pup` not on PATH: run `pnpm dev <command>` from the pupitre checkout, or `pnpm link --global` there.
 - Check `echo "$PUP_SESSION_ID $PUP_CONDUCTOR"` once. Both empty: you are the operator's console and
-  this skill applies. Either set because `pup launch` or `pup conductor start` opened your window:
-  you are a session or the conductor, the operator stance above does not apply, and the commands
-  refused to you are refused by design. Set in a shell the human opened by hand: it leaked from
-  an earlier launch; ask, then prefix `env -u PUP_CONDUCTOR` rather than exporting anything.
+  this skill applies. Either set: look at how this conversation opened. A window `pup launch` or
+  `pup conductor start` opened begins with pup's compiled kickoff (a task spec or the conductor's
+  standing orders typed in as the first turn), and then you are a session or the conductor, the
+  operator stance above does not apply, and the commands refused to you are refused by design. A
+  conversation that opened with a human turn, such as "use pup", is the human's shell and the
+  variable leaked from an earlier launch: say so, then prefix `env -u PUP_CONDUCTOR` on each
+  command rather than exporting anything. `pup` cannot tell the two apart itself; you can.
 
 ## Vocabulary
 
@@ -37,7 +40,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
-| Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages |
+| Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |
 | Debt and decisions | `pup debt`, `pup debt close <n>`, `pup log [module]`, `pup audit` |
 | Delegate the whole loop | `pup conductor start [--model m --worker-model m]`, `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |

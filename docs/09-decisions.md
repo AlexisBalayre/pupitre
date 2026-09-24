@@ -3639,8 +3639,10 @@ changes back into those docs is pending.
     bite every project — linked into `~/.claude/skills/` so it loads in any repo and outside them.
     The skill tells the console to check the two markers first: set by a launch, it is a session
     or the conductor and the operator stance does not apply. The GitHub merge stays the human's
-    click, which is what keeps decision 47's invariant whole: pup opens the pull request, nothing
-    in pup merges it. *Deferred, with reasons:* `pup init` writing a repo-local copy of the skill
+    click: the console gates with `pup merge --pr`, which opens a pull request where a plain
+    `pup merge` would fast-forward local main (decision 26), so the branch still lands through
+    the human's review, which is the reason decision 47 keeps the merge with the operator.
+    *Deferred, with reasons:* `pup init` writing a repo-local copy of the skill
     with the project id and brief filled in, once a second project has used the linked one; a
     bare `pup` that opens `claude` in the calling terminal with the status snapshot preloaded,
     whose fleet kickoff would be a third exemption to decision 43's addendum and needs its own

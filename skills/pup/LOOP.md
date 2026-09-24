@@ -26,7 +26,8 @@ From the project's main checkout:
 pup merge <task> --pr
 ```
 
-Run it plain first. If stages flag (diff size, complexity, dead exports, duplication, coverage),
+Always with `--pr`: a plain `pup merge` fast-forwards local main on pass, which skips the
+human's review of the pull request. Run it without the debt flags first. If stages flag (diff size, complexity, dead exports, duplication, coverage),
 re-run with `--accept-debt "<reason>" --review-by "<condition>"`. One reason is stamped on every
 flagged stage, so write one that fits all of them. On pass the branch is pushed and a PR opened;
 `pup status` then says `merged`, which means the PR exists, not that GitHub merged it.
