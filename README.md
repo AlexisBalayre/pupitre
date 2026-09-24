@@ -44,6 +44,7 @@ Pupitre exists so that an engineer can still *master* a codebase that agents are
 | Knowledge | Every merge writes a decision record. `pup log`, `pup map --open` and `pup report --open` show what exists and why. |
 | Conductor | `pup conductor` starts one Claude Code session that plans, launches, steers and reports on the workers. It holds every power except the merge. The merge stays yours. |
 | Dashboard | `pup ui` is a live terminal dashboard: sessions, backlog, debt and the conflict radar in one place. |
+| Console | Any Claude Code window you open is the operator's hands. The shipped `pup` skill teaches it the commands, the tiers and the loop, so you drive everything in conversation, from inside a repo or across the fleet. |
 
 All state lives under `~/.pupitre/<project-id>/`. Adopting Pupitre commits nothing to your repo.
 
@@ -71,6 +72,25 @@ pup log payments                            # the decisions that landed, newest 
 ```
 
 Day one blocks nothing: `pup init` records every metric as it is, debt included, and the gate only refuses regressions from there.
+
+## Talk to it
+
+You do not have to learn the commands. Link the shipped skill once:
+
+```bash
+ln -s "$(pwd)/skills/pup" ~/.claude/skills/pup   # from the pupitre checkout
+```
+
+Then open `claude` anywhere and say "use pup". Inside a registered repo the conversation is about
+that project: "what needs me", "plan a task for the dead exports init found", "steer t-abc to add a
+test for the empty case", "gate it and open the PR". Outside any repo it is about the fleet: every
+project, what needs you in each, and `--project <id>` to act on one. The skill carries the
+vocabulary, the tiers (a session edits inside its scope, the conductor plans and steers but never
+merges, the operator gates and closes debt), and the per-task loop from a finished branch to a
+merged pull request. The one thing it will not do is merge on GitHub. That click stays yours.
+
+Every window you open by hand is the operator, so the console can do what the conductor is
+refused: gate, close debt, reach another project. It explains before it does any of them.
 
 ## The loop
 

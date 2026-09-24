@@ -20,6 +20,7 @@ Pluggable means: no committed structure required, nothing blocked on day one, wo
 
 - Correct the draft conventions and risk map before any session runs. Inferred patterns are partly wrong on messy codebases; ten minutes here prevents fifty sessions replicating a misread pattern.
 - Confirm adapter command resolution (build, test, lint).
+- The natural place to do both is a Claude Code window with the `pup` skill loaded (`skills/pup/`, linked into `~/.claude/skills/`): it reads the findings back, drafts the first task specs from them, and runs every step of the loop in conversation. Decision 70.
 
 ## Phase 4 — improve and continue
 
