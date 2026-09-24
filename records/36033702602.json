@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-24T17:30:41.413Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36033702602",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36033702602",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cfadadab848e49d8612ab91752ab3e558a9dd774",
+  "source": "pr",
+  "pr_number": 115,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3641-3643",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 70 justifies the console design by claiming it preserves \"decision 47's invariant\" as: \"pup opens the pull request, nothing in pup merges it.\" This both misattributes to decision 47 an invariant it never states, and is factually false about `pup` as implemented — plain `pup merge <session>` (no `--pr`) performs a real local merge onto `main` (`git(req.repoPath, 'merge', '--ff-only', session.branch);`, `src/core/merge-gate.service.ts:874`), a behavior decision 26 itself documents (\"`pup merge --pr` = same gate, pull request instead of local merge... `pup merge` ff-merges local main\", `docs/09-decisions.md:496-497`). Decision 47's actual statement is about who is *allowed* to invoke `pup merge` (operator-only), not about what `pup merge` technically does. Nowhere does decision 47 say \"pup opens the pull request, nothing in pup merges it\" — that phrase appears only in decision 70's new text.",
+      "body": "Decision 70 claims: \"The GitHub merge stays the human's click, which is what keeps decision\n47's invariant whole: pup opens the pull request, nothing in pup merges it.\"\n(<https://github.com/AlexisBalayre/pupitre/blob/cfadadab848e49d8612ab91752ab3e558a9dd774/docs/09-decisions.md#L3641-L3643>)\n\nThis is inaccurate on two counts:\n\n1. Decision 47 never states this invariant. Its actual text on the merge is: \"The merge stays\n   with the operator because the verdict moves a branch onto main and the human is the\n   reviewer... a conductor that merged would be a session merging sessions under another name\"\n   (docs/09-decisions.md:1751-1754) — an operator-only permission rule, not a claim that pup\n   itself never merges.\n\n2. The underlying factual claim (\"nothing in pup merges it\") is false. Decision 26 states:\n   \"`pup merge --pr` = same gate, pull request instead of local merge... `pup merge` ff-merges\n   local main\" (docs/09-decisions.md:496-497), and the code still does this today:\n   `git(req.repoPath, 'merge', '--ff-only', session.branch);` (src/core/merge-gate.service.ts:874).\n\nThe console's own guidance (SKILL.md/LOOP.md) always uses `--pr`, so the operational behavior\ntaught is fine — but the decision record misattributes an invariant to decision 47 and\ncontradicts decision 26, both of which are binding per AGENTS.md's decisions-log rule.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3624",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This PR's new decision entry is numbered 70, skipping 69 entirely — every decision number 1 through 68 is used exactly once in the file with no prior gaps, so this permanently breaks the file's own unbroken sequential-numbering precedent (not a written MUST-rule, but the established pattern decisions are cited by elsewhere, e.g. \"decision 47\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "22-26",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The env-var check gives the agent two branches for \"either var is set\" that demand opposite behavior (defer silently vs. ask-and-override) with no stated way to tell them apart. Validated against the code: `callingConductor()` in `src/cli/index.ts` is a bare `process.env.PUP_CONDUCTOR || undefined` with no cross-check, unlike `callingSession()`, which additionally consults `findSessionByWorktree(db, process.cwd())` — so for the conductor case, even `pup` itself has no way to distinguish a real conductor window from a leaked var, leaving only the LLM's own unstated judgment call, which this file never equips it to make.",
+      "body": "`skills/pup/SKILL.md` lines 22-26\n(<https://github.com/AlexisBalayre/pupitre/blob/cfadadab848e49d8612ab91752ab3e558a9dd774/skills/pup/SKILL.md#L22-L26>)\nreads:\n\n> Check `echo \"$PUP_SESSION_ID $PUP_CONDUCTOR\"` once. Both empty: you are the operator's console and\n> this skill applies. Either set because `pup launch` or `pup conductor start` opened your window:\n> you are a session or the conductor, the operator stance above does not apply, and the commands\n> refused to you are refused by design. Set in a shell the human opened by hand: it leaked from\n> an earlier launch; ask, then prefix `env -u PUP_CONDUCTOR` rather than exporting anything.\n\nBoth non-empty branches describe the *same observable state* (a var is set) but demand opposite\nbehavior: branch 2 says defer silently (\"the operator stance does not apply\"); branch 3 says ask\nthe human and override per-command. The text never states how the agent tells them apart — it\nnarrates the two causes as if already known, not as something to determine. This matters more\nthan usual here because `callingConductor()` in `src/cli/index.ts` (`return process.env.PUP_CONDUCTOR\n|| undefined;`) checks *only* the env var, with no worktree cross-check the way `callingSession()`\nhas (`findSessionByWorktree(db, process.cwd())`). So for the conductor case, `pup` itself cannot\ndistinguish \"a real conductor window\" from \"a leaked var in a human's shell\" either — the LLM's\nown judgment, uninformed by anything this document states, is the only thing that can. Get it\nwrong toward branch 2 and the console silently refuses to act as operator when the human wants it\nto; get it wrong toward branch 3 and the assistant may act with elevated confidence it shouldn't\nhave. This is exactly the ambiguity class decision 70 itself calls out as the whole point of the\nchange (\"the gap was context, not privilege\") — so an unresolved fork in the context-detection\nlogic undermines the change's own premise.",
+      "suggestion": "Add the actual distinguishing signal, e.g.: a real session/conductor window's first message is pup's own compiled kickoff prompt, not a human chat turn — if your conversation opened with a human message (e.g. \"use pup\"), the var is a leak from a previous launch (branch 3) even though it is set."
+    },
+    {
+      "file": "docs/07-onboarding.md",
+      "line": "23",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The decision-70 citation (\"...runs every step of the loop in conversation. Decision 70.\") is a standalone trailing sentence, which deviates from this repo's established citation style. Every other decision reference across `docs/00`-`08` (e.g. `docs/02-cli.md:3`, `docs/03-profiles.md:63`, `docs/01-architecture.md:15`) uses an inline parenthetical, lowercase form: `(decision 43)`, `(decision 47)`, `(decision 51)`. This is the first decision citation in `docs/07-onboarding.md`, and it introduces a different, inconsistent format rather than matching the convention already in force elsewhere in the design docs.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "cost_usd": 4.567264700000001,
+  "duration_ms": 531267,
+  "num_turns": 15,
+  "tokens": {
+    "input": 17,
+    "output": 16816,
+    "cache_read": 384390,
+    "cache_creation": 70891,
+    "total": 472114
+  }
+}
