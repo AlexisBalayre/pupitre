@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-24T13:20:59.568Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36003126115",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36003126115",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7fbeed644907d189357dcbba2a3bd2991de514f5",
+  "source": "pr",
+  "pr_number": 114,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "245,1880",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "printInitReport's header line and pup audit's mirrored header print `repoPath` raw; in fleet mode (`--project <id>`) this traces to a registry store column (`row.repo_path`) left unsanitized, while every sibling line in the same function is scrubbed.",
+      "body": "`printInitReport`'s header ([src/cli/index.ts#L245](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/index.ts#L245-L245)) and the mirrored `pup audit` header ([L1880](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/index.ts#L1880-L1880)) print `` `Project ${report.projectId} (${repoPath})` `` with `repoPath` unsanitized. In the fleet path, `pup init --project <id>` / `pup audit --project <id>` reach `project()` ([L584-590](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/index.ts#L584-L590)) → `resolveProject(cwd, selected)` → `openRegistered`, which returns `{ repoPath: project.repoPath, ... }` off a raw `row.repo_path` column ([src/cli/project.utils.ts#L127](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/project.utils.ts#L127-L127), returned raw at [L184](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/project.utils.ts#L184-L184)). Every OTHER print of the same `project.repoPath` field in that file (L164, L176, L181, L210) IS wrapped in `sanitizeReason`, and this PR's own decision 68 sanitizes `report.sandbox` and every finding in the very same function's `printBaselineTail` call right after this header — this header line is the one it missed. The write side (`ensureProject`, `INSERT OR IGNORE INTO projects (id, repo_path)`) does no character validation, and `repoPath` for a fresh `pup init` comes from `git rev-parse`'s echo of the actual directory path, so a directory name carrying control characters (creatable by any local user) survives into the stored `repo_path` and back out through this header. The new source-scan guard's `STORE_WRITTEN_FIELDS` list doesn't include `repoPath`/`repo_path`, so it can't catch this sink or a future regression shaped like it.",
+      "suggestion": "console.log(`Project ${report.projectId} (${sanitizeReason(repoPath)})`);"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3583-3618",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 68 gives two incompatible mutation-testing totals for what reads as the same exercise: \"Thirty-five mutants... the scan catches thirty-four\" (L3583-3584) versus \"the thirty-mutant run\" (L3604) and \"twenty-nine of the thirty ways\" (L3616-3618), with no text distinguishing two separate runs.",
+      "body": "Decision 68's entry states, in one paragraph: \"*Thirty-five mutants, each applied to a backup copy and restored from it*, one per sanitized sink: the scan catches thirty-four\" ([docs/09-decisions.md#L3583-L3584](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/docs/09-decisions.md#L3583-L3584)). Later in the same entry: \"the thirty-mutant run is what measures the gap rather than argues it away\" ([L3604](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/docs/09-decisions.md#L3604-L3604)), and it closes with \"...every sink decision 67 listed, every sink the scan found beside them, and twenty-nine of the thirty ways a reviewer could take a sanitizer back out of `index.ts` today\" ([L3616-L3618](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/docs/09-decisions.md#L3616-L3618)). No text anywhere in the entry attributes these to two distinct mutation-testing passes (the one genuinely distinct prior run mentioned, \"an earlier run of the harness,\" is never given a mutant count). 30 is not a plausible rounding of 35, and 29-of-30 states a different miss rate than 34-of-35. A reader relying on this section to know the guard's actual measured coverage cannot tell which figure is correct.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3555-3559",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 68 claims the scanned field list is 11 named fields \"and twenty more,\" but the \"among them\" clause already lists all of the remaining fields exhaustively, and the actual `STORE_WRITTEN_FIELDS` array has 28 entries total (11 + 17), not 31 (11 + 20).",
+      "body": "Decision 68 says the scan fails when a `console.log` interpolation names one of \"`description`, `reason`, `review_by`, `accepted_by`, `summary`, `alternatives`, `conventions`, `detail`, `sandbox`, `sessionA`, `sessionB` and twenty more — `id`, `files`, `path`, `stage`, `status`, `move`, `state`, `branch`, `goal`, `acceptance`, `adapters`, `finding`, `created_at`, `session_id`, `sessionId`, `reviewBy`, `worktreePath` among them\" ([docs/09-decisions.md#L3555-L3559](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/docs/09-decisions.md#L3555-L3559)). The first list has 11 names; the \"among them\" list has 17 names; 11+17 = 28, matching the actual `STORE_WRITTEN_FIELDS` array length exactly ([src/cli/index.test.ts#L4687-L4716](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/index.test.ts#L4687-L4716)), with no fields left over to justify \"twenty more\" (which implies 31 total). The \"among them\" clause is an exhaustive enumeration of the remainder, not a partial sample, so \"twenty\" is simply the wrong numeral.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3564-3572",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 68 claims 7 allowlisted interpolations in two groups (\"Two... Five...\"), but its own sentence names 4 counters plus 3 ids in the second group (7, not 5), and the actual `CONSTANT_INTERPOLATIONS` array has 9 entries (2+7), not 7.",
+      "body": "Decision 68 states: \"*Seven interpolations are allowlisted, whole and by name*, in two groups. Two name a listed field only inside a quoted constant: `'sandbox'.padEnd(16)`... and `blockedReason(db, session) ?? '(no reason recorded)'`... Five print an integer rather than text: `pup review`'s four counters reached through a local called `detail` (`.risk`, `.rejectCount`, `.scopeViolations`, `.overlaps`), and `entry.id`, `record.id` and `c.id`...\" ([docs/09-decisions.md#L3564-L3572](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/docs/09-decisions.md#L3564-L3572)). As framed, the second group names 4 counters + 3 ids = 7 items, not 5, making the group total 2+7=9, not the claimed \"Seven.\" This matches the actual `CONSTANT_INTERPOLATIONS` array, which has exactly 9 entries ([src/cli/index.test.ts#L4724-L4738](https://github.com/AlexisBalayre/pupitre/blob/7fbeed644907d189357dcbba2a3bd2991de514f5/src/cli/index.test.ts#L4724-L4738)). The doc should read \"Nine interpolations... Seven print an integer.\"",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1799,1808",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`pup profile list`/`pup profile show` print YAML-sourced fields (`layer.name`, `layer.extends`, `layer.contextBudget`, and a stringified layer) raw; a session with HOME reach could plant control characters in a profile layer file. Pre-existing, not touched by this PR, and not on the new guard's field list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4813-4826",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The guard's sanitizer-name detector (`/sanitizeReason\\(|goalHeadline\\(/`) is a raw string match over the recorded expression text, so a comment or string literal inside a `${...}` containing those characters (e.g. `${entry.reason /* sanitizeReason( */}`) would clear the filter without any real sanitization happening — not the same as decision 68's declared 'one sanitizer anywhere in the expression clears it' ceiling, which covers a real call, not incidental text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4844-4866",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The guard's synthetic self-test pins `entry.id` from the integer-PK allowlist but never exercises `record.id` or `c.id`, so a future accidental removal of either from `CONSTANT_INTERPOLATIONS` wouldn't be caught by this pinning test (though the primary source-scan test still would).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4786-4800",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The hand-rolled bracket walker (`skipBalanced`) has no branch for regex literals; a future `${...}` containing a `/regex/` whose body happens to include a listed field name (e.g. `${s.match(/reason/)}`) would be misread as plain text and falsely flagged as a raw sink. No live trigger today.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4802-4810",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The scan locates call sites via a raw `indexOf('console.log(', ...)` with no check that the match sits outside a string or comment; a future doc-comment or help string literally containing the text `console.log(...${entry.reason}...)` would be misread as a real call site. No live trigger today.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4580-4584",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A test comment restates `printGateStage`'s own JSDoc almost verbatim (same facts about `plainDetail`, the 2000-char/300-char limits, and the 'six paths on one line' regression) instead of pointing at the callee's doc, which general.md's seam-duplication rule asks to avoid.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3567-3569",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 68 groups `detail.entry.risk` with the \"integer\" counters, but `review.service.ts` computes risk as `Math.round(risk * 10) / 10` — a one-decimal value, not an integer. The underlying safety argument (numeric, not attacker text) still holds; the label is imprecise, not misleading about safety.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "212-225",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new sanitization paragraph sits under the session-protocol section between decision-66/67 asides and the session-done/handoff-done bullets, but most of the commands it discusses (pup watch, pup debt, pup log, pup merge, pup init, pup audit) are documented elsewhere in the file under their own sections — a reader scanning by command wouldn't expect to find this note here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "217",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The claim that pup init and pup audit both \"end on\" an adapters:/sandbox: line overgeneralizes pup audit: on its ordinary path (existing baseline present) audit calls printBaselineTail directly and never prints an adapters: line; that line only appears via printInitReport on the no-stored-baseline fallback path.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "cost_usd": 14.3693714,
+  "duration_ms": 978748,
+  "num_turns": 41,
+  "tokens": {
+    "input": 41,
+    "output": 35317,
+    "cache_read": 1498375,
+    "cache_creation": 128881,
+    "total": 1662614
+  }
+}
