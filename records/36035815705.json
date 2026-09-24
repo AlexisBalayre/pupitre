@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-24T17:43:28.304Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36035815705",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36035815705",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5b2f74f1a92f7a1baba5b8bee92f39f968a9304a",
+  "source": "pr",
+  "pr_number": 116,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "b65a9d165f7386686e129fd55ade535d4643bf8d",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4167-4169",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rewritten docstring opens with \"The file name reaches the refusal too, ...\" but the \"too\" has no antecedent inside the docstring itself — nothing before it states what else reaches the refusal. Resolvable by also reading the impl comment at index.ts:1849-1851, but as a standalone contract for this one test it reads as an ungrounded comparison.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 1.0847080499999997,
+  "duration_ms": 200509,
+  "num_turns": 14,
+  "tokens": {
+    "input": 17,
+    "output": 6976,
+    "cache_read": 345183,
+    "cache_creation": 33862,
+    "total": 386038
+  }
+}
