@@ -911,7 +911,7 @@ export function buildProgram(): Command {
       // Scrubbed like every other named field a print interpolates, rather
       // than allowlisted as another derivation of the repo path: `handle.name`
       // is a local, and chasing its provenance per line is the carve-out
-      // decision 68 dropped. The call is idempotent on the composed name.
+      // decision 68 dropped.
       console.log(`Conductor running (tmux: ${sanitizeReason(handle.name)}).`);
       // Its own socket, so the attach names it: a plain `tmux attach` asks the
       // default server, which the conductor's window is deliberately not on

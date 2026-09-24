@@ -2031,9 +2031,6 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    // Every expected launch error is printed through one refusal, and their
-    // messages quote what the store holds — a conflicting session's id and the
-    // files it claimed here (decision 69).
     it('scrubs the refusal a launch error prints', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
@@ -4094,9 +4091,10 @@ describe('CLI commands', () => {
     });
 
     /**
-     * A layer file under `~/.pupitre/<id>/profiles/`, which a session's shell
-     * reaches through decision 28's HOME — so every field of one is text a
-     * session can write and the operator's terminal then renders (decision 69).
+     * Writes `yaml` as `profiles/<fileName>` in the repo's store: a layer file
+     * under `~/.pupitre/<id>/profiles/`, which a session's shell reaches through
+     * decision 28's HOME — so every field of one is text a session can write
+     * and the operator's terminal then renders (decision 69).
      */
     function plantLayer(repoPath: string, fileName: string, yaml: string): void {
       const { profilesDir } = projectPaths(repoPath);
@@ -4167,10 +4165,8 @@ describe('CLI commands', () => {
     });
 
     /**
-     * The error path, which carries more of a layer than either reader does:
-     * `InvalidProfileError` quotes the file's own name and the source line the
-     * YAML parser choked on. Both are a session's text, and both arrive raw —
-     * a file name is not a field any producer ever saw.
+     * The file name reaches the refusal too, and a file name is not a field any
+     * producer ever saw, so the source scan cannot stand in for this test.
      */
     it('scrubs a malformed layer refusal line by line, keeping its lines', () => {
       const repo = initRepo();
