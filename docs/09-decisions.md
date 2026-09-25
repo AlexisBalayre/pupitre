@@ -3711,9 +3711,9 @@ changes back into those docs is pending.
     `contextBudget` would disable the budget refusal in silence (2026-09-25).** `ProfileLayer`
     declares `extends?: string` and `contextBudget?: number`, but the parser only checked `name`
     and the three list fields, so a layer file could carry any YAML value. For `contextBudget` that
-    is not a visible type error but a disabled guard: a non-numeric string, a map or a list reaches
-    `compileProfile`'s check as `tokenEstimate > NaN` (a one-element numeric list coerces to its
-    number by accident, which is luck, not a rule), and every comparison with `NaN` is false, so
+    is not a visible type error but a disabled guard: a non-numeric string, a map or a list of two
+    or more elements reaches `compileProfile`'s check as `tokenEstimate > NaN` (a one-element numeric
+    list coerces to its number, which is luck, not a rule), and every comparison with `NaN` is false, so
     the check passes an over-budget context instead of refusing — the one failure mode where the
     wrong type is indistinguishable from no budget at all. *This was latent, not a live escape:*
     every `compileProfile` caller passes `base: DEFAULT_BASE_PROFILE` and none passes a `role`
