@@ -73,6 +73,26 @@ describe('compileProfile', () => {
     expect(() => ProfileCompiler.compileProfile(input)).toThrow(ContextBudgetExceededError);
   });
 
+  /**
+   * A layer file whose `contextBudget` is a string used to reach this check and
+   * pass it: `tokenEstimate > NaN` is false, so the budget was off rather than
+   * exceeded. Nothing compiles from a layer file yet, so this was latent, not a
+   * live escape. The refusal now happens at `parseProfileLayer`, one step
+   * earlier and before `compileProfile` runs at all, which is the only place a
+   * compiled budget can be trusted to be a number. Kept as the regression that
+   * was checked red against the old parser.
+   */
+  it('refuses through compileProfile a base layer whose contextBudget is a string', () => {
+    const compile = () =>
+      ProfileCompiler.compileProfile(
+        makeInput({
+          base: ProfileCompiler.parseProfileLayer('name: base\ncontextBudget: nine\n'),
+          role: undefined,
+        }),
+      );
+    expect(compile).toThrow(InvalidProfileError);
+  });
+
   it('produces a stable hash that changes with content and user config', () => {
     const a = ProfileCompiler.compileProfile(makeInput());
     const b = ProfileCompiler.compileProfile(makeInput());
@@ -534,6 +554,30 @@ describe('parseProfileLayer', () => {
     expect(() => ProfileCompiler.parseProfileLayer('extends: base\n')).toThrow(InvalidProfileError);
     expect(() => ProfileCompiler.parseProfileLayer('name: x\nskills: nope\n')).toThrow(
       InvalidProfileError,
+    );
+  });
+
+  it('parses a layer that sets both typed fields', () => {
+    const layer = ProfileCompiler.parseProfileLayer(
+      'name: backend\nextends: base\ncontextBudget: 8000\n',
+    );
+    expect(layer).toEqual({ name: 'backend', extends: 'base', contextBudget: 8000 });
+  });
+
+  // `contextBudget` is the one field whose wrong type is silent: it reaches the
+  // budget check as `tokenEstimate > NaN`, always false (decision 71).
+  it.each(['nine', '"8000"', '8000.5', '-1', '0', '[8000]', '{n: 1}'])(
+    'refuses contextBudget: %s',
+    (value) => {
+      expect(() =>
+        ProfileCompiler.parseProfileLayer(`name: backend\ncontextBudget: ${value}\n`),
+      ).toThrow(/Profile field `contextBudget` must be a positive integer\./);
+    },
+  );
+
+  it.each(['5', '[base]', '{name: base}', '""'])('refuses extends: %s', (value) => {
+    expect(() => ProfileCompiler.parseProfileLayer(`name: backend\nextends: ${value}\n`)).toThrow(
+      /Profile field `extends` must be a non-empty string\./,
     );
   });
 });

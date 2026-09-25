@@ -37,6 +37,23 @@ export function parseProfileLayer(yamlText: string): ProfileLayer {
       throw new InvalidProfileError(`Profile field \`${key}\` must be a list.`);
     }
   }
+  if (raw.extends !== undefined && (typeof raw.extends !== 'string' || !raw.extends)) {
+    throw new InvalidProfileError('Profile field `extends` must be a non-empty string.');
+  }
+  // A non-number here would disable the context-budget refusal rather than trip
+  // it: `tokenEstimate > contextBudget` would compare against NaN, and every
+  // comparison with NaN is false, so the check would pass an over-budget
+  // context instead of throwing. No launch compiles from a layer file today
+  // (every caller passes DEFAULT_BASE_PROFILE), so this guards the moment one
+  // does — a wrong type here is silent, which is why it is refused at the
+  // parser and not left to the check (decision 71).
+  const budget = raw.contextBudget;
+  if (
+    budget !== undefined &&
+    !(typeof budget === 'number' && Number.isInteger(budget) && budget > 0)
+  ) {
+    throw new InvalidProfileError('Profile field `contextBudget` must be a positive integer.');
+  }
   return raw as unknown as ProfileLayer;
 }
 
