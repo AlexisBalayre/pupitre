@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-25T08:34:23.737Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36113055110",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36113055110",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fe7aad70da00ac5e4c970ced929fb3aabc00d079",
+  "source": "pr",
+  "pr_number": 115,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e2c9a919efd26a78f22e4e4202a9258112214c81",
+  "prior_importants": [
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "22-29",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3688",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 70's re-citation of decision 47 loosens the quoted language from 'merging sessions' to 'acting on sessions', which is broader than what decision 47 actually restricts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "README.md",
+      "line": "92-94",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "README.md ~92-94: the reworded sentence's action list ('merges, kills or closes debt') doesn't match the list in the sentence just before it ('gate, close debt, reach another project'), and reuses 'merge' right after the README explicitly disclaims doing GitHub merges, creating a local coherence/ambiguity gap the fix didn't resolve.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 2.49046905,
+  "duration_ms": 344805,
+  "num_turns": 27,
+  "tokens": {
+    "input": 29,
+    "output": 16500,
+    "cache_read": 738763,
+    "cache_creation": 59849,
+    "total": 815141
+  }
+}
