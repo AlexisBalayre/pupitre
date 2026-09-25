@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-25T11:01:18.102Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36126198540",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36126198540",
+  "actor": "AlexisBalayre",
+  "commit_sha": "01382e1891cbcd30e953fc4586ca14b454980b34",
+  "source": "pr",
+  "pr_number": 117,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "50",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`const budget = raw.contextBudget;` is the only field check in `parseProfileLayer` that binds the raw value to a local first — the `name` check and the `skills/subagents/mcp` loop above it both reference `raw.field` directly. Minor internal inconsistency in an otherwise consistent function; the local does have some justification since `budget` is referenced 4 times.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4128-4139",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rewritten test `'refuses a layer whose fields are not the types the interface claims'` plants `extends: 5\\ncontextBudget: nine`, but since `parseProfileLayer` checks `extends` before `contextBudget` (service.ts lines 40 vs 50), only the `extends` refusal ever fires — `contextBudget: nine` is inert leftover from the pre-diff fixture that needed both bad values to prove row-printing coercion. Deliberate reuse per decision 71's own text, but the test's JSDoc doesn't call out that `contextBudget` is now inert, which could confuse someone debugging this test without the decision log open.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "567-568",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Comment `// \\`contextBudget\\` is the one field whose wrong type is silent: it reaches the budget check as \\`tokenEstimate > NaN\\`, always false (decision 71).` restates, fact-for-fact, the seam comment already on `parseProfileLayer` itself (profile-compiler.service.ts:43-49) that explains the exact same NaN mechanism for the exact same check. No call-site-specific payload survives; per the seam-duplication rule this should be deleted rather than repeated.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "76-83",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc block above `'refuses through compileProfile a base layer whose contextBudget is a string'` restates four of its five facts (\"latent, not a live escape,\" \"checked red... against the old parser,\" \"refusal now happens at parseProfileLayer... before compileProfile runs\") near-verbatim from decision 71's own prose (docs/09-decisions.md ~3729-3733). Only \"which is the only place a compiled budget can be trusted to be a number\" is a genuinely new observation; the rest earns its keep by proximity, not by carrying new information.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4105-4108",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above the row-scrub test has two sentences: the first is legitimate call-site rationale for why the fixture changed to a plain integer budget, but the second (\"The `String` coercion at the sink stays anyway — belt and braces, and `sanitizeReason` takes a string.\") duplicates decision 71's closing line almost word-for-word. It adds no fact not already in the decision this same comment cites two lines earlier and should be dropped, keeping only the first sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3714-3715",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 71 states as a universal fact that \"a string, a list or a map reaches `compileProfile`'s check as `tokenEstimate > NaN`\", but this is false for at least one shape it names: a single-element numeric array like `contextBudget: [8000]` coerces via `ToPrimitive`/`ToNumber` to the string `\"8000\"` then the number `8000`, so the comparison would (by accident) evaluate correctly rather than becoming `NaN`. Holds for maps, multi-element lists, and non-numeric strings, but overclaims for \"a list\" in general. Doesn't change the design conclusion — the type check is still worth having — and docs/03-profiles.md phrases the same point more carefully without this problem.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 5.387988949999998,
+  "duration_ms": 575629,
+  "num_turns": 28,
+  "tokens": {
+    "input": 45,
+    "output": 18168,
+    "cache_read": 1158375,
+    "cache_creation": 88091,
+    "total": 1264679
+  }
+}
