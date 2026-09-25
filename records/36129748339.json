@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-25T11:35:59.663Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36129748339",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36129748339",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1f527c2025077186f12d2f326863ff2c7441e894",
+  "source": "pr",
+  "pr_number": 118,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9ea49a19f5dae776d865518959ac49085b7f21a2",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3715-3716",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Requalifying \"list\" as \"a list of two or more elements\" pushed the paragraph's last two lines past the entry's established hard-wrap width: line 3715 is 101 characters and line 3716 is 104, versus the ~96-99 character ceiling used elsewhere in this same decision (e.g. lines 3711-3713, 3718). Worth a manual rewrap for consistency.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 1.21846695,
+  "duration_ms": 303516,
+  "num_turns": 22,
+  "tokens": {
+    "input": 39,
+    "output": 13492,
+    "cache_read": 840582,
+    "cache_creation": 37516,
+    "total": 891629
+  }
+}
