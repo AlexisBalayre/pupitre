@@ -4104,8 +4104,7 @@ describe('CLI commands', () => {
 
     // Only `name` and `extends` can still carry an escape: decision 71 types
     // `contextBudget` at the parser, so a budget that is not a positive integer
-    // never reaches this row. The `String` coercion at the sink stays anyway —
-    // belt and braces, and `sanitizeReason` takes a string.
+    // never reaches this row.
     it('scrubs the layer fields `profile list` prints in its row', () => {
       const repo = initRepo();
       plantLayer(
@@ -4127,7 +4126,9 @@ describe('CLI commands', () => {
      * since decision 71 `parseProfileLayer` holds the layer to that instead of
      * printing whatever the YAML held. The refusal reaches the terminal through
      * `loadLayerFile`'s wrap, so it is prefixed with the file name — which is
-     * not a field any producer saw, and is scrubbed here like the message.
+     * not a field any producer saw, and is scrubbed here like the message. The
+     * parser checks `extends` first, so the bad `contextBudget` beside it is
+     * inert here; it is the fixture the old row-printing test planted.
      */
     it('refuses a layer whose fields are not the types the interface claims', () => {
       const repo = initRepo();

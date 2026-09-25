@@ -74,13 +74,9 @@ describe('compileProfile', () => {
   });
 
   /**
-   * A layer file whose `contextBudget` is a string used to reach this check and
-   * pass it: `tokenEstimate > NaN` is false, so the budget was off rather than
-   * exceeded. Nothing compiles from a layer file yet, so this was latent, not a
-   * live escape. The refusal now happens at `parseProfileLayer`, one step
-   * earlier and before `compileProfile` runs at all, which is the only place a
-   * compiled budget can be trusted to be a number. Kept as the regression that
-   * was checked red against the old parser.
+   * The refusal fires in `parseProfileLayer`, before `compileProfile` runs at
+   * all: the parser is the only place a compiled budget can be trusted to be a
+   * number. Kept as the regression that was checked red against the old parser.
    */
   it('refuses through compileProfile a base layer whose contextBudget is a string', () => {
     const compile = () =>
@@ -564,8 +560,6 @@ describe('parseProfileLayer', () => {
     expect(layer).toEqual({ name: 'backend', extends: 'base', contextBudget: 8000 });
   });
 
-  // `contextBudget` is the one field whose wrong type is silent: it reaches the
-  // budget check as `tokenEstimate > NaN`, always false (decision 71).
   it.each(['nine', '"8000"', '8000.5', '-1', '0', '[8000]', '{n: 1}'])(
     'refuses contextBudget: %s',
     (value) => {
