@@ -34,7 +34,9 @@ contextBudget: 6000   # hard cap for the compiled result, tokens
 `extends` and `contextBudget` are typed at the parser (decision 71): `extends` must be a non-empty
 string and `contextBudget` a positive integer, refused with an `InvalidProfileError` naming the
 field, because a `contextBudget` that is not a number reaches the budget check as a comparison
-against `NaN` and turns the refusal off instead of failing loudly.
+against `NaN` and turns the refusal off instead of failing loudly. Leaving either one out is fine;
+writing the key with an empty value is not, since YAML reads a bare `contextBudget:` as null rather
+than as an absent field, and it would otherwise fall back to the default budget.
 
 ## Scope enforcement in a session (decisions 6, 63)
 

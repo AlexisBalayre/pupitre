@@ -75,11 +75,14 @@ describe('compileProfile', () => {
 
   /**
    * A layer file whose `contextBudget` is a string used to reach this check and
-   * pass it: `tokenEstimate > NaN` is false, so the budget was off and the
-   * session launched. The refusal now happens at the parser, one step earlier,
-   * which is the only place a compiled budget can be trusted to be a number.
+   * pass it: `tokenEstimate > NaN` is false, so the budget was off rather than
+   * exceeded. Nothing compiles from a layer file yet, so this was latent, not a
+   * live escape. The refusal now happens at `parseProfileLayer`, one step
+   * earlier and before `compileProfile` runs at all, which is the only place a
+   * compiled budget can be trusted to be a number. Kept as the regression that
+   * was checked red against the old parser.
    */
-  it('refuses a base layer whose contextBudget came out of YAML as a string', () => {
+  it('refuses through compileProfile a base layer whose contextBudget is a string', () => {
     const compile = () =>
       ProfileCompiler.compileProfile(
         makeInput({
