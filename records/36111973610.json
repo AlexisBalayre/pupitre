@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-25T08:24:47.595Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36111973610",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36111973610",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e2c9a919efd26a78f22e4e4202a9258112214c81",
+  "source": "pr",
+  "pr_number": 115,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "22-29",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The leaked-env-var recovery instructions check both `PUP_SESSION_ID` and `PUP_CONDUCTOR` (\"Either set\"), but the prescribed fix unsets only `PUP_CONDUCTOR` (`env -u PUP_CONDUCTOR`), never `PUP_SESSION_ID`. If `PUP_SESSION_ID` is the one that actually leaked, the agent runs a no-op fix, remains refused by every operator-only guard that checks `PUP_SESSION_ID` (e.g. `pup merge`'s `callingSession` check and `refuseUnlessOperator` in `src/cli/index.ts`), and has no textual cue the fix didn't take.",
+      "body": "The leaked-marker recovery step is asymmetric. Lines 22-29 open by checking `echo \"$PUP_SESSION_ID $PUP_CONDUCTOR\"` and branch on *either* being set, but the prescribed remedy on line 28 is unconditionally `env -u PUP_CONDUCTOR` — it never unsets `PUP_SESSION_ID`.\n\nIf a human reuses a shell that was previously inside a `pup launch` window, the leaked variable is `PUP_SESSION_ID`, not `PUP_CONDUCTOR`. Following this instruction literally runs a no-op (`PUP_CONDUCTOR` was never set), leaves `PUP_SESSION_ID` set, and the agent's next `pup merge`/`--project` call is refused again by the exact guards this paragraph exists to work around (`callingSession` and `refuseUnlessOperator` in `src/cli/index.ts`) — with the agent believing it already applied the documented fix.\n\nThis is agent-executable instructional text, so the gap is a functional bug, not a stylistic one: the playbook dead-ends silently on a plausible input.\n\nSuggested fix: unset whichever variable `echo` showed as set — e.g. `env -u PUP_SESSION_ID -u PUP_CONDUCTOR` unconditionally (unsetting an already-unset var is a harmless no-op).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e2c9a919efd26a78f22e4e4202a9258112214c81/skills/pup/SKILL.md#L22-L29",
+      "suggestion": "  variable leaked from an earlier launch: say so, then prefix `env -u PUP_SESSION_ID -u PUP_CONDUCTOR`\n  on each command rather than exporting anything. `pup` cannot tell the two apart itself; you can."
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3687-3688",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 70 attributes the principle \"a conductor that crossed stores would be a session merging sessions under another name\" to decision 47, but decision 47's actual line about \"session merging sessions under another name\" is stated specifically about the merge action, not about cross-project store access (that's decision 43's territory) — the extension is a plausible analogy, not a direct restatement of decision 47.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "README.md",
+      "line": "92-93",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Every window you open by hand is the operator, so the console can do what the conductor is refused: gate, close debt, reach another project. It explains before it does any of them.\" doesn't match SKILL.md's actual explain-before-acting list (\"merge, kill, debt close\"), which omits reaching another project and includes kill — the sentence implies a broader guarantee than the skill actually makes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "64-65",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Every string read from `~/.pupitre` is session-writable and must be scrubbed before it prints. Multi-line details are scrubbed line by line; a whole-string scrub collapses them.\" — \"collapses them\" is vague about both its referent and the failure mode, leaving a reader unable to tell what mistake to avoid when implementing scrubbing elsewhere.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "29-30",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Always with `--pr`: a plain `pup merge` fast-forwards local main on pass, which skips the human's review of the pull request. Run it without the debt flags first.\" — the first \"it\" in the second sentence reads as though it could refer to the just-named \"a plain `pup merge`\" (the bad example) rather than the actual `pup merge <task> --pr` command shown in the code block above; a second \"it\" later in the same sentence correctly refers to the real command, compounding the ambiguity. Surrounding context (the opening clause, the code block, SKILL.md's own restatement) makes the correct reading recoverable, so this stays a nit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3699-3701",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"...the console gates with `pup merge --pr`, which opens a pull request where a plain `pup merge` would fast-forward local main (decision 26), so the branch still lands through the human's review...\" reads on first pass as if the fast-forward happens inside the pull request; the intent is contrastive (opens a PR, instead of what a plain `pup merge` would do), not sequential — factually accurate once read twice.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "context",
+      "description": "gh pr diff output redirection to a file was blocked by the CI sandbox's write restrictions; the reviewer worked around it by reading diff output directly from stdout, with no loss of coverage."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 4.205538950000001,
+  "duration_ms": 490032,
+  "num_turns": 20,
+  "tokens": {
+    "input": 23,
+    "output": 21367,
+    "cache_read": 629641,
+    "cache_creation": 81021,
+    "total": 732052
+  }
+}
