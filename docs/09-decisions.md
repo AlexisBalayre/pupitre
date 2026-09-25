@@ -3684,8 +3684,8 @@ changes back into those docs is pending.
     the project around the cwd or, outside a repo, to the fleet. Three shapes were on the table. A
     fleet-level conductor: refused, because a conductor is keyed to one project by construction
     (its checkout, profile, socket and `PUP_CONDUCTOR` value, decision 47) and decision 43's
-    addendum grants fleet reading to two readers only; a conductor that crossed stores would be
-    a session merging sessions under another name, which is the line decision 47 draws. A new
+    addendum grants fleet reading to two readers only; a conductor that crossed stores would have
+    the shape decision 47 refuses for the merge, a session acting on sessions under another name. A new
     tier with its own env marker, allowed `--project` but refused the merge: rejected, because
     every guard would grow a branch and the result would still not be the control the operator
     asked for. What was chosen is the observation that a Claude Code window the operator opens by
@@ -3696,9 +3696,10 @@ changes back into those docs is pending.
     bite every project — linked into `~/.claude/skills/` so it loads in any repo and outside them.
     The skill tells the console to check the two markers first: set by a launch, it is a session
     or the conductor and the operator stance does not apply. The GitHub merge stays the human's
-    click: the console gates with `pup merge --pr`, which opens a pull request where a plain
-    `pup merge` would fast-forward local main (decision 26), so the branch still lands through
-    the human's review, which is the reason decision 47 keeps the merge with the operator.
+    click: the console gates with `pup merge --pr`, which opens a pull request instead of the
+    fast-forward of local main a plain `pup merge` performs (decision 26), so the branch still
+    lands through the human's review, which is the reason decision 47 keeps the merge with the
+    operator.
     *Deferred, with reasons:* `pup init` writing a repo-local copy of the skill
     with the project id and brief filled in, once a second project has used the linked one; a
     bare `pup` that opens `claude` in the calling terminal with the status snapshot preloaded,

@@ -27,7 +27,7 @@ pup merge <task> --pr
 ```
 
 Always with `--pr`: a plain `pup merge` fast-forwards local main on pass, which skips the
-human's review of the pull request. Run it without the debt flags first. If stages flag (diff size, complexity, dead exports, duplication, coverage),
+human's review of the pull request. Run the `--pr` command without the debt flags first. If stages flag (diff size, complexity, dead exports, duplication, coverage),
 re-run with `--accept-debt "<reason>" --review-by "<condition>"`. One reason is stamped on every
 flagged stage, so write one that fits all of them. On pass the branch is pushed and a PR opened;
 `pup status` then says `merged`, which means the PR exists, not that GitHub merged it.
@@ -62,7 +62,8 @@ Then the next task: `pup launch <task>`, or hand the order to the conductor.
 - Under the gate sandbox the default TMPDIR is write-denied. A generated hook must `mktemp`
   beside its own files.
 - Every string read from `~/.pupitre` is session-writable and must be scrubbed before it prints.
-  Multi-line details are scrubbed line by line; a whole-string scrub collapses them.
+  Multi-line details are scrubbed line by line: a single scrub over the whole block folds it
+  onto one line and cuts it at 300 characters.
 - A `[` in a git revision turns `git diff a...b` into a pathspec glob that exits 0 on unknown
   refs. Mock the git client in CLI tests rather than trusting a passing call.
 - A pre-commit that runs the full suite can hang one test for minutes under load. Run the

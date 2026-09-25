@@ -25,8 +25,8 @@ the ones refused to sessions and conductors. Explain before you act on anything 
   standing orders typed in as the first turn), and then you are a session or the conductor, the
   operator stance above does not apply, and the commands refused to you are refused by design. A
   conversation that opened with a human turn, such as "use pup", is the human's shell and the
-  variable leaked from an earlier launch: say so, then prefix `env -u PUP_CONDUCTOR` on each
-  command rather than exporting anything. `pup` cannot tell the two apart itself; you can.
+  variable leaked from an earlier launch: say so, then prefix `env -u PUP_SESSION_ID -u PUP_CONDUCTOR`
+  on each command rather than exporting anything. `pup` cannot tell the two apart itself; you can.
 
 ## Vocabulary
 

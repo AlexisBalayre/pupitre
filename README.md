@@ -90,7 +90,8 @@ merges, the operator gates and closes debt), and the per-task loop from a finish
 merged pull request. The one thing it will not do is merge on GitHub. That click stays yours.
 
 Every window you open by hand is the operator, so the console can do what the conductor is
-refused: gate, close debt, reach another project. It explains before it does any of them.
+refused: gate, close debt, reach another project. It explains before it merges, kills or closes
+debt.
 
 ## The loop
 
