@@ -4102,35 +4102,43 @@ describe('CLI commands', () => {
       writeFileSync(join(profilesDir, fileName), yaml);
     }
 
+    // Only `name` and `extends` can still carry an escape: decision 71 types
+    // `contextBudget` at the parser, so a budget that is not a positive integer
+    // never reaches this row. The `String` coercion at the sink stays anyway —
+    // belt and braces, and `sanitizeReason` takes a string.
     it('scrubs the layer fields `profile list` prints in its row', () => {
       const repo = initRepo();
       plantLayer(
         repo,
         'evil.yml',
-        'name: "ev\u001b[2Jil"\nextends: "ba\u001b[2Jse"\ncontextBudget: "60\u001b[2J00"\n',
+        'name: "ev\u001b[2Jil"\nextends: "ba\u001b[2Jse"\ncontextBudget: 6000\n',
       );
       useCwd(repo);
 
       buildProgram().parse(['profile', 'list'], { from: 'user' });
 
       const row = logs.find((line) => line.startsWith('ev'));
-      expect(row).toBe(`${'ev [2Jil'.padEnd(18)}${'ba [2Jse'.padEnd(18)}60 [2J00`);
+      expect(row).toBe(`${'ev [2Jil'.padEnd(18)}${'ba [2Jse'.padEnd(18)}6000`);
       expect(row).not.toContain('\u001b');
     });
 
-    // `ProfileLayer` says `extends?: string` and `contextBudget?: number`, but
-    // `parseProfileLayer` only checks `name` and the three list fields — every
-    // other value is whatever the YAML held. Both go through `String` before
-    // the sanitizer, which takes a string and would throw on a number.
-    it('prints a layer row whose fields are not the types the interface claims', () => {
+    /**
+     * `ProfileLayer` says `extends?: string` and `contextBudget?: number`, and
+     * since decision 71 `parseProfileLayer` holds the layer to that instead of
+     * printing whatever the YAML held. The refusal reaches the terminal through
+     * `loadLayerFile`'s wrap, so it is prefixed with the file name — which is
+     * not a field any producer saw, and is scrubbed here like the message.
+     */
+    it('refuses a layer whose fields are not the types the interface claims', () => {
       const repo = initRepo();
-      plantLayer(repo, 'odd.yml', 'name: odd\nextends: 5\ncontextBudget: nine\n');
+      plantLayer(repo, 'o\u001b[31mdd.yml', 'name: odd\nextends: 5\ncontextBudget: nine\n');
       useCwd(repo);
 
       buildProgram().parse(['profile', 'list'], { from: 'user' });
 
-      expect(logs).toContain(`${'odd'.padEnd(18)}${'5'.padEnd(18)}nine`);
-      expect(process.exitCode).toBeUndefined();
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual(['o [31mdd.yml: Profile field `extends` must be a non-empty string.']);
+      expect(logs).not.toContain(`${'odd'.padEnd(18)}${'5'.padEnd(18)}nine`);
     });
 
     /**

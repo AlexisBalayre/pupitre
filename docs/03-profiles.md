@@ -28,8 +28,13 @@ skills: [api-testing, sql-review]
 subagents: [test-runner]
 hooks: []            # additive only; base hooks cannot be removed
 mcp: []
-context_budget: 6000  # hard cap for the compiled result, tokens
+contextBudget: 6000   # hard cap for the compiled result, tokens
 ```
+
+`extends` and `contextBudget` are typed at the parser (decision 71): `extends` must be a non-empty
+string and `contextBudget` a positive integer, refused with an `InvalidProfileError` naming the
+field, because a `contextBudget` that is not a number reaches the budget check as a comparison
+against `NaN` and turns the refusal off instead of failing loudly.
 
 ## Scope enforcement in a session (decisions 6, 63)
 
