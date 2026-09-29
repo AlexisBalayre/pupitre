@@ -2,19 +2,14 @@ import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 import {
   brokenPackageManagerInstall,
-  isUnavailable,
   localContext,
   sanitizeReason,
 } from '../adapters/capability.utils.js';
-import type { Adapter, DeadExport } from '../adapters/types/adapter.types.js';
+import type { Adapter } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
-import { repoCoverageRatio } from './coverage.utils.js';
+import { measureDebt } from './debt.service.js';
 import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
-import {
-  DUPLICATION_RULE_ID,
-  GATE_COMMAND_TIMEOUT_MS,
-  GATE_OUTPUT_TAIL_CHARS,
-} from './merge-gate.constants.js';
+import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import {
@@ -24,12 +19,7 @@ import {
   saveProjectBaseline,
   saveProjectOriginUrl,
 } from './session.repository.js';
-import type {
-  BaselineStageResult,
-  DebtBaseline,
-  InitReport,
-  ProjectBaseline,
-} from './types/init.types.js';
+import type { BaselineStageResult, InitReport, ProjectBaseline } from './types/init.types.js';
 
 export class NoAdapterError extends Error {
   constructor(repoPath: string) {
@@ -230,49 +220,18 @@ export function initProject(
     if (installPath) throw new BrokenToolchainError(stage, installPath);
   }
 
-  const debt: DebtBaseline = {};
-  const ctx = localContext(repoPath, gateEnv);
+  // The gate measures the same way, through the same module, or the bar stored
+  // here and the bar merges are compared against drift apart (decision 72).
+  const { debt, gaps } = measureDebt(detected, localContext(repoPath, gateEnv));
   // A capability that could not measure says why (decision 29); that reason is
   // the whole point of running init before any session does.
   // Sanitized here, not at the producer: a custom adapter's reason is parsed
   // JSON that never passed through failureSummary (decision 29).
-  const reportUnavailable = (adapterId: string, stage: string, reason: string): void => {
+  for (const gap of gaps) {
     findings.push(
-      `${adapterId}: ${stage} not measured — ${sanitizeReason(reason)}. The gate will skip that stage until it is fixed.`,
+      `${gap.adapterId}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}. The gate will skip that stage until it is fixed.`,
     );
-  };
-
-  const deadCodeResults = detected.map((a) => ({ id: a.id, result: a.deadCode?.(ctx) }));
-  for (const { id, result } of deadCodeResults) {
-    if (result && isUnavailable(result)) reportUnavailable(id, 'dead code', result.unavailable);
   }
-  const measured = deadCodeResults
-    .map(({ result }) => result)
-    .filter((r): r is DeadExport[] => r !== undefined && !isUnavailable(r));
-  // Counting adapters that measured, not findings: an unavailable capability
-  // must leave the bar unset (a baseline of [] would read as "0 dead exports"
-  // and flag every later finding), while one that found nothing still stores [].
-  if (measured.length > 0) {
-    debt.deadExports = measured.flat();
-  }
-  if (detected.some((a) => a.duplication)) {
-    debt.duplicatedLines = detected.reduce(
-      (sum, a) => sum + (a.duplication?.(ctx).duplicatedLines ?? 0),
-      0,
-    );
-    // Stamped with the number so the gate can tell a comparable bar from one
-    // counted under an older rule (decision 39).
-    debt.duplicationRule = DUPLICATION_RULE_ID;
-  }
-  const coverageAdapter = detected.find((a) => a.coverage);
-  const coverageResult = coverageAdapter?.coverage?.(ctx);
-  if (coverageAdapter && coverageResult && isUnavailable(coverageResult)) {
-    reportUnavailable(coverageAdapter.id, 'coverage', coverageResult.unavailable);
-  }
-  const coverageReport =
-    coverageResult && !isUnavailable(coverageResult) ? coverageResult : undefined;
-  const coverageRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
-  if (coverageRatio !== undefined) debt.coverageRatio = coverageRatio;
 
   const baseline: ProjectBaseline = {
     capturedAt: new Date().toISOString(),
