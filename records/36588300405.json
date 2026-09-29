@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-29T15:12:54.005Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36588300405",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36588300405",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9a9a7712de6694206856287e496b9ab8cd3fd328",
+  "source": "pr",
+  "pr_number": 120,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9b9116ae1543d5b37ca7439eaf75f7bcf5226659",
+  "prior_importants": [
+    {
+      "file": "src/core/types/dashboard.types.ts",
+      "line": "27-34",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 0.23227775,
+  "duration_ms": 33568,
+  "num_turns": 13,
+  "tokens": {
+    "input": 15,
+    "output": 3265,
+    "cache_read": 283045,
+    "cache_creation": 26087,
+    "total": 312412
+  }
+}
