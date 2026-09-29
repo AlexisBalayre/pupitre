@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-29T15:07:45.022Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36587384996",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36587384996",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9b3fe680bfed5f3b3ac05ea3d25c106dc78f4a94",
+  "source": "pr",
+  "pr_number": 121,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "docs"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "31b1681fe0a12edee1e245187ce2d7dc21336069",
+  "prior_importants": [
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "158-185",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "review-conventions could not run pnpm typecheck (node_modules not installed in the review environment) and fell back to direct source/grep inspection to verify no broken imports were introduced by the move; inspection was judged sufficient given the diff's small, mechanical scope."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "cost_usd": 0.6858396,
+  "duration_ms": 150152,
+  "num_turns": 10,
+  "tokens": {
+    "input": 17,
+    "output": 6718,
+    "cache_read": 345693,
+    "cache_creation": 35478,
+    "total": 387906
+  }
+}
