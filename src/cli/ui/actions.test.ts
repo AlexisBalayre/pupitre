@@ -157,7 +157,9 @@ describe('dashboard actions', () => {
   it('steers through `steerSession`, as `pup steer` does', () => {
     const result = steerSelected(deps, SESSION, 'read docs/05 first');
 
-    expect(steerSession).toHaveBeenCalledWith(db, SESSION, 'read docs/05 first', 'manual');
+    expect(steerSession).toHaveBeenCalledWith(db, SESSION, 'read docs/05 first', {
+      kind: 'manual',
+    });
     expect(result.message).toContain(SESSION);
   });
 

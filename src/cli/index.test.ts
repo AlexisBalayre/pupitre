@@ -3118,19 +3118,45 @@ describe('CLI commands', () => {
 
       // By session id through the lifecycle, which resolves the pane recorded
       // at launch; the CLI never forms a tmux target itself (decision 46).
-      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'do X instead', 'manual');
+      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'do X instead', {
+        kind: 'manual',
+        by: 'operator',
+      });
       expect(recordSteerMessage).not.toHaveBeenCalled();
       expect(logs).toContain('Steered session s1.');
       expect(process.exitCode).toBeUndefined();
     });
 
-    // A message over the peer socket lands whole and never touches the input
-    // box, so nothing is typed; the record is what the report and the
-    // last-steer queries read, and it names who sent it (decision 47).
+    // Whoever typed it: a steer is the conductor's or a session's whether it
+    // went into the input box or over the peer socket, and a record naming the
+    // operator for all three would make the report's account of who corrected
+    // a session worthless (decisions 44, 47).
     it.each([
       ['operator', '', ''],
       ['conductor', 'p1', ''],
       // A session pup can identify is named as one, whatever else it exports.
+      ['session:s1', 'p1', 's1'],
+    ])('names the %s that typed the steer', (by, conductor, session) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_CONDUCTOR', conductor);
+      vi.stubEnv('PUP_SESSION_ID', session);
+
+      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
+
+      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'do X instead', {
+        kind: 'manual',
+        by,
+      });
+    });
+
+    // A message over the peer socket lands whole and never touches the input
+    // box, so nothing is typed; the record is what the report and the
+    // last-steer queries read, and it names the same sender.
+    it.each([
+      ['operator', '', ''],
+      ['conductor', 'p1', ''],
       ['session:s1', 'p1', 's1'],
     ])(
       'records a steer already sent by message, by the %s, and types nothing',

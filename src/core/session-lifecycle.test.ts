@@ -643,6 +643,40 @@ describe('launchTask rollback', () => {
     expect(launch()).toBe('t-1-1');
   });
 
+  // The other way a kickoff fails: the window never showed its input box, so
+  // nothing was typed and nothing refused it. Reporting that launch as a
+  // success left a bypass-permissions agent sitting in a fresh worktree with
+  // none of its task read, and the task claimed by it.
+  it('kills a session whose window never became ready, and says so in one line', () => {
+    vi.mocked(kickoff).mockReturnValueOnce(false);
+
+    const error = caught(launch) as LaunchRolledBackError;
+
+    expect(error).toBeInstanceOf(LaunchRolledBackError);
+    // Nothing said anything, so the rollback line is the whole of it.
+    expect(error.refusal).toBeUndefined();
+    expect(error.rolledBack).toBe(
+      "Session t-1's window never became ready, so its context was not delivered and the " +
+        'session was killed',
+    );
+    expect(killTmux).toHaveBeenCalledWith('t-1', '%7');
+    expect(getSession(db, 't-1')?.state).toBe('killed');
+    expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).toEqual(['t-1']);
+  });
+
+  // The kickoff event survives the rollback: the session it was written on is
+  // killed, not deleted, and it is the only record of why.
+  it('leaves the undelivered kickoff on record', () => {
+    vi.mocked(kickoff).mockReturnValueOnce(false);
+
+    expect(launch).toThrow(LaunchRolledBackError);
+    expect(
+      listEvents(db, 't-1')
+        .filter((event) => event.type === 'steer')
+        .map((event) => JSON.parse(event.payload)),
+    ).toEqual([{ kind: 'kickoff', delivered: false }]);
+  });
+
   // A rollback that fails is a bug path and ends in a stack, as it always has.
   // The refusal is why the launch failed and must not be lost behind it.
   it('carries the refusal out as the cause when the kill itself throws', () => {
@@ -692,7 +726,7 @@ describe('steer, interrupt and kill by session id', () => {
   });
 
   it('addresses the pane recorded at launch, never the session', () => {
-    steerSession(db, 's-1', 'do X instead', 'manual');
+    steerSession(db, 's-1', 'do X instead', { kind: 'manual' });
     interruptSession(db, 's-1');
 
     expect(steerPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' }, 'do X instead');
@@ -747,13 +781,29 @@ describe('steer, interrupt and kill by session id', () => {
   // a session the report and the last-steer queries show as corrected by
   // nobody.
   it('records the steer it typed, and records nothing when the paste is refused', () => {
-    steerSession(db, 's-1', 'do X instead', 'manual');
+    steerSession(db, 's-1', 'do X instead', { kind: 'manual' });
     vi.mocked(steerPane).mockImplementationOnce(() => {
       throw new SteerNotDeliveredError('s-1', 12);
     });
 
-    expect(() => steerSession(db, 's-1', 'do Y', 'manual')).toThrow(SteerNotDeliveredError);
+    expect(() => steerSession(db, 's-1', 'do Y', { kind: 'manual' })).toThrow(
+      SteerNotDeliveredError,
+    );
     expect(steerEvents()).toEqual([{ kind: 'manual' }]);
+  });
+
+  // A typed steer is not the operator's just because it was typed: the
+  // conductor and every session can type one too, and a record that named the
+  // operator for all three would make the report's account of who corrected a
+  // session worthless (decisions 44, 47).
+  it('records the sender the caller named, for a typed steer as for a sent one', () => {
+    steerSession(db, 's-1', 'do X instead', { kind: 'manual', by: 'conductor' });
+    recordSteerMessage(db, 's-1', 'session:s-2');
+
+    expect(steerEvents()).toEqual([
+      { kind: 'manual', by: 'conductor' },
+      { kind: 'message', by: 'session:s-2' },
+    ]);
   });
 
   // The watchdog's resume and the gate's re-steer record the outcome of a

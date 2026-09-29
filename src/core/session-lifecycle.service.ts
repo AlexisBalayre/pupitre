@@ -134,7 +134,7 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
     throw new ScopeConflictError(row.id, conflicts);
   }
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
-  const sessionId = startOrRollBack(db, { ...req, task });
+  const sessionId = startSession(db, { ...req, task });
   if (conflicts.length > 0) {
     appendEvent(db, sessionId, 'scope_overlap', {
       via: req.overlapVia ?? 'operator',
@@ -192,29 +192,6 @@ function knowledgeSliceFor(
     return buildKnowledgeSlice(buildCodeMap(db, pid, repoPath, adapter), scopeIn) || undefined;
   } catch {
     return undefined;
-  }
-}
-
-/**
- * `startSession`, undone when the window refuses the opening context. The
- * launch has by then claimed its task, inserted its row as `running` and
- * opened its window — `startSession` throws after all three — so left as is
- * the task reads as claimed (a re-launch raises TaskAlreadyClaimedError) and
- * the window sits empty. Killing the session undoes all of it: the window
- * goes, the row is `killed`, and the task returns to the backlog (decision
- * 40), which is why every front end's retry is a fresh launch of the task.
- */
-function startOrRollBack(db: Database, req: LaunchTaskRequest & { task: TaskSpec }): string {
-  try {
-    return startSession(db, req);
-  } catch (error) {
-    if (!isRefusedSteer(error)) throw error;
-    const { sessionId } = error;
-    throw rollBackRefusedLaunch(
-      () => killSession(db, sessionId),
-      `Launch rolled back (session ${sessionId} killed)`,
-      error,
-    );
   }
 }
 
@@ -284,9 +261,51 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
   db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);
   transitionSession(db, sessionId, 'running', { profileHash: compiled.hash });
 
-  // Deliver the compiled task context as the opening prompt once the UI is ready.
-  const started = kickoff(pane, compiled.contextMarkdown);
-  appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered: started });
+  return deliverKickoff(db, sessionId, pane, compiled.contextMarkdown);
+}
+
+/**
+ * Deliver the compiled task context as the opening prompt once the UI is
+ * ready, or undo the launch. Both ways it can fail land here and nowhere
+ * earlier: the task is claimed, the row is `running` and the window is up by
+ * the time the first character is typed, so left as they are the task reads as
+ * claimed (a re-launch raises TaskAlreadyClaimedError) and the window sits
+ * empty, on a bypass-permissions agent that has read none of its task.
+ *
+ * Killing the session undoes all of it — the window goes, the row is `killed`,
+ * and the task returns to the backlog (decision 40) — which is why every front
+ * end's retry is a fresh launch of the same task. The two failures differ only
+ * in whether there is a refusal to read: a paste that never landed whole says
+ * so itself (decision 45), while a window that never showed its input box
+ * never said anything, so the rollback line is the whole of it.
+ */
+function deliverKickoff(
+  db: Database,
+  sessionId: string,
+  pane: SessionPane,
+  context: string,
+): string {
+  let delivered: boolean;
+  try {
+    delivered = kickoff(pane, context);
+  } catch (error) {
+    if (!isRefusedSteer(error)) throw error;
+    throw rollBackRefusedLaunch(
+      () => killSession(db, sessionId),
+      `Launch rolled back (session ${sessionId} killed)`,
+      error,
+    );
+  }
+  // Recorded before the rollback below, and kept through it: a launch that was
+  // undone still leaves on the session it killed the trace of why.
+  appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered });
+  if (!delivered) {
+    throw rollBackRefusedLaunch(
+      () => killSession(db, sessionId),
+      `Session ${sessionId}'s window never became ready, so its context was not delivered ` +
+        'and the session was killed',
+    );
+  }
   return sessionId;
 }
 
@@ -310,12 +329,23 @@ export function sessionPane(row: SessionRow): SessionPane {
 }
 
 /**
+ * How a delivered steer is recorded: what kind of steer it was, and who sent
+ * it where the caller can name a sender — a typed steer is not the operator's
+ * just because it was typed, and a conductor or session pup can identify is
+ * named as one before its word is taken (decisions 44, 47).
+ */
+type SteerRecord = {
+  kind: string;
+  by?: string;
+};
+
+/**
  * Steer a session by id, into the pane recorded at its launch. The session
  * half of `steerPane`: resolves the row, refuses a session that has stopped or
  * has no pane recorded, and lets the runtime's own refusals (a gone pane, a
  * paste that never landed) through untouched for the caller to print.
  *
- * `kind` is the event the delivered steer is recorded as, and is what the
+ * `record` is the event the delivered steer is written as, and is what the
  * front ends pass instead of appending their own — a steer nobody recorded is
  * a session the report and the last-steer queries show as corrected by
  * nobody. It is optional because the two callers inside core record the
@@ -328,10 +358,10 @@ export function steerSession(
   db: Database,
   sessionId: string,
   message: string,
-  kind?: string,
+  record?: SteerRecord,
 ): void {
   steerPane(sessionPane(requireLiveSession(db, sessionId, 'steer')), message);
-  if (kind) appendEvent(db, sessionId, 'steer', { kind });
+  if (record) appendEvent(db, sessionId, 'steer', record);
 }
 
 /**

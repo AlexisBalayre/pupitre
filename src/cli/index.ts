@@ -1289,20 +1289,23 @@ export function buildProgram(): Command {
     .option('--sent', 'record a steer already delivered by cross-session message; type nothing')
     .action((session: string, message: string, opts: { sent?: boolean }) => {
       const { db } = project();
-      // A message sent over the peer socket lands whole and never touches the
-      // input box, so it needs no typing — only the record, which core keeps
-      // either way. The sender is this front end's to name: a session pup can
-      // identify is named as one before its word is taken (decisions 44, 47).
+      // The sender is this front end's to name, and it names one either way: a
+      // conductor's or a session's steer is theirs whether it was typed into
+      // the box or sent over the socket, and pup identifies both before their
+      // word is taken (decisions 44, 47).
+      const sender = callingSession(db);
+      const by = sender ? `session:${sender}` : callingConductor() ? 'conductor' : 'operator';
+      // A message over the peer socket lands whole and never touches the input
+      // box, so it needs no typing — only the record, which core keeps either
+      // way.
       if (opts.sent) {
-        const sender = callingSession(db);
-        const by = sender ? `session:${sender}` : callingConductor() ? 'conductor' : 'operator';
         return steerOrRefuse(
           () => recordSteerMessage(db, session, by),
           `Recorded a message steer to session ${session}.`,
         );
       }
       steerOrRefuse(
-        () => steerSession(db, session, message, 'manual'),
+        () => steerSession(db, session, message, { kind: 'manual', by }),
         `Steered session ${session}.`,
       );
     });

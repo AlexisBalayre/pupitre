@@ -106,10 +106,15 @@ export function launchSelected(deps: ActionDeps, taskId: string, model: string):
   });
 }
 
-/** `pup steer`: type a correction into the session's launch pane, and record it. */
+/**
+ * `pup steer`: type a correction into the session's launch pane, and record it.
+ * No sender rides with it, where `pup steer` names one: this screen has no
+ * reading of who is at it, and a record naming the operator on a guess would
+ * be worse than one naming nobody.
+ */
 export function steerSelected(deps: ActionDeps, sessionId: string, message: string): ActionResult {
   return attempt(() => {
-    steerSession(deps.db, sessionId, message, 'manual');
+    steerSession(deps.db, sessionId, message, { kind: 'manual' });
     return `Steered ${sessionId}.`;
   });
 }
