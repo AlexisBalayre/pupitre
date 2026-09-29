@@ -513,7 +513,7 @@ function conductorSocket(repoProjectId: string): string {
  * know — a caller names the window it means and gets back a label to print or
  * an argv to run.
  */
-export type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
+type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
 
 /** What the window is called: what a peer addresses it by, and what the operator reads. */
 export function windowLabel(target: WindowTarget): string {
