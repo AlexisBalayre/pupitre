@@ -2,21 +2,17 @@ import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sanitizeReason } from '../../adapters/capability.utils.js';
-import {
-  attachArgs,
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
-  windowLabel,
-} from '../../claude/session-runtime.service.js';
+import { attachArgs, windowLabel } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
-import { appendEvent, getSession, transitionSession } from '../../core/session.repository.js';
+import { getSession, transitionSession } from '../../core/session.repository.js';
 import {
   isHandoffReady,
   requestHandoff,
   respawnSession,
 } from '../../core/session-handoff.service.js';
+import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
   interruptSession,
   killSession,
@@ -77,12 +73,20 @@ export function failure(error: unknown): ActionResult {
 }
 
 /**
- * `pup launch`: claim a backlog task and open a session on it. The rollback is
- * the CLI's own — `launchTask` claims the task, inserts the row and opens the
- * window before the kickoff can be refused, so a kickoff that never landed
- * leaves a claimed task and an empty window unless the session is killed
- * (decision 40). `model` empty means the profile's default, as omitting
- * `--model` does.
+ * A launch that undid itself, as one status line: the refusal that stopped it
+ * when there was one, what core undid, and the key to press to try again —
+ * this screen's retry, where the CLI names the command to re-run.
+ */
+function rolledBackLine(error: LaunchRolledBackError, retry: string): string {
+  const refused = error.refusal ? `${error.refusal.message} ` : '';
+  return `${refused}${error.rolledBack}. ${retry}`;
+}
+
+/**
+ * `pup launch`: claim a backlog task and open a session on it. A kickoff the
+ * window refused has already been rolled back by `launchTask` — the task is
+ * back in the backlog (decision 40), so the retry is the same key on the same
+ * task. `model` empty means the profile's default, as omitting `--model` does.
  */
 export function launchSelected(deps: ActionDeps, taskId: string, model: string): ActionResult {
   return attempt(() => {
@@ -96,14 +100,8 @@ export function launchSelected(deps: ActionDeps, taskId: string, model: string):
       });
       return `Launched ${sessionId} (tmux: ${windowLabel({ sessionId })}).`;
     } catch (error) {
-      if (!(error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError)) {
-        throw error;
-      }
-      killSession(deps.db, error.sessionId);
-      throw new Error(
-        `${error.message} Launch rolled back (session ${error.sessionId} killed); ` +
-          `press l on ${taskId} again.`,
-      );
+      if (!(error instanceof LaunchRolledBackError)) throw error;
+      throw new Error(rolledBackLine(error, `Press l on ${taskId} again.`));
     }
   });
 }
@@ -111,8 +109,7 @@ export function launchSelected(deps: ActionDeps, taskId: string, model: string):
 /** `pup steer`: type a correction into the session's launch pane, and record it. */
 export function steerSelected(deps: ActionDeps, sessionId: string, message: string): ActionResult {
   return attempt(() => {
-    steerSession(deps.db, sessionId, message);
-    appendEvent(deps.db, sessionId, 'steer', { kind: 'manual' });
+    steerSession(deps.db, sessionId, message, 'manual');
     return `Steered ${sessionId}.`;
   });
 }
@@ -124,7 +121,6 @@ export function steerSelected(deps: ActionDeps, sessionId: string, message: stri
 export function interruptSelected(deps: ActionDeps, sessionId: string): ActionResult {
   return attempt(() => {
     interruptSession(deps.db, sessionId);
-    appendEvent(deps.db, sessionId, 'interrupt', { steered: false });
     return `Interrupted ${sessionId}.`;
   });
 }
@@ -209,9 +205,9 @@ export async function respawnSelected(
 
 /**
  * `pup conductor start|stop`, chosen by what the snapshot says is running. The
- * start is the CLI's whole start: a window that never became ready has had no
- * context delivered, and is a bypass-permissions agent sitting in the main
- * checkout, so it is killed rather than left to inspect.
+ * start is the CLI's whole start, the conflict radar included: `startConductor`
+ * brings one up unless one is already sweeping, and rolls the window back
+ * itself when its context never landed.
  */
 export function toggleConductor(
   deps: ActionDeps,
@@ -223,21 +219,23 @@ export function toggleConductor(
       stopConductor(deps.repoPath);
       return 'Conductor stopped.';
     }
-    const handle = startConductor({
-      repoPath: deps.repoPath,
-      base: DEFAULT_BASE_PROFILE,
-      claudeUserDir: join(homedir(), '.claude'),
-      ...(models.model ? { model: models.model } : {}),
-      ...(models.workerModel ? { workerModel: models.workerModel } : {}),
-    });
-    if (!handle.delivered) {
-      stopConductor(deps.repoPath);
-      throw new Error(
-        `Conductor window ${handle.name} never became ready, so its context was not delivered ` +
-          'and the window was killed. Press c again.',
-      );
+    try {
+      const handle = startConductor({
+        db: deps.db,
+        repoPath: deps.repoPath,
+        base: DEFAULT_BASE_PROFILE,
+        claudeUserDir: join(homedir(), '.claude'),
+        ...(models.model ? { model: models.model } : {}),
+        ...(models.workerModel ? { workerModel: models.workerModel } : {}),
+      });
+      const radar = handle.radarTarget
+        ? ` Conflict radar started with it (tmux: ${handle.radarTarget}).`
+        : '';
+      return `Conductor running (tmux: ${handle.name}).${radar}`;
+    } catch (error) {
+      if (!(error instanceof LaunchRolledBackError)) throw error;
+      throw new Error(rolledBackLine(error, 'Press c again.'));
     }
-    return `Conductor running (tmux: ${handle.name}).`;
   });
 }
 

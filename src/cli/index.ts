@@ -24,7 +24,6 @@ import {
   conductorName,
   killWatcher,
   launchWatcher,
-  SessionPaneMissingError,
   SteerNotDeliveredError,
   windowLabel,
 } from '../claude/session-runtime.service.js';
@@ -54,8 +53,7 @@ import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.j
 import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
-import { getWatcherBeat } from '../core/overlap.repository.js';
-import { scanOverlaps, WATCH_INTERVAL_MS, WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
+import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
@@ -64,7 +62,6 @@ import { listProjects, putProjectToSleep, wakeProject } from '../core/project.se
 import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
-  appendEvent,
   deleteTask,
   findSessionByWorktree,
   getProject,
@@ -72,7 +69,6 @@ import {
   getTask,
   listBacklogTasks,
   listSessions,
-  type SessionRow,
   transitionSession,
   updateTaskSpec,
 } from '../core/session.repository.js';
@@ -89,8 +85,12 @@ import {
   respawnSession,
 } from '../core/session-handoff.service.js';
 import {
+  isRefusedSteer,
+  LaunchRolledBackError,
   ScopeConflictError,
   TaskAlreadyClaimedError,
+  TerminalSessionError,
+  UnknownSessionError,
   UnknownTaskError,
 } from '../core/session-lifecycle.errors.js';
 import {
@@ -100,9 +100,9 @@ import {
   launchTask,
   markSessionDone,
   planTask,
+  recordSteerMessage,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { isTerminal } from '../core/session-state.utils.js';
 import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
@@ -359,26 +359,6 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 }
 
 /**
- * Session lookup for commands that drive a live tmux pane (`steer`,
- * `interrupt`). Terminal sessions are refused, not just missing ones: their
- * pane is long gone, and a dead name is exactly what tmux would have
- * prefix-matched onto a live sibling before targets were pinned. Prints the
- * refusal and sets the exit code; callers just bail on undefined.
- */
-function resolveLiveSession(db: Database, session: string, verb: string): SessionRow | undefined {
-  const row = getSession(db, session);
-  if (!row) {
-    refuse(`No session ${session}.`);
-    return undefined;
-  }
-  if (isTerminal(row.state)) {
-    refuse(`Session ${session} is ${row.state}; nothing to ${verb}.`);
-    return undefined;
-  }
-  return row;
-}
-
-/**
  * Shared by `merge`, `init` and `audit`: the three commands that run children a
  * session wrote. A flag rather than the `PUP_GATE_ENV` variable it replaces —
  * direnv, a CI job or a shell wrapper supplies a variable without anyone
@@ -401,29 +381,43 @@ const ORIGIN_MOVED_DESCRIPTION =
   "re-record origin's URL as this project's push target, after origin legitimately moved";
 
 /**
- * Undo a launch whose kickoff was refused, in the order both refused launches
- * need: the refusal first — an `undo` that throws must not hide why the launch
- * failed — then the window, then the line naming the rollback and the retry.
- * `undo` and that line are the callers' own: a session's launch kills a
- * session, the conductor's kills a window, and each says so in its own words.
+ * A launch that undid itself, as the operator reads it: the refusal that
+ * stopped it, when there was one to read, then what was undone and what to
+ * type to try it again. Core does the undoing and words what it undid; the
+ * retry is this front end's — a terminal hands the shell back, so it names
+ * the command rather than a key to press.
  */
-function rollBackRefusedLaunch(error: RefusedSteer, undo: () => void, rolledBack: string): void {
-  console.error(error.message);
-  undo();
-  console.error(rolledBack);
-  process.exitCode = 1;
+function reportRolledBack(error: LaunchRolledBackError, retry: string): void {
+  if (error.refusal) console.error(error.refusal.message);
+  refuse(`${error.rolledBack}. ${retry}`);
 }
 
 /**
- * The two ways a steer, a kickoff included, is refused with nothing typed: the
- * paste never landed whole (decision 45), or the pane recorded at launch is
- * not there to type into (decision 46) — for a launch, a window that died
- * before its context arrived.
+ * The refusals a steer or an interrupt answers for rather than crashes on: a
+ * session the store does not hold or has already finished with, a pane that is
+ * not there to type into, or a paste that never landed whole.
  */
-type RefusedSteer = SteerNotDeliveredError | SessionPaneMissingError;
+function isSteerRefusal(error: unknown): error is Error {
+  return (
+    isRefusedSteer(error) ||
+    error instanceof UnknownSessionError ||
+    error instanceof TerminalSessionError
+  );
+}
 
-function isRefusedSteer(error: unknown): error is RefusedSteer {
-  return error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError;
+/**
+ * Run a steer or an interrupt and say what happened: the refusals core throws
+ * are the operator's to read, and anything else is a bug and is rethrown.
+ */
+function steerOrRefuse(act: () => void, done: string): void {
+  try {
+    act();
+  } catch (error) {
+    if (!isSteerRefusal(error)) throw error;
+    refuse(error.message);
+    return;
+  }
+  console.log(done);
 }
 
 /**
@@ -441,13 +435,9 @@ function refuse(message: string): void {
 type ExpectedLaunchError = new (...args: never[]) => Error;
 
 /**
- * The tail every command that opens a session shares. A kickoff the session
- * refused is rolled back: the launch has already claimed its task, inserted
- * its row as `running` and opened its window — `startSession` throws after all
- * three — so left as is the task reads as claimed (a re-launch raises
- * TaskAlreadyClaimedError) and the window sits empty. Killing the session
- * undoes it: the window goes, the row is `killed`, and the task returns to the
- * backlog (decision 40), where it now sits — so the retry is always
+ * The tail every command that opens a session shares. A launch whose kickoff
+ * the window refused has already undone itself in core, and leaves the task
+ * back in the backlog (decision 40) — so the retry is always
  * `pup launch <task>`, for a sweep too: `createSession` had already planned the
  * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
  * An error the caller could not have avoided — the scope it collides with, a
@@ -456,7 +446,6 @@ type ExpectedLaunchError = new (...args: never[]) => Error;
  * Returns the session id, or undefined once a refusal has been printed.
  */
 function launchOrRefuse(
-  db: Database,
   taskId: string,
   expected: readonly ExpectedLaunchError[],
   start: () => string,
@@ -464,13 +453,8 @@ function launchOrRefuse(
   try {
     return start();
   } catch (error) {
-    if (isRefusedSteer(error)) {
-      const { sessionId } = error;
-      rollBackRefusedLaunch(
-        error,
-        () => killSession(db, sessionId),
-        `Launch rolled back (session ${sessionId} killed). Re-run \`pup launch ${taskId}\`.`,
-      );
+    if (error instanceof LaunchRolledBackError) {
+      reportRolledBack(error, `Re-run \`pup launch ${taskId}\`.`);
       return undefined;
     }
     if (!expected.some((type) => error instanceof type)) throw error;
@@ -695,7 +679,7 @@ export function buildProgram(): Command {
       // `InvalidProfileError` too: the compile validates the spec AND reads the
       // project brief, so an oversized brief must refuse in one line here
       // rather than crash out of a launch (decision 57).
-      const sessionId = launchOrRefuse(db, task.id, [ScopeConflictError, InvalidProfileError], () =>
+      const sessionId = launchOrRefuse(task.id, [ScopeConflictError, InvalidProfileError], () =>
         createSession(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
@@ -837,7 +821,6 @@ export function buildProgram(): Command {
         console.log(`scope-in: ${sanitizeReason((spec.scopeIn ?? []).join(', '))}`);
       }
       const sessionId = launchOrRefuse(
-        db,
         taskId,
         [UnknownTaskError, TaskAlreadyClaimedError, ScopeConflictError, InvalidProfileError],
         () =>
@@ -882,6 +865,7 @@ export function buildProgram(): Command {
       let handle: ConductorHandle;
       try {
         handle = startConductor({
+          db,
           repoPath,
           base: DEFAULT_BASE_PROFILE,
           claudeUserDir: join(homedir(), '.claude'),
@@ -889,25 +873,11 @@ export function buildProgram(): Command {
           workerModel: opts.workerModel,
         });
       } catch (error) {
-        if (!isRefusedSteer(error)) throw error;
-        // Rolled back like a session launch whose kickoff never landed, so
-        // nothing runs on an empty prompt; the window is the conductor's
-        // whole footprint, so killing it is the whole rollback.
-        rollBackRefusedLaunch(
-          error,
-          () => stopConductor(repoPath),
-          'Conductor launch rolled back (window killed). Re-run `pup conductor`.',
-        );
-        return;
-      }
-      // A window with no context is a bypass-permissions agent in the main
-      // checkout that has read none of its tier; killed, not left to inspect.
-      if (!handle.delivered) {
-        stopConductor(repoPath);
-        return refuse(
-          `Conductor window ${handle.name} never became ready, so its context was not ` +
-            'delivered and the window was killed. Re-run `pup conductor`.',
-        );
+        if (!(error instanceof LaunchRolledBackError)) throw error;
+        // A kickoff that never landed, and a window that never became ready to
+        // take one, are both rolled back where the launch is: the window is
+        // the conductor's whole footprint, so killing it is the whole rollback.
+        return reportRolledBack(error, 'Re-run `pup conductor`.');
       }
       // Scrubbed like every other named field a print interpolates, rather
       // than allowlisted as another derivation of the repo path: `handle.name`
@@ -920,19 +890,12 @@ export function buildProgram(): Command {
       console.log(
         `Attach with: ${sanitizeReason(attachCommand({ conductorOf: projectId(repoPath) }))}`,
       );
-      // The radar is the turn watchdog's host, and the conductor is the thing
-      // the watchdog exists to keep going: its own waiting turn dies with the
-      // worker's, and then nobody resumes either (addendum to decision 35). So
-      // a conductor without a radar is started with one, and told so — the
-      // operator asked for a fleet that runs itself, not for two commands.
-      // Whether one is up is the store's word, not a window name a session
-      // could mint: a radar that sweeps records its beat every sweep, and
-      // `launchWatcher` replaces whatever stale window wears the name.
-      const beat = getWatcherBeat(db, projectId(repoPath));
-      if (beat === undefined || Date.now() - beat.getTime() > WATCH_STALE_AFTER_MS) {
-        const { target } = launchWatcher(projectId(repoPath), repoPath);
+      // The start brings a radar up with it unless one is already sweeping —
+      // the operator asked for a fleet that runs itself, not for two commands
+      // — and this is where that is said out loud.
+      if (handle.radarTarget) {
         console.log(
-          `Conflict radar started with it (tmux: ${target}) — it runs the turn watchdog.`,
+          `Conflict radar started with it (tmux: ${handle.radarTarget}) — it runs the turn watchdog.`,
         );
       }
     });
@@ -1326,29 +1289,22 @@ export function buildProgram(): Command {
     .option('--sent', 'record a steer already delivered by cross-session message; type nothing')
     .action((session: string, message: string, opts: { sent?: boolean }) => {
       const { db } = project();
-      if (!resolveLiveSession(db, session, 'steer')) return;
       // A message sent over the peer socket lands whole and never touches the
-      // input box, so it needs no typing — but it needs the record, or the
-      // report and last-steer queries would show a session corrected by
-      // nobody. The event names the sender, and a session pup can identify is
-      // named as one before its word is taken (decisions 44, 47).
+      // input box, so it needs no typing — only the record, which core keeps
+      // either way. The sender is this front end's to name: a session pup can
+      // identify is named as one before its word is taken (decisions 44, 47).
       if (opts.sent) {
         const sender = callingSession(db);
-        appendEvent(db, session, 'steer', {
-          kind: 'message',
-          by: sender ? `session:${sender}` : callingConductor() ? 'conductor' : 'operator',
-        });
-        console.log(`Recorded a message steer to session ${session}.`);
-        return;
+        const by = sender ? `session:${sender}` : callingConductor() ? 'conductor' : 'operator';
+        return steerOrRefuse(
+          () => recordSteerMessage(db, session, by),
+          `Recorded a message steer to session ${session}.`,
+        );
       }
-      try {
-        steerSession(db, session, message);
-      } catch (error) {
-        if (!isRefusedSteer(error)) throw error;
-        return refuse(error.message);
-      }
-      appendEvent(db, session, 'steer', { kind: 'manual' });
-      console.log(`Steered session ${session}.`);
+      steerOrRefuse(
+        () => steerSession(db, session, message, 'manual'),
+        `Steered session ${session}.`,
+      );
     });
 
   program
@@ -1356,28 +1312,8 @@ export function buildProgram(): Command {
     .description("Abort the session's in-flight tool call (Escape), optionally steering a message")
     .action((session: string, message?: string) => {
       const { db } = project();
-      if (!resolveLiveSession(db, session, 'interrupt')) return;
-      try {
-        interruptSession(db, session);
-      } catch (error) {
-        // Nothing landed, so nothing is on record.
-        if (!(error instanceof SessionPaneMissingError)) throw error;
-        return refuse(error.message);
-      }
-      try {
-        if (message) steerSession(db, session, message);
-      } catch (error) {
-        if (!isRefusedSteer(error)) throw error;
-        // Escape already landed, so the interrupt is on record; only the
-        // steer is refused.
-        appendEvent(db, session, 'interrupt', { steered: false });
-        return refuse(error.message);
-      }
-      appendEvent(db, session, 'interrupt', { steered: Boolean(message) });
-      // The message is a real steer — log it as one too, so last-steer queries
-      // see it no matter which path delivered it.
-      if (message) appendEvent(db, session, 'steer', { kind: 'interrupt' });
-      console.log(
+      steerOrRefuse(
+        () => interruptSession(db, session, message),
         message ? `Interrupted and steered session ${session}.` : `Interrupted session ${session}.`,
       );
     });
@@ -1895,7 +1831,7 @@ export function buildProgram(): Command {
         // launch can raise, so the only refusal left for the operator to answer
         // is the project brief, which the compile reads and can refuse for
         // being oversized (decision 57).
-        const sessionId = launchOrRefuse(db, task.id, [InvalidProfileError], () =>
+        const sessionId = launchOrRefuse(task.id, [InvalidProfileError], () =>
           createSession(db, {
             repoPath,
             base: DEFAULT_BASE_PROFILE,

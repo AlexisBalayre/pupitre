@@ -92,6 +92,7 @@ vi.mock('../core/session-lifecycle.service.js', () => ({
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   planTask: vi.fn(),
+  recordSteerMessage: vi.fn(),
   sessionPane: vi.fn(),
   steerSession: vi.fn(),
 }));
@@ -114,7 +115,6 @@ vi.mock('../core/session-handoff.service.js', () => ({
 import { render } from 'ink';
 import {
   deadTurnError,
-  launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
@@ -126,8 +126,7 @@ import { gitDiffPaths } from '../core/git-diff.client.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
-import { recordWatcherBeat, replaceOverlaps } from '../core/overlap.repository.js';
-import { WATCH_STALE_AFTER_MS } from '../core/overlap.service.js';
+import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import {
@@ -153,7 +152,13 @@ import {
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import { ScopeConflictError, UnknownTaskError } from '../core/session-lifecycle.errors.js';
+import {
+  LaunchRolledBackError,
+  ScopeConflictError,
+  TerminalSessionError,
+  UnknownSessionError,
+  UnknownTaskError,
+} from '../core/session-lifecycle.errors.js';
 import {
   createSession,
   interruptSession,
@@ -161,6 +166,7 @@ import {
   launchTask,
   markSessionDone,
   planTask,
+  recordSteerMessage,
   sessionPane,
   steerSession,
 } from '../core/session-lifecycle.service.js';
@@ -276,6 +282,18 @@ function seedBacklogTask(repoPath: string, taskId: string, goal: string): void {
 }
 
 /** A session whose tmux pane is gone for good — steer/interrupt must refuse it. */
+/**
+ * What `launchTask` and `createSession` throw once they have undone a launch
+ * whose kickoff the window refused: the refusal that stopped it, and the
+ * clause naming what was undone. The retry is this front end's to add.
+ */
+function rolledBackLaunch(sessionId: string): LaunchRolledBackError {
+  return new LaunchRolledBackError(
+    `Launch rolled back (session ${sessionId} killed)`,
+    new SteerNotDeliveredError(sessionId, 3000),
+  );
+}
+
 function seedKilledSession(repoPath: string, sessionId: string): void {
   seedSession(repoPath, sessionId);
   const { db } = resolveProject(repoPath);
@@ -345,14 +363,6 @@ function seedDeadTurn(repoPath: string, sessionId: string, refusal?: string): vo
     stalledAt,
     ...(refusal ? { refusal } : {}),
   });
-  db.close();
-}
-
-/** The radar's last beat, as a sweep records it (real, unmocked repository). */
-function seedWatcherBeat(repoPath: string, ageMs: number): void {
-  const { db } = resolveProject(repoPath);
-  ensureProject(db, projectId(repoPath), repoPath);
-  recordWatcherBeat(db, projectId(repoPath), new Date(Date.now() - ageMs));
   db.close();
 }
 
@@ -1786,15 +1796,14 @@ describe('CLI commands', () => {
     // A sweep is scoped to the whole repo, so it collides with every live
     // session there is; refusing it would make `--sweep` unrunnable whenever
     // anything else runs, and there is no flag to say otherwise (decision 41).
-    it('rolls the sweep launch back when its kickoff never lands whole', () => {
+    it('reports the sweep launch that rolled itself back', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockImplementation(() => {
-        throw new SteerNotDeliveredError('sweep-abc', 3000);
+        throw rolledBackLaunch('sweep-abc');
       });
 
       buildProgram().parse(['audit', '--sweep'], { from: 'user' });
 
-      expect(firstCall(killSession)[1]).toBe('sweep-abc');
       // The sweep task was already planned, so the retry is a launch of it,
       // not another `--sweep` that would plan a second one beside the orphan.
       const [, request] = firstCall(createSession);
@@ -2066,21 +2075,19 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('fails loudly when the kickoff context never lands whole in the new window', () => {
-      // kickoff() delivers the compiled context through the same paste, so a
-      // launch whose context arrived as a tail is a launch that failed, not a
-      // session to attach to (decision 45).
+    // The kickoff delivers the compiled context through the same paste a steer
+    // uses, so a launch whose context arrived as a tail is a launch that
+    // failed, not a session to attach to (decision 45). `launchTask` undoes it
+    // and answers with both halves; this command adds the retry — the task is
+    // back in the backlog (decision 40), so the retry is a plain launch of it.
+    it('prints the refusal, then what was undone and how to try again', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new SteerNotDeliveredError('t-abc-0', 3000);
+        throw rolledBackLaunch('t-abc-0');
       });
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
-      // startSession throws after the task is claimed, the row is `running`
-      // and the window is up; killing the session returns the task to the
-      // backlog (decision 40) so `pup launch` can be re-run.
-      expect(firstCall(killSession)[1]).toBe('t-abc-0');
       expect(errors).toEqual([
         'Steer to session t-abc-0 did not land: 3000 chars',
         'Launch rolled back (session t-abc-0 killed). Re-run `pup launch t-abc`.',
@@ -2089,36 +2096,17 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('Launched session');
     });
 
-    it('prints the refusal before the rollback, so a kill that throws does not hide it', () => {
+    // The rollback line stands on its own when core had no refusal to hand
+    // over: the window never said anything, and one line is the whole of it.
+    it('prints the rollback alone when no refusal rode with it', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new SteerNotDeliveredError('t-abc-0', 3000);
-      });
-      vi.mocked(killSession).mockImplementation(() => {
-        throw new Error('tmux server gone');
-      });
-
-      expect(() => buildProgram().parse(['launch', 't-abc'], { from: 'user' })).toThrow(
-        'tmux server gone',
-      );
-
-      expect(errors).toEqual(['Steer to session t-abc-0 did not land: 3000 chars']);
-    });
-
-    it('rolls back a launch whose window was gone before the kickoff could type into it', () => {
-      // The same three steps had already happened — task claimed, row running,
-      // window opened — when the pane vanished under the kickoff, so the same
-      // rollback applies (decision 46).
-      useCwd(initRepo());
-      vi.mocked(launchTask).mockImplementation(() => {
-        throw new SessionPaneMissingError('t-abc-0', '%3', 'gone');
+        throw new LaunchRolledBackError('Launch rolled back (session t-abc-0 killed)');
       });
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
-      expect(firstCall(killSession)[1]).toBe('t-abc-0');
       expect(errors).toEqual([
-        "Session t-abc-0's pane %3 no longer exists; nothing was sent.",
         'Launch rolled back (session t-abc-0 killed). Re-run `pup launch t-abc`.',
       ]);
       expect(process.exitCode).toBe(1);
@@ -2181,12 +2169,7 @@ describe('CLI commands', () => {
     it('starts the conductor with its own model and the model its sessions get', () => {
       const repo = initRepo();
       useCwd(repo);
-      vi.mocked(startConductor).mockReturnValue({
-        name: 'pup-conductor-p1',
-        paneId: '%3',
-        delivered: true,
-      });
-      seedWatcherBeat(repo, 0);
+      vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
 
       buildProgram().parse(['conductor', '--model', 'fable', '--worker-model', 'opus'], {
         from: 'user',
@@ -2205,31 +2188,22 @@ describe('CLI commands', () => {
         /^Attach with: tmux -L pup-conductor-([0-9a-f]{12}) attach -t '=pup-conductor-\1:'$/,
       );
       expect(logs).toHaveLength(2);
-      expect(launchWatcher).not.toHaveBeenCalled();
       expect(process.exitCode).toBeUndefined();
     });
 
-    // The radar hosts the turn watchdog, and the conductor's waiting turn is
-    // what the watchdog exists to bring back (addendum to decision 35).
-    // Whether one is up is the store's beat, not a window name a session
-    // could mint.
-    it.each([
-      ['none has ever swept', undefined],
-      ['the last beat is stale', WATCH_STALE_AFTER_MS + 1_000],
-    ])('starts the conflict radar with it when %s, and says so', (_when, beatAgeMs) => {
-      const repo = initRepo();
-      useCwd(repo);
+    // The start brings a radar up with it unless one is already sweeping —
+    // `startConductor`'s call (src/core/conductor.test.ts), since the store's
+    // beat is what decides it. This command is where it is said out loud.
+    it('names the conflict radar the start brought up with it', () => {
+      useCwd(initRepo());
       vi.mocked(startConductor).mockReturnValue({
         name: 'pup-conductor-p1',
         paneId: '%3',
-        delivered: true,
+        radarTarget: 'pup-watch-p1',
       });
-      if (beatAgeMs !== undefined) seedWatcherBeat(repo, beatAgeMs);
-      vi.mocked(launchWatcher).mockReturnValue({ target: 'pup-watch-p1' });
 
       buildProgram().parse(['conductor', 'start'], { from: 'user' });
 
-      expect(firstCall(launchWatcher)).toEqual([projectId(repo), repo]);
       expect(logs[2]).toBe(
         'Conflict radar started with it (tmux: pup-watch-p1) — it runs the turn watchdog.',
       );
@@ -2255,34 +2229,45 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('rolls the launch back when the kickoff never lands whole', () => {
+    // `startConductor` kills the window itself and answers with both halves
+    // (src/core/conductor.test.ts); this command adds the retry, which on a
+    // terminal is the command to type again.
+    it('prints the refusal, then what was undone and how to try again', () => {
       useCwd(initRepo());
       vi.mocked(startConductor).mockImplementation(() => {
-        throw new SteerNotDeliveredError('conductor-p1', 900);
+        throw new LaunchRolledBackError(
+          'Conductor launch rolled back (window killed)',
+          new SteerNotDeliveredError('conductor-p1', 900),
+        );
       });
 
       buildProgram().parse(['conductor'], { from: 'user' });
 
-      expect(stopConductor).toHaveBeenCalledTimes(1);
-      expect(errors[0]).toContain('did not land');
-      expect(errors[1]).toContain('rolled back');
+      expect(errors).toEqual([
+        'Steer to session conductor-p1 did not land: 900 chars',
+        'Conductor launch rolled back (window killed). Re-run `pup conductor`.',
+      ]);
+      expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
     });
 
-    // A window with no context is a bypass-permissions agent in the main
-    // checkout that has read none of its tier — killed, never left up.
-    it('kills the window and exits 1 when it never became ready to take its context', () => {
+    // A window that never became ready took no context, so there is no
+    // refusal to read: the rollback line is the whole of what happened.
+    it('prints the rollback alone when it never became ready to take its context', () => {
       useCwd(initRepo());
-      vi.mocked(startConductor).mockReturnValue({
-        name: 'pup-conductor-p1',
-        paneId: '%3',
-        delivered: false,
+      vi.mocked(startConductor).mockImplementation(() => {
+        throw new LaunchRolledBackError(
+          'Conductor window pup-conductor-p1 never became ready, so its context was not ' +
+            'delivered and the window was killed',
+        );
       });
 
       buildProgram().parse(['conductor'], { from: 'user' });
 
-      expect(stopConductor).toHaveBeenCalledTimes(1);
-      expect(errors.join('\n')).toContain('the window was killed');
+      expect(errors).toEqual([
+        'Conductor window pup-conductor-p1 never became ready, so its context was not ' +
+          'delivered and the window was killed. Re-run `pup conductor`.',
+      ]);
       expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
     });
@@ -3069,15 +3054,14 @@ describe('CLI commands', () => {
       expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true });
     });
 
-    it('rolls the launch back when the kickoff never lands whole', () => {
+    it('reports the launch that rolled itself back', () => {
       useCwd(initRepo());
       vi.mocked(createSession).mockImplementation(() => {
-        throw new SteerNotDeliveredError('t-new-0', 3000);
+        throw rolledBackLaunch('t-new-0');
       });
 
       buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
 
-      expect(firstCall(killSession)[1]).toBe('t-new-0');
       expect(errors[0]).toBe('Steer to session t-new-0 did not land: 3000 chars');
       expect(errors[1]).toMatch(
         /^Launch rolled back \(session t-new-0 killed\)\. Re-run `pup launch t-[a-z0-9]+`\.$/,
@@ -3117,18 +3101,15 @@ describe('CLI commands', () => {
     });
   });
 
+  /**
+   * The steer itself, its refusals and its record all live in
+   * `steerSession` (src/core/session-lifecycle.test.ts). What this command
+   * still owns is reaching it, naming the sender a `--sent` record is
+   * attributed to, and turning each refusal into a line and a failing exit
+   * rather than a stack.
+   */
   describe('steer', () => {
-    it('reports no session and does not steer', () => {
-      useCwd(initRepo());
-
-      buildProgram().parse(['steer', 'missing-session', 'do X instead'], { from: 'user' });
-
-      expect(errors).toEqual(['No session missing-session.']);
-      expect(process.exitCode).toBe(1);
-      expect(steerSession).not.toHaveBeenCalled();
-    });
-
-    it('steers an existing session and records the event', () => {
+    it('steers an existing session by id', () => {
       const repo = initRepo();
       useCwd(repo);
       seedSession(repo, 's1');
@@ -3137,15 +3118,10 @@ describe('CLI commands', () => {
 
       // By session id through the lifecycle, which resolves the pane recorded
       // at launch; the CLI never forms a tmux target itself (decision 46).
-      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'do X instead');
+      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'do X instead', 'manual');
+      expect(recordSteerMessage).not.toHaveBeenCalled();
       expect(logs).toContain('Steered session s1.');
       expect(process.exitCode).toBeUndefined();
-
-      const { db } = resolveProject(repo);
-      const events = db
-        .prepare("SELECT type, payload FROM events WHERE session_id = 's1'")
-        .all() as { type: string; payload: string }[];
-      expect(events).toContainEqual({ type: 'steer', payload: JSON.stringify({ kind: 'manual' }) });
     });
 
     // A message over the peer socket lands whole and never touches the input
@@ -3168,184 +3144,138 @@ describe('CLI commands', () => {
         buildProgram().parse(['steer', 's1', 'do X instead', '--sent'], { from: 'user' });
 
         expect(steerSession).not.toHaveBeenCalled();
+        expect(recordSteerMessage).toHaveBeenCalledWith(expect.anything(), 's1', by);
         expect(logs).toContain('Recorded a message steer to session s1.');
-        const { db } = resolveProject(repo);
-        const events = db
-          .prepare("SELECT type, payload FROM events WHERE session_id = 's1'")
-          .all() as { type: string; payload: string }[];
-        expect(events).toEqual([
-          { type: 'steer', payload: JSON.stringify({ kind: 'message', by }) },
-        ]);
       },
     );
 
-    it('refuses a terminal session', () => {
+    // Every refusal core throws for a steer, read back as the operator sees
+    // it: one line, a failing exit, and no claim that anything was steered.
+    it.each([
+      ['a session the store does not hold', () => new UnknownSessionError('s1'), 'No session s1.'],
+      [
+        'a session that has stopped',
+        () => new TerminalSessionError('s1', 'killed', 'steer'),
+        'Session s1 is killed; nothing to steer.',
+      ],
+      [
+        'a paste that never landed whole',
+        () => new SteerNotDeliveredError('s1', 3000),
+        'Steer to session s1 did not land: 3000 chars',
+      ],
+      [
+        'a pane that is gone',
+        () => new SessionPaneMissingError('s1', '%3', 'gone'),
+        "Session s1's pane %3 no longer exists; nothing was sent.",
+      ],
+    ])('reports %s, and exits 1', (_case, refusal, message) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(steerSession).mockImplementation(() => {
+        throw refusal();
+      });
+
+      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
+
+      expect(errors).toEqual([message]);
+      expect(process.exitCode).toBe(1);
+      expect(logs).not.toContain('Steered session s1.');
+    });
+
+    // The same refusals on the record-only path, where nothing was typed.
+    it('reports a refused `--sent` record, and exits 1', () => {
       const repo = initRepo();
       useCwd(repo);
       seedKilledSession(repo, 's1');
+      vi.mocked(recordSteerMessage).mockImplementation(() => {
+        throw new TerminalSessionError('s1', 'killed', 'steer');
+      });
 
-      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
+      buildProgram().parse(['steer', 's1', 'do X instead', '--sent'], { from: 'user' });
 
       expect(errors).toEqual(['Session s1 is killed; nothing to steer.']);
       expect(process.exitCode).toBe(1);
-      expect(steerSession).not.toHaveBeenCalled();
+      expect(logs).not.toContain('Recorded a message steer to session s1.');
     });
 
-    it('exits 1 with the named message, and records no steer, when the paste never lands', () => {
+    // A bug is not a refusal: it keeps its stack rather than being printed as
+    // a line the operator is meant to act on.
+    it('rethrows anything that is not a refusal', () => {
       const repo = initRepo();
       useCwd(repo);
       seedSession(repo, 's1');
       vi.mocked(steerSession).mockImplementation(() => {
-        throw new SteerNotDeliveredError('s1', 3000);
+        throw new TypeError('undefined is not a function');
       });
 
-      buildProgram().parse(['steer', 's1', 'a'.repeat(3000)], { from: 'user' });
-
-      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
-      expect(process.exitCode).toBe(1);
-      expect(logs).not.toContain('Steered session s1.');
-      const { db } = resolveProject(repo);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 's1'").get()).toEqual({
-        n: 0,
-      });
-    });
-
-    it('exits 1 with the named message, and records no steer, when the launch pane is gone', () => {
-      // The pane pinned at launch no longer exists; nothing was pasted into
-      // whatever pane the session now shows (decision 46).
-      const repo = initRepo();
-      useCwd(repo);
-      seedSession(repo, 's1');
-      vi.mocked(steerSession).mockImplementation(() => {
-        throw new SessionPaneMissingError('s1', '%3', 'gone');
-      });
-
-      buildProgram().parse(['steer', 's1', 'do X instead'], { from: 'user' });
-
-      expect(errors).toEqual(["Session s1's pane %3 no longer exists; nothing was sent."]);
-      expect(process.exitCode).toBe(1);
-      expect(logs).not.toContain('Steered session s1.');
-      const { db } = resolveProject(repo);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = 's1'").get()).toEqual({
-        n: 0,
-      });
+      expect(() => buildProgram().parse(['steer', 's1', 'do X'], { from: 'user' })).toThrow(
+        TypeError,
+      );
     });
   });
 
+  /**
+   * Escape, the steer that may ride behind it and both their records are
+   * `interruptSession`'s (src/core/session-lifecycle.test.ts). This command
+   * hands it the message, if any, and reports what came back.
+   */
   describe('interrupt', () => {
-    function sessionEvents(repo: string, sessionId: string): { type: string; payload: string }[] {
-      const { db } = resolveProject(repo);
-      return db.prepare('SELECT type, payload FROM events WHERE session_id = ?').all(sessionId) as {
-        type: string;
-        payload: string;
-      }[];
-    }
-
-    it('reports no session and touches neither tmux nor the event log', () => {
-      useCwd(initRepo());
-
-      buildProgram().parse(['interrupt', 'missing-session'], { from: 'user' });
-
-      expect(errors).toEqual(['No session missing-session.']);
-      expect(process.exitCode).toBe(1);
-      expect(interruptSession).not.toHaveBeenCalled();
-      expect(steerSession).not.toHaveBeenCalled();
-    });
-
-    it('sends Escape before steering when a message is given, and records a steered interrupt', () => {
+    it('hands the message to the interrupt, so Escape lands before it', () => {
       const repo = initRepo();
       useCwd(repo);
       seedSession(repo, 's1');
 
       buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
 
-      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1');
-      expect(steerSession).toHaveBeenCalledWith(expect.anything(), 's1', 'retry the fetch');
-      // The whole point of `interrupt <sid> "msg"` over `steer` is Escape lands
-      // FIRST, so the steer is not queued behind the hung tool call.
-      const escapeOrder = vi.mocked(interruptSession).mock.invocationCallOrder[0];
-      const steerOrder = vi.mocked(steerSession).mock.invocationCallOrder[0];
-      expect(escapeOrder).toBeLessThan(steerOrder as number);
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1', 'retry the fetch');
+      expect(steerSession).not.toHaveBeenCalled();
       expect(logs).toContain('Interrupted and steered session s1.');
       expect(process.exitCode).toBeUndefined();
-      const events = sessionEvents(repo, 's1');
-      expect(events).toContainEqual({
-        type: 'interrupt',
-        payload: JSON.stringify({ steered: true }),
-      });
-      // The delivered message is a real steer — logged as one too, so a
-      // last-steer query cannot miss steers that arrived via interrupt.
-      expect(events).toContainEqual({
-        type: 'steer',
-        payload: JSON.stringify({ kind: 'interrupt' }),
-      });
     });
 
-    it('refuses a terminal session without touching tmux', () => {
-      const repo = initRepo();
-      useCwd(repo);
-      seedKilledSession(repo, 's1');
-
-      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
-
-      expect(errors).toEqual(['Session s1 is killed; nothing to interrupt.']);
-      expect(process.exitCode).toBe(1);
-      expect(interruptSession).not.toHaveBeenCalled();
-      expect(steerSession).not.toHaveBeenCalled();
-    });
-
-    it('records the interrupt but not the steer, and exits 1, when the message never lands', () => {
-      const repo = initRepo();
-      useCwd(repo);
-      seedSession(repo, 's1');
-      vi.mocked(steerSession).mockImplementation(() => {
-        throw new SteerNotDeliveredError('s1', 3000);
-      });
-
-      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
-
-      // Escape had already landed when the paste was refused.
-      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1');
-      expect(errors).toEqual(['Steer to session s1 did not land: 3000 chars']);
-      expect(process.exitCode).toBe(1);
-      expect(sessionEvents(repo, 's1')).toEqual([
-        { type: 'interrupt', payload: JSON.stringify({ steered: false }) },
-      ]);
-    });
-
-    it('does not steer when no message is given', () => {
+    it('sends Escape alone when no message is given', () => {
       const repo = initRepo();
       useCwd(repo);
       seedSession(repo, 's1');
 
       buildProgram().parse(['interrupt', 's1'], { from: 'user' });
 
-      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1');
-      expect(steerSession).not.toHaveBeenCalled();
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1', undefined);
       expect(logs).toContain('Interrupted session s1.');
       expect(process.exitCode).toBeUndefined();
-      expect(sessionEvents(repo, 's1')).toContainEqual({
-        type: 'interrupt',
-        payload: JSON.stringify({ steered: false }),
-      });
     });
 
-    it('records nothing, and does not steer, when the launch pane is gone before Escape', () => {
+    it.each([
+      ['a session the store does not hold', () => new UnknownSessionError('s1'), 'No session s1.'],
+      [
+        'a session that has stopped',
+        () => new TerminalSessionError('s1', 'killed', 'interrupt'),
+        'Session s1 is killed; nothing to interrupt.',
+      ],
+      [
+        'a pane that is gone before Escape',
+        () => new SessionPaneMissingError('s1', '%3', 'gone'),
+        "Session s1's pane %3 no longer exists; nothing was sent.",
+      ],
+      [
+        'a message that never landed after Escape did',
+        () => new SteerNotDeliveredError('s1', 3000),
+        'Steer to session s1 did not land: 3000 chars',
+      ],
+    ])('reports %s, and exits 1', (_case, refusal, message) => {
       const repo = initRepo();
       useCwd(repo);
       seedSession(repo, 's1');
       vi.mocked(interruptSession).mockImplementation(() => {
-        throw new SessionPaneMissingError('s1', '%3', 'gone');
+        throw refusal();
       });
 
       buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
 
-      // Escape never landed, so there is no interrupt to put on record, and
-      // the steer is not attempted into a pane that is not there.
-      expect(errors).toEqual(["Session s1's pane %3 no longer exists; nothing was sent."]);
+      expect(errors).toEqual([message]);
       expect(process.exitCode).toBe(1);
-      expect(steerSession).not.toHaveBeenCalled();
-      expect(sessionEvents(repo, 's1')).toEqual([]);
+      expect(logs).not.toContain('Interrupted and steered session s1.');
     });
   });
 

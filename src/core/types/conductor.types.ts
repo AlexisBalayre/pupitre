@@ -1,6 +1,9 @@
+import type { Database } from 'better-sqlite3';
 import type { ProfileLayer } from './profile.types.js';
 
 export interface StartConductorRequest {
+  /** Read, never written: whether a radar is already sweeping is the store's word. */
+  db: Database;
   repoPath: string;
   base: ProfileLayer;
   claudeUserDir: string;
@@ -40,6 +43,10 @@ export interface ConductorHandle {
   /** tmux and peer name, `pup-conductor-<project id>`. */
   name: string;
   paneId: string;
-  /** False when the window never showed its input box, so the kickoff was not typed. */
-  delivered: boolean;
+  /**
+   * The conflict radar's tmux window when this start brought one up, absent
+   * when a fresh beat said one was already sweeping. A window that never took
+   * its context is not a handle at all: it is rolled back and thrown.
+   */
+  radarTarget?: string;
 }

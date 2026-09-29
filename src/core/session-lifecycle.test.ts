@@ -30,6 +30,7 @@ import {
   killSession as killTmux,
   launchSession,
   SessionPaneMissingError,
+  SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { briefPath } from './brief.service.js';
@@ -50,8 +51,11 @@ import {
   transitionSession,
 } from './session.repository.js';
 import {
+  LaunchRolledBackError,
   ScopeConflictError,
   TaskAlreadyClaimedError,
+  TerminalSessionError,
+  UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
 import {
@@ -60,6 +64,7 @@ import {
   killSession,
   launchTask,
   planTask,
+  recordSteerMessage,
   sessionPane,
   steerSession,
 } from './session-lifecycle.service.js';
@@ -550,12 +555,122 @@ describe('launchTask armed-driver guard', () => {
   });
 });
 
+/** What `act` threw, for the assertions a `toThrow` matcher cannot make. */
+function caught(act: () => unknown): unknown {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected a throw');
+}
+
 function commitIn(dir: string, file: string, content: string): void {
   mkdirSync(dirname(join(dir, file)), { recursive: true });
   writeFileSync(join(dir, file), content);
   gitIn(dir, 'add', '.');
   gitIn(dir, 'commit', '-qm', `add ${file}`);
 }
+
+/**
+ * A kickoff the new window refuses is the one failure that lands after the
+ * launch has already claimed the task, inserted the row as `running` and
+ * opened the window. Undone here rather than at each front end, so `pup
+ * launch` and the dashboard's `l` leave the same nothing behind (decision 40).
+ */
+describe('launchTask rollback', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-rollback-home-'))));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-rollback-')));
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+    planTask(db, { repoPath: repo, task: spec() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const launch = () =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+    });
+
+  // Both ways a kickoff is refused with nothing typed: the paste never landed
+  // whole (decision 45), or the pane pinned at launch was gone before it could
+  // be typed into (decision 46).
+  it.each([
+    ['the paste never landed whole', () => new SteerNotDeliveredError('t-1', 3000)],
+    ['the pane was gone', () => new SessionPaneMissingError('t-1', '%7', 'gone')],
+  ])('kills the session and hands back both halves when %s', (_case, refusal) => {
+    const thrown = refusal();
+    vi.mocked(kickoff).mockImplementationOnce(() => {
+      throw thrown;
+    });
+
+    const error = caught(launch) as LaunchRolledBackError;
+
+    expect(error).toBeInstanceOf(LaunchRolledBackError);
+    expect(error.refusal).toBe(thrown);
+    // The clause each front end punctuates its own retry onto.
+    expect(error.rolledBack).toBe('Launch rolled back (session t-1 killed)');
+    expect(killTmux).toHaveBeenCalledWith('t-1', '%7');
+    expect(getSession(db, 't-1')?.state).toBe('killed');
+  });
+
+  // The whole point of the kill: a claimed task no relaunch could take, and an
+  // empty window, is what a refusal left behind before it.
+  it('returns the task to the backlog, so the retry is a fresh launch', () => {
+    vi.mocked(kickoff).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError('t-1', 3000);
+    });
+
+    expect(launch).toThrow(LaunchRolledBackError);
+    expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).toEqual(['t-1']);
+    // And it launches: a task still claimed would raise TaskAlreadyClaimedError.
+    expect(launch()).toBe('t-1-1');
+  });
+
+  // A rollback that fails is a bug path and ends in a stack, as it always has.
+  // The refusal is why the launch failed and must not be lost behind it.
+  it('carries the refusal out as the cause when the kill itself throws', () => {
+    vi.mocked(kickoff).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError('t-1', 3000);
+    });
+    vi.mocked(killTmux).mockImplementationOnce(() => {
+      throw new Error('tmux server gone');
+    });
+
+    const error = caught(launch) as Error;
+
+    expect(error.message).toBe('tmux server gone');
+    expect(error.cause).toBeInstanceOf(SteerNotDeliveredError);
+  });
+
+  // Only a refused kickoff is answered for. Anything else is a bug, and a bug
+  // that killed the session it crashed in would throw away the evidence.
+  it('leaves the session alone when the launch fails some other way', () => {
+    vi.mocked(kickoff).mockImplementationOnce(() => {
+      throw new TypeError('undefined is not a function');
+    });
+
+    expect(launch).toThrow(TypeError);
+    expect(killTmux).not.toHaveBeenCalled();
+    expect(getSession(db, 't-1')?.state).toBe('running');
+  });
+});
 
 describe('steer, interrupt and kill by session id', () => {
   let db: Database;
@@ -577,7 +692,7 @@ describe('steer, interrupt and kill by session id', () => {
   });
 
   it('addresses the pane recorded at launch, never the session', () => {
-    steerSession(db, 's-1', 'do X instead');
+    steerSession(db, 's-1', 'do X instead', 'manual');
     interruptSession(db, 's-1');
 
     expect(steerPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' }, 'do X instead');
@@ -600,9 +715,104 @@ describe('steer, interrupt and kill by session id', () => {
   });
 
   it('names a session the store does not hold', () => {
-    expect(() => steerSession(db, 's-9', 'do X')).toThrow('No session s-9.');
+    expect(() => steerSession(db, 's-9', 'do X')).toThrow(UnknownSessionError);
     expect(() => interruptSession(db, 's-9')).toThrow('No session s-9.');
+    expect(() => recordSteerMessage(db, 's-9', 'operator')).toThrow('No session s-9.');
   });
+
+  // A merged session's work is on the branch and a killed one's window is
+  // gone; either way there is nothing to correct, and the pane id left on the
+  // row belongs to whatever holds it now. Refused in core, so `pup steer` and
+  // the dashboard's `s` refuse the same sessions.
+  it.each([
+    ['merged', ['awaiting-review', 'merged']],
+    ['killed', ['killed']],
+  ])('refuses a %s session, and sends nothing', (state, steps) => {
+    for (const step of steps) transitionSession(db, 's-1', step as 'merged');
+
+    expect(() => steerSession(db, 's-1', 'do X')).toThrow(
+      `Session s-1 is ${state}; nothing to steer.`,
+    );
+    expect(() => interruptSession(db, 's-1')).toThrow(TerminalSessionError);
+    expect(() => interruptSession(db, 's-1')).toThrow(
+      `Session s-1 is ${state}; nothing to interrupt.`,
+    );
+    expect(() => recordSteerMessage(db, 's-1', 'operator')).toThrow(TerminalSessionError);
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(interruptPane).not.toHaveBeenCalled();
+    expect(listEvents(db, 's-1').map((event) => event.type)).not.toContain('steer');
+  });
+
+  // The record is core's now, not each front end's: a steer nobody recorded is
+  // a session the report and the last-steer queries show as corrected by
+  // nobody.
+  it('records the steer it typed, and records nothing when the paste is refused', () => {
+    steerSession(db, 's-1', 'do X instead', 'manual');
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError('s-1', 12);
+    });
+
+    expect(() => steerSession(db, 's-1', 'do Y', 'manual')).toThrow(SteerNotDeliveredError);
+    expect(steerEvents()).toEqual([{ kind: 'manual' }]);
+  });
+
+  // The watchdog's resume and the gate's re-steer record the outcome of a
+  // whole sweep or gate run, not the paste alone, so they write their own
+  // event once they know it — and must not get a second one from here.
+  it('records nothing for a caller that keeps its own event', () => {
+    steerSession(db, 's-1', 'resume');
+
+    expect(steerPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' }, 'resume');
+    expect(steerEvents()).toEqual([]);
+  });
+
+  // A message over the peer socket lands whole and never touches the input
+  // box, so there is nothing to type — only the record, which names the sender
+  // the caller identified (decisions 44, 47).
+  it('records a message steer without typing anything', () => {
+    recordSteerMessage(db, 's-1', 'session:s-2');
+
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(steerEvents()).toEqual([{ kind: 'message', by: 'session:s-2' }]);
+  });
+
+  it('records the interrupt it sent, and the steer that rode with it', () => {
+    interruptSession(db, 's-1', 'do X instead');
+
+    expect(interruptPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' });
+    expect(steerPane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%7' }, 'do X instead');
+    expect(events('interrupt')).toEqual([{ steered: true }]);
+    // A real steer, recorded as one too, so last-steer queries see it no
+    // matter which path delivered it.
+    expect(steerEvents()).toEqual([{ kind: 'interrupt' }]);
+  });
+
+  // Escape landed before the paste was refused, so the interrupt is on record
+  // and the steer is not — the one thing the two-call front-end version of
+  // this had to remember to do.
+  it('records the interrupt alone when the steer behind it is refused', () => {
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError('s-1', 12);
+    });
+
+    expect(() => interruptSession(db, 's-1', 'do X')).toThrow(SteerNotDeliveredError);
+    expect(events('interrupt')).toEqual([{ steered: false }]);
+    expect(steerEvents()).toEqual([]);
+  });
+
+  it('records nothing when the pane is not there to interrupt', () => {
+    db.prepare("UPDATE sessions SET tmux_target = NULL WHERE id = 's-1'").run();
+
+    expect(() => interruptSession(db, 's-1', 'do X')).toThrow(SessionPaneMissingError);
+    expect(listEvents(db, 's-1').map((event) => event.type)).not.toContain('interrupt');
+  });
+
+  const events = (type: string): unknown[] =>
+    listEvents(db, 's-1')
+      .filter((event) => event.type === type)
+      .map((event) => JSON.parse(event.payload));
+
+  const steerEvents = (): unknown[] => events('steer');
 
   it('kills by the recorded pane as well as the name, then marks the row killed', () => {
     killSession(db, 's-1');

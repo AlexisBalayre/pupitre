@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import type { Database } from 'better-sqlite3';
 import { failureSummary } from '../adapters/capability.utils.js';
 import {
   conductorName,
@@ -8,15 +9,19 @@ import {
   kickoff,
   killConductor,
   launchConductor,
+  launchWatcher,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { assertNoArmedGitDrivers, GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { getWatcherBeat } from './overlap.repository.js';
+import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   compileConductorProfile,
   snapshotUserConfigHash,
   writeCompiledProfile,
 } from './profile-compiler.service.js';
+import { isRefusedSteer, rollBackRefusedLaunch } from './session-lifecycle.errors.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
 
 // Hooks off and the GIT_DIR family scrubbed, like every other git call pup
@@ -138,6 +143,12 @@ function graphForConductor(
  * Its code graph is built from a PRIVATE detached checkout of the merge target,
  * never from the live main working tree (decision 51 — see
  * `refreshConductorCheckout`).
+ *
+ * A window that refuses or never takes its context is rolled back here rather
+ * than by each front end, and answered for with one `LaunchRolledBackError`:
+ * there is no half-started conductor to hand back, only a window to kill. A
+ * start that succeeds brings the conflict radar up with it (`startRadarWith`)
+ * and says in the handle whether it did.
  */
 export function startConductor(req: StartConductorRequest): ConductorHandle {
   const pid = projectId(req.repoPath);
@@ -171,8 +182,51 @@ export function startConductor(req: StartConductorRequest): ConductorHandle {
     model: req.model,
     mcpConfigPath,
   });
-  const delivered = kickoff(pane, compiled.contextMarkdown);
-  return { name, paneId: pane.paneId, delivered };
+  let delivered: boolean;
+  try {
+    delivered = kickoff(pane, compiled.contextMarkdown);
+  } catch (error) {
+    if (!isRefusedSteer(error)) throw error;
+    // Rolled back like a session launch whose kickoff never landed, so nothing
+    // runs on an empty prompt; the window is the conductor's whole footprint,
+    // so killing it is the whole rollback.
+    throw rollBackRefusedLaunch(
+      () => stopConductor(req.repoPath),
+      'Conductor launch rolled back (window killed)',
+      error,
+    );
+  }
+  if (!delivered) {
+    // A window with no context is a bypass-permissions agent in the main
+    // checkout that has read none of its tier; killed, not left to inspect.
+    // No refusal rides with this one: the window never said anything, and the
+    // rollback line is the whole of what happened.
+    throw rollBackRefusedLaunch(
+      () => stopConductor(req.repoPath),
+      `Conductor window ${name} never became ready, so its context was not delivered and ` +
+        'the window was killed',
+    );
+  }
+  return { name, paneId: pane.paneId, radarTarget: startRadarWith(req.db, pid, req.repoPath) };
+}
+
+/**
+ * The conflict radar, started alongside the conductor unless one is already
+ * sweeping, and named when this start brought it up.
+ *
+ * The radar is the turn watchdog's host, and the conductor is the thing the
+ * watchdog exists to keep going: its own waiting turn dies with the worker's,
+ * and then nobody resumes either (addendum to decision 35). So a conductor
+ * without a radar is started with one, and the caller says so — the operator
+ * asked for a fleet that runs itself, not for two commands. Whether one is up
+ * is the store's word, not a window name a session could mint: a radar that
+ * sweeps records its beat every sweep, and `launchWatcher` replaces whatever
+ * stale window wears the name.
+ */
+function startRadarWith(db: Database, pid: string, repoPath: string): string | undefined {
+  const beat = getWatcherBeat(db, pid);
+  if (beat !== undefined && Date.now() - beat.getTime() <= WATCH_STALE_AFTER_MS) return undefined;
+  return launchWatcher(pid, repoPath).target;
 }
 
 export function stopConductor(repoPath: string): void {

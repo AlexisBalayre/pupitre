@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The tmux boundary only: the profile compiler and the filesystem run for
@@ -24,6 +25,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     paneId: '%3',
     socket: `pup-conductor-${projectId}`,
   })),
+  launchWatcher: vi.fn(() => ({ target: 'pup-watch-1' })),
 }));
 
 import {
@@ -31,6 +33,9 @@ import {
   kickoff,
   killConductor,
   launchConductor,
+  launchWatcher,
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
 import {
   conductorCheckoutDir,
@@ -38,8 +43,12 @@ import {
   startConductor,
   stopConductor,
 } from './conductor.service.js';
+import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { recordWatcherBeat } from './overlap.repository.js';
+import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
+import { LaunchRolledBackError } from './session-lifecycle.errors.js';
 
 const REPO = '/repo';
 
@@ -61,6 +70,7 @@ const NO_CODEGRAPH_PATH = '/usr/bin:/bin';
 
 describe('startConductor', () => {
   let home: string;
+  let db: Database;
   beforeEach(() => {
     vi.clearAllMocks();
     // projectPaths writes the compiled profile under $HOME/.pupitre.
@@ -68,14 +78,20 @@ describe('startConductor', () => {
     vi.stubEnv('HOME', home);
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    db = openStore(':memory:');
+    // A radar sweeping right now, so the start that is under test here brings
+    // none up; the radar has a describe of its own below.
+    recordWatcherBeat(db, projectId(REPO), new Date());
   });
   afterEach(() => {
+    db.close();
     vi.unstubAllEnvs();
     vi.mocked(console.error).mockRestore();
   });
 
   function start(overrides: { model?: string; workerModel?: string } = {}) {
     return startConductor({
+      db,
       repoPath: REPO,
       base: DEFAULT_BASE_PROFILE,
       claudeUserDir: join(home, '.claude'),
@@ -90,7 +106,7 @@ describe('startConductor', () => {
     expect(handle).toEqual({
       name: `pup-conductor-${projectId(REPO)}`,
       paneId: '%3',
-      delivered: true,
+      radarTarget: undefined,
     });
     expect(existsSync(join(outDir, 'settings.json'))).toBe(true);
     expect(existsSync(join(outDir, 'hooks', 'edit-block.sh'))).toBe(true);
@@ -115,18 +131,96 @@ describe('startConductor', () => {
     expect(prompt).toContain('pup launch <task> --model opus');
   });
 
-  it('reports a window that never became ready rather than hiding it', () => {
-    vi.mocked(kickoff).mockReturnValue(false);
+  // A window with no context is a bypass-permissions agent in the main
+  // checkout that has read none of its tier, so the start undoes itself rather
+  // than hand back a window to inspect. No refusal rides with this one: the
+  // window never said anything, and the rollback line is the whole of it.
+  it('kills a window that never became ready, and says so in one line', () => {
+    // Once, so the mock's `true` is back for the describes that follow: a
+    // `clearAllMocks` clears the calls, not the implementation.
+    vi.mocked(kickoff).mockReturnValueOnce(false);
 
-    expect(start().delivered).toBe(false);
+    const error = caught(start) as LaunchRolledBackError;
+
+    expect(error).toBeInstanceOf(LaunchRolledBackError);
+    expect(killConductor).toHaveBeenCalledWith(projectId(REPO));
+    expect(error.refusal).toBeUndefined();
+    expect(error.rolledBack).toBe(
+      `Conductor window pup-conductor-${projectId(REPO)} never became ready, so its context ` +
+        'was not delivered and the window was killed',
+    );
   });
 
-  it('touches no store: the conductor is not a session', () => {
+  // The same rollback for a kickoff the window refused: the paste never landed
+  // whole (decision 45), or the pane was gone before it could be typed into
+  // (decision 46). The refusal rides along — it is why the launch failed — and
+  // each front end adds its own retry hint to the rollback clause.
+  it.each([
+    ['the paste never landed whole', () => new SteerNotDeliveredError('conductor-1', 900)],
+    ['the pane was gone', () => new SessionPaneMissingError('conductor-1', '%3', 'gone')],
+  ])('kills the window and answers with the refusal when %s', (_case, refusal) => {
+    const thrown = refusal();
+    vi.mocked(kickoff).mockImplementationOnce(() => {
+      throw thrown;
+    });
+
+    const error = caught(start) as LaunchRolledBackError;
+
+    expect(error).toBeInstanceOf(LaunchRolledBackError);
+    expect(killConductor).toHaveBeenCalledWith(projectId(REPO));
+    expect(error.refusal).toBe(thrown);
+    expect(error.rolledBack).toBe('Conductor launch rolled back (window killed)');
+  });
+
+  it('writes nothing to the store: the conductor is not a session', () => {
     start();
 
     expect(existsSync(projectPaths(REPO).dbFile)).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
+  });
+
+  // The radar is the turn watchdog's host, and the conductor is the thing the
+  // watchdog exists to keep going: its own waiting turn dies with the worker's,
+  // and then nobody resumes either (addendum to decision 35). Whether one is up
+  // is the store's beat, not a window name a session could mint.
+  describe('the conflict radar it brings with it', () => {
+    it.each([
+      ['none has ever swept', undefined],
+      ['the last beat is stale', WATCH_STALE_AFTER_MS + 1_000],
+    ])('starts one when %s, and names the window', (_when, beatAgeMs) => {
+      db.prepare('DELETE FROM watcher_beats').run();
+      if (beatAgeMs !== undefined) {
+        recordWatcherBeat(db, projectId(REPO), new Date(Date.now() - beatAgeMs));
+      }
+
+      expect(start().radarTarget).toBe('pup-watch-1');
+      expect(launchWatcher).toHaveBeenCalledWith(projectId(REPO), REPO);
+    });
+
+    it('leaves a radar that is already sweeping alone', () => {
+      expect(start().radarTarget).toBeUndefined();
+      expect(launchWatcher).not.toHaveBeenCalled();
+    });
+
+    it('starts none for a window that was rolled back', () => {
+      db.prepare('DELETE FROM watcher_beats').run();
+      vi.mocked(kickoff).mockReturnValueOnce(false);
+
+      expect(start).toThrow(LaunchRolledBackError);
+      expect(launchWatcher).not.toHaveBeenCalled();
+    });
   });
 });
+
+/** What `act` threw, for the assertions a `toThrow` matcher cannot make. */
+function caught(act: () => unknown): unknown {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected a throw');
+}
 
 describe('stopConductor and isConductorRunning', () => {
   it('kills and probes the window by the project id', () => {
@@ -148,6 +242,7 @@ describe('startConductor code graph', () => {
   let home: string;
   let repo: string;
   let cgLog: string;
+  let db: Database;
 
   function gitIn(cwd: string, ...args: string[]): string {
     return execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV }).trim();
@@ -177,6 +272,7 @@ describe('startConductor code graph', () => {
 
   const start = () =>
     startConductor({
+      db,
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       claudeUserDir: join(home, '.claude'),
@@ -187,6 +283,7 @@ describe('startConductor code graph', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    db = openStore(':memory:');
     home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-cond-home-')));
     vi.stubEnv('HOME', home);
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
@@ -203,6 +300,7 @@ describe('startConductor code graph', () => {
   const checkout = () => conductorCheckoutDir(repo);
 
   afterEach(() => {
+    db.close();
     vi.unstubAllEnvs();
     vi.mocked(console.error).mockRestore();
   });

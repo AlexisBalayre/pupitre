@@ -25,7 +25,7 @@ vi.mock('../../core/session-handoff.service.js', async (importOriginal) => ({
   respawnSession: vi.fn(),
 }));
 vi.mock('../../core/conductor.service.js', () => ({
-  startConductor: vi.fn(() => ({ name: 'pup-conductor-x', delivered: true })),
+  startConductor: vi.fn(() => ({ name: 'pup-conductor-x', paneId: '%3' })),
   stopConductor: vi.fn(),
 }));
 
@@ -38,7 +38,6 @@ import {
   getSession,
   insertSession,
   insertTask,
-  listEvents,
   transitionSession,
 } from '../../core/session.repository.js';
 import {
@@ -46,6 +45,7 @@ import {
   requestHandoff,
   respawnSession,
 } from '../../core/session-handoff.service.js';
+import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
   interruptSession,
   killSession,
@@ -116,18 +116,27 @@ describe('dashboard actions', () => {
     });
 
     // `launchTask` claims the task, inserts the row and opens the window before
-    // the kickoff can be refused, so a refusal that is not rolled back leaves a
-    // claimed task no relaunch can take and an empty window (decision 40).
-    it('kills the session and says so when the kickoff never landed', () => {
+    // the kickoff can be refused, and undoes all three itself (decision 40).
+    // What this screen adds is the retry: the same key on the same task, where
+    // the CLI names the command to re-run.
+    it('says what was undone and which key retries it', () => {
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new SteerNotDeliveredError('s-half-1', 12);
+        throw new LaunchRolledBackError(
+          'Launch rolled back (session s-half-1 killed)',
+          new SteerNotDeliveredError('s-half-1', 12),
+        );
       });
 
       const result = launchSelected(deps, 't-planned', '');
 
-      expect(killSession).toHaveBeenCalledWith(db, 's-half-1');
+      expect(killSession).not.toHaveBeenCalled();
       expect(result.failed).toBe(true);
-      expect(result.message).toContain('rolled back');
+      expect(result.message).toBe(
+        'Steer to session s-half-1 did not land: its input box never held the whole 12-char ' +
+          'message. Cleared the box and submitted nothing; the session is still running with ' +
+          'an empty prompt. Launch rolled back (session s-half-1 killed). Press l on t-planned ' +
+          'again.',
+      );
     });
 
     it('reports a refusal rather than throwing it at the render loop', () => {
@@ -142,20 +151,33 @@ describe('dashboard actions', () => {
     });
   });
 
-  it('steers through `steerSession` and records the steer, as `pup steer` does', () => {
+  // The record is `steerSession`'s own (src/core/session-lifecycle.test.ts),
+  // so this key and `pup steer` cannot drift apart over what a steer leaves
+  // behind, or over which sessions refuse one.
+  it('steers through `steerSession`, as `pup steer` does', () => {
     const result = steerSelected(deps, SESSION, 'read docs/05 first');
 
-    expect(steerSession).toHaveBeenCalledWith(db, SESSION, 'read docs/05 first');
-    expect(listEvents(db, SESSION).map((event) => event.type)).toContain('steer');
+    expect(steerSession).toHaveBeenCalledWith(db, SESSION, 'read docs/05 first', 'manual');
     expect(result.message).toContain(SESSION);
   });
 
-  it('interrupts through `interruptSession` and records the interrupt', () => {
+  it('interrupts through `interruptSession`, with no message behind it', () => {
     interruptSelected(deps, SESSION);
 
     expect(interruptSession).toHaveBeenCalledWith(db, SESSION);
-    const interrupt = listEvents(db, SESSION).find((event) => event.type === 'interrupt');
-    expect(interrupt && JSON.parse(interrupt.payload)).toEqual({ steered: false });
+  });
+
+  // A refusal core throws — a session that has stopped, a pane that is gone —
+  // reaches the status bar as a line, because this screen is held open.
+  it('reports a refused steer rather than throwing it at the render loop', () => {
+    vi.mocked(steerSession).mockImplementation(() => {
+      throw new Error('Session s-live-1 is killed; nothing to steer.');
+    });
+
+    expect(steerSelected(deps, SESSION, 'read docs/05 first')).toEqual({
+      message: 'Session s-live-1 is killed; nothing to steer.',
+      failed: true,
+    });
   });
 
   // Every message here reaches Ink, which passes an escape straight through to
@@ -266,11 +288,28 @@ describe('dashboard actions', () => {
       const result = toggleConductor(deps, false, { model: 'opus', workerModel: 'sonnet' });
 
       expect(vi.mocked(startConductor).mock.calls[0]?.[0]).toMatchObject({
+        db,
         repoPath: REPO,
         model: 'opus',
         workerModel: 'sonnet',
       });
-      expect(result.message).toContain('pup-conductor-x');
+      expect(result.message).toBe('Conductor running (tmux: pup-conductor-x).');
+    });
+
+    // The radar is `startConductor`'s to bring up, by the store's beat
+    // (src/core/conductor.test.ts); this screen only says that it did, as
+    // `pup conductor start` does.
+    it('names the conflict radar the start brought up with it', () => {
+      vi.mocked(startConductor).mockReturnValue({
+        name: 'pup-conductor-x',
+        paneId: '%3',
+        radarTarget: 'pup-watch-x',
+      });
+
+      expect(toggleConductor(deps, false, { model: '', workerModel: '' }).message).toBe(
+        'Conductor running (tmux: pup-conductor-x). Conflict radar started with it ' +
+          '(tmux: pup-watch-x).',
+      );
     });
 
     it('stops the running one through `stopConductor`', () => {
@@ -282,18 +321,44 @@ describe('dashboard actions', () => {
       expect(startConductor).not.toHaveBeenCalled();
     });
 
-    // A window with no context is a bypass-permissions agent in the main
-    // checkout that has read none of its tier; killed, not left to inspect.
-    it('kills a window that never became ready', () => {
-      vi.mocked(startConductor).mockReturnValue({
-        name: 'pup-conductor-x',
-        delivered: false,
-      } as ReturnType<typeof startConductor>);
+    // `startConductor` kills the window itself — a window with no context is a
+    // bypass-permissions agent in the main checkout that has read none of its
+    // tier — and this screen adds the key to press to try again. The drift
+    // this closes: the toggle used to let a refused kickoff leave the window
+    // up, where `pup conductor start` killed it.
+    it('reports a window that never became ready, and the key that retries it', () => {
+      vi.mocked(startConductor).mockImplementation(() => {
+        throw new LaunchRolledBackError(
+          'Conductor window pup-conductor-x never became ready, so its context was not ' +
+            'delivered and the window was killed',
+        );
+      });
 
       const result = toggleConductor(deps, false, { model: '', workerModel: '' });
 
-      expect(stopConductor).toHaveBeenCalledWith(REPO);
-      expect(result.failed).toBe(true);
+      expect(stopConductor).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        message:
+          'Conductor window pup-conductor-x never became ready, so its context was not ' +
+          'delivered and the window was killed. Press c again.',
+        failed: true,
+      });
+    });
+
+    it('reports a kickoff the window refused, refusal first', () => {
+      vi.mocked(startConductor).mockImplementation(() => {
+        throw new LaunchRolledBackError(
+          'Conductor launch rolled back (window killed)',
+          new Error('Steer to session conductor-x did not land.'),
+        );
+      });
+
+      expect(toggleConductor(deps, false, { model: '', workerModel: '' })).toEqual({
+        message:
+          'Steer to session conductor-x did not land. Conductor launch rolled back ' +
+          '(window killed). Press c again.',
+        failed: true,
+      });
     });
   });
 
