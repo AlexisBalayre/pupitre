@@ -4522,7 +4522,7 @@ describe('CLI commands', () => {
       const [, request] = firstCall(runMergeGate);
       expect(request.repoPath).toBe(repo);
       expect(request.sessionId).toBe('s1');
-      expect(request.adapter.id).toBe('typescript');
+      expect(request.adapters.map((a) => a.id)).toEqual(['typescript']);
       expect(request.openPr).toBeUndefined();
     });
 

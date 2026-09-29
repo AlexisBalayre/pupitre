@@ -384,9 +384,16 @@ function gateAndMerge(
     }
   };
 
+  // One repo has one build, one test and one lint, and the runner that answers
+  // for them is the one whose stack detected first (decision 22, which decision
+  // 72 amends for debt only — that is measured over every adapter below). The
+  // same adapter answers for nested packages, which are the root manifest's.
+  // `undefined` only for a caller that passed no adapter at all: `pup merge`
+  // refuses an undetected repo before the gate runs.
+  const [primary] = req.adapters;
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
-  const commands = req.adapter.gateCommands(req.repoPath);
+  const commands = primary?.gateCommands(req.repoPath) ?? [];
   for (const stage of ['build', 'test', 'lint'] as const) {
     const command = commands.find((c) => c.stage === stage);
     if (!command) {
@@ -410,7 +417,7 @@ function gateAndMerge(
   // does, as hard stages in the package's own directory. A script the trusted
   // manifest lacks is a flag: changed code no stage measures is never a free
   // pass (decisions 30, 59).
-  const nestedPackages = req.adapter.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
+  const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
     for (const command of pkg.commands) {
@@ -513,8 +520,8 @@ function gateAndMerge(
     stages.push({ stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` });
   }
 
-  const measurement = measureDebt([req.adapter], capabilityContext);
-  const complexityAdapters = req.adapter.complexity ? [req.adapter] : [];
+  const measurement = measureDebt(req.adapters, capabilityContext);
+  const complexityAdapters = req.adapters.filter((a) => a.complexity);
   const judged = judgeDebt(
     {
       ...measurement,

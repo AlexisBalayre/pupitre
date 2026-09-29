@@ -35,7 +35,13 @@ interface AcceptDebtRequest {
 export interface MergeRequest {
   repoPath: string;
   sessionId: string;
-  adapter: Adapter;
+  /**
+   * Every adapter detected for the repo, in detection order. Debt is measured
+   * over all of them, so a TypeScript+Python repo gates against the same bar
+   * `pup init` recorded; the hard stages and the nested-package check stay with
+   * the first, whose runner owns the repo's scripts (decision 72, amending 22).
+   */
+  adapters: Adapter[];
   acceptDebt?: AcceptDebtRequest;
   /** Push the branch and open a pull request instead of merging locally (decision 26). */
   openPr?: boolean;

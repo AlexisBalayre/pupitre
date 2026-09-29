@@ -40,6 +40,7 @@ import {
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
+import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
@@ -175,11 +176,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     vi.unstubAllEnvs();
   });
 
-  const merge = (adapter = passingAdapter, acceptDebt?: { reason: string; reviewBy: string }) =>
+  const merge = (
+    adapters: Adapter | Adapter[] = passingAdapter,
+    acceptDebt?: { reason: string; reviewBy: string },
+  ) =>
     runMergeGate(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter,
+      adapters: Array.isArray(adapters) ? adapters : [adapters],
       acceptDebt: acceptDebt && { acceptedBy: 'human', ...acceptDebt },
     });
 
@@ -535,7 +539,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = runMergeGate(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter: passingAdapter,
+      adapters: [passingAdapter],
       acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: SESSION_ID },
     });
 
@@ -723,6 +727,111 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     );
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  // Decision 72: `pup init` always measured every detected adapter while the
+  // gate measured only the first, so in a TypeScript+Python repo the second
+  // stack's debt was never gated and the ratchet then overwrote the
+  // all-adapter bar with a partial one.
+  describe('a repo two adapters detected', () => {
+    /** A second stack whose debt lives in files the first one never reads. */
+    const secondAdapter = (overrides: Partial<Adapter> = {}): Adapter => ({
+      ...debtAdapter(),
+      id: 'fake-second',
+      ...overrides,
+    });
+
+    it("flags a dead export the second adapter's files introduce", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.py', 'def feature():\n    pass\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+
+      const outcome = merge([
+        debtAdapter(),
+        secondAdapter({ deadCode: () => [{ file: 'src/feature.py', exportName: 'feature' }] }),
+      ]);
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'dead-code',
+          status: 'flagged',
+          detail: expect.stringContaining('src/feature.py#feature'),
+        }),
+      );
+    });
+
+    it('ratchets the duplication bar to the sum over both adapters', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 60 });
+      const adapters = [
+        debtAdapter({ duplication: () => ({ duplicatedLines: 12, blocks: [] }) }),
+        secondAdapter({ duplication: () => ({ duplicatedLines: 30, blocks: [] }) }),
+      ];
+
+      const outcome = merge(adapters);
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'duplication',
+          status: 'pass',
+          detail: '42 duplicated lines (baseline 60)',
+        }),
+      );
+      const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+      expect(stored.debt?.duplicatedLines).toBe(42);
+      // The same number `pup init` would have recorded over the same adapters —
+      // the bar the gate ratchets and the bar init captures are one measurement.
+      expect(initProject(db, repo, adapters).baseline.debt?.duplicatedLines).toBe(42);
+    });
+
+    it('flags a complexity rise in either adapter, over its own files', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.py', 'def feature():\n    pass\n');
+
+      const outcome = merge([
+        debtAdapter(),
+        secondAdapter({
+          complexity: ({ measurePath }) => [
+            { file: 'src/feature.py', complexity: measurePath === repo ? 1 : 40 },
+          ],
+        }),
+      ]);
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'complexity',
+          status: 'flagged',
+          detail: expect.stringContaining('src/feature.py (+39)'),
+        }),
+      );
+    });
+
+    it('runs the hard stages and the nested-package check from the first adapter only', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const secondGateCommands = vi.fn(() => [
+        { stage: 'build' as const, command: 'false', args: [] },
+      ]);
+      const secondNested = vi.fn(() => []);
+
+      const outcome = merge([
+        passingAdapter,
+        secondAdapter({
+          gateCommands: secondGateCommands,
+          touchedNestedPackages: secondNested,
+        }),
+      ]);
+
+      // One repo has one build, test and lint (decision 22): the second
+      // adapter's failing build is never run.
+      expect(outcome.status).toBe('merged');
+      expect(secondGateCommands).not.toHaveBeenCalled();
+      expect(secondNested).not.toHaveBeenCalled();
+    });
   });
 
   it('measures the worktree but reads tool config from the main checkout', () => {
@@ -1176,7 +1285,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: debtAdapter({ deadCode: () => [] }),
+        adapters: [debtAdapter({ deadCode: () => [] })],
         openPr: true,
       }),
     );
@@ -1213,7 +1322,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: passingAdapter,
+        adapters: [passingAdapter],
         openPr: true,
       }),
     );
@@ -1253,7 +1362,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1280,7 +1389,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1302,7 +1411,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: passingAdapter,
+        adapters: [passingAdapter],
         openPr: true,
       }),
     );
@@ -1324,7 +1433,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: debtAdapter({ deadCode: () => [] }),
+        adapters: [debtAdapter({ deadCode: () => [] })],
         openPr: true,
       }),
     );
@@ -1359,7 +1468,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const request = {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter: passingAdapter,
+      adapters: [passingAdapter],
       acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
       openPr: true,
     };
@@ -1384,7 +1493,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const request = {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter: passingAdapter,
+      adapters: [passingAdapter],
       openPr: true,
     };
     const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
@@ -1408,7 +1517,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1426,7 +1535,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
           openPr: true,
         }),
@@ -1446,7 +1555,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: passingAdapter,
+        adapters: [passingAdapter],
         openPr: true,
       }),
     );
@@ -1469,7 +1578,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1488,7 +1597,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1508,7 +1617,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           runMergeGate(db, {
             repoPath: repo,
             sessionId: SESSION_ID,
-            adapter: passingAdapter,
+            adapters: [passingAdapter],
             openPr: true,
           }),
       ),
@@ -1524,7 +1633,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1540,7 +1649,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
