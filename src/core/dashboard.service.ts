@@ -2,11 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import {
-  conductorName,
-  conductorSocket,
-  transcriptDir,
-} from '../claude/session-runtime.service.js';
+import { attachCommand, conductorName, transcriptDir } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
 import { eventDetail } from './dashboard-events.utils.js';
@@ -79,7 +75,7 @@ export function buildDashboardSnapshot(
     conductor: {
       running: isConductorRunning(repoPath),
       name: conductorName(pid),
-      attachCommand: `tmux -L ${conductorSocket(pid)} attach -t ${conductorName(pid)}`,
+      attachCommand: attachCommand({ conductorOf: pid }),
     },
     // `listSessions` returns oldest first and `sort` is stable, so the tie
     // between two sessions that both need a human stays in creation order.

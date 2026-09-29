@@ -38,9 +38,14 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     }
   },
   conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
-  // Spelled like the window name, as the runtime spells it: a separate tmux
-  // server is what keeps a session from reaching the conductor (decision 47).
-  conductorSocket: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
+  // Not boundaries but the names and attach lines themselves, and the real
+  // ones: what these print is the contract under test — the pinned target and
+  // the socket the conductor's window is on (decisions 46, 47) — so a fake
+  // spelling here would only agree with itself.
+  attachCommand: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .attachCommand,
+  windowLabel: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .windowLabel,
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -458,7 +463,7 @@ describe('CLI commands', () => {
       // conductor's own server, so a plain `tmux attach -t` finds nothing
       // (decision 47).
       expect(logs[0]).toMatch(
-        /^conductor running \(attach: tmux -L pup-conductor-([0-9a-f]{12}) attach -t pup-conductor-\1\)$/,
+        /^conductor running \(attach: tmux -L pup-conductor-([0-9a-f]{12}) attach -t '=pup-conductor-\1:'\)$/,
       );
     });
 
@@ -2178,10 +2183,11 @@ describe('CLI commands', () => {
         workerModel: 'opus',
       });
       expect(logs[0]).toBe('Conductor running (tmux: pup-conductor-p1).');
-      // The socket is the project's, not the name the stub returned: the
-      // window is not on the default server, and the attach has to say so.
+      // Socket and target are both the project's, not the name the stub
+      // returned: the window is not on the default server, and the attach has
+      // to say so — pinned, and quoted for the shell it is pasted into.
       expect(logs[1]).toMatch(
-        /^Attach with: tmux -L pup-conductor-[0-9a-f]{12} attach -t pup-conductor-p1$/,
+        /^Attach with: tmux -L pup-conductor-([0-9a-f]{12}) attach -t '=pup-conductor-\1:'$/,
       );
       expect(logs).toHaveLength(2);
       expect(launchWatcher).not.toHaveBeenCalled();
@@ -3019,7 +3025,7 @@ describe('CLI commands', () => {
       });
       expect(request.task.id as string).toMatch(/^t-/);
       expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
-      expect(logs).toContain('Attach with: tmux attach -t pup-t-abc-0');
+      expect(logs).toContain("Attach with: tmux attach -t '=pup-t-abc-0:'");
     });
 
     // `pup new` is `plan add` plus a launch, so guarding only the newer command
@@ -4859,10 +4865,9 @@ const CONSTANT_INTERPOLATIONS = [
   'entry.id',
   'record.id',
   'c.id',
-  // Derivations of the repo path, not the path: a label pup composes, a hex
-  // socket name, and a store path pup built. The path itself prints scrubbed.
+  // Derivations of the repo path, not the path: a label pup composes and a
+  // store path pup built. The path itself prints scrubbed.
   'codegraphLabel(repoPath)',
-  'conductorSocket(projectId(repoPath))',
   'briefPath(repoPath)',
 ];
 

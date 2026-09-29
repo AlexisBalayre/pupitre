@@ -202,6 +202,8 @@ describe('buildDashboardSnapshot', () => {
   });
 
   describe('conductor', () => {
+    // The socket, the pin and the quoting are all the runtime's: this reads
+    // the line back whole, as the operator pastes it (decisions 46, 47).
     it('reports the window and the socket-pinned command that attaches to it', () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
 
@@ -209,7 +211,7 @@ describe('buildDashboardSnapshot', () => {
 
       expect(conductor.running).toBe(true);
       expect(conductor.attachCommand).toBe(
-        `tmux -L pup-conductor-${projectId(repo)} attach -t ${conductor.name}`,
+        `tmux -L pup-conductor-${projectId(repo)} attach -t '=${conductor.name}:'`,
       );
     });
 

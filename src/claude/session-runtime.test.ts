@@ -50,9 +50,10 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
+  attachArgs,
+  attachCommand,
   conductorName,
   conductorPane,
-  conductorSocket,
   deadTurnError,
   hasConductorWindow,
   interruptPane,
@@ -69,6 +70,7 @@ import {
   SteerNotDeliveredError,
   steerPane,
   transcriptDir,
+  windowLabel,
 } from './session-runtime.service.js';
 
 beforeEach(() => {
@@ -424,6 +426,73 @@ describe('killSession', () => {
       ['kill-session', '-t', '=pup-s-1:'],
       ['kill-session', '-t', '=pup-s-1:'],
     ]);
+  });
+});
+
+describe('windowLabel, attachArgs and attachCommand', () => {
+  it('spells both windows, so nothing outside this module has to', () => {
+    expect(windowLabel({ sessionId: 't-abc' })).toBe('pup-t-abc');
+    expect(windowLabel({ conductorOf: 'proj-1' })).toBe('pup-conductor-proj-1');
+  });
+
+  it("pins the session's attach target, and asks the default server for it", () => {
+    expect(attachArgs({ sessionId: 't-abc' })).toEqual(['attach', '-t', '=pup-t-abc:']);
+  });
+
+  it("names the conductor's own server, where its window is (decision 47)", () => {
+    expect(attachArgs({ conductorOf: 'proj-1' })).toEqual([
+      '-L',
+      'pup-conductor-proj-1',
+      'attach',
+      '-t',
+      '=pup-conductor-proj-1:',
+    ]);
+  });
+
+  // The operator pastes this line into a shell; in zsh a bare `=pup-t-abc:`
+  // is an equals-expansion and dies as `pup-t-abc: not found` before tmux runs.
+  it('quotes the pinned target, which zsh would otherwise expand', () => {
+    expect(attachCommand({ sessionId: 't-abc' })).toBe("tmux attach -t '=pup-t-abc:'");
+    expect(attachCommand({ conductorOf: 'proj-1' })).toBe(
+      "tmux -L pup-conductor-proj-1 attach -t '=pup-conductor-proj-1:'",
+    );
+  });
+});
+
+/**
+ * The one place this suite runs the real tmux instead of the fake: what is
+ * under test IS tmux's own name resolution, and the fake models what pup
+ * believes about it, so a test against the fake could only agree with the
+ * belief. tmux is pup's transport (decision 1), so it is installed wherever
+ * this suite runs.
+ */
+describe('attachArgs against the installed tmux', () => {
+  it('refuses a session whose name only prefix-matches a live one, which a bare name takes', async () => {
+    const { spawnSync } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    // A server of this suite's own, and no `$TMUX`: these tests can run inside
+    // a pup session, and tmux refuses a nested attach before it ever resolves
+    // the target. Under `/tmp` rather than `tmpdir()`: a unix socket path is
+    // capped at 104 bytes, which macOS's per-user `tmpdir()` alone eats.
+    const env: NodeJS.ProcessEnv = { ...process.env, TMUX_TMPDIR: mkdtempSync('/tmp/pup-tmux-') };
+    delete env.TMUX;
+    const socket = `probe-${process.pid}`;
+    const tmuxHere = (args: string[]) =>
+      spawnSync('tmux', ['-L', socket, ...args], { encoding: 'utf8', env });
+
+    try {
+      tmuxHere(['new-session', '-d', '-s', 'pup-t-abc-1', 'sleep', '30']);
+
+      const pinnedAttach = tmuxHere(attachArgs({ sessionId: 't-abc' }));
+      const bareAttach = tmuxHere(['attach', '-t', 'pup-t-abc']);
+
+      expect(pinnedAttach.stderr).toContain("can't find session");
+      // What the pin is for: the bare name prefix-matches the live sibling, and
+      // tmux gets all the way to wanting a terminal — which this process is not.
+      expect(bareAttach.stderr).toContain('open terminal failed');
+    } finally {
+      tmuxHere(['kill-server']);
+    }
   });
 });
 
@@ -1037,7 +1106,13 @@ describe('launchConductor', () => {
     // The socket rides on the pane: the kickoff is the one thing that types
     // into the conductor, and it must reach the same server (decision 47).
     expect(pane).toEqual({ sessionId: 'conductor-proj-1', paneId: '%7', socket: SOCKET });
-    expect(conductorSocket('proj-1')).toBe(SOCKET);
+    expect(attachArgs({ conductorOf: 'proj-1' })).toEqual([
+      '-L',
+      SOCKET,
+      'attach',
+      '-t',
+      '=pup-conductor-proj-1:',
+    ]);
     expect(conductorName('proj-1')).toBe('pup-conductor-proj-1');
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
     expect(tmuxCalls).toHaveLength(3);
