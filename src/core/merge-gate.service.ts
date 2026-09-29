@@ -207,6 +207,18 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (session.state !== 'awaiting-review') {
     throw new SessionNotReviewableError(req.sessionId, session.state);
   }
+  // Refused, not run: with no adapter the three hard stages skip as "no command
+  // available" and every debt stage as "adapter cannot measure", so the gate
+  // would merge anything it was handed while reporting a full set of stages
+  // (decision 6 — the gate is the backstop, and a silent one is worse than
+  // none). `pup merge` refuses first; this is the seam holding every caller.
+  if (req.adapters.length === 0) {
+    throw new Error(
+      `No adapter for ${req.repoPath}; the gate would measure nothing. ` +
+        'Run `pup init` from a repo with a supported stack (TypeScript, Python, or a ' +
+        '.pupitre/adapter.yml).',
+    );
+  }
   // Before the auto-rebase, which runs a smudge filter on every file it checks
   // out and a merge driver on every conflict, with the operator's environment
   // and ahead of the sandbox that confines the stages. Both paths, because the
@@ -388,8 +400,7 @@ function gateAndMerge(
   // for them is the one whose stack detected first (decision 22, which decision
   // 72 amends for debt only — that is measured over every adapter below). The
   // same adapter answers for nested packages, which are the root manifest's.
-  // `undefined` only for a caller that passed no adapter at all: `pup merge`
-  // refuses an undetected repo before the gate runs.
+  // Never `undefined`: `runMergeGate` refuses an empty list before the lock.
   const [primary] = req.adapters;
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.

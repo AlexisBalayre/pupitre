@@ -238,13 +238,16 @@ function gapReasons(gaps: DebtGap[]): string {
     : gaps.map((g) => `${sanitizeReason(g.adapterId)}: ${sanitizeReason(g.reason)}`).join('; ');
 }
 
+/** `<adapter> not measured — <reason>`, one per gap. */
+function gapList(gaps: DebtGap[]): string {
+  return gaps
+    .map((g) => `${sanitizeReason(g.adapterId)} not measured — ${sanitizeReason(g.reason)}`)
+    .join('; ');
+}
+
 /** The same gaps as an aside on a stage the other adapters did measure. */
 function gapAside(gaps: DebtGap[]): string {
-  return gaps.length === 0
-    ? ''
-    : `; ${gaps
-        .map((g) => `${sanitizeReason(g.adapterId)} not measured — ${sanitizeReason(g.reason)}`)
-        .join('; ')}`;
+  return gaps.length === 0 ? '' : `; ${gapList(gaps)}`;
 }
 
 /** `a, b, c, …` — the first few of a list, the rest elided. */
@@ -288,11 +291,22 @@ function judgeDeadCode(
   const knownKeys = new Set(known.map((d) => `${d.file}\u0000${d.exportName}`));
   const fresh = found.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
   if (fresh.length === 0) {
+    // Finding nothing is a pass only when every adapter looked. With one of
+    // them out, the stage skips: a session can make a capability unavailable
+    // from inside its own worktree — an unparseable `.py` file is enough to
+    // stop vulture — and a stage that skips must not read as one that passed
+    // (decisions 29, 30). A real finding still flags below, because the
+    // adapters that did measure found it.
     return {
       stage: {
         stage,
-        status: 'pass',
-        detail: withNote(measured, `no new unused exports${gapAside(gaps)}`),
+        status: gaps.length === 0 ? 'pass' : 'skipped',
+        detail: withNote(
+          measured,
+          gaps.length === 0
+            ? 'no new unused exports'
+            : `${gapList(gaps)}; the adapters that did measure found no new unused exports`,
+        ),
       },
       ...(ratchet ? { ratchet } : {}),
     };

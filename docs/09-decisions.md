@@ -3778,6 +3778,14 @@ changes back into those docs is pending.
     answered against — a Python file judged against a TypeScript report would read as a file the
     coverage tool never saw and flag on every merge. Merging two runners' ratios into one number is
     a separate decision, and `pup init` would have to agree to it first.
+    *So the coverage gap this decision does not close, stated plainly:* both `coverage` and
+    `coverableFiles` are asked of that first declaring adapter only, so in a TypeScript+Python repo
+    a changed Python source file gets no decision-30 unreported-file check — it is absent from the
+    coverage stage's view rather than flagged as unmeasured, exactly as it was before this decision.
+    Patch coverage, the repo ratio and the ratchet all remain the first adapter's. Dead code,
+    duplication and complexity are gated over both stacks from here on; coverage is the one debt
+    stage where the second stack is still invisible, and closing it means deciding how two runners'
+    reports combine into one ratio, on the `pup init` side first.
     *A partial dead-code count still compares, but never ratchets.* When one adapter measures and
     another cannot, the comparison runs — a subset of the findings can only fail to flag, never
     flag something real as fresh — and the stage says which adapter was missing. The bar does not
@@ -3797,6 +3805,16 @@ changes back into those docs is pending.
     two-adapter merge whose ratcheted `duplicatedLines` is asserted against what `initProject`
     records over the same two adapters, which is the one assertion that would have caught the
     original bug.
+    *An operator security review after the fact tightened two things.* The dead-code stage now
+    *skips* rather than passes when one adapter measured nothing and the rest found nothing new: a
+    session can make a capability unavailable from inside its own worktree — an unparseable `.py`
+    file is enough to stop vulture — and a stage that measured nothing must not read as one that
+    found nothing (decision 29's rule, applied to a partial measurement). A real finding still
+    flags, because the adapters that did measure found it. And `runMergeGate` now refuses an empty
+    `adapters` list before taking the lock: with no adapter the hard stages report "no command
+    available" and every debt stage "adapter cannot measure", so the gate would merge anything it
+    was handed while printing a full-looking report — decision 6's backstop, silent. `pup merge`
+    already refused an undetected repo; the refusal belongs at the seam every caller shares.
     *Not validated with the gate,* per the rule decision 39 learned: a change to what a gate metric
     counts cannot be confirmed by the gate that counts it. `pnpm test`, `pnpm typecheck` and the new
     tables are the evidence.

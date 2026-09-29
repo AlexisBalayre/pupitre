@@ -245,7 +245,11 @@ describe('judgeDebt', () => {
       },
     ],
     [
-      'one adapter measured and another could not',
+      // Not a pass: a session can make a capability unavailable from inside its
+      // own worktree — an unparseable `.py` file stops vulture — and a stage
+      // that measured nothing must not read as one that found nothing
+      // (decisions 29, 30).
+      'one adapter measured and found nothing while another could not measure',
       {
         measured: {
           debt: { deadExports: [LEGACY_EXPORT] },
@@ -254,8 +258,27 @@ describe('judgeDebt', () => {
         baseline: { deadExports: [LEGACY_EXPORT] },
         expected: {
           stage: 'dead-code',
-          status: 'pass',
-          detail: 'no new unused exports; python not measured — vulture missing',
+          status: 'skipped',
+          detail:
+            'python not measured — vulture missing; the adapters that did measure found no new unused exports',
+        },
+      },
+    ],
+    [
+      // A finding still flags: the adapters that did measure found it, and the
+      // gap only means there may be more.
+      'one adapter found a fresh export while another could not measure',
+      {
+        measured: {
+          debt: { deadExports: [LEGACY_EXPORT, DEAD_EXPORT] },
+          gaps: [{ adapterId: 'python', capability: 'dead code', reason: 'vulture missing' }],
+        },
+        baseline: { deadExports: [LEGACY_EXPORT] },
+        expected: {
+          stage: 'dead-code',
+          status: 'flagged',
+          detail:
+            '1 new unused export(s): src/feature.ts#feature; python not measured — vulture missing',
         },
       },
     ],

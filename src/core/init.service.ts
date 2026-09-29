@@ -229,7 +229,8 @@ export function initProject(
   // JSON that never passed through failureSummary (decision 29).
   for (const gap of gaps) {
     findings.push(
-      `${gap.adapterId}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}. The gate will skip that stage until it is fixed.`,
+      `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}. ` +
+        'The gate will skip that stage until it is fixed.',
     );
   }
 

@@ -694,6 +694,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(() => merge()).toThrow(SessionNotReviewableError);
   });
 
+  // Not "every stage skipped and merged anyway": with no adapter the hard
+  // stages report "no command available" and every debt stage "adapter cannot
+  // measure", so a full-looking report would sit on top of nothing measured.
+  it('refuses a request that carries no adapter at all, before taking the lock', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+    expect(() => merge([])).toThrow(/No adapter for/);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+  });
+
   /** Stamped with the current rule by default, so the stage compares (decision 39). */
   const seedDebtBaseline = (debt: DebtBaseline) =>
     saveProjectBaseline(
