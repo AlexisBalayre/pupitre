@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-09-29T14:58:50.267Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "36585395682",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/36585395682",
+  "actor": "AlexisBalayre",
+  "commit_sha": "31b1681fe0a12edee1e245187ce2d7dc21336069",
+  "source": "pr",
+  "pr_number": 121,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "158-185",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`debt.service.ts` exports `GateDebtMeasurement` and `DebtVerdict` interfaces inline, violating the documented rule that exported types live in `*.types.ts` files.",
+      "body": "`debt.service.ts` is a new `*.service.ts` file that declares two `export interface`s directly in it: `GateDebtMeasurement` (lines 158-171) and `DebtVerdict` (lines 173-185).\n\n`docs/conventions/general.md` §Type separation states: \"Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`, `src/adapters/types/`. **Never inline an exported `type`/`interface` in a `*.service.ts` or `*.routes.ts` file** — the spot-check hook warns on this. Re-export from the consumer if you want a stable call-site path.\"\n\nThis is not aspirational: `.claude/spot-checks.tsv` carries a regex (`\\.(service|routes)\\.tsx?$` / `^[[:space:]]*export[[:space:]]+(interface|type)[[:space:]]`) run by `.claude/hooks/convention-spot-check.sh` on Stop, which matches both lines verbatim.\n\nMove `GateDebtMeasurement` and `DebtVerdict` into `src/core/types/merge-gate.types.ts` (or a new `debt.types.ts`), and re-export from `debt.service.ts` if a stable `./debt.service.js` import path is wanted for callers such as `debt.test.ts` and `merge-gate.service.ts`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/31b1681fe0a12edee1e245187ce2d7dc21336069/src/core/debt.service.ts#L158-L185>",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1613-1616",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new call-site comment on `detectAdapters(repoPath)` restates the JSDoc already on `MergeRequest.adapters` in `src/core/types/merge-gate.types.ts:39-44`; per the seam-duplication rule in `docs/conventions/general.md` §Comments, the call-site copy should be deleted since the field's own doc already carries the WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "249-251",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`gapAside` is a one-liner with a single caller (`judgeDeadCode`); inlining `${gaps.length === 0 ? '' : `; ${gapList(gaps)}`}` at that call site would remove a layer of indirection without loss of clarity, though the name does carry some meaning.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "534-568",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `judgeDebt` call site builds a `GateDebtMeasurement` inline via spread plus several conditional spreads; a named local variable would let each field read as one concept instead of three levels of conditional spread, though the project uses this idiom elsewhere (e.g. `runMergeGate:331-332`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3781-3789",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'Coverage stays one adapter's too' paragraph and the following 'So the coverage gap this decision does not close' paragraph both restate 'one ratio per repo, from the first adapter' — each carries some distinct payload (design rationale vs. the resulting gap), so this is minor overlap rather than a clear duplicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "224",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The doc comment on `withNote` (\"Appends the nested-package note to a detail that exclusion shapes.\") restates the function's name and one-line body verbatim, adding no WHY; a competent reader loses nothing if it's deleted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "241",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The doc comment on `gapList` (\"`<adapter> not measured — <reason>`, one per gap.\") merely echoes the template string built two lines below; the function is self-evident without it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "253",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The doc comment on `samples` (\"`a, b, c, …` — the first few of a list, the rest elided.\") restates the one-line slice+join+ellipsis body directly below it, adding no WHY (e.g. no mention of why `DEBT_DETAIL_SAMPLES` was picked).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.test.ts",
+      "line": "55, 93-94, 104-105, 248-251, 317-319, 708-710",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Nearly every test case that pairs with a documented branch in `debt.service.ts` repeats that branch's inline WHY comment almost verbatim (recurring ~8-10 times) rather than stating a test-specific fact — this is stale-risk duplication that will drift if one side is edited and not the other, even though each individual comment is accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "238, 244",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`sanitizeReason(g.adapterId)` guards a value that in practice is always a compile-time literal or content from the protected `.pupitre/adapter.yml` path, never session-controlled worktree content — defensive layering rather than a reachable attack surface, but harmless to keep.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "79-134",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`measureDebt` has no collision check on adapter `id` when building `gaps`; an operator-authored `.pupitre/adapter.yml` reusing a built-in id like `python` would produce an ambiguous joined gap report (e.g. \"python: X; python: Y\"). Only reachable via a protected, operator-controlled path, not by a session, so this is a usability nit rather than a security issue.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "cost_usd": 13.056914049999994,
+  "duration_ms": 596953,
+  "num_turns": 25,
+  "tokens": {
+    "input": 25,
+    "output": 29447,
+    "cache_read": 699852,
+    "cache_creation": 92402,
+    "total": 821726
+  }
+}
