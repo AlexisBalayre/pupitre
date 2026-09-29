@@ -1340,6 +1340,21 @@ describe('CLI commands', () => {
   });
 
   describe('watch', () => {
+    // The radar is a window like any other: its attach line is pinned against
+    // a stale prefix match and quoted for the shell it is pasted into.
+    it('prints a pasteable attach line for the radar it started', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const target = `pup-watch-${projectId(repo)}`;
+      vi.mocked(launchWatcher).mockReturnValue({ target });
+
+      buildProgram().parse(['watch', '--start'], { from: 'user' });
+
+      expect(logs).toEqual([
+        `Conflict radar running (tmux: ${target}). Watch it: tmux attach -t '=${target}:'`,
+      ]);
+    });
+
     it('emits a STALLED line for a running session with an old events file', () => {
       const repo = initRepo();
       useCwd(repo);

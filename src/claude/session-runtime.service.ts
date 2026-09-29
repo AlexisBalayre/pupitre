@@ -508,21 +508,26 @@ function conductorSocket(repoProjectId: string): string {
 }
 
 /**
- * A window pup opened: a session's, or a project's conductor. Which name it
- * wears and which server it is on are this module's to know — a caller names
- * the window it means and gets back a label to print or an argv to run.
+ * A window pup opened: a session's, a project's conductor, or its conflict
+ * radar. Which name it wears and which server it is on are this module's to
+ * know — a caller names the window it means and gets back a label to print or
+ * an argv to run.
  */
-export type WindowTarget = { sessionId: string } | { conductorOf: string };
+export type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
 
 /** What the window is called: what a peer addresses it by, and what the operator reads. */
 export function windowLabel(target: WindowTarget): string {
-  return 'sessionId' in target ? tmuxName(target.sessionId) : conductorName(target.conductorOf);
+  if ('sessionId' in target) return tmuxName(target.sessionId);
+  if ('conductorOf' in target) return conductorName(target.conductorOf);
+  return watcherTarget(target.watcherOf);
 }
 
 /**
  * The `tmux` argv that attaches to the window, socket included: the
  * conductor's window is on a server of its own, and a bare `attach -t` asks
  * the default server, which is deliberately not where it lives (decision 47).
+ * A session's window and the radar's are on that default server, and say so
+ * by naming no socket at all.
  *
  * The target is pinned like every other lookup by name. A bare one resolves
  * exact -> fnmatch -> PREFIX, and a respawn mints exactly that pair: once

@@ -1264,7 +1264,9 @@ export function buildProgram(): Command {
       }
       if (opts.start) {
         const { target } = launchWatcher(pid, repoPath);
-        console.log(`Conflict radar running (tmux: ${target}). Watch it: tmux attach -t ${target}`);
+        console.log(
+          `Conflict radar running (tmux: ${target}). Watch it: ${attachCommand({ watcherOf: pid })}`,
+        );
         return;
       }
       const intervalMs = Math.max(1, Number(opts.interval)) * 1000;

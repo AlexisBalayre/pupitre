@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -430,13 +431,18 @@ describe('killSession', () => {
 });
 
 describe('windowLabel, attachArgs and attachCommand', () => {
-  it('spells both windows, so nothing outside this module has to', () => {
+  it('spells every window pup opens, so nothing outside this module has to', () => {
     expect(windowLabel({ sessionId: 't-abc' })).toBe('pup-t-abc');
     expect(windowLabel({ conductorOf: 'proj-1' })).toBe('pup-conductor-proj-1');
+    expect(windowLabel({ watcherOf: 'proj-1' })).toBe('pup-watch-proj-1');
   });
 
   it("pins the session's attach target, and asks the default server for it", () => {
     expect(attachArgs({ sessionId: 't-abc' })).toEqual(['attach', '-t', '=pup-t-abc:']);
+  });
+
+  it("pins the radar's too, on that same default server", () => {
+    expect(attachArgs({ watcherOf: 'proj-1' })).toEqual(['attach', '-t', '=pup-watch-proj-1:']);
   });
 
   it("names the conductor's own server, where its window is (decision 47)", () => {
@@ -467,21 +473,31 @@ describe('windowLabel, attachArgs and attachCommand', () => {
  * this suite runs.
  */
 describe('attachArgs against the installed tmux', () => {
-  it('refuses a session whose name only prefix-matches a live one, which a bare name takes', async () => {
+  it('refuses a session whose name only prefix-matches a live one, which a bare name takes', async (ctx) => {
     const { spawnSync } =
       await vi.importActual<typeof import('node:child_process')>('node:child_process');
-    // A server of this suite's own, and no `$TMUX`: these tests can run inside
-    // a pup session, and tmux refuses a nested attach before it ever resolves
-    // the target. Under `/tmp` rather than `tmpdir()`: a unix socket path is
-    // capped at 104 bytes, which macOS's per-user `tmpdir()` alone eats.
-    const env: NodeJS.ProcessEnv = { ...process.env, TMUX_TMPDIR: mkdtempSync('/tmp/pup-tmux-') };
+    // A socket of this suite's own, named by PATH (`-S`) and kept short: a
+    // unix socket path is capped at 104 bytes, and `-L` would spend a dozen
+    // of them on a `tmux-<uid>/` of its own under an already deep `tmpdir()`.
+    // Under `tmpdir()` because the merge gate runs this suite sandboxed, where
+    // the child's own TMPDIR is about all it may write — `/tmp` is denied
+    // (decision 36).
+    const dir = mkdtempSync(join(tmpdir(), 'x'));
+    // No `$TMUX`: these tests can run inside a pup session, and tmux refuses a
+    // nested attach before it ever resolves the target.
+    const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.TMUX;
-    const socket = `probe-${process.pid}`;
     const tmuxHere = (args: string[]) =>
-      spawnSync('tmux', ['-L', socket, ...args], { encoding: 'utf8', env });
+      spawnSync('tmux', ['-S', join(dir, 's'), ...args], { encoding: 'utf8', env });
 
     try {
-      tmuxHere(['new-session', '-d', '-s', 'pup-t-abc-1', 'sleep', '30']);
+      const started = tmuxHere(['new-session', '-d', '-s', 'pup-t-abc-1', 'sleep', '30']);
+      // A host whose sandbox refuses the socket itself, which is the one thing
+      // this test cannot work around. Skipped out loud, with what tmux said:
+      // a test that quietly stops testing is worse than one that is not there.
+      if (/not permitted|permission denied/i.test(started.stderr ?? '')) {
+        ctx.skip(`no tmux socket here: ${started.stderr.trim()}`);
+      }
 
       const pinnedAttach = tmuxHere(attachArgs({ sessionId: 't-abc' }));
       const bareAttach = tmuxHere(['attach', '-t', 'pup-t-abc']);
@@ -492,6 +508,7 @@ describe('attachArgs against the installed tmux', () => {
       expect(bareAttach.stderr).toContain('open terminal failed');
     } finally {
       tmuxHere(['kill-server']);
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
