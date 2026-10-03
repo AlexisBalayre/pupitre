@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { isUnavailable, localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import { localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
 import {
   killSession as killTmux,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
-import { patchCoverage, repoCoverageRatio } from './coverage.utils.js';
+import { patchCoverage } from './coverage.utils.js';
+import { judgeDebt, measureDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
   assertNoArmedGitDrivers,
@@ -30,11 +31,8 @@ import {
 import { readOriginUrl } from './init.service.js';
 import { hasOpenLedgerEntry, insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import {
-  COMPLEXITY_FILE_FLAG_DELTA,
-  COVERAGE_RATIO_EPSILON,
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_FLAG_LINES,
-  DUPLICATION_RULE_ID,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_OUTPUT_TAIL_CHARS,
   LOCKFILE_NAMES,
@@ -57,7 +55,7 @@ import {
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import type { PullRequestRef } from './types/github.types.js';
-import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type { ProjectBaseline } from './types/init.types.js';
 import type {
   GateReport,
   GateStageResult,
@@ -88,17 +86,6 @@ function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boole
   } catch {
     return false;
   }
-}
-
-/**
- * A repo path on its way into a stage detail. Paths come from `git diff -z`
- * precisely so they stay raw bytes, and a detail is printed to the operator's
- * terminal, fenced into the PR body, and fed back to the session as a re-steer
- * prompt — so a filename carrying ANSI escapes could repaint the report the
- * operator decides from (the decision-29 rationale, applied to paths).
- */
-function quotePath(path: string): string {
-  return sanitizeReason(path);
 }
 
 /** A CSI escape — where a test runner's colour and cursor moves are carried. */
@@ -219,6 +206,18 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (!session) throw new Error(`No session ${req.sessionId}.`);
   if (session.state !== 'awaiting-review') {
     throw new SessionNotReviewableError(req.sessionId, session.state);
+  }
+  // Refused, not run: with no adapter the three hard stages skip as "no command
+  // available" and every debt stage as "adapter cannot measure", so the gate
+  // would merge anything it was handed while reporting a full set of stages
+  // (decision 6 — the gate is the backstop, and a silent one is worse than
+  // none). `pup merge` refuses first; this is the seam holding every caller.
+  if (req.adapters.length === 0) {
+    throw new Error(
+      `No adapter for ${req.repoPath}; the gate would measure nothing. ` +
+        'Run `pup init` from a repo with a supported stack (TypeScript, Python, or a ' +
+        '.pupitre/adapter.yml).',
+    );
   }
   // Before the auto-rebase, which runs a smudge filter on every file it checks
   // out and a merge driver on every conflict, with the operator's environment
@@ -397,9 +396,15 @@ function gateAndMerge(
     }
   };
 
+  // One repo has one build, one test and one lint, and the runner that answers
+  // for them is the one whose stack detected first (decision 22, which decision
+  // 72 amends for debt only — that is measured over every adapter below). The
+  // same adapter answers for nested packages, which are the root manifest's.
+  // Never `undefined`: `runMergeGate` refuses an empty list before the lock.
+  const [primary] = req.adapters;
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
-  const commands = req.adapter.gateCommands(req.repoPath);
+  const commands = primary?.gateCommands(req.repoPath) ?? [];
   for (const stage of ['build', 'test', 'lint'] as const) {
     const command = commands.find((c) => c.stage === stage);
     if (!command) {
@@ -423,7 +428,7 @@ function gateAndMerge(
   // does, as hard stages in the package's own directory. A script the trusted
   // manifest lacks is a flag: changed code no stage measures is never a free
   // pass (decisions 30, 59).
-  const nestedPackages = req.adapter.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
+  const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
     for (const command of pkg.commands) {
@@ -456,7 +461,6 @@ function gateAndMerge(
           .slice(0, DEBT_DETAIL_SAMPLES)
           .map((pkg) => quotePath(pkg.dir))
           .join(', ')}${droppedDirs.length > DEBT_DETAIL_SAMPLES ? ', …' : ''})`;
-  const measuredHere = (detail: string): string => `${detail}${nestedNote}`;
 
   const specRow = db
     .prepare('SELECT project_id, spec FROM tasks WHERE id = ?')
@@ -492,7 +496,6 @@ function gateAndMerge(
   const baseline = project?.baseline
     ? (JSON.parse(project.baseline) as ProjectBaseline)
     : undefined;
-  const measuredDebt: DebtBaseline = {};
 
   const changed = countChangedLines(req.repoPath, target, session.branch);
   const sizeFindings: string[] = [];
@@ -528,298 +531,50 @@ function gateAndMerge(
     stages.push({ stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` });
   }
 
-  if (!req.adapter.deadCode) {
-    stages.push({
-      stage: 'dead-code',
-      status: 'skipped',
-      detail: 'not measured — adapter cannot detect dead code',
-    });
-  } else {
-    const result = req.adapter.deadCode(capabilityContext);
-    if (!isUnavailable(result)) measuredDebt.deadExports = result;
-    const known = baseline?.debt?.deadExports;
-    if (isUnavailable(result)) {
-      stages.push({
-        stage: 'dead-code',
-        status: 'skipped',
-        detail: measuredHere(`not measured — ${sanitizeReason(result.unavailable)}`),
-      });
-    } else if (!known) {
-      stages.push({
-        stage: 'dead-code',
-        status: 'skipped',
-        detail: measuredHere('not measured — no debt baseline; run `pup init`'),
-      });
-    } else {
-      const knownKeys = new Set(known.map((d) => `${d.file}\u0000${d.exportName}`));
-      const fresh = result.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
-      if (fresh.length === 0) {
-        stages.push({
-          stage: 'dead-code',
-          status: 'pass',
-          detail: measuredHere('no new unused exports'),
-        });
-      } else {
-        const quoted = fresh
-          .slice(0, DEBT_DETAIL_SAMPLES)
-          .map((d) => `${quotePath(d.file)}#${d.exportName}`)
-          .join(', ');
-        const ellipsis = fresh.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
-        flaggedDebt.push({
-          description: `New unused exports (${fresh.length}) merged from session ${session.id}`,
-          // Sorted so a retry produces the same list, and with it the same
-          // ledger dedupe key, whatever order the tool reported findings in.
-          files: [...new Set(fresh.map((d) => d.file))].sort(),
-        });
-        stages.push({
-          stage: 'dead-code',
-          status: 'flagged',
-          detail: flagDetail(
-            measuredHere(`${fresh.length} new unused export(s): ${quoted}${ellipsis}`),
-          ),
-        });
-      }
-    }
-  }
-
-  if (!req.adapter.duplication) {
-    stages.push({
-      stage: 'duplication',
-      status: 'skipped',
-      detail: 'not measured — adapter cannot detect duplication',
-    });
-  } else {
-    const duplication = req.adapter.duplication(capabilityContext);
-    // A number counted under an older rule is not a bar, it is a different
-    // measurement — comparing across the two passes on the difference. So a
-    // mismatch skips the stage, and must not move the bar either: this number
-    // was never compared to anything, and re-stamping it here would let one
-    // merge write an arbitrary floor that every later merge gates against and
-    // `pup audit` then confirms. Only `pup audit`, on the trusted checkout,
-    // re-stamps an existing baseline (decisions 30, 39).
-    const comparableRule = baseline?.debt?.duplicationRule === DUPLICATION_RULE_ID;
-    if (comparableRule || baseline?.debt?.duplicatedLines === undefined) {
-      measuredDebt.duplicatedLines = duplication.duplicatedLines;
-      measuredDebt.duplicationRule = DUPLICATION_RULE_ID;
-    }
-    const knownLines = comparableRule ? baseline?.debt?.duplicatedLines : undefined;
-    // Say what was left out, so a number that fell has a visible reason and a
-    // pile of copy-pasted fixtures is not silently invisible (decisions 29, 39).
-    // Re-checked as a finite number here as well as at the custom adapter's
-    // boundary: this string reaches the terminal, the fenced PR body and the
-    // re-steer prompt, and an adapter is not the only possible producer.
-    const excludedBlocks = duplication.excludedTestBlocks;
-    const fixtureNote =
-      typeof excludedBlocks === 'number' && Number.isFinite(excludedBlocks) && excludedBlocks > 0
-        ? `; ${Math.trunc(excludedBlocks)} test-fixture block(s) not counted`
-        : '';
-    if (knownLines === undefined) {
-      stages.push({
-        stage: 'duplication',
-        status: 'skipped',
-        detail: measuredHere(
-          baseline?.debt?.duplicatedLines === undefined
-            ? 'not measured — no debt baseline; run `pup init`'
-            : 'not measured — the stored baseline counts duplication a different way; run `pup audit`',
-        ),
-      });
-    } else if (duplication.duplicatedLines <= knownLines) {
-      stages.push({
-        stage: 'duplication',
-        status: 'pass',
-        detail: measuredHere(
-          `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})${fixtureNote}`,
-        ),
-      });
-    } else {
-      const changedSet = new Set(changedPaths);
-      const touchedBlocks = duplication.blocks.filter((b) =>
-        b.locations.some((l) => changedSet.has(l.file)),
-      );
-      const samples = (touchedBlocks.length > 0 ? touchedBlocks : duplication.blocks)
-        .slice(0, DEBT_DETAIL_SAMPLES)
-        .map((b) =>
-          b.locations
-            .slice(0, 2)
-            .map((l) => `${quotePath(l.file)}:${l.line}`)
-            .join(' ≈ '),
-        )
-        .join('; ');
-      const files = [
-        ...new Set(
-          touchedBlocks
-            .flatMap((b) => b.locations.map((l) => l.file))
-            .filter((f) => changedSet.has(f)),
-        ),
-      ].sort();
-      flaggedDebt.push({
-        description: `Duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} in session ${session.id}`,
-        files: files.length > 0 ? files : changedPaths,
-      });
-      stages.push({
-        stage: 'duplication',
-        status: 'flagged',
-        detail: flagDetail(
-          measuredHere(
-            `duplicated lines rose from ${knownLines} to ${duplication.duplicatedLines} (e.g. ${samples})${fixtureNote}`,
-          ),
-        ),
-      });
-    }
-  }
-
-  if (!req.adapter.complexity) {
-    stages.push({
-      stage: 'complexity',
-      status: 'skipped',
-      detail: 'not measured — adapter cannot measure complexity',
-    });
-  } else {
-    // "Before" reads the main checkout, which the merge lock holds at the target
-    // branch — no historical checkout needed.
-    const before = new Map(
-      req.adapter
-        .complexity(localContext(req.repoPath, req.gateEnv), changedPaths)
-        .map((f) => [f.file, f.complexity]),
+  const measurement = measureDebt(req.adapters, capabilityContext);
+  const complexityAdapters = req.adapters.filter((a) => a.complexity);
+  const judged = judgeDebt(
+    {
+      ...measurement,
+      ...(complexityAdapters.length > 0
+        ? {
+            complexity: {
+              // "Before" reads the main checkout, which the merge lock holds at
+              // the target branch — no historical checkout needed.
+              before: complexityAdapters.flatMap(
+                (a) => a.complexity?.(localContext(req.repoPath, req.gateEnv), changedPaths) ?? [],
+              ),
+              after: complexityAdapters.flatMap(
+                (a) => a.complexity?.(capabilityContext, changedPaths) ?? [],
+              ),
+            },
+          }
+        : {}),
+      coverableFiles:
+        measurement.coverageAdapter?.coverableFiles?.(capabilityContext, changedPaths) ?? [],
+      ...(measurement.coverage
+        ? {
+            patch: patchCoverage(
+              measurement.coverage,
+              gitDiffAddedLines(req.repoPath, target, session.branch),
+            ),
+          }
+        : {}),
+      nestedNote,
+    },
+    baseline?.debt,
+    changedPaths,
+    session.id,
+  );
+  // The accept hint is this caller's to add: `judgeDebt` cannot know whether
+  // the merge carries --accept-debt, and the nested-package stages above go
+  // through the same wrapper.
+  for (const stage of judged.stages) {
+    stages.push(
+      stage.status === 'flagged' ? { ...stage, detail: flagDetail(stage.detail ?? '') } : stage,
     );
-    const risen = req.adapter
-      .complexity(capabilityContext, changedPaths)
-      .map((f) => ({ ...f, delta: f.complexity - (before.get(f.file) ?? 0) }))
-      .filter((f) => f.delta > COMPLEXITY_FILE_FLAG_DELTA);
-    if (risen.length === 0) {
-      stages.push({
-        stage: 'complexity',
-        status: 'pass',
-        detail: `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points`,
-      });
-    } else {
-      const quoted = risen
-        .slice(0, DEBT_DETAIL_SAMPLES)
-        .map((f) => `${quotePath(f.file)} (+${f.delta})`)
-        .join(', ');
-      const ellipsis = risen.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
-      flaggedDebt.push({
-        description: `Complexity rise (+${risen.reduce((sum, f) => sum + f.delta, 0)} decision points) merged from session ${session.id}`,
-        files: risen.map((f) => f.file),
-      });
-      stages.push({
-        stage: 'complexity',
-        status: 'flagged',
-        detail: flagDetail(
-          `complexity rose sharply in ${risen.length} touched file(s): ${quoted}${ellipsis}`,
-        ),
-      });
-    }
   }
-
-  if (!req.adapter.coverage) {
-    stages.push({
-      stage: 'coverage',
-      status: 'skipped',
-      detail: 'not measured — adapter cannot measure coverage',
-    });
-  } else {
-    const result = req.adapter.coverage(capabilityContext);
-    const coverageReport = isUnavailable(result) ? undefined : result;
-    const repoRatio = coverageReport ? repoCoverageRatio(coverageReport) : undefined;
-    if (repoRatio !== undefined) measuredDebt.coverageRatio = repoRatio;
-    const baselineRatio = baseline?.debt?.coverageRatio;
-    const coverable = req.adapter.coverableFiles?.(capabilityContext, changedPaths) ?? [];
-    if (!coverageReport || repoRatio === undefined) {
-      const reason = isUnavailable(result)
-        ? sanitizeReason(result.unavailable)
-        : 'the instrumented run reported no instrumentable lines';
-      // Skipping here is a session-reachable outcome, not just an environment
-      // gap: the coverage config lives in the worktree, so failing the run or
-      // emptying the report turns the stage off. Changed source plus no
-      // measurement is a flag, not a free skip (decision 30).
-      if (coverable.length > 0) {
-        flaggedDebt.push({
-          description: `Coverage unmeasured over ${coverable.length} changed source file(s) in session ${session.id}`,
-          files: [...coverable].sort(),
-        });
-        stages.push({
-          stage: 'coverage',
-          status: 'flagged',
-          detail: flagDetail(
-            measuredHere(`${coverable.length} changed source file(s) went unmeasured — ${reason}`),
-          ),
-        });
-      } else {
-        stages.push({
-          stage: 'coverage',
-          status: 'skipped',
-          detail: measuredHere(`not measured — ${reason}`),
-        });
-      }
-    } else if (baselineRatio === undefined) {
-      stages.push({
-        stage: 'coverage',
-        status: 'skipped',
-        detail: measuredHere('not measured — no coverage baseline; run `pup init`'),
-      });
-    } else {
-      const patch = patchCoverage(
-        coverageReport,
-        gitDiffAddedLines(req.repoPath, target, session.branch),
-      );
-      const pct = (ratio: number): string => `${Math.round(ratio * 1000) / 10}%`;
-      // Changed code the report never mentions is the loophole patch coverage
-      // alone cannot see: excluding a file otherwise reads as "no instrumentable
-      // changed lines" and passes for free (decision 30). hasOwn, not `in`: the
-      // Python report is parsed JSON, so its keys can reach the prototype.
-      const unreported = coverable.filter((file) => !Object.hasOwn(coverageReport.files, file));
-      const ratio = patch.instrumented === 0 ? undefined : patch.covered / patch.instrumented;
-      const ratioBelowBar = ratio !== undefined && ratio + COVERAGE_RATIO_EPSILON < baselineRatio;
-      if (unreported.length > 0 || ratioBelowBar) {
-        // Both are evaluated, never short-circuited: a merge that hides files
-        // AND drops patch coverage must record both, or the ledger understates
-        // what was accepted while the baseline ratchets anyway.
-        const problems: string[] = [];
-        const files = new Set<string>();
-        if (unreported.length > 0) {
-          const quoted = unreported.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
-          const ellipsis = unreported.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
-          problems.push(
-            `${unreported.length} changed source file(s) never reached the coverage report — no test loads them, or coverage config excludes them: ${quoted}${ellipsis}`,
-          );
-          for (const file of unreported) files.add(file);
-        }
-        if (ratio !== undefined && ratioBelowBar) {
-          const quoted = patch.uncovered
-            .slice(0, DEBT_DETAIL_SAMPLES)
-            .map((u) => `${quotePath(u.file)}:${u.line}`)
-            .join(', ');
-          const ellipsis = patch.uncovered.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
-          problems.push(
-            `patch coverage ${pct(ratio)} below repo baseline ${pct(baselineRatio)} (uncovered: ${quoted}${ellipsis})`,
-          );
-          for (const u of patch.uncovered) files.add(u.file);
-        }
-        flaggedDebt.push({
-          description: `Coverage gap (${problems.length === 2 ? 'unreported files and patch coverage' : unreported.length > 0 ? 'unreported files' : `patch coverage ${pct(ratio as number)} below baseline ${pct(baselineRatio)}`}) merged from session ${session.id}`,
-          files: [...files].sort(),
-        });
-        stages.push({
-          stage: 'coverage',
-          status: 'flagged',
-          detail: flagDetail(measuredHere(problems.join('; '))),
-        });
-      } else if (ratio === undefined) {
-        stages.push({
-          stage: 'coverage',
-          status: 'pass',
-          detail: measuredHere('no instrumentable changed lines'),
-        });
-      } else {
-        stages.push({
-          stage: 'coverage',
-          status: 'pass',
-          detail: measuredHere(`patch coverage ${pct(ratio)} (baseline ${pct(baselineRatio)})`),
-        });
-      }
-    }
-  }
+  flaggedDebt.push(...judged.flags);
 
   if (flaggedDebt.length > 0) {
     if (!req.acceptDebt) {
@@ -886,14 +641,12 @@ function gateAndMerge(
     !req.openPr &&
     project &&
     baseline &&
-    (measuredDebt.deadExports !== undefined ||
-      measuredDebt.duplicatedLines !== undefined ||
-      measuredDebt.coverageRatio !== undefined)
+    Object.keys(judged.ratchet).length > 0
   ) {
     // Ratchet (docs/04): the merged state becomes the new bar. Accepted-debt merges
     // move it too — the accepted amount lives in the ledger, and re-flagging it would
     // punish later sessions for debt they didn't add.
-    const next: ProjectBaseline = { ...baseline, debt: { ...baseline.debt, ...measuredDebt } };
+    const next: ProjectBaseline = { ...baseline, debt: { ...baseline.debt, ...judged.ratchet } };
     saveProjectBaseline(
       db,
       specRow.project_id,

@@ -1615,8 +1615,11 @@ export function buildProgram(): Command {
             '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it.',
           );
         }
-        const [adapter] = detectAdapters(repoPath);
-        if (!adapter) {
+        // Every detected adapter, not just the first: the gate measures debt
+        // over all of them so its bar is the one `pup init` recorded
+        // (decision 72).
+        const adapters = detectAdapters(repoPath);
+        if (adapters.length === 0) {
           return refuse(
             'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
           );
@@ -1641,7 +1644,7 @@ export function buildProgram(): Command {
           outcome = runMergeGate(db, {
             repoPath,
             sessionId: session,
-            adapter,
+            adapters,
             acceptDebt:
               opts.acceptDebt && opts.reviewBy
                 ? {

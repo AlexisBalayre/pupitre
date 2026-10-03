@@ -40,6 +40,7 @@ import {
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
+import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
@@ -175,11 +176,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     vi.unstubAllEnvs();
   });
 
-  const merge = (adapter = passingAdapter, acceptDebt?: { reason: string; reviewBy: string }) =>
+  const merge = (
+    adapters: Adapter | Adapter[] = passingAdapter,
+    acceptDebt?: { reason: string; reviewBy: string },
+  ) =>
     runMergeGate(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter,
+      adapters: Array.isArray(adapters) ? adapters : [adapters],
       acceptDebt: acceptDebt && { acceptedBy: 'human', ...acceptDebt },
     });
 
@@ -535,7 +539,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = runMergeGate(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter: passingAdapter,
+      adapters: [passingAdapter],
       acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: SESSION_ID },
     });
 
@@ -690,6 +694,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(() => merge()).toThrow(SessionNotReviewableError);
   });
 
+  // Not "every stage skipped and merged anyway": with no adapter the hard
+  // stages report "no command available" and every debt stage "adapter cannot
+  // measure", so a full-looking report would sit on top of nothing measured.
+  it('refuses a request that carries no adapter at all, before taking the lock', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+    expect(() => merge([])).toThrow(/No adapter for/);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+  });
+
   /** Stamped with the current rule by default, so the stage compares (decision 39). */
   const seedDebtBaseline = (debt: DebtBaseline) =>
     saveProjectBaseline(
@@ -703,50 +719,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         debt: { duplicationRule: DUPLICATION_RULE_ID, ...debt },
       }),
     );
-
-  it('skips the debt-delta stages as not measured when the adapter lacks them', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-
-    const outcome = merge();
-
-    expect(outcome.status).toBe('merged');
-    for (const stage of ['dead-code', 'duplication', 'complexity', 'coverage']) {
-      expect(outcome.report.stages).toContainEqual(
-        expect.objectContaining({
-          stage,
-          status: 'skipped',
-          detail: expect.stringContaining('not measured'),
-        }),
-      );
-    }
-  });
-
-  it('skips dead-code and duplication without a stored debt baseline', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-
-    const outcome = merge(debtAdapter());
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'dead-code',
-        status: 'skipped',
-        detail: expect.stringContaining('pup init'),
-      }),
-    );
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'duplication',
-        status: 'skipped',
-        detail: expect.stringContaining('pup init'),
-      }),
-    );
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'complexity', status: 'pass' }),
-    );
-  });
 
   it('refuses a branch that introduces a new unused export', () => {
     const worktree = seedSession(db, repo);
@@ -769,6 +741,111 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
+  // Decision 72: `pup init` always measured every detected adapter while the
+  // gate measured only the first, so in a TypeScript+Python repo the second
+  // stack's debt was never gated and the ratchet then overwrote the
+  // all-adapter bar with a partial one.
+  describe('a repo two adapters detected', () => {
+    /** A second stack whose debt lives in files the first one never reads. */
+    const secondAdapter = (overrides: Partial<Adapter> = {}): Adapter => ({
+      ...debtAdapter(),
+      id: 'fake-second',
+      ...overrides,
+    });
+
+    it("flags a dead export the second adapter's files introduce", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.py', 'def feature():\n    pass\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+
+      const outcome = merge([
+        debtAdapter(),
+        secondAdapter({ deadCode: () => [{ file: 'src/feature.py', exportName: 'feature' }] }),
+      ]);
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'dead-code',
+          status: 'flagged',
+          detail: expect.stringContaining('src/feature.py#feature'),
+        }),
+      );
+    });
+
+    it('ratchets the duplication bar to the sum over both adapters', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 60 });
+      const adapters = [
+        debtAdapter({ duplication: () => ({ duplicatedLines: 12, blocks: [] }) }),
+        secondAdapter({ duplication: () => ({ duplicatedLines: 30, blocks: [] }) }),
+      ];
+
+      const outcome = merge(adapters);
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'duplication',
+          status: 'pass',
+          detail: '42 duplicated lines (baseline 60)',
+        }),
+      );
+      const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+      expect(stored.debt?.duplicatedLines).toBe(42);
+      // The same number `pup init` would have recorded over the same adapters —
+      // the bar the gate ratchets and the bar init captures are one measurement.
+      expect(initProject(db, repo, adapters).baseline.debt?.duplicatedLines).toBe(42);
+    });
+
+    it('flags a complexity rise in either adapter, over its own files', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.py', 'def feature():\n    pass\n');
+
+      const outcome = merge([
+        debtAdapter(),
+        secondAdapter({
+          complexity: ({ measurePath }) => [
+            { file: 'src/feature.py', complexity: measurePath === repo ? 1 : 40 },
+          ],
+        }),
+      ]);
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'complexity',
+          status: 'flagged',
+          detail: expect.stringContaining('src/feature.py (+39)'),
+        }),
+      );
+    });
+
+    it('runs the hard stages and the nested-package check from the first adapter only', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const secondGateCommands = vi.fn(() => [
+        { stage: 'build' as const, command: 'false', args: [] },
+      ]);
+      const secondNested = vi.fn(() => []);
+
+      const outcome = merge([
+        passingAdapter,
+        secondAdapter({
+          gateCommands: secondGateCommands,
+          touchedNestedPackages: secondNested,
+        }),
+      ]);
+
+      // One repo has one build, test and lint (decision 22): the second
+      // adapter's failing build is never run.
+      expect(outcome.status).toBe('merged');
+      expect(secondGateCommands).not.toHaveBeenCalled();
+      expect(secondNested).not.toHaveBeenCalled();
+    });
+  });
+
   it('measures the worktree but reads tool config from the main checkout', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -788,91 +865,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(seen).toEqual({ measurePath: worktree, configPath: repo });
   });
 
-  it('skips the dead-code stage when the tooling is unavailable', () => {
+  // The trap this closes end to end: a compare the gate skipped must not write
+  // the number it could not compare in as the floor, where no later merge or
+  // audit ever sees it. `judgeDebt` withholds it; this is the store agreeing.
+  it('leaves the stored duplication bar alone when the rule no longer matches', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
-    const adapter = debtAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      // The adapter's own reason, not a generic "unavailable" — a stage that
-      // skips without saying why reads like a stage that passed.
-      expect.objectContaining({
-        stage: 'dead-code',
-        status: 'skipped',
-        detail: 'not measured — vulture missing',
-      }),
-    );
-  });
-
-  it('does not flag dead exports already recorded in the baseline', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({
-      deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }],
-      duplicatedLines: 0,
-    });
-    const adapter = debtAdapter({
-      deadCode: () => [{ file: 'src/legacy.ts', exportName: 'old' }],
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'dead-code', status: 'pass' }),
-    );
-  });
-
-  it('flags a duplication rise with sample locations from the branch diff', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 4 });
-    const adapter = debtAdapter({
-      duplication: () => ({
-        duplicatedLines: 16,
-        blocks: [
-          {
-            locations: [
-              { file: 'src/feature.ts', line: 3 },
-              { file: 'src/app.ts', line: 9 },
-            ],
-          },
-        ],
-      }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('refused');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'duplication',
-        status: 'flagged',
-        detail: expect.stringContaining('rose from 4 to 16'),
-      }),
-    );
-  });
-
-  // The trap this closes: 62 measured under the new rule against 220 stored
-  // under the old one passes on the difference, and the ratchet then writes the
-  // difference in as the floor, where no later merge or audit ever sees it.
-  it.each([
-    ['a baseline captured before the rule was stamped', undefined, 62],
-    ['a baseline captured under a superseded rule', 'imports-counted', 62],
-    // Decision 59: nested packages left the count, so a pre-59 number is not a bar.
-    ['a baseline stamped before nested packages were left out', 'tests-excluded', 62],
-    // The number is what the old rule would have flagged and refused. Skipping
-    // the compare must not turn that refusal into an unbounded silent floor.
-    ['a rise the skipped compare never saw', undefined, 5000],
-  ])('skips duplication rather than comparing across rules: %s', (_label, storedRule, measured) => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 220, duplicationRule: storedRule });
-    const adapter = debtAdapter({ duplication: () => ({ duplicatedLines: measured, blocks: [] }) });
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 220, duplicationRule: 'imports-counted' });
+    const adapter = debtAdapter({ duplication: () => ({ duplicatedLines: 62, blocks: [] }) });
 
     const outcome = merge(adapter);
 
@@ -883,48 +883,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         detail: expect.stringContaining('counts duplication a different way'),
       }),
     );
-    // And the number it could not compare must not become the bar either: only
-    // `pup audit`, on the trusted checkout, re-stamps an existing baseline.
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.duplicatedLines).toBe(220);
-    expect(stored.debt?.duplicationRule).toBe(storedRule);
-  });
-
-  it('names the blocks left uncounted as test fixtures', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 12 });
-    const adapter = debtAdapter({
-      duplication: () => ({ duplicatedLines: 8, blocks: [], excludedTestBlocks: 17 }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'duplication',
-        detail: '8 duplicated lines (baseline 12); 17 test-fixture block(s) not counted',
-      }),
-    );
-  });
-
-  // A custom adapter self-reports its numbers and may not know the rule, so the
-  // gate must fall silent about fixtures rather than claim it counted none.
-  it('says nothing about test fixtures when the adapter omits the count', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 12 });
-    const adapter = debtAdapter({ duplication: () => ({ duplicatedLines: 8, blocks: [] }) });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'duplication',
-        detail: '8 duplicated lines (baseline 12)',
-      }),
-    );
+    expect(stored.debt?.duplicationRule).toBe('imports-counted');
   });
 
   // Decision 58 leaves a nested package out of every root measurement on the
@@ -1219,43 +1180,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('skips the coverage stage when the instrumented run is unavailable', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    const adapter = debtAdapter({ coverage: () => ({ unavailable: 'instrumented run crashed' }) });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'coverage',
-        status: 'skipped',
-        detail: 'not measured — instrumented run crashed',
-      }),
-    );
-  });
-
-  it('refuses a patch whose coverage falls below the baseline ratio', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    const adapter = debtAdapter({
-      coverage: () => ({ files: { 'src/feature.ts': { covered: [], instrumented: [1] } } }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('refused');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'coverage',
-        status: 'flagged',
-        detail: expect.stringContaining('patch coverage 0% below repo baseline 80%'),
-      }),
-    );
-  });
-
   it('passes a fully covered patch and ratchets the stored coverage ratio', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1277,26 +1201,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.coverageRatio).toBeCloseTo(2 / 3);
-  });
-
-  it('passes the coverage stage when the diff has no instrumentable lines', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/notes.txt', 'prose only\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    const adapter = debtAdapter({
-      coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'coverage',
-        status: 'pass',
-        detail: 'no instrumentable changed lines',
-      }),
-    );
   });
 
   // A realistic coverableFiles: source, not tests, not assets.
@@ -1323,104 +1227,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         status: 'flagged',
         detail: expect.stringContaining('src/feature.ts'),
       }),
-    );
-  });
-
-  it('flags changed source when coverage reports nothing at all, rather than skipping', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    // The broad version of the same bypass: rather than excluding the changed
-    // files, make the whole instrumented run fail. Config lives in the worktree,
-    // so this is session-reachable and must not buy a free skip.
-    const adapter = debtAdapter({
-      coverableFiles,
-      coverage: () => ({ unavailable: 'instrumented vitest run failed: threshold not met' }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('refused');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'coverage',
-        status: 'flagged',
-        detail: expect.stringContaining('went unmeasured'),
-      }),
-    );
-  });
-
-  it('still skips quietly when coverage is unavailable and no source changed', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/notes.txt', 'prose only\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    const adapter = debtAdapter({
-      coverableFiles,
-      coverage: () => ({ unavailable: 'no coverage provider installed' }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'coverage', status: 'skipped' }),
-    );
-  });
-
-  it('records both coverage problems when a merge hides files and drops the ratio', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/hidden.ts', 'export const hidden = 1;\n');
-    commitIn(worktree, 'src/thin.ts', 'export const thin = 1;\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    const adapter = debtAdapter({
-      coverableFiles,
-      // src/hidden.ts is absent; src/thin.ts is present but uncovered.
-      coverage: () => ({ files: { 'src/thin.ts': { covered: [], instrumented: [1] } } }),
-    });
-
-    const outcome = merge(adapter, { reason: 'deadline', reviewBy: 'before v2' });
-
-    expect(outcome.status).toBe('merged');
-    const detail = outcome.report.stages.find((s) => s.stage === 'coverage')?.detail ?? '';
-    expect(detail).toContain('src/hidden.ts');
-    expect(detail).toContain('patch coverage 0%');
-    // One ledger entry, but naming every file both problems touched.
-    const [entry] = listLedgerEntries(db, 'proj-1');
-    expect(JSON.parse(entry?.files ?? '[]')).toEqual(['src/hidden.ts', 'src/thin.ts']);
-  });
-
-  it('leaves changed assets and tests free, which coverage never reports anyway', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/notes.txt', 'prose only\n');
-    commitIn(worktree, 'src/feature.test.ts', 'export const spec = 1;\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    const adapter = debtAdapter({
-      coverableFiles,
-      coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'coverage', status: 'pass' }),
-    );
-  });
-
-  it('passes when every changed source file is in the coverage report', () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ coverageRatio: 0.8 });
-    const adapter = debtAdapter({
-      coverableFiles,
-      coverage: () => ({ files: { 'src/feature.ts': { covered: [1], instrumented: [1] } } }),
-    });
-
-    const outcome = merge(adapter);
-
-    expect(outcome.status).toBe('merged');
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'coverage', status: 'pass' }),
     );
   });
 
@@ -1491,7 +1297,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: debtAdapter({ deadCode: () => [] }),
+        adapters: [debtAdapter({ deadCode: () => [] })],
         openPr: true,
       }),
     );
@@ -1528,7 +1334,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: passingAdapter,
+        adapters: [passingAdapter],
         openPr: true,
       }),
     );
@@ -1568,7 +1374,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1595,7 +1401,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1617,7 +1423,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: passingAdapter,
+        adapters: [passingAdapter],
         openPr: true,
       }),
     );
@@ -1639,7 +1445,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: debtAdapter({ deadCode: () => [] }),
+        adapters: [debtAdapter({ deadCode: () => [] })],
         openPr: true,
       }),
     );
@@ -1674,7 +1480,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const request = {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter: passingAdapter,
+      adapters: [passingAdapter],
       acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
       openPr: true,
     };
@@ -1699,7 +1505,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const request = {
       repoPath: repo,
       sessionId: SESSION_ID,
-      adapter: passingAdapter,
+      adapters: [passingAdapter],
       openPr: true,
     };
     const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
@@ -1723,7 +1529,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1741,7 +1547,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
           openPr: true,
         }),
@@ -1761,7 +1567,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
-        adapter: passingAdapter,
+        adapters: [passingAdapter],
         openPr: true,
       }),
     );
@@ -1784,7 +1590,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1803,7 +1609,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1823,7 +1629,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           runMergeGate(db, {
             repoPath: repo,
             sessionId: SESSION_ID,
-            adapter: passingAdapter,
+            adapters: [passingAdapter],
             openPr: true,
           }),
       ),
@@ -1839,7 +1645,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
@@ -1855,7 +1661,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
-          adapter: passingAdapter,
+          adapters: [passingAdapter],
           openPr: true,
         }),
       ),
