@@ -221,8 +221,9 @@ function tmuxName(sessionId: string): string {
 }
 
 /**
- * Exact-match pin for the two commands that address a session by NAME:
- * kill-session, and the stale-name kill before new-session. The '=' pins tmux
+ * Exact-match pin for every command that addresses a window by NAME:
+ * kill-session, the stale-name kill before new-session, the window probes,
+ * and the attach `attachArgs` builds. The '=' pins tmux
  * to exact matching — a bare name resolves exact -> fnmatch -> PREFIX, so once
  * `pup-t-abc` is gone its keys land in a live `pup-t-abc-1`, and session
  * slugs mint exactly such prefix pairs. The trailing ':' is required: bare
@@ -498,10 +499,60 @@ export function conductorName(repoProjectId: string): string {
  * socket is not a namespace to guess past — a client asks one server and sees
  * nothing of any other (decision 47). Spelled the same as the window name,
  * from the same project id; the two are separate namespaces, and this is the
- * one place the label is formed.
+ * one place the label is formed. Not exported: a caller that has to reach
+ * the conductor's server asks `attachArgs` for the argv rather than spelling
+ * a `-L` of its own (AGENTS.md's module boundary).
  */
-export function conductorSocket(repoProjectId: string): string {
+function conductorSocket(repoProjectId: string): string {
   return conductorName(repoProjectId);
+}
+
+/**
+ * A window pup opened: a session's, a project's conductor, or its conflict
+ * radar. Which name it wears and which server it is on are this module's to
+ * know — a caller names the window it means and gets back a label to print or
+ * an argv to run.
+ */
+type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
+
+/** What the window is called: what a peer addresses it by, and what the operator reads. */
+export function windowLabel(target: WindowTarget): string {
+  if ('sessionId' in target) return tmuxName(target.sessionId);
+  if ('conductorOf' in target) return conductorName(target.conductorOf);
+  return watcherTarget(target.watcherOf);
+}
+
+/**
+ * The `tmux` argv that attaches to the window, socket included: the
+ * conductor's window is on a server of its own, and a bare `attach -t` asks
+ * the default server, which is deliberately not where it lives (decision 47).
+ * A session's window and the radar's are on that default server, and say so
+ * by naming no socket at all.
+ *
+ * The target is pinned like every other lookup by name. A bare one resolves
+ * exact -> fnmatch -> PREFIX, and a respawn mints exactly that pair: once
+ * `pup-t-abc` is gone, `attach -t pup-t-abc` hands the operator `pup-t-abc-1`
+ * — another session, reading as the one they asked for. Pinned, tmux refuses
+ * with `can't find session` instead (verified by hand on tmux 3.7b).
+ */
+export function attachArgs(target: WindowTarget): string[] {
+  const socket = 'conductorOf' in target ? ['-L', conductorSocket(target.conductorOf)] : [];
+  return [...socket, 'attach', '-t', pinned(windowLabel(target))];
+}
+
+/**
+ * The same attach as a line for a human shell. Quoted rather than joined: the
+ * pinned target opens with '=', and zsh expands a word starting with one to
+ * the path of that command (`=ls` becomes `/bin/ls`), so an unquoted line
+ * dies on the operator's own shell before tmux ever sees it.
+ */
+export function attachCommand(target: WindowTarget): string {
+  return ['tmux', ...attachArgs(target).map(shellWord)].join(' ');
+}
+
+/** A word a shell takes literally, single-quoted when it would not. */
+function shellWord(word: string): string {
+  return /^[\w.,:/@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
 
 /**

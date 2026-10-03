@@ -20,12 +20,13 @@ import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import {
+  attachCommand,
   conductorName,
-  conductorSocket,
   killWatcher,
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  windowLabel,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
@@ -489,9 +490,9 @@ function reportLaunched(sessionId: string, what = 'session'): void {
   // Sanitized on each interpolation rather than once into a local: a local is
   // a name the source scan can no longer see the field through (decision 68).
   console.log(
-    `Launched ${what} ${sanitizeReason(sessionId)} (tmux: pup-${sanitizeReason(sessionId)}).`,
+    `Launched ${what} ${sanitizeReason(sessionId)} (tmux: ${sanitizeReason(windowLabel({ sessionId }))}).`,
   );
-  console.log(`Attach with: tmux attach -t pup-${sanitizeReason(sessionId)}`);
+  console.log(`Attach with: ${sanitizeReason(attachCommand({ sessionId }))}`);
 }
 
 /**
@@ -913,11 +914,11 @@ export function buildProgram(): Command {
       // is a local, and chasing its provenance per line is the carve-out
       // decision 68 dropped.
       console.log(`Conductor running (tmux: ${sanitizeReason(handle.name)}).`);
-      // Its own socket, so the attach names it: a plain `tmux attach` asks the
-      // default server, which the conductor's window is deliberately not on
-      // (decision 47).
+      // The line carries the `-L` socket and pins its target, both the
+      // runtime's to spell (decision 47, decision 46) — and it is quoted, so
+      // it pastes into the operator's shell as it stands.
       console.log(
-        `Attach with: tmux -L ${conductorSocket(projectId(repoPath))} attach -t ${sanitizeReason(handle.name)}`,
+        `Attach with: ${sanitizeReason(attachCommand({ conductorOf: projectId(repoPath) }))}`,
       );
       // The radar is the turn watchdog's host, and the conductor is the thing
       // the watchdog exists to keep going: its own waiting turn dies with the
@@ -1263,7 +1264,9 @@ export function buildProgram(): Command {
       }
       if (opts.start) {
         const { target } = launchWatcher(pid, repoPath);
-        console.log(`Conflict radar running (tmux: ${target}). Watch it: tmux attach -t ${target}`);
+        console.log(
+          `Conflict radar running (tmux: ${target}). Watch it: ${attachCommand({ watcherOf: pid })}`,
+        );
         return;
       }
       const intervalMs = Math.max(1, Number(opts.interval)) * 1000;
@@ -1409,7 +1412,9 @@ export function buildProgram(): Command {
         } catch (error) {
           return refuse((error as Error).message);
         }
-        console.log(`Hard-respawned session ${session} (tmux: pup-${session}).`);
+        console.log(
+          `Hard-respawned session ${session} (tmux: ${sanitizeReason(windowLabel({ sessionId: session }))}).`,
+        );
         return;
       }
       killSession(db, session);

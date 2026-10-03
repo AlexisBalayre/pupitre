@@ -3,9 +3,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import {
-  conductorSocket,
+  attachArgs,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  windowLabel,
 } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
@@ -93,7 +94,7 @@ export function launchSelected(deps: ActionDeps, taskId: string, model: string):
         claudeUserDir: join(homedir(), '.claude'),
         ...(model ? { model } : {}),
       });
-      return `Launched ${sessionId} (tmux: pup-${sessionId}).`;
+      return `Launched ${sessionId} (tmux: ${windowLabel({ sessionId })}).`;
     } catch (error) {
       if (!(error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError)) {
         throw error;
@@ -249,18 +250,18 @@ export interface AttachTarget {
 }
 
 export function sessionAttachTarget(sessionId: string): AttachTarget {
-  return { label: `pup-${sessionId}`, args: ['attach', '-t', `pup-${sessionId}`] };
+  return { label: windowLabel({ sessionId }), args: attachArgs({ sessionId }) };
 }
 
 /**
- * The conductor's window is on a tmux server of its own, so its target carries
- * the `-L` socket: a bare `attach -t` asks the default server, which is
- * deliberately not where that window lives (decision 47).
+ * The conductor's window is on a tmux server of its own, and the socket that
+ * reaches it is the runtime's to spell, as the pin on the target is: this
+ * screen names the window and runs the argv it gets back (decision 47).
  */
 export function conductorAttachTarget(snapshot: DashboardSnapshot): AttachTarget {
   return {
     label: snapshot.conductor.name,
-    args: ['-L', conductorSocket(snapshot.projectId), 'attach', '-t', snapshot.conductor.name],
+    args: attachArgs({ conductorOf: snapshot.projectId }),
   };
 }
 
@@ -274,7 +275,7 @@ export function attachTo(target: AttachTarget): ActionResult {
   const result = spawnSync('tmux', target.args, { stdio: 'inherit' });
   if (result.error) return { message: result.error.message, failed: true };
   if (result.status !== 0) {
-    return { message: `tmux attach -t ${target.label} exited ${result.status}.`, failed: true };
+    return { message: `Attaching to ${target.label} exited ${result.status}.`, failed: true };
   }
   return { message: `Detached from ${target.label}.` };
 }

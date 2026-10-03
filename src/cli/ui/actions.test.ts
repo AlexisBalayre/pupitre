@@ -298,8 +298,12 @@ describe('dashboard actions', () => {
   });
 
   describe('attach', () => {
-    it('targets the session window on the default server', () => {
-      expect(sessionAttachTarget(SESSION).args).toEqual(['attach', '-t', `pup-${SESSION}`]);
+    // Pinned, so an attach to a session whose window is gone refuses rather
+    // than landing in a live `pup-<id>-1` the bare name prefix-matches
+    // (decision 46).
+    it('targets the session window on the default server, by its pinned name', () => {
+      expect(sessionAttachTarget(SESSION).args).toEqual(['attach', '-t', `=pup-${SESSION}:`]);
+      expect(sessionAttachTarget(SESSION).label).toBe(`pup-${SESSION}`);
     });
 
     // The conductor's window is on a tmux server of its own, so a bare
@@ -315,14 +319,14 @@ describe('dashboard actions', () => {
         'pup-conductor-ab12cd34ef56',
         'attach',
         '-t',
-        'pup-conductor-ab12cd34ef56',
+        '=pup-conductor-ab12cd34ef56:',
       ]);
     });
 
     it('hands tmux the terminal it is holding', () => {
       const result = attachTo(sessionAttachTarget(SESSION));
 
-      expect(spawnSync).toHaveBeenCalledWith('tmux', ['attach', '-t', `pup-${SESSION}`], {
+      expect(spawnSync).toHaveBeenCalledWith('tmux', ['attach', '-t', `=pup-${SESSION}:`], {
         stdio: 'inherit',
       });
       expect(result.message).toContain(`pup-${SESSION}`);

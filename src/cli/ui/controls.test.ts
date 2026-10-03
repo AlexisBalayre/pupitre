@@ -21,7 +21,10 @@ vi.mock('./actions.service.js', () => ({
   respawnSelected: vi.fn(() => Promise.resolve({ message: 'Respawned.' })),
   runMerge: vi.fn(() => ({ kill: vi.fn() })),
   selectedBlockedReason: vi.fn(() => 'the reject cap'),
-  sessionAttachTarget: vi.fn((id: string) => ({ label: `pup-${id}`, args: ['attach', '-t', id] })),
+  sessionAttachTarget: vi.fn((id: string) => ({
+    label: `pup-${id}`,
+    args: ['attach', '-t', `=pup-${id}:`],
+  })),
   steerSelected: vi.fn(() => ({ message: 'Steered.' })),
   toggleConductor: vi.fn(() => ({ message: 'Conductor stopped.' })),
   unblockSelected: vi.fn(() => ({ message: 'Unblocked.' })),
@@ -222,7 +225,7 @@ describe('dashboard controls', () => {
       expect(sessionAttachTarget).toHaveBeenCalledWith('s-run-1');
       expect(attachTo).toHaveBeenCalledWith({
         label: 'pup-s-run-1',
-        args: ['attach', '-t', 's-run-1'],
+        args: ['attach', '-t', '=pup-s-run-1:'],
       });
       instance.unmount();
     });

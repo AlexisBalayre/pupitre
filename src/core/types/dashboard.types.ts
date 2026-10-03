@@ -25,9 +25,11 @@ interface DashboardConductor {
   /** The conductor window's tmux name, up or not. */
   name: string;
   /**
-   * What the operator types to attach. Carries the `-L` socket: the window is
-   * on the conductor's own tmux server, so a bare `attach -t` finds nothing
-   * (decision 47). Who may be shown it is the reader's call, not the model's.
+   * What the operator types to attach, as `attachCommand` spells it: the `-L`
+   * socket, because the window is on the conductor's own tmux server and a
+   * bare `attach -t` finds nothing (decision 47), and a pinned target quoted
+   * for the shell it is pasted into. Who may be shown it is the reader's
+   * call, not the model's.
    */
   attachCommand: string;
 }
