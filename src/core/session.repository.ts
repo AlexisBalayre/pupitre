@@ -326,7 +326,7 @@ export function taskSpecForDisplay(row: Pick<TaskRow, 'spec'> | undefined): Part
   return row ? parseJsonOr<Partial<TaskSpec>>(row.spec, {}) : {};
 }
 
-export type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'acceptance'>>;
+type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'acceptance'>>;
 
 /**
  * `pup plan edit`: merge the given fields over the stored spec, validate the
