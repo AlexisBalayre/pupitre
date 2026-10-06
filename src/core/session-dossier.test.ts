@@ -74,14 +74,20 @@ describe('renderSessionDossierHtml', () => {
   it('embeds the timeline oldest first with typed titles and gate stages', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
     appendEvent(db, 's1', 'steer', { kind: 'kickoff' });
-    appendEvent(db, 's1', 'gate_result', {
-      report: {
-        sessionId: 's1',
-        passed: false,
-        sandbox: 'none',
-        stages: [{ stage: 'test', status: 'fail', detail: '2 failing' }],
-      },
-    });
+    // A report with neither transition nor outcome: no writer stores one
+    // today, but the store holds whatever an older pup wrote.
+    db.prepare(
+      "INSERT INTO events (session_id, type, payload) VALUES ('s1', 'gate_result', ?)",
+    ).run(
+      JSON.stringify({
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'none',
+          stages: [{ stage: 'test', status: 'fail', detail: '2 failing' }],
+        },
+      }),
+    );
     appendEvent(db, 's1', 'gate_result', { from: 'running', to: 'awaiting-review' });
     appendEvent(db, 's1', 'session_done', { summary: 'widget shipped' });
 
@@ -97,22 +103,6 @@ describe('renderSessionDossierHtml', () => {
       { stage: 'test', status: 'fail', detail: '2 failing' },
     ]);
     expect(data.timeline[3].body).toBe('widget shipped');
-  });
-
-  it('drops poisoned gate-stage members instead of dying server- or client-side', () => {
-    const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'gate_result', {
-      report: {
-        sessionId: 's1',
-        passed: false,
-        sandbox: 'none',
-        stages: [null, { stage: 'test' }, { stage: 'lint', status: 'pass' }],
-      },
-    });
-
-    const data = embeddedData(renderSessionDossierHtml(db, REPO, session));
-
-    expect(data.timeline[0].stages).toEqual([{ stage: 'lint', status: 'pass', detail: null }]);
   });
 
   it('replaces bidi overrides in prose but keeps the newlines pre-wrap renders', () => {
@@ -200,6 +190,23 @@ describe('renderSessionDossierHtml', () => {
       title: 'scope_violation',
       body: '{"path":"docs/00.md"}',
     });
+  });
+
+  it('renders a question and a dead turn as the payload they were stored with', () => {
+    const session = seedSession(db, 's1', { goal: 'goal' });
+    appendEvent(db, 's1', 'question', { text: 'which table?' });
+    appendEvent(db, 's1', 'turn_died', {
+      reason: 'API Error',
+      stalledAt: '2026-10-06T10:00:00Z',
+      refusal: 'pane gone',
+    });
+
+    const data = embeddedData(renderSessionDossierHtml(db, REPO, session));
+
+    expect(data.timeline.map((t: { body: string }) => t.body)).toEqual([
+      '{"text":"which table?"}',
+      '{"reason":"API Error","stalledAt":"2026-10-06T10:00:00Z","refusal":"pane gone"}',
+    ]);
   });
 
   it('normalises event and session timestamps to ISO UTC', () => {

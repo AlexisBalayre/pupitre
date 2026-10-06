@@ -12,8 +12,9 @@ import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
-import { asStageArray, asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
+  decodeEvent,
   type EventRow,
   getProject,
   listBacklogTasks,
@@ -36,7 +37,7 @@ import type {
   FleetSummary,
 } from './types/dashboard.types.js';
 import type { ProjectBaseline } from './types/init.types.js';
-import type { GateReport } from './types/merge-gate.types.js';
+import type { SessionEvent } from './types/session-event.types.js';
 
 /**
  * One reading of the project for every surface that shows it: `pup status`
@@ -291,20 +292,15 @@ function dashboardSession(
  * resumed more than once through an outage.
  */
 function newestDeadTurn(newestFirst: EventRow[], stalledAt: string): DashboardDeadTurn | undefined {
-  for (const event of newestFirst) {
-    if (event.type !== 'turn_died') continue;
-    const payload = parseJsonOr<{ reason?: unknown; stalledAt?: unknown; refusal?: unknown }>(
-      event.payload,
-      {},
-    );
-    if (payload.stalledAt !== stalledAt) continue;
+  for (const row of newestFirst) {
+    const event = decodeEvent(row);
+    if (event.type !== 'turn_died' || event.stalledAt !== stalledAt) continue;
     return {
       // Sanitized again on the way out, like every other stored text on a row:
-      // the error line is the session's own pane (decision 29), and a torn
-      // payload must render as a row rather than end the snapshot.
-      reason: typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : '',
-      at: toIsoUtc(event.created_at),
-      ...(typeof payload.refusal === 'string' ? { refusal: sanitizeReason(payload.refusal) } : {}),
+      // the error line is the session's own pane (decision 29).
+      reason: event.reason === undefined ? '' : sanitizeReason(event.reason),
+      at: toIsoUtc(row.created_at),
+      ...(event.refusal === undefined ? {} : { refusal: sanitizeReason(event.refusal) }),
     };
   }
   return undefined;
@@ -317,25 +313,27 @@ function newestDeadTurn(newestFirst: EventRow[], stalledAt: string): DashboardDe
  * Derived off the store like a stall, so both surfaces read one answer.
  */
 function openQuestion(newestFirst: EventRow[]): string | undefined {
-  for (const event of newestFirst) {
+  for (const row of newestFirst) {
+    const event = decodeEvent(row);
     if (event.type === 'steer') return undefined;
     if (event.type !== 'question') continue;
-    const payload = parseJsonOr<{ text?: unknown }>(event.payload, {});
     // Session-written text bound for the operator's terminal (decision 29).
-    return typeof payload.text === 'string' ? sanitizeReason(payload.text) || undefined : undefined;
+    return event.text === undefined ? undefined : sanitizeReason(event.text) || undefined;
   }
   return undefined;
 }
 
 function newestSteer(newestFirst: EventRow[]): DashboardSteer | undefined {
-  const steer = newestFirst.find((event) => event.type === 'steer');
-  if (!steer) return undefined;
-  const payload = parseJsonOr<{ kind?: unknown; by?: unknown }>(steer.payload, {});
-  return {
-    ...(typeof payload.kind === 'string' ? { kind: sanitizeReason(payload.kind) } : {}),
-    ...(typeof payload.by === 'string' ? { by: sanitizeReason(payload.by) } : {}),
-    at: toIsoUtc(steer.created_at),
-  };
+  for (const row of newestFirst) {
+    const event = decodeEvent(row);
+    if (event.type !== 'steer') continue;
+    return {
+      ...(event.kind === undefined ? {} : { kind: sanitizeReason(event.kind) }),
+      ...(event.by === undefined ? {} : { by: sanitizeReason(event.by) }),
+      at: toIsoUtc(row.created_at),
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -344,42 +342,41 @@ function newestSteer(newestFirst: EventRow[]): DashboardSteer | undefined {
  * filter as review.service's `lastGateReport`).
  */
 function newestGate(newestFirst: EventRow[]): DashboardGate | undefined {
-  for (const event of newestFirst) {
-    const gate = event.type === 'gate_result' ? gateOf(event) : undefined;
+  for (const row of newestFirst) {
+    const gate = gateOf(decodeEvent(row), row.created_at);
     if (gate) return gate;
   }
   return undefined;
 }
 
 /**
- * The gate run a `gate_result` event reports, or nothing for a bare transition.
- * The stages go through `asStageArray`'s shape guard first — one `null` member
- * a session wrote must drop out of the list, not end the snapshot — and then
- * through decision 29's terminal sanitizing, because a stage detail is a failing
- * test's own output.
+ * The gate run a `gate_result` event reports, or nothing for a bare transition
+ * or any other event. The stages go through the report pages' scrub and then
+ * decision 29's terminal sanitizing, because a stage detail is a failing test's
+ * own output.
  */
-function gateOf(event: EventRow): DashboardGate | undefined {
-  const report = parseJsonOr<{ report?: GateReport }>(event.payload, {}).report;
-  if (!report) return undefined;
-  const stages = asStageArray(report.stages).map(({ stage, status, detail }) => ({
+function gateOf(event: SessionEvent, createdAt: string): DashboardGate | undefined {
+  if (event.type !== 'gate_result' || !event.report) return undefined;
+  const stages = displayStages(event.report.stages).map(({ stage, status, detail }) => ({
     stage: sanitizeReason(stage),
     status: sanitizeReason(status),
     ...(detail === null ? {} : { detail: sanitizeReason(detail) }),
   }));
   const failed = stages.find((stage) => stage.status === 'fail');
   return {
-    passed: report.passed === true,
+    passed: event.report.passed,
     ...(failed ? { failedStage: failed.stage } : {}),
     stages,
-    at: toIsoUtc(event.created_at),
+    at: toIsoUtc(createdAt),
   };
 }
 
-function dashboardEvent(event: EventRow): DashboardEvent {
-  const detail = eventDetail(event, event.type === 'gate_result' ? gateOf(event) : undefined);
+function dashboardEvent(row: EventRow): DashboardEvent {
+  const event = decodeEvent(row);
+  const detail = eventDetail(event, gateOf(event, row.created_at));
   return {
-    type: sanitizeReason(event.type),
-    at: toIsoUtc(event.created_at),
+    type: sanitizeReason(row.type),
+    at: toIsoUtc(row.created_at),
     ...(detail ? { detail } : {}),
   };
 }
@@ -417,14 +414,12 @@ function baselineOf(db: Database, pid: string): DashboardBaseline | undefined {
  * can describe a parking the other would describe differently.
  */
 export function blockedReason(db: Database, sessionId: string): string | undefined {
-  for (const event of listEvents(db, sessionId).reverse()) {
-    if (event.type !== 'gate_result') continue;
-    const payload = parseJsonOr<{ to?: unknown; reason?: unknown }>(event.payload, {});
-    if (payload.to !== 'blocked') continue;
+  for (const event of listEvents(db, sessionId).reverse().map(decodeEvent)) {
+    if (event.type !== 'gate_result' || event.to !== 'blocked') continue;
     // Sanitized like every other stored text a reader prints: the reason quotes
     // a steer refusal, and the report that refused to land is the session's own
     // output (decision 29).
-    return typeof payload.reason === 'string' ? sanitizeReason(payload.reason) : undefined;
+    return event.reason === undefined ? undefined : sanitizeReason(event.reason);
   }
   return undefined;
 }

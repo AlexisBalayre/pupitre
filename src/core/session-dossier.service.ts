@@ -6,21 +6,21 @@ import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectId } from './paths.utils.js';
 import {
-  asStageArray,
   asStringArray,
   decisionRecordDatum,
+  displayStages,
   displayText,
-  parseJsonOr,
   toIsoUtc,
 } from './report-data.utils.js';
 import {
+  decodeEvent,
   type EventRow,
   listEvents,
   listTasks,
   type SessionRow,
   taskSpecForDisplay,
 } from './session.repository.js';
-import type { GateReport } from './types/merge-gate.types.js';
+import type { SessionEvent } from './types/session-event.types.js';
 
 /**
  * One session's dossier page — the report's per-session detail view
@@ -40,7 +40,10 @@ export function renderSessionDossierHtml(
   const events = listEvents(db, session.id);
   // Newest first, so `find` returns the latest merge — a respawned session can
   // in principle merge more than once, and the latest is what stands.
-  const mergeEvent = [...events].reverse().find((event) => event.type === 'merge');
+  const mergeEvent = events
+    .map(decodeEvent)
+    .reverse()
+    .find((event) => event.type === 'merge');
   const data = {
     repoPath,
     session: {
@@ -87,8 +90,8 @@ export function dossierFileName(sessionId: string): string | null {
  * event type nothing special-cases still renders — type plus raw payload —
  * because dropping store rows silently is the wrong failure mode.
  */
-function timelineDatum(event: EventRow) {
-  const payload = parseJsonOr<Record<string, unknown>>(event.payload, {});
+function timelineDatum(row: EventRow) {
+  const event = decodeEvent(row);
   const datum: {
     at: string;
     title: string;
@@ -96,57 +99,59 @@ function timelineDatum(event: EventRow) {
     stages: { stage: string; status: string; detail: string | null }[];
     files: string[];
   } = {
-    at: toIsoUtc(event.created_at),
-    title: displayText(event.type),
+    at: toIsoUtc(row.created_at),
+    title: displayText(row.type),
     body: null,
     stages: [],
     files: [],
   };
   switch (event.type) {
     case 'gate_result': {
-      const report = payload.report as Partial<GateReport> | undefined;
-      datum.stages = asStageArray(report?.stages);
-      if (payload.outcome === 'refused') datum.title = 'gate refused';
-      else if (typeof payload.from === 'string' && typeof payload.to === 'string')
-        datum.title = displayText(`${payload.from} → ${payload.to}`);
+      const { report } = event;
+      datum.stages = displayStages(report?.stages ?? []);
+      if (event.outcome === 'refused') datum.title = 'gate refused';
+      else if (event.from !== undefined && event.to !== undefined)
+        datum.title = displayText(`${event.from} → ${event.to}`);
       else if (report) datum.title = report.passed ? 'gate passed' : 'gate failed';
       break;
     }
     case 'merge': {
       datum.title =
-        typeof payload.target === 'string'
-          ? displayText(`merged into ${payload.target}`)
-          : 'merged';
-      datum.files = asStringArray(payload.files).map(displayText);
-      datum.body = safeHttpUrl(payload.prUrl);
+        event.target === undefined ? 'merged' : displayText(`merged into ${event.target}`);
+      datum.files = event.files.map(displayText);
+      datum.body = safeHttpUrl(event.prUrl);
       break;
     }
     case 'steer': {
       // A message steer names its sender; the timeline is where that is read.
-      const by = typeof payload.by === 'string' ? `, by ${payload.by}` : '';
-      datum.title =
-        typeof payload.kind === 'string' ? displayText(`steer (${payload.kind}${by})`) : 'steer';
+      const by = event.by === undefined ? '' : `, by ${event.by}`;
+      datum.title = event.kind === undefined ? 'steer' : displayText(`steer (${event.kind}${by})`);
       break;
     }
     case 'session_done':
       datum.title = 'done';
-      datum.body = typeof payload.summary === 'string' ? displayText(payload.summary) : null;
+      datum.body = event.summary === undefined ? null : displayText(event.summary);
       break;
     case 'handoff_ready':
       datum.title = 'handoff ready';
       break;
-    default:
-      if (Object.keys(payload).length > 0) datum.body = displayText(JSON.stringify(payload));
+    default: {
+      // `type: undefined` keeps the tag out of the dump: JSON.stringify skips
+      // undefined keys, as it does the fields the payload did not carry.
+      const dump = JSON.stringify(
+        event.type === 'other' ? event.fields : { ...event, type: undefined },
+      );
+      if (dump !== '{}') datum.body = displayText(dump);
+    }
   }
   return datum;
 }
 
-function mergeDatum(event: EventRow) {
-  const payload = parseJsonOr<Record<string, unknown>>(event.payload, {});
+function mergeDatum(event: Extract<SessionEvent, { type: 'merge' }>) {
   return {
-    target: typeof payload.target === 'string' ? displayText(payload.target) : null,
-    files: asStringArray(payload.files).map(displayText),
-    prUrl: safeHttpUrl(payload.prUrl),
+    target: event.target === undefined ? null : displayText(event.target),
+    files: event.files.map(displayText),
+    prUrl: safeHttpUrl(event.prUrl),
   };
 }
 
@@ -155,8 +160,8 @@ function mergeDatum(event: EventRow) {
  * as a clickable href — validate it HERE, not in the page, so a `javascript:`
  * or `file:` scheme never reaches an anchor at all.
  */
-function safeHttpUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
+function safeHttpUrl(value: string | undefined): string | null {
+  if (value === undefined) return null;
   try {
     const scheme = new URL(value).protocol;
     return scheme === 'http:' || scheme === 'https:' ? value : null;

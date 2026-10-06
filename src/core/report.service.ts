@@ -7,14 +7,15 @@ import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { projectId } from './paths.utils.js';
 import {
-  asStageArray,
   asStringArray,
   decisionRecordDatum,
+  displayStages,
   displayText,
   parseJsonOr,
   toIsoUtc,
 } from './report-data.utils.js';
 import {
+  decodeEvent,
   listBacklogTasks,
   listEvents,
   listSessions,
@@ -24,7 +25,6 @@ import {
 } from './session.repository.js';
 import { dossierFileName } from './session-dossier.service.js';
 import type { DebtBaseline } from './types/init.types.js';
-import type { GateReport } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
 /**
@@ -95,15 +95,13 @@ export function renderReportHtml(db: Database, repoPath: string): string {
 
 function sessionDatum(db: Database, session: SessionRow, spec: Partial<TaskSpec>) {
   // Newest first, so `find` returns the latest matching event.
-  const events = listEvents(db, session.id).reverse();
-  const done = events.find((event) => event.type === 'session_done');
-  const doneSummary = done ? parseJsonOr<{ summary?: unknown }>(done.payload, {}).summary : null;
+  const events = listEvents(db, session.id).reverse().map(decodeEvent);
+  const doneSummary = events.find((event) => event.type === 'session_done')?.summary;
   // Every state transition logs a gate_result event; only real gate runs carry
-  // a report payload (same filter as review.service's lastGateReport).
-  const lastGate = events
-    .filter((event) => event.type === 'gate_result')
-    .map((event) => parseJsonOr<{ report?: GateReport }>(event.payload, {}).report)
-    .find((report) => report !== undefined);
+  // a report (same filter as review.service's lastGateReport).
+  const lastGate = events.flatMap((event) =>
+    event.type === 'gate_result' && event.report ? [event.report] : [],
+  )[0];
   return {
     id: displayText(session.id),
     state: displayText(session.state),
@@ -116,8 +114,8 @@ function sessionDatum(db: Database, session: SessionRow, spec: Partial<TaskSpec>
     goal: typeof spec.goal === 'string' ? displayText(spec.goal) : '',
     scopeIn: asStringArray(spec.scopeIn).map(displayText),
     scopeOut: asStringArray(spec.scopeOut).map(displayText),
-    doneSummary: typeof doneSummary === 'string' ? displayText(doneSummary) : null,
-    gateStages: asStageArray(lastGate?.stages),
+    doneSummary: doneSummary === undefined ? null : displayText(doneSummary),
+    gateStages: displayStages(lastGate?.stages ?? []),
   };
 }
 

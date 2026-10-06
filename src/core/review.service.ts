@@ -13,9 +13,15 @@ import {
   RISK_WEIGHT_REJECTION,
   RISK_WEIGHT_SCOPE_VIOLATION,
 } from './review.constants.js';
-import { listSessions, readTaskSpec, type SessionRow } from './session.repository.js';
-import type { GateReport } from './types/merge-gate.types.js';
+import {
+  decodeEvent,
+  listEvents,
+  listSessions,
+  readTaskSpec,
+  type SessionRow,
+} from './session.repository.js';
 import type { ReviewQueueEntry, SessionReviewDetail } from './types/review.types.js';
+import type { StoredGateReport } from './types/session-event.types.js';
 
 function targetBranch(repoPath: string): string {
   const target = execFileSync(
@@ -37,15 +43,10 @@ function scopeViolationCount(db: Database, sessionId: string): number {
   return row.n;
 }
 
-function lastGateReport(db: Database, sessionId: string): GateReport | undefined {
-  const rows = db
-    .prepare(
-      "SELECT payload FROM events WHERE session_id = ? AND type = 'gate_result' ORDER BY id DESC",
-    )
-    .all(sessionId) as { payload: string }[];
-  for (const row of rows) {
-    const payload = JSON.parse(row.payload) as { report?: GateReport };
-    if (payload.report) return payload.report;
+function lastGateReport(db: Database, sessionId: string): StoredGateReport | undefined {
+  for (const row of listEvents(db, sessionId).reverse()) {
+    const event = decodeEvent(row);
+    if (event.type === 'gate_result' && event.report) return event.report;
   }
   return undefined;
 }

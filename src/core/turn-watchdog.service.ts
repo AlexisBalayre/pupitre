@@ -9,9 +9,10 @@ import {
 } from '../claude/session-runtime.service.js';
 import { findStalledSessions } from './dashboard.service.js';
 import { projectId } from './paths.utils.js';
-import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { toIsoUtc } from './report-data.utils.js';
 import {
   appendEvent,
+  decodeEvent,
   getSession,
   isProjectDormant,
   listEvents,
@@ -214,20 +215,17 @@ function deadTurnEvents(
   sessionId: string,
 ): Array<{ reason: string; stalledAt: string; refusal?: string; at: Date }> {
   return listEvents(db, sessionId)
-    .filter((event) => event.type === 'turn_died')
     .reverse()
-    .map((event) => {
-      // Through the store's own tolerant parse: a payload is JSON pup wrote,
-      // but a torn row must drop out of a sweep rather than end it.
-      const payload = parseJsonOr<{ reason?: unknown; stalledAt?: unknown; refusal?: unknown }>(
-        event.payload,
-        {},
-      );
-      return {
-        reason: typeof payload.reason === 'string' ? payload.reason : '',
-        stalledAt: typeof payload.stalledAt === 'string' ? payload.stalledAt : '',
-        ...(typeof payload.refusal === 'string' ? { refusal: payload.refusal } : {}),
-        at: new Date(Date.parse(toIsoUtc(event.created_at))),
-      };
+    .flatMap((row) => {
+      const event = decodeEvent(row);
+      if (event.type !== 'turn_died') return [];
+      return [
+        {
+          reason: event.reason ?? '',
+          stalledAt: event.stalledAt ?? '',
+          ...(event.refusal === undefined ? {} : { refusal: event.refusal }),
+          at: new Date(Date.parse(toIsoUtc(row.created_at))),
+        },
+      ];
     });
 }

@@ -1,6 +1,6 @@
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { parseJsonOr } from './report-data.utils.js';
 import type { DashboardGate } from './types/dashboard.types.js';
+import type { SessionEvent } from './types/session-event.types.js';
 
 /**
  * What an event's payload says, in the words a person reads it in: the
@@ -12,48 +12,45 @@ import type { DashboardGate } from './types/dashboard.types.js';
  * `gate` is the run a `gate_result` event reports, as the snapshot service
  * read it: the verdict here and the stage list on the row come from one
  * reading of the report, and a util does not reach into a service for it.
- * The event is typed by the two fields read, because utils do not import
- * repositories.
  */
 export function eventDetail(
-  event: { type: string; payload: string },
+  event: SessionEvent,
   gate: DashboardGate | undefined,
 ): string | undefined {
-  const payload = parseJsonOr<Record<string, unknown>>(event.payload, {});
-  const text = (key: string): string | undefined => {
-    const value = payload[key];
-    return typeof value === 'string' ? sanitizeReason(value) : undefined;
-  };
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' ? sanitizeReason(value) : undefined;
   const line = (...parts: (string | undefined)[]): string | undefined =>
     parts.filter(Boolean).join(' · ') || undefined;
   switch (event.type) {
     case 'gate_result': {
-      const [from, to] = [text('from'), text('to')];
+      const [from, to] = [text(event.from), text(event.to)];
       const verdict = gate?.passed
         ? 'gate passed'
         : gate && `gate failed${gate.failedStage ? ` at ${gate.failedStage}` : ''}`;
       return line(
         from && to ? `${from} → ${to}` : undefined,
         verdict,
-        text('outcome'),
-        text('reason'),
+        text(event.outcome),
+        text(event.reason),
       );
     }
     case 'steer': {
-      const by = text('by');
-      return line(text('kind'), by && `by ${by}`);
+      const by = text(event.by);
+      return line(text(event.kind), by && `by ${by}`);
     }
     case 'turn_died':
-      return line(text('reason'), text('refusal'));
+      return line(text(event.reason), text(event.refusal));
     case 'session_done':
-      return text('summary');
+      return text(event.summary);
     case 'question':
-      return text('text');
+      return text(event.text);
     case 'merge': {
-      const target = text('target');
-      return text('prUrl') ?? (target && `into ${target}`);
+      const target = text(event.target);
+      return text(event.prUrl) ?? (target && `into ${target}`);
     }
+    case 'handoff_ready':
+      return undefined;
     default:
-      return text('kind');
+      return text(event.fields.kind);
   }
 }

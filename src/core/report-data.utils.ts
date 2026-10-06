@@ -1,3 +1,5 @@
+import type { StoredGateStage } from './types/session-event.types.js';
+
 /**
  * JSON.parse that returns `fallback` for a malformed or type-confused store
  * column — the store is session-writable, and one bad row must degrade to the
@@ -36,28 +38,18 @@ export function displayText(value: string): string {
 }
 
 /**
- * Shape guard for gate stages read back from an event payload: `Array.isArray`
- * on the container says nothing about the members, and one `null` element (or
- * a stage with no `status`) written by a session must drop out of the render,
- * not kill `pup report` server-side or blank the page in the browser. Members
- * pass through `displayText` — stage details are gate-written prose.
+ * Gate stages as both report pages embed them, through `displayText` — stage
+ * details are gate-written prose. A stage without a detail embeds `null`, so
+ * the page has one shape to render.
  */
-export function asStageArray(
-  value: unknown,
+export function displayStages(
+  stages: StoredGateStage[],
 ): { stage: string; status: string; detail: string | null }[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((member: unknown) => {
-    if (member === null || typeof member !== 'object') return [];
-    const stage = member as { stage?: unknown; status?: unknown; detail?: unknown };
-    if (typeof stage.stage !== 'string' || typeof stage.status !== 'string') return [];
-    return [
-      {
-        stage: displayText(stage.stage),
-        status: displayText(stage.status),
-        detail: typeof stage.detail === 'string' ? displayText(stage.detail) : null,
-      },
-    ];
-  });
+  return stages.map(({ stage, status, detail }) => ({
+    stage: displayText(stage),
+    status: displayText(status),
+    detail: detail === undefined ? null : displayText(detail),
+  }));
 }
 
 /**

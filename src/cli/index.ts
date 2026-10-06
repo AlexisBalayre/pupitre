@@ -111,8 +111,9 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
-import type { GateReport, GateStageResult, MergeOutcome } from '../core/types/merge-gate.types.js';
+import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
+import type { StoredGateStage } from '../core/types/session-event.types.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
   enclosingProject,
@@ -197,7 +198,7 @@ function printDecisionRecordBody(record: DecisionRecordRow): void {
  * one line with nothing to say the rest was dropped. A single line still over
  * 300 characters is still cut, as every other scrubbed string is.
  */
-function printGateStage(stage: GateStageResult): void {
+function printGateStage(stage: StoredGateStage): void {
   const [head = '', ...rest] = (stage.detail ?? '').split('\n');
   console.log(
     `  ${sanitizeReason(stage.stage).padEnd(16)} ${sanitizeReason(stage.status).toUpperCase()}${stage.detail ? `  ${sanitizeReason(head)}` : ''}`,

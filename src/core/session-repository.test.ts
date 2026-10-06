@@ -5,6 +5,7 @@ import { InvalidProfileError } from './profile.errors.js';
 import {
   appendEvent,
   claimingSession,
+  decodeEvent,
   deleteTask,
   editTaskSpec,
   ensureProject,
@@ -102,7 +103,9 @@ describe('session repository', () => {
   });
 
   it('appends a null-session event without a foreign-key error', () => {
-    expect(() => appendEvent(db, null, 'utility_call', { note: 'gate reviewer' })).not.toThrow();
+    expect(() =>
+      appendEvent(db, null, 'utility_call', { kind: 'gate-reviewer', ok: true }),
+    ).not.toThrow();
   });
 
   it('lists only the requested project tasks, with the spec as raw JSON', () => {
@@ -120,7 +123,7 @@ describe('session repository', () => {
     seedSession(db, 's1');
     seedSession(db, 's2');
     appendEvent(db, 's1', 'steer', { kind: 'manual' });
-    appendEvent(db, 's2', 'interrupt', {});
+    appendEvent(db, 's2', 'interrupt', { steered: false });
     appendEvent(db, 's1', 'session_done', { summary: 'shipped' });
 
     const rows = listEvents(db, 's1');
@@ -410,6 +413,155 @@ describe('task spec decoding', () => {
 
       expect(editTaskSpec(db, 't-1', { goal: 'g2' })).toBe('claimed');
       expect(spec()).toEqual(valid);
+    });
+  });
+});
+
+describe('decodeEvent', () => {
+  const gate = (payload: unknown) =>
+    decodeEvent({ type: 'gate_result', payload: JSON.stringify(payload) });
+
+  it('reads a gate run as its verdict and stages', () => {
+    expect(
+      gate({
+        outcome: 'refused',
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'none',
+          stages: [
+            { stage: 'lint', status: 'pass' },
+            { stage: 'tests', status: 'fail', detail: '2 failing' },
+          ],
+        },
+      }),
+    ).toEqual({
+      type: 'gate_result',
+      outcome: 'refused',
+      report: {
+        passed: false,
+        stages: [
+          { stage: 'lint', status: 'pass' },
+          { stage: 'tests', status: 'fail', detail: '2 failing' },
+        ],
+      },
+    });
+  });
+
+  it('reads a bare transition as a gate result without a report', () => {
+    expect(gate({ from: 'running', to: 'blocked', reason: 'reject cap' })).toEqual({
+      type: 'gate_result',
+      from: 'running',
+      to: 'blocked',
+      reason: 'reject cap',
+    });
+  });
+
+  it('reads a torn payload as a gate result without a report instead of throwing', () => {
+    const event = decodeEvent({ type: 'gate_result', payload: '{"report":' });
+
+    expect(event).toEqual({ type: 'gate_result' });
+  });
+
+  it('reads a top-level array or a non-object report as no report', () => {
+    expect(gate([{ report: {} }])).toEqual({ type: 'gate_result' });
+    expect(gate({ report: 'passed' })).toEqual({ type: 'gate_result' });
+    expect(gate({ report: null })).toEqual({ type: 'gate_result' });
+  });
+
+  it('drops stage members of the wrong shape and keeps the rest', () => {
+    const event = gate({
+      report: {
+        passed: 'yes',
+        stages: [
+          null,
+          'lint',
+          { stage: 'build' },
+          { stage: 7, status: 'pass' },
+          { stage: 'tests', status: 'fail', detail: 42 },
+          { stage: 'lint', status: 'pass' },
+        ],
+      },
+    });
+
+    expect(event).toEqual({
+      type: 'gate_result',
+      report: {
+        passed: false,
+        stages: [
+          { stage: 'tests', status: 'fail' },
+          { stage: 'lint', status: 'pass' },
+        ],
+      },
+    });
+  });
+
+  it('reads stages that are not an array as none', () => {
+    expect(gate({ report: { passed: true, stages: { stage: 'lint' } } })).toEqual({
+      type: 'gate_result',
+      report: { passed: true, stages: [] },
+    });
+  });
+
+  // Decision 68: the decoder hands each renderer the store text as it was.
+  it('leaves control characters for the renderer to scrub', () => {
+    expect(
+      decodeEvent({ type: 'question', payload: JSON.stringify({ text: '\u001b[2Jwhich one?' }) }),
+    ).toEqual({ type: 'question', text: '\u001b[2Jwhich one?' });
+  });
+
+  it('reads a field of the wrong type as absent', () => {
+    expect(
+      decodeEvent({ type: 'steer', payload: JSON.stringify({ kind: 5, by: 'conductor' }) }),
+    ).toEqual({ type: 'steer', by: 'conductor' });
+    expect(
+      decodeEvent({ type: 'session_done', payload: JSON.stringify({ summary: ['done'] }) }),
+    ).toEqual({ type: 'session_done' });
+  });
+
+  it('reads a merge, keeping only the string members of its file list', () => {
+    expect(
+      decodeEvent({
+        type: 'merge',
+        payload: JSON.stringify({
+          branch: 'pup/s1',
+          target: 'main',
+          files: ['src/a.ts', null, 3],
+          prUrl: 'https://github.com/o/r/pull/1',
+        }),
+      }),
+    ).toEqual({
+      type: 'merge',
+      target: 'main',
+      files: ['src/a.ts'],
+      prUrl: 'https://github.com/o/r/pull/1',
+    });
+    expect(decodeEvent({ type: 'merge', payload: '{}' })).toEqual({ type: 'merge', files: [] });
+  });
+
+  it('reads a dead turn and a handoff signal', () => {
+    expect(
+      decodeEvent({
+        type: 'turn_died',
+        payload: JSON.stringify({ reason: 'API Error', stalledAt: '2026-10-06T10:00:00Z' }),
+      }),
+    ).toEqual({ type: 'turn_died', reason: 'API Error', stalledAt: '2026-10-06T10:00:00Z' });
+    expect(decodeEvent({ type: 'handoff_ready', payload: '{"hash":"abc"}' })).toEqual({
+      type: 'handoff_ready',
+      hash: 'abc',
+    });
+  });
+
+  it('keeps the payload of a type nothing reads by field', () => {
+    expect(decodeEvent({ type: 'interrupt', payload: '{"steered":false}' })).toEqual({
+      type: 'other',
+      eventType: 'interrupt',
+      fields: { steered: false },
+    });
+    expect(decodeEvent({ type: 'interrupt', payload: 'not json' })).toEqual({
+      type: 'other',
+      eventType: 'interrupt',
+      fields: {},
     });
   });
 });
