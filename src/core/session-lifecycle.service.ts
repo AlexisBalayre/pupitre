@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -15,7 +14,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { assertNoArmedGitDrivers, GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { assertNoArmedGitDrivers, runGit } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
@@ -57,16 +56,6 @@ import type {
 function sessionSlug(taskId: string, existing: number): string {
   const stem = taskId.replace(/[^a-zA-Z0-9]+/g, '-').slice(0, 24);
   return existing === 0 ? stem : `${stem}-${existing}`;
-}
-
-function git(repoPath: string, ...args: string[]): string {
-  // Hooks off and the GIT_DIR family scrubbed: `worktree add` fires
-  // post-checkout, and a hook planted by an earlier session lives in the shared
-  // common dir, untracked (decision 28).
-  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repoPath, ...args], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
-  }).trim();
 }
 
 /**
@@ -226,7 +215,7 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
     outDir: compiledDir,
     codegraphBinary: binary,
   });
-  git(req.repoPath, 'worktree', 'add', '-b', branch, worktreePath, 'HEAD');
+  runGit(req.repoPath, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
   writeCompiledProfile(compiled, compiledDir);
   // After `worktree add`, since the files do not exist before it, and before the
   // launch, so the window opens on a graph of its own branch (decision 51).

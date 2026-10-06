@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 import {
   brokenPackageManagerInstall,
@@ -8,7 +7,7 @@ import {
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import { measureDebt } from './debt.service.js';
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { runGit } from './git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
@@ -57,18 +56,13 @@ export class BrokenToolchainError extends Error {
  */
 export function readOriginUrl(repoPath: string): string | undefined {
   try {
-    const url = execFileSync(
-      'git',
-      [...GIT_SAFE_CONFIG, '-C', repoPath, 'config', '--get', 'remote.origin.url'],
+    const url = runGit(
+      repoPath,
+      ['config', '--get', 'remote.origin.url'],
       // Timed out like every other child pup runs: an `include.path` pointing at
       // a fifo is another thing a session can write into the shared config, and
       // an untimed read would hang `pup init` and hang `--pr` before the lock.
-      {
-        encoding: 'utf8',
-        env: scrubbedGitEnv(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: GATE_COMMAND_TIMEOUT_MS,
-      },
+      { stdio: ['ignore', 'pipe', 'pipe'], timeout: GATE_COMMAND_TIMEOUT_MS },
     ).trim();
     return url || undefined;
   } catch {

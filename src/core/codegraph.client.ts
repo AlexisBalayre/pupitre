@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { runGit } from './git-diff.client.js';
 
 /**
  * CodeGraph (github.com/colbymchenry/codegraph) as a session capability: a local
@@ -78,13 +78,6 @@ const VERSION_TIMEOUT_MS = 10_000;
  */
 const EXCLUDE_LINE = '/.codegraph/';
 
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
-  }).trim();
-}
-
 /**
  * Absolute path of the `codegraph` binary from OUTSIDE the repository, or
  * undefined when there is none. Resolved like `claude` at launch, because the
@@ -129,7 +122,7 @@ export function codegraphBinary(repoPath: string): string | undefined {
  * wherever pup's process is standing.
  */
 export function ensureCodegraphExcluded(cwd: string): void {
-  const path = resolve(cwd, git(cwd, 'rev-parse', '--git-path', 'info/exclude'));
+  const path = resolve(cwd, runGit(cwd, ['rev-parse', '--git-path', 'info/exclude']).trim());
   const existing = existsSync(path) ? readFileSync(path, 'utf8') : '';
   if (existing.split('\n').some((line) => line.trim() === EXCLUDE_LINE)) return;
   appendFileSync(path, `${existing && !existing.endsWith('\n') ? '\n' : ''}${EXCLUDE_LINE}\n`);

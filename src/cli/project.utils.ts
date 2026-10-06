@@ -1,11 +1,10 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { openStore } from '../core/db.client.js';
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
+import { runGit } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import type { RegisteredProject } from '../core/types/fleet.types.js';
 
@@ -36,15 +35,10 @@ const INIT_HINT = 'run pup init from the repo you want to control.';
  * recognise it under a translated git.
  */
 function repoRoot(cwd: string): string {
-  const commonDir = execFileSync(
-    'git',
-    [...GIT_SAFE_CONFIG, '-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-    {
-      encoding: 'utf8',
-      env: { ...scrubbedGitEnv(), LC_ALL: 'C' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  ).trim();
+  const commonDir = runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    env: { LC_ALL: 'C' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
   return commonDir.replace(/\/\.git\/?$/, '');
 }
 

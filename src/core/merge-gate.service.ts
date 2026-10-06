@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,12 +13,12 @@ import { judgeDebt, measureDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
   assertNoArmedGitDrivers,
-  GIT_SAFE_CONFIG,
+  currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
-  scrubbedGitEnv,
+  runGit,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -65,24 +64,9 @@ import type {
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
-/**
- * Every git call the gate makes runs with hooks disabled. Worktrees share the
- * main checkout's `$GIT_COMMON_DIR/hooks`, hooks are untracked so the scope
- * audit never sees one appear, and the gate's own `git rebase` runs before any
- * stage — so a planted `pre-rebase` would execute with pup's environment ahead
- * of the sandbox that is supposed to confine it. A command-line `-c` outranks a
- * session-written `.git/config` (decision 28).
- */
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
-  }).trim();
-}
-
 function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
-    git(repoPath, 'merge-base', '--is-ancestor', maybeAncestor, ref);
+    runGit(repoPath, ['merge-base', '--is-ancestor', maybeAncestor, ref]);
     return true;
   } catch {
     return false;
@@ -232,7 +216,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   // (decision 50).
   assertNoArmedGitDrivers(req.repoPath);
   assertNoArmedGitDrivers(session.worktree_path);
-  const target = git(req.repoPath, 'branch', '--show-current');
+  const target = currentBranch(req.repoPath);
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
   }
@@ -342,7 +326,7 @@ function gateAndMerge(
   const failed = (): MergeOutcome =>
     rejectOrBlock(db, { sessionId: session.id, passed: false, sandbox, stages });
 
-  const dirty = git(worktree, 'status', '--porcelain');
+  const dirty = runGit(worktree, ['status', '--porcelain']).trim();
   if (dirty) {
     stages.push({
       stage: 'worktree-clean',
@@ -357,11 +341,11 @@ function gateAndMerge(
     stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
   } else {
     try {
-      git(worktree, 'rebase', target);
+      runGit(worktree, ['rebase', target]);
       stages.push({ stage: 'fresh-base', status: 'pass', detail: `auto-rebased onto ${target}` });
     } catch (error) {
       try {
-        git(worktree, 'rebase', '--abort');
+        runGit(worktree, ['rebase', '--abort']);
       } catch {
         // nothing to abort — the rebase never started
       }
@@ -609,13 +593,13 @@ function gateAndMerge(
   }
 
   const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
-  const commitSubjects = git(
-    req.repoPath,
+  const commitSubjects = runGit(req.repoPath, [
     'log',
     '--reverse',
     '--format=%s',
     `${target}..${session.branch}`,
-  )
+  ])
+    .trim()
     .split('\n')
     .filter(Boolean);
   let prUrl: string | undefined;
@@ -635,7 +619,7 @@ function gateAndMerge(
       prUrl = createPullRequest(req.repoPath, newPr);
     }
   } else {
-    git(req.repoPath, 'merge', '--ff-only', session.branch);
+    runGit(req.repoPath, ['merge', '--ff-only', session.branch]);
   }
   transitionSession(db, session.id, 'merged', { report });
   appendEvent(db, session.id, 'merge', {
@@ -673,9 +657,9 @@ function gateAndMerge(
   // By pane as well as name: a rename from inside the session would leave
   // the name pointing at nothing while the window ran on (decision 46).
   killTmux(session.id, session.tmux_target);
-  git(req.repoPath, 'worktree', 'remove', '--force', worktree);
+  runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
   // PR mode needs -D: the branch is not in the local target's history, only on origin.
-  git(req.repoPath, 'branch', req.openPr ? '-D' : '-d', session.branch);
+  runGit(req.repoPath, ['branch', req.openPr ? '-D' : '-d', session.branch]);
   return {
     status: 'merged',
     report,
@@ -711,27 +695,29 @@ function pushBranch(repoPath: string, originUrl: string, branch: string): void {
       // A missing remote-tracking ref is the expected first-push case, not an
       // error: git's stderr is captured here (not inherited) so its "fatal:
       // Needed a single revision" doesn't reach the operator console.
-      return execFileSync(
-        'git',
-        [...GIT_SAFE_CONFIG, '-C', repoPath, 'rev-parse', '--verify', tracking],
-        { encoding: 'utf8', env: scrubbedGitEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
-      ).trim();
+      return runGit(repoPath, ['rev-parse', '--verify', tracking], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
     } catch {
       return undefined;
     }
   })();
-  const tip = git(repoPath, 'rev-parse', `refs/heads/${branch}`);
-  const objects = git(repoPath, 'rev-parse', '--path-format=absolute', '--git-path', 'objects');
+  const tip = runGit(repoPath, ['rev-parse', `refs/heads/${branch}`]).trim();
+  const objects = runGit(repoPath, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-path',
+    'objects',
+  ]).trim();
   const scratch = mkdtempSync(join(tmpdir(), 'pup-push-'));
   try {
-    git(scratch, 'init', '--quiet', '--bare', '--template=');
-    // Unlike the shared git() helper this gets a timeout: a stalled push would
+    runGit(scratch, ['init', '--quiet', '--bare', '--template=']);
+    // Unlike the other git calls here this gets a timeout: a stalled push would
     // otherwise hang while holding the merge lock. Hooks are off for the same
     // reason they are everywhere else in the gate (decision 28).
-    execFileSync(
-      'git',
+    runGit(
+      scratch,
       [
-        ...GIT_SAFE_CONFIG,
         '--git-dir',
         scratch,
         'push',
@@ -739,16 +725,12 @@ function pushBranch(repoPath: string, originUrl: string, branch: string): void {
         originUrl,
         `${tip}:refs/heads/${branch}`,
       ],
-      {
-        encoding: 'utf8',
-        timeout: GATE_COMMAND_TIMEOUT_MS,
-        env: { ...scrubbedGitEnv(), GIT_OBJECT_DIRECTORY: objects },
-      },
+      { timeout: GATE_COMMAND_TIMEOUT_MS, env: { GIT_OBJECT_DIRECTORY: objects } },
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  git(repoPath, 'update-ref', tracking, tip);
+  runGit(repoPath, ['update-ref', tracking, tip]);
 }
 
 function prTitle(goal: string): string {

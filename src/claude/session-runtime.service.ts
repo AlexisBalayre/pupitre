@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
+import { runGit } from '../core/git-diff.client.js';
 import { hasUnsubmittedInput, pasteLanded } from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
@@ -373,18 +373,11 @@ export function preseedTrust(worktreePath: string, claudeJsonPath = CLAUDE_JSON)
 /** Empty when the path is not a git checkout. */
 function mainRepoRoot(worktreePath: string): string[] {
   try {
-    const commonDir = execFileSync(
-      'git',
-      [
-        ...GIT_SAFE_CONFIG,
-        '-C',
-        worktreePath,
-        'rev-parse',
-        '--path-format=absolute',
-        '--git-common-dir',
-      ],
-      { encoding: 'utf8', env: scrubbedGitEnv() },
-    ).trim();
+    const commonDir = runGit(worktreePath, [
+      'rev-parse',
+      '--path-format=absolute',
+      '--git-common-dir',
+    ]).trim();
     return [realpathSync(dirname(commonDir))];
   } catch {
     return [];

@@ -1,11 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from '../core/git-diff.client.js';
+import { runGit } from '../core/git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 
 const MANIFEST = 'package.json';
-
-/** A tree listing is one path per file; 64 MiB is far past any real repo's. */
-const LS_TREE_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * Directories below the measured root that are nested packages: each holds its
@@ -40,17 +36,10 @@ function committedPackageDirs(checkout: string): Set<string> {
   try {
     // Timed out like every other child pup runs: git reads config a session
     // can write, and an untimed read would hang the gate inside the lock.
-    listing = execFileSync(
-      'git',
-      [...GIT_SAFE_CONFIG, '-C', checkout, 'ls-tree', '-r', '-z', '--name-only', 'HEAD'],
-      {
-        encoding: 'utf8',
-        env: scrubbedGitEnv(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: GATE_COMMAND_TIMEOUT_MS,
-        maxBuffer: LS_TREE_MAX_BUFFER,
-      },
-    );
+    listing = runGit(checkout, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: GATE_COMMAND_TIMEOUT_MS,
+    });
   } catch {
     return new Set();
   }
