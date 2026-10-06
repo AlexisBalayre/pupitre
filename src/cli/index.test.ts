@@ -115,6 +115,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
 import { render } from 'ink';
 import {
   deadTurnError,
+  launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
