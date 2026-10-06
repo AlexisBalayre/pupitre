@@ -1,0 +1,140 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T10:36:17.358Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37450598108",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37450598108",
+  "actor": "AlexisBalayre",
+  "commit_sha": "dea9af89be8b7640b46a39d33705db20367e4de0",
+  "source": "pr",
+  "pr_number": 131,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "f5e29fc6a0e1b9ee65f434f9545a03d370ed2fb3",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1697-1708",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "135-138",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1708-1716",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pup map` catch repeats the body of `refusedUnsandboxed()` (instanceof UndeclaredSandboxError → refuse(error.message), else rethrow), so the CLI now has two refusal mechanisms for one error that a future change to the refusal format must keep in sync; a shared wrapper in the style of `refuseMalformedSpec` (returning undefined on refusal) would fold both and drop the `let nodes: ReturnType<typeof buildCodeMap>` + try/catch shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/custom.adapter.ts",
+      "line": "56-58",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The adapter layer imports `UndeclaredSandboxError` only to special-case it in its catch; any future adapter that wraps `runGateChild` errors will need the same rethrow, so the 'don't wrap the sandbox refusal' rule may belong in a shared capability helper (next to `failureSummary`) once a second caller appears.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "209",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `const mode = sandboxMode();` in `runGateChild` shadows the module-level cached probe `let mode: SandboxMode | undefined;` (line 151); a distinct name such as `current` avoids the reader confusing the two.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "68-73, 110-116",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In-code docs lag the new passthrough: the `DECLARATION_VAR` JSDoc still says it is the only place the declaration is read, and the `GateChildOptions.gateEnv` doc doesn't mention that `runGateChild` now adds `PUP_SANDBOX` to the passthrough itself when pup runs in declared-vm; only decision 78's addendum records it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "213-216",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Comment typo: \"so the declaration is its too\" should read \"is its, too\" (or \"is theirs too\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3883",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"a vitest default waits for a Linux CI job\" is cryptic: say what default (a vitest-level `PUP_SANDBOX` default) is deferred and why, e.g. \"a vitest-level default for PUP_SANDBOX is deferred until a Linux CI job exists\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1536-1537",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment restates the test title and its `not.toContain('Custom adapter')` assertion; its only WHY (depGraph is a gate child) is already implied by the name, so it can be cut to one line or removed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/custom-adapter.test.ts",
+      "line": "79-95",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new test adds another inline copy of the `process.platform` override-and-restore block, while `src/cli/index.test.ts` already uses an `onPlatform` helper; this widens the duplication flagged in the prior round.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2981943,
+  "duration_ms": 112395,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 8046,
+    "cache_read": 256917,
+    "cache_creation": 38555,
+    "total": 303532
+  }
+}
