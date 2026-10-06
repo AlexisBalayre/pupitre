@@ -5,10 +5,9 @@ import { GIT_SAFE_CONFIG, gitDiffPaths, scrubbedGitEnv } from './git-diff.client
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { projectId } from './paths.utils.js';
 import { scopedPaths } from './scope-audit.utils.js';
-import { getTask, listSessions } from './session.repository.js';
+import { listSessions, readTaskSpec } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import type { OverlapPair, ScopeConflict } from './types/overlap.types.js';
-import type { TaskSpec } from './types/profile.types.js';
 
 /** Cadence of the conflict radar; status flags the watcher stale above 3x this. */
 export const WATCH_INTERVAL_MS = 15_000;
@@ -93,16 +92,14 @@ export function scopeConflicts(
   const tracked = trackedFiles(repoPath);
   const filesBySession: Record<string, string[]> = {};
   for (const session of live) {
-    // Both branches are unreachable while the store is pup's own: an id cannot
-    // contain a `:`, and `sessions.task_id` is a NOT NULL foreign key. They are
-    // loud rather than skipped because a scope this cannot read is a scope it
+    // Both refusals are unreachable while the store is pup's own: an id cannot
+    // contain a `:`, and `sessions.task_id` is a NOT NULL foreign key to a spec
+    // `pup plan` validated. They are loud rather than skipped because a scope this cannot read is a scope it
     // cannot clear, and silently comparing against nothing is the fail-open
     // direction (decision 29).
     if (session.id === CANDIDATE_KEY) throw new Error(`Session ${session.id} shadows the launch.`);
-    const task = getTask(db, session.task_id);
-    if (!task) throw new Error(`Session ${session.id} has no task ${session.task_id}.`);
-    const spec = JSON.parse(task.spec) as TaskSpec;
-    filesBySession[session.id] = scopedPaths(tracked, spec.scopeIn ?? [], spec.scopeOut ?? []);
+    const spec = readTaskSpec(db, session.task_id);
+    filesBySession[session.id] = scopedPaths(tracked, spec.scopeIn, spec.scopeOut);
   }
   filesBySession[CANDIDATE_KEY] = scopedPaths(tracked, scopeIn, scopeOut);
   // Either side, so the answer does not rest on the candidate having been

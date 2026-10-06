@@ -22,6 +22,7 @@ import {
   listTasks,
   type SessionRow,
   type TaskRow,
+  taskSpecForDisplay,
 } from './session.repository.js';
 import { classifySessionActivity, isSessionStalled } from './session-activity.utils.js';
 import type {
@@ -36,7 +37,6 @@ import type {
 } from './types/dashboard.types.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { GateReport } from './types/merge-gate.types.js';
-import type { TaskSpec } from './types/profile.types.js';
 
 /**
  * One reading of the project for every surface that shows it: `pup status`
@@ -81,7 +81,7 @@ export function buildDashboardSnapshot(
     // between two sessions that both need a human stays in creation order.
     sessions: sessions.sort((a, b) => Number(sortsFirst(b)) - Number(sortsFirst(a))),
     backlog: listBacklogTasks(db, pid).map((task) => {
-      const spec = parseJsonOr<Partial<TaskSpec>>(task.spec, {});
+      const spec = taskSpecForDisplay(task);
       return {
         // The store is not always the caller's own since the fleet views
         // (decisions 60, 61), and `pup ui` draws the backlog and the radar,
@@ -229,7 +229,7 @@ function dashboardSession(
   eventsFile: string | undefined,
   stall: StalledSession | undefined,
 ): DashboardSession {
-  const spec = task ? parseJsonOr<Partial<TaskSpec>>(task.spec, {}) : {};
+  const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
   // session that is not running, or has yet to fire a hook.
   const activity =

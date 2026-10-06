@@ -63,14 +63,16 @@ import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import {
   deleteTask,
+  editTaskSpec,
   findSessionByWorktree,
   getProject,
   getSession,
   getTask,
   listBacklogTasks,
   listSessions,
+  MalformedTaskSpecError,
+  taskSpecForDisplay,
   transitionSession,
-  updateTaskSpec,
 } from '../core/session.repository.js';
 import { formatStaleAge } from '../core/session-activity.utils.js';
 import { dossierFileName, renderSessionDossierHtml } from '../core/session-dossier.service.js';
@@ -103,7 +105,6 @@ import {
   recordSteerMessage,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { assertPlannableSpec } from '../core/task-spec.utils.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
@@ -469,6 +470,21 @@ function launchOrRefuse(
   }
 }
 
+/**
+ * A read that refuses, naming the task, when a stored spec it needs is
+ * unusable — rather than a stack trace. Scrubbed like a launch refusal: the
+ * message quotes the task id and the glob that failed, which are store text.
+ */
+function refuseMalformedSpec<TResult>(read: () => TResult): TResult | undefined {
+  try {
+    return read();
+  } catch (error) {
+    if (!(error instanceof MalformedTaskSpecError)) throw error;
+    refuse(sanitizeLines(error.message));
+    return undefined;
+  }
+}
+
 /** How every launch reports the window it opened. */
 function reportLaunched(sessionId: string, what = 'session'): void {
   // Sanitized on each interpolation rather than once into a local: a local is
@@ -719,7 +735,7 @@ export function buildProgram(): Command {
             return;
           }
           for (const row of backlog) {
-            const spec = JSON.parse(row.spec) as TaskSpec;
+            const spec = taskSpecForDisplay(row);
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
             console.log(
               `${sanitizeReason(row.id).padEnd(14)}${goalColumn(goalHeadline(spec.goal))}  ${scope}${originMarker(row.origin)}`,
@@ -767,28 +783,23 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
-          const row = getTask(db, target);
-          if (!row) {
-            return refuse(`No task ${target}.`);
-          }
-          const spec = JSON.parse(row.spec) as TaskSpec;
-          const edited: TaskSpec = {
-            ...spec,
-            goal: opts.goal ?? spec.goal,
-            scopeIn: opts.scope ?? spec.scopeIn ?? [],
-            scopeOut: opts.scopeOut ?? spec.scopeOut,
-            acceptance: opts.accept ?? spec.acceptance,
-          };
-          // The only `UPDATE tasks SET spec` there is, so it runs exactly the
-          // validation `plan add` runs — otherwise edit could store a spec add
-          // would have refused, and the failure would surface at launch.
+          let outcome: ReturnType<typeof editTaskSpec>;
           try {
-            assertPlannableSpec(edited);
+            outcome = editTaskSpec(db, target, {
+              goal: opts.goal,
+              scopeIn: opts.scope,
+              scopeOut: opts.scopeOut,
+              acceptance: opts.accept,
+            });
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
-            return refuse(error.message);
+            // Store text either way: the stored spec's glob, or the task id.
+            return refuse(sanitizeLines(error.message));
           }
-          if (!updateTaskSpec(db, target, JSON.stringify(edited))) {
+          if (outcome === 'unknown') {
+            return refuse(`No task ${target}.`);
+          }
+          if (outcome === 'claimed') {
             return refuse(`Task ${target} is already claimed by a session; its spec is frozen.`);
           }
           console.log(`Updated ${target}.`);
@@ -816,7 +827,7 @@ export function buildProgram(): Command {
       }
       const planned = getTask(db, taskId);
       if (planned) {
-        const spec = JSON.parse(planned.spec) as TaskSpec;
+        const spec = taskSpecForDisplay(planned);
         console.log(`goal: ${sanitizeReason(spec.goal ?? '')}`);
         console.log(`scope-in: ${sanitizeReason((spec.scopeIn ?? []).join(', '))}`);
       }
@@ -1472,7 +1483,8 @@ export function buildProgram(): Command {
     .action((session?: string) => {
       const { repoPath, db } = project();
       if (!session) {
-        const queue = buildReviewQueue(db, repoPath);
+        const queue = refuseMalformedSpec(() => buildReviewQueue(db, repoPath));
+        if (queue === undefined) return;
         if (queue.length === 0) {
           console.log('Nothing awaiting review.');
           return;
@@ -1490,7 +1502,8 @@ export function buildProgram(): Command {
         }
         return;
       }
-      const detail = buildSessionReview(db, repoPath, session);
+      const detail = refuseMalformedSpec(() => buildSessionReview(db, repoPath, session));
+      if (detail === undefined) return;
       // Every string on this page is read out of the store — the session row,
       // the spec the conductor may have written, the gate report the events
       // hold — so every one of them is scrubbed on the way out, as the
@@ -1603,7 +1616,13 @@ export function buildProgram(): Command {
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          return refuse(error instanceof Error ? error.message : String(error));
+          // Store-read and child-read text reaches here too (the spec refusal, an
+          // adapter command's stderr from the session's worktree), so control
+          // characters are stripped — but not cut to a line: pup's own refusals
+          // carry remediation steps past the scrubber's 300 (decision 68).
+          const message = error instanceof Error ? error.message : String(error);
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+          return refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
         } finally {
           // The gate has released its own lock by now, so a later signal must
           // not reach a handler that would delete the next run's.

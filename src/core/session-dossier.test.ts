@@ -252,6 +252,15 @@ describe('renderSessionDossierHtml', () => {
 
     expect(data.intent).toEqual({ goal: '', scopeIn: [], scopeOut: [], acceptance: [] });
   });
+
+  it('renders a session whose spec is not JSON with empty intent instead of throwing', () => {
+    const session = seedSession(db, 's1', { goal: 'goal' });
+    db.prepare("UPDATE tasks SET spec = 'not json {' WHERE id = 'task-s1'").run();
+
+    const data = embeddedData(renderSessionDossierHtml(db, REPO, session));
+
+    expect(data.intent).toEqual({ goal: '', scopeIn: [], scopeOut: [], acceptance: [] });
+  });
 });
 
 describe('dossierFileName', () => {

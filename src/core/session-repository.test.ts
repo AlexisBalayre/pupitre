@@ -1,10 +1,12 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
+import { InvalidProfileError } from './profile.errors.js';
 import {
   appendEvent,
   claimingSession,
   deleteTask,
+  editTaskSpec,
   ensureProject,
   findSessionByWorktree,
   getSession,
@@ -18,7 +20,10 @@ import {
   listEvents,
   listSessions,
   listTasks,
+  MalformedTaskSpecError,
+  readTaskSpec,
   saveProjectDormantAt,
+  taskSpecForDisplay,
   transitionSession,
   updateTaskSpec,
 } from './session.repository.js';
@@ -268,5 +273,143 @@ describe('the backlog', () => {
     expect(deleteTask(db, 't-1')).toBe(false);
     expect(updateTaskSpec(db, 't-1', '{}')).toBe(false);
     expect(getTask(db, 't-1')?.spec).toBe(JSON.stringify({ goal: 't-1' }));
+  });
+});
+
+describe('task spec decoding', () => {
+  let db: Database;
+  const stored = (spec: string, id = 't-1') => {
+    ensureProject(db, 'proj-1', '/repo');
+    insertTask(db, { id, projectId: 'proj-1', spec });
+  };
+  const valid = { id: 't-1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] };
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+  });
+
+  describe('readTaskSpec', () => {
+    it('lets the row id win over the blob, and defaults scope-out', () => {
+      stored(JSON.stringify({ ...valid, id: 't-other' }));
+
+      expect(readTaskSpec(db, 't-1')).toEqual({ ...valid, id: 't-1', scopeOut: [] });
+    });
+
+    // The SyntaxError's message carries the stored bytes, so the refusal names
+    // the task and never quotes what it choked on.
+    it('refuses a spec that is not JSON with a typed error naming the task', () => {
+      stored('{"goal": "\u202e not json');
+
+      const read = () => readTaskSpec(db, 't-1');
+      expect(read).toThrow(MalformedTaskSpecError);
+      expect(read).toThrow('Task t-1 has an unusable spec: it is not valid JSON.');
+    });
+
+    it.each([
+      ['null', 'not a JSON object'],
+      ['["src/**"]', 'not a JSON object'],
+      ['{"scopeIn": "src/**"}', 'scopeIn is not a list of globs'],
+      ['{"scopeIn": ["src/**"], "scopeOut": [1]}', 'scopeOut is not a list of globs'],
+    ])('refuses the wrong shape %s', (spec, reason) => {
+      stored(spec);
+
+      expect(() => readTaskSpec(db, 't-1')).toThrow(reason);
+    });
+
+    // A row can predate `pup plan add`'s validation (decision 40); the refusal
+    // stays an InvalidProfileError, so every command refusing one refuses it.
+    it('runs the plannable checks, naming the task', () => {
+      stored(JSON.stringify({ goal: 'g', acceptance: [] }));
+
+      const read = () => readTaskSpec(db, 't-1');
+      expect(read).toThrow(InvalidProfileError);
+      expect(read).toThrow(/Task t-1 has an unusable spec: Task scope-in is empty/);
+    });
+
+    it('refuses a task that is not stored', () => {
+      expect(() => readTaskSpec(db, 't-gone')).toThrow(MalformedTaskSpecError);
+    });
+  });
+
+  describe('taskSpecForDisplay', () => {
+    it('degrades a malformed or missing row to an empty spec', () => {
+      expect(taskSpecForDisplay({ spec: 'not json' })).toEqual({});
+      expect(taskSpecForDisplay({ spec: '"a string"' })).toEqual({});
+      expect(taskSpecForDisplay(undefined)).toEqual({});
+    });
+
+    it('passes a well-formed spec through', () => {
+      expect(taskSpecForDisplay({ spec: JSON.stringify(valid) })).toEqual(valid);
+    });
+  });
+
+  describe('editTaskSpec', () => {
+    const spec = () => JSON.parse(getTask(db, 't-1')?.spec ?? '{}');
+
+    it('replaces only the fields it is given', () => {
+      stored(JSON.stringify({ ...valid, scopeOut: ['src/x.ts'] }));
+
+      expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
+      expect(spec()).toEqual({ ...valid, goal: 'sharper', scopeOut: ['src/x.ts'] });
+    });
+
+    it('replaces every field it is given', () => {
+      stored(JSON.stringify(valid));
+
+      editTaskSpec(db, 't-1', {
+        goal: 'g2',
+        scopeIn: ['lib/**'],
+        scopeOut: ['lib/gen/**'],
+        acceptance: ['b'],
+      });
+      expect(spec()).toEqual({
+        id: 't-1',
+        goal: 'g2',
+        scopeIn: ['lib/**'],
+        scopeOut: ['lib/gen/**'],
+        acceptance: ['b'],
+      });
+    });
+
+    it('validates the merged spec as `plan add` would, writing nothing on refusal', () => {
+      stored(JSON.stringify(valid));
+
+      expect(() => editTaskSpec(db, 't-1', { scopeIn: ['src/\n**'] })).toThrow(InvalidProfileError);
+      expect(() => editTaskSpec(db, 't-1', { scopeIn: ['  '] })).toThrow('scope-in is empty');
+      expect(spec()).toEqual(valid);
+    });
+
+    // Edit is how a row that fails the plannable checks gets repaired, so the
+    // stored spec is not held to them — only the result is.
+    it('repairs a stored spec with no scope', () => {
+      stored(JSON.stringify({ goal: 'g', acceptance: ['a'] }));
+
+      expect(editTaskSpec(db, 't-1', { scopeIn: ['src/**'] })).toBe('updated');
+      expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/**']);
+    });
+
+    it('refuses a stored spec that is not JSON', () => {
+      stored('not json');
+
+      expect(() => editTaskSpec(db, 't-1', { goal: 'g' })).toThrow(MalformedTaskSpecError);
+    });
+
+    it('says when the task is unknown', () => {
+      expect(editTaskSpec(db, 't-gone', { goal: 'g' })).toBe('unknown');
+    });
+
+    it('says when a session has claimed the task, leaving the spec frozen', () => {
+      stored(JSON.stringify(valid));
+      insertSession(db, {
+        id: 's1',
+        taskId: 't-1',
+        worktreePath: '/repo/.worktrees/s1',
+        branch: 'pup/s1',
+        profileHash: 'h',
+      });
+
+      expect(editTaskSpec(db, 't-1', { goal: 'g2' })).toBe('claimed');
+      expect(spec()).toEqual(valid);
+    });
   });
 });

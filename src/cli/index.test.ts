@@ -140,6 +140,7 @@ import {
   insertTask,
   listBacklogTasks,
   listEvents,
+  MalformedTaskSpecError,
   saveProjectDormantAt,
   transitionSession,
 } from '../core/session.repository.js';
@@ -1984,8 +1985,35 @@ describe('CLI commands', () => {
         id: 't-1',
         goal: 'sharper thought',
         scopeIn: ['src/**'],
+        scopeOut: [],
         acceptance: ['tests pass'],
       });
+    });
+
+    // The refusal quotes the glob that failed through JSON.stringify, which
+    // escapes C0 controls and emits C1 raw; a stored glob is store text, so the
+    // line is scrubbed like every other one (decision 68).
+    it('scrubs the stored glob a refused edit quotes', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-1',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({
+          id: 't-1',
+          goal: 'g',
+          scopeIn: ['src/**\n\u009b2J'],
+          acceptance: ['a'],
+        }),
+      });
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--goal', 'sharper'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('Scope glob contains a control character');
+      expect(errors.join('\n')).not.toContain('\u009b');
+      expect(process.exitCode).toBe(1);
     });
 
     // A spec a session writes becomes a later session's kickoff prompt verbatim
@@ -2349,6 +2377,27 @@ describe('CLI commands', () => {
       expect(row).not.toContain('second line of the goal');
       expect(row).not.toContain('\u001b');
     });
+
+    // A malformed row the report survives used to kill `pup review` with a
+    // SyntaxError; it is a refusal naming the task, its id scrubbed.
+    it.each([[[]], [[NOISY_ID]]])(
+      'refuses a spec that is not JSON, naming the task (%j)',
+      (args) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedReviewable(repo);
+        const { db } = resolveProject(repo);
+        db.prepare("UPDATE tasks SET spec = 'not json {'").run();
+        db.close();
+
+        buildProgram().parse(['review', ...args], { from: 'user' });
+
+        const refusal = errors.join('\n');
+        expect(refusal).toContain('Task t- [2Js1 has an unusable spec: it is not valid JSON.');
+        expect(refusal).not.toContain('\u001b');
+        expect(process.exitCode).toBe(1);
+      },
+    );
 
     it("scrubs every stored string on one branch's page", () => {
       const repo = initRepo();
@@ -4529,17 +4578,40 @@ describe('CLI commands', () => {
       expect(request.openPr).toBeUndefined();
     });
 
-    it('reports a thrown gate error and exits 1', () => {
+    // Whole but clean: pup's own refusals carry remediation steps past the
+    // scrubber's 300-character cut, and an adapter command's stderr from the
+    // session's worktree can ride in the same message (decision 68).
+    it('reports a thrown gate error whole, with control characters stripped', () => {
       useCwd(initRepoWithAdapter());
+      const long = `worktree has a held lock; ${'run `git config --unset x`. '.repeat(14)}`;
       vi.mocked(runMergeGate).mockImplementation(() => {
-        throw new Error('worktree has a held lock');
+        throw new Error(`${long}\u001b]52;c;payload\u0007 tail`);
       });
 
       buildProgram().parse(['merge', 's1'], { from: 'user' });
 
-      expect(errors).toEqual(['worktree has a held lock']);
+      expect(long.length).toBeGreaterThan(300);
+      expect(errors).toEqual([`${long} ]52;c;payload  tail`]);
       expect(process.exitCode).toBe(1);
       expect(logs).toEqual([]);
+    });
+
+    // The gate reads the stored spec strictly, and its refusal quotes store
+    // text: the task id, and the glob that failed (decision 68).
+    it('scrubs a gate refusal that quotes the stored spec', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockImplementation(() => {
+        throw new MalformedTaskSpecError(
+          't-\u001b[2J1',
+          'Scope glob contains a control character.',
+        );
+      });
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('Task t- [2J1 has an unusable spec');
+      expect(errors.join('\n')).not.toContain('\u001b');
+      expect(process.exitCode).toBe(1);
     });
 
     it('merges and cleans up on a passing gate with no PR', () => {

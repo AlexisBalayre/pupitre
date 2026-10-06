@@ -49,6 +49,7 @@ import {
   getSession,
   getTask,
   incrementRejectCount,
+  readTaskSpec,
   type SessionRow,
   saveProjectBaseline,
   transitionSession,
@@ -462,11 +463,11 @@ function gateAndMerge(
           .map((pkg) => quotePath(pkg.dir))
           .join(', ')}${droppedDirs.length > DEBT_DETAIL_SAMPLES ? ', …' : ''})`;
 
-  const specRow = db
-    .prepare('SELECT project_id, spec FROM tasks WHERE id = ?')
-    .get(session.task_id) as { project_id: string; spec: string };
-  const spec = JSON.parse(specRow.spec) as TaskSpec;
-  const violations = auditScope(changedPaths, spec.scopeIn, spec.scopeOut ?? []);
+  const specRow = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(session.task_id) as {
+    project_id: string;
+  };
+  const spec = readTaskSpec(db, session.task_id);
+  const violations = auditScope(changedPaths, spec.scopeIn, spec.scopeOut);
   if (violations.length > 0) {
     stages.push({
       stage: 'scope-audit',

@@ -13,9 +13,8 @@ import {
   RISK_WEIGHT_REJECTION,
   RISK_WEIGHT_SCOPE_VIOLATION,
 } from './review.constants.js';
-import { listSessions, type SessionRow } from './session.repository.js';
+import { listSessions, readTaskSpec, type SessionRow } from './session.repository.js';
 import type { GateReport } from './types/merge-gate.types.js';
-import type { TaskSpec } from './types/profile.types.js';
 import type { ReviewQueueEntry, SessionReviewDetail } from './types/review.types.js';
 
 function targetBranch(repoPath: string): string {
@@ -29,11 +28,6 @@ function targetBranch(repoPath: string): string {
   ).trim();
   if (!target) throw new Error(`Main worktree at ${repoPath} is not on a branch.`);
   return target;
-}
-
-function taskSpec(db: Database, taskId: string): TaskSpec {
-  const row = db.prepare('SELECT spec FROM tasks WHERE id = ?').get(taskId) as { spec: string };
-  return JSON.parse(row.spec) as TaskSpec;
 }
 
 function scopeViolationCount(db: Database, sessionId: string): number {
@@ -88,7 +82,7 @@ function buildEntry(
   return {
     sessionId: session.id,
     branch: session.branch,
-    goal: taskSpec(db, session.task_id).goal,
+    goal: readTaskSpec(db, session.task_id).goal,
     changedLines,
     filesChanged: paths.length,
     rejectCount: session.reject_count,
@@ -140,7 +134,7 @@ export function buildSessionReview(
   const liveDiffs = liveSessionDiffs(repoPath, target, live);
   return {
     entry: buildEntry(db, repoPath, target, session, liveDiffs),
-    spec: taskSpec(db, session.task_id),
+    spec: readTaskSpec(db, session.task_id),
     state: session.state,
     worktreePath: session.worktree_path,
     files: gitDiffNumstat(repoPath, target, session.branch),
