@@ -74,7 +74,7 @@ const GIT_MAX_BUFFER = 64 * 1024 * 1024;
  * What a call site may add to a git spawn. `env` is laid over the scrubbed
  * environment rather than replacing it, so a caller names only what it adds.
  */
-export interface RunGitOptions {
+interface RunGitOptions {
   env?: NodeJS.ProcessEnv;
   stdio?: ExecFileSyncOptions['stdio'];
   timeout?: number;
