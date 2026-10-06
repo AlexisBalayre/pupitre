@@ -380,9 +380,15 @@ export function recordSteerMessage(db: Database, sessionId: string, by: string):
  * Send Escape to a session's launch pane, optionally steering a message once
  * the UI is back at its input box, and record what landed. The two are one
  * call because their records are one story: an Escape that landed is on record
- * even when the steer behind it is refused.
+ * even when the steer behind it is refused. `by` names the sender of that steer
+ * where the caller can identify one, as `steerSession`'s record does.
  */
-export function interruptSession(db: Database, sessionId: string, message?: string): void {
+export function interruptSession(
+  db: Database,
+  sessionId: string,
+  message?: string,
+  by?: string,
+): void {
   const pane = sessionPane(requireLiveSession(db, sessionId, 'interrupt'));
   // Nothing landed yet, so nothing is on record if this refuses.
   interruptPane(pane);
@@ -399,7 +405,7 @@ export function interruptSession(db: Database, sessionId: string, message?: stri
   appendEvent(db, sessionId, 'interrupt', { steered: Boolean(message) });
   // The message is a real steer — record it as one too, so last-steer queries
   // see it no matter which path delivered it.
-  if (message) appendEvent(db, sessionId, 'steer', { kind: 'interrupt' });
+  if (message) appendEvent(db, sessionId, 'steer', { kind: 'interrupt', by });
 }
 
 export function killSession(db: Database, sessionId: string): void {
