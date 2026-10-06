@@ -1532,15 +1532,35 @@ export function buildProgram(): Command {
     .description('Run the gate pipeline and merge on pass')
     .option('--accept-debt <reason>', 'merge despite a flagged shortcut, creating a ledger entry')
     .option('--review-by <condition>', 'review-by condition for the ledger entry')
+    .option(
+      '--approved-by <who>',
+      'who approved the debt, for the ledger entry (required from the conductor; default: human)',
+    )
     .option('--pr', 'on pass, push the branch and open a pull request instead of merging locally')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .action(
       (
         session: string,
-        opts: { acceptDebt?: string; reviewBy?: string; pr?: boolean; gateEnv?: string },
+        opts: {
+          acceptDebt?: string;
+          reviewBy?: string;
+          approvedBy?: string;
+          pr?: boolean;
+          gateEnv?: string;
+        },
       ) => {
         if (Boolean(opts.acceptDebt) !== Boolean(opts.reviewBy)) {
           return refuse('--accept-debt and --review-by must be passed together.');
+        }
+        if (opts.approvedBy !== undefined && !opts.acceptDebt) {
+          return refuse('--approved-by names who accepted the debt; pass it with --accept-debt.');
+        }
+        // Scrubbed before anything reads it: the value is a relay's word and
+        // lands in the ledger and on every `pup debt` (decisions 68, 75).
+        const approvedBy =
+          opts.approvedBy === undefined ? undefined : sanitizeReason(opts.approvedBy);
+        if (approvedBy === '') {
+          return refuse('--approved-by needs a name, such as tg:<user>.');
         }
         const { repoPath, db } = project();
         // The gate's verdict moves another session's branch and parks it
@@ -1551,11 +1571,20 @@ export function buildProgram(): Command {
         if (callingSession(db)) {
           return refuse('`pup merge` is operator-only; sessions cannot merge sessions.');
         }
-        // The merge is the one act the conductor hands back: the verdict moves
-        // a branch onto main, and the human is the reviewer (decision 47).
-        if (callingConductor()) {
+        // The conductor gates a branch but never moves main: with --pr the
+        // verdict opens a pull request the human merges, without it the
+        // fast-forward is the operator's (decisions 47, 75).
+        const conductor = callingConductor();
+        if (conductor && !opts.pr) {
           return refuse(
-            '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it.',
+            '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it. Use --pr to gate it and open a pull request.',
+          );
+        }
+        // Accepting debt is the human's call; the conductor only relays it, so
+        // it must say whose it is rather than wear the operator's `human`.
+        if (conductor && opts.acceptDebt && !approvedBy) {
+          return refuse(
+            'The conductor relays a debt approval, it does not give one: pass --approved-by <who> with --accept-debt.',
           );
         }
         // Every detected adapter, not just the first: the gate measures debt
@@ -1593,8 +1622,8 @@ export function buildProgram(): Command {
                 ? {
                     reason: opts.acceptDebt,
                     reviewBy: opts.reviewBy,
-                    // True by the guard above: only an operator reaches this line.
-                    acceptedBy: 'human',
+                    // Only the operator reaches this line without an approver.
+                    acceptedBy: approvedBy ?? 'human',
                   }
                 : undefined,
             openPr: opts.pr,

@@ -25,9 +25,10 @@ interface AcceptDebtRequest {
   reason: string;
   reviewBy: string;
   /**
-   * Who the ledger records as accepting the debt: the session id when the
-   * merge runs inside a session, `'human'` otherwise — the audit trail must
-   * not claim human attribution for an agent's call (decision 27).
+   * Who the ledger records as accepting the debt: `'human'` for the operator,
+   * or the approver a conductor names with `--approved-by` — the audit trail
+   * must not claim the operator's attribution for a call the operator did not
+   * make (decisions 27, 75). Scrubbed before it is stored.
    */
   acceptedBy: string;
 }

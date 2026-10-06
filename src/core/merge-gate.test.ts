@@ -547,6 +547,27 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe(SESSION_ID);
   });
 
+  // The approver is a relay's word (`--approved-by`, decision 75); the store
+  // keeps it scrubbed, whichever caller built the request.
+  it('scrubs control characters out of the acceptor before the ledger keeps it', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+
+    const outcome = runMergeGate(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      acceptDebt: {
+        reason: 'deadline',
+        reviewBy: 'before v2',
+        acceptedBy: 'tg:\u001b[2Jalexis\u009b',
+      },
+    });
+
+    expect(outcome.status).toBe('merged');
+    expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe('tg: [2Jalexis');
+  });
+
   it('counts a lockfile-named file outside the repo root toward the diff size', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/pnpm-lock.yaml', 'generated: line\n'.repeat(700));
