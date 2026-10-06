@@ -1,0 +1,186 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T07:50:39.307Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37431752657",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37431752657",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0d2e7787766053d07ab081e6559654bd15248dd9",
+  "source": "pr",
+  "pr_number": 123,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "363",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "steerSession now throws TerminalSessionError, and the watchdog's catch (turn-watchdog.service.ts L125-130) still filters on isRefusedSteer only, so a session that is killed or merged mid-sweep aborts the rest of that sweep instead of being skipped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "210",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "If launchWatcher throws after the conductor's kickoff landed, startConductor throws with the conductor window still running. `pup conductor start` then crashes without printing the started/attach lines it printed before the move, and the TUI reports a failure for a conductor that is up.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.errors.ts",
+      "line": "86-88",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `LaunchRolledBackError` JSDoc says `launchTask` and `startConductor` are \"the only two functions that open a window on a compiled context\", but `respawnSession` also does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.errors.ts",
+      "line": "79-83",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR promotes the CLI's private `isRefusedSteer` to an exported core helper, but leaves the identical private copy in `src/core/turn-watchdog.service.ts:237-239`, so core now has two definitions of the same refusal predicate (decisions 45/46) that can drift apart; the watchdog should import the new export.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/actions.service.ts",
+      "line": "79-82",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`rolledBackLine` rebuilds the exact text that the `LaunchRolledBackError` constructor already puts in `error.message`. The format is now defined in two places, and a change to one will quietly diverge from the other.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "285-298",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `rolledBackLaunch` helper was inserted between `seedKilledSession` and its JSDoc. The old comment now sits on its own, stacked on top of the new helper's JSDoc, and `seedKilledSession` has lost its doc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.errors.ts",
+      "line": "122-125",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "the comment is a history narration (\"as it always has\", \"which is why the CLI printed it before killing back when the rollback lived there\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "387",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Nothing landed yet, so nothing is on record if this refuses.\" narrates the control flow rather than a hidden invariant.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "200",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "the inline comment (\"A window with no context is a bypass-permissions agent… killed, not left to inspect\") restates what `rollBackRefusedLaunch`'s JSDoc and the `startConductor` JSDoc already say.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "the new JSDoc blocks are very long: `deliverKickoff`, `startRadarWith`, `steerSession`, `LaunchRolledBackError` and `requireLiveSession` each run 8-14 lines of prose.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1314-1322",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "When the conductor or a session runs `pup interrupt <s> <message>`, the steer is still recorded as `{kind:'interrupt'}` with no `by`. This is the same misattribution that commit d96d1ea fixed for `pup steer`'s typed path: the sender is worked out there but never passed to `interruptSession`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "99-110",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "To find the latest handoff request, `signalledHash` searches the whole steer payload for the text `handoff-request`. A session controls the `by` field (through `PUP_SESSION_ID`, after `cd`-ing out of its worktree), so it can plant that text and fake a request. Decision 44 says an unrequested `handoff_ready` should make no session ready, and this breaks that.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned because no spec, protocol or infra surface is touched. review-security ran as a single instance although the diff passes the size gate, since the only trust-boundary surface is the steer/rollback shell-outs."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer said it did not read testing.md, the test files, the src/cli/index.ts diff or docs/09-decisions.md, so convention coverage of those files is partial."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The docs reviewer's important finding (LaunchRolledBackError JSDoc 'only two functions') was CONFIRMED by the validator, which recommended a nit: the sentence describes who throws the error and no caller relies on it. The orchestrator downgraded it to nit."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.2122716999999996,
+  "duration_ms": 229429,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 11746,
+    "cache_read": 274086,
+    "cache_creation": 43037,
+    "total": 328883
+  }
+}
