@@ -206,11 +206,16 @@ function sandboxMode(): SandboxMode {
  * `stdout`/`stderr` attached, exactly as the direct calls this replaced did.
  */
 export function runGateChild(command: string, args: string[], options: GateChildOptions): string {
-  const applied = sandboxMode() === 'applied';
+  const mode = sandboxMode();
+  const applied = mode === 'applied';
   const { scratchDir, policyDir } = sandboxRun();
   const cacheDir = toolchainCacheDir(options.repoPath);
+  // A child runs in the same VM pup was declared to be in, so the declaration
+  // is its too — the Linux twin of `inherited`. Without this, pup gating itself
+  // would fail its own test stage, which reaches sandboxLabel() (decision 78).
+  const declared = mode === 'declared-vm' ? [DECLARATION_VAR] : [];
   const env = gateChildEnv({
-    passthrough: options.gateEnv,
+    passthrough: [...(options.gateEnv ?? []), ...declared],
     scratchDir,
     cacheDir,
     ...(options.env ? { set: options.env } : {}),

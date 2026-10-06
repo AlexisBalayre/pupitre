@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-import { runGateChild } from '../core/sandbox.utils.js';
+import { runGateChild, UndeclaredSandboxError } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,
@@ -53,6 +53,9 @@ function runJson<TOutput>(
       ...(stdin !== undefined ? { input: stdin } : {}),
     });
   } catch (error) {
+    // Not the command's failure: pup refused to run it, and the operator's
+    // instructions are in that message, not in a wrapped stderr (decision 78).
+    if (error instanceof UndeclaredSandboxError) throw error;
     const failure = error as { stderr?: string; message?: string };
     throw new CustomAdapterCommandError(
       capability,

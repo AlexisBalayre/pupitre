@@ -246,6 +246,20 @@ describe('runGateChild', () => {
 
       expect(runGateChild('sh', ['-c', 'printf ok'], { cwd, repoPath: cwd })).toBe('ok');
     });
+
+    // Self-gating: the test stage is a child that reaches sandboxLabel() itself.
+    it('hands the declaration to the child, which is in the same VM', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      const cwd = fakeCheckout();
+
+      expect(runGateChild('sh', ['-c', 'printf %s "$PUP_SANDBOX"'], { cwd, repoPath: cwd })).toBe(
+        'vm',
+      );
+    });
   });
 
   it('hands the child a var pup computed, which the operator never exported', () => {

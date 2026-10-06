@@ -3875,6 +3875,13 @@ changes back into those docs is pending.
     runs a child bare either. The off-darwin answer is read on every call and not cached with the
     darwin probe: there is nothing to measure, only the operator's word. On darwin nothing changes:
     `sandbox-exec` is applied or inherited and the variable is ignored.
+    *On review:* the declaration is handed to every gate child (`runGateChild` adds `PUP_SANDBOX`
+    to the passthrough when pup itself runs in `declared-vm`), because the child is in the same VM
+    — the Linux twin of darwin's `inherited`; without it pup gating itself would fail its own test
+    stage, which reaches `sandboxLabel()`. A developer running `pnpm test` on bare Linux outside
+    pup sets `PUP_SANDBOX=vm` in the shell; a vitest default waits for a Linux CI job. And the
+    custom adapter lets `UndeclaredSandboxError` through unwrapped, so `pup map` refuses in pup's
+    one line instead of blaming the operator's `depGraph` command.
 
 ## Implementation notes
 

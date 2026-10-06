@@ -1533,6 +1533,24 @@ describe('CLI commands', () => {
     });
   });
 
+  // The custom adapter's depGraph is a gate child; the refusal must come out
+  // as pup's one line, not wrapped as the operator's command failing.
+  it('map off darwin refuses in one line when a custom adapter would run a child', () => {
+    const repo = initRepo();
+    useCwd(repo);
+    mkdirSync(join(repo, '.pupitre'), { recursive: true });
+    writeFileSync(join(repo, '.pupitre', 'adapter.yml'), "depGraph: echo '{}'\n");
+    onPlatform('linux');
+    vi.stubEnv('PUP_SANDBOX', undefined);
+
+    buildProgram().parse(['map'], { from: 'user' });
+
+    expect(process.exitCode).toBe(1);
+    expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
+    expect(errors[0]).not.toContain('Custom adapter');
+    expect(logs).toEqual([]);
+  });
+
   describe('init', () => {
     it('reports the NoAdapterError and exits 1 when no adapter detects the repo', () => {
       useCwd(initRepo());

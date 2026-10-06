@@ -1705,7 +1705,15 @@ export function buildProgram(): Command {
           'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
         );
       }
-      const nodes = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
+      let nodes: ReturnType<typeof buildCodeMap>;
+      try {
+        nodes = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
+      } catch (error) {
+        // Only the custom adapter runs a child here; the built-in ones build
+        // the graph in-process and need no declaration (decision 78).
+        if (!(error instanceof UndeclaredSandboxError)) throw error;
+        return refuse(error.message);
+      }
       if (!opts.open) {
         console.log(renderCodeMap(nodes, module));
         return;
