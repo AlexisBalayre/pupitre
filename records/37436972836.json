@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T08:35:44.618Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37436972836",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37436972836",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bd83c82132439e33b0717bba033e772ee26b4c93",
+  "source": "pr",
+  "pr_number": 127,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1318-1319",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new call-site comment (\"The steer behind Escape is named as pup steer names one (decisions 44, 47).\") is a pointer rather than a WHY: the steer action (1292-1295), the interruptSession JSDoc and the new test comment already carry the reason, and AGENTS.md §Comments says to delete the call-site copy when the seam already says it. Drop it, or state the WHY in one line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "383-384",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc addition \"as `steerSession`'s record does\" is a loose cross-reference (recordSteerMessage is the closer analogue) and doesn't say what omitting `by` means; something like \"`by` names who sent the steer; omitted, the record names nobody.\" would be tighter.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6434116000000001,
+  "duration_ms": 63816,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 3849,
+    "cache_read": 157912,
+    "cache_creation": 27380,
+    "total": 189151
+  }
+}
