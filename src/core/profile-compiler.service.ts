@@ -27,6 +27,15 @@ import type {
 // rather than trust the caller — these are enforcement scripts.
 const SHELL_UNSAFE_PATH = /['"\n`$\\]/;
 
+/**
+ * Tools that open a screen pup cannot answer (decision 74). Skipping
+ * permissions (decision 19) silences permission prompts, not the selector
+ * AskUserQuestion opens or the approval ExitPlanMode waits on: the pane has no
+ * input box, a steer is refused and the watchdog never resumes it. A deny
+ * rule takes the tools out of the model's toolset, sessions and conductor alike.
+ */
+const UNANSWERABLE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
+
 export function parseProfileLayer(yamlText: string): ProfileLayer {
   const raw = parse(yamlText) as Record<string, unknown> | null;
   if (!raw || typeof raw !== 'object' || typeof raw.name !== 'string' || !raw.name) {
@@ -179,7 +188,8 @@ function buildContextMarkdown(
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
       '  `pup session done "<one-line summary>"`\n' +
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
-      '- If you are blocked on something only a human can decide, say so and stop.',
+      '- If you are blocked on something only a human can decide, write your question as plain ' +
+      'text and end your turn. pup cannot answer a selector or a plan approval.',
     // LAST, below every rule it could contradict, and framed as reference.
     // The file is store-resident and a session's shell can reach it, so the
     // `pup brief` guard does not keep a session from writing it (decision 57's
@@ -459,6 +469,7 @@ export function compileProfile(input: CompileInput): CompiledProfile {
       Stop: [...eventEntry, ...(layerHooks.Stop ?? [])],
       Notification: [...eventEntry, ...(layerHooks.Notification ?? [])],
     },
+    permissions: { deny: UNANSWERABLE_TOOLS },
   };
 
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());
@@ -624,6 +635,7 @@ export function compileConductorProfile(input: ConductorCompileInput): CompiledP
         },
       ] as HookMatcherEntry[],
     },
+    permissions: { deny: UNANSWERABLE_TOOLS },
   };
   const files: Record<string, string> = {
     'context.md': contextMarkdown,

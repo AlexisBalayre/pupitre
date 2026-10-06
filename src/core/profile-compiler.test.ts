@@ -109,6 +109,20 @@ describe('compileProfile', () => {
       expect(compiled.settings.hooks[event]?.[0]?.hooks[0]?.command).toContain('event-log.sh');
     }
   });
+
+  // Decision 74: a selector or a plan approval leaves the pane without an
+  // input box, so no steer reaches it. The tools are denied, and the protocol
+  // says what to do instead.
+  it('denies the tools that open a screen pup cannot answer', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+
+    const settings = JSON.parse(compiled.files['settings.json'] as string);
+    expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+    expect(compiled.contextMarkdown).toContain(
+      '- If you are blocked on something only a human can decide, write your question as plain ' +
+        'text and end your turn. pup cannot answer a selector or a plan approval.',
+    );
+  });
 });
 
 describe('compileProfile with a code graph (decision 51)', () => {
@@ -817,6 +831,13 @@ describe('compileConductorProfile', () => {
       'hooks/edit-block.sh',
       'settings.json',
     ]);
+  });
+
+  it('denies the tools that open a screen pup cannot answer (decision 74)', () => {
+    const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    const settings = JSON.parse(compiled.files['settings.json'] as string);
+    expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
   });
 
   // The conductor's graph is main's, pinned the way a session's is pinned to
