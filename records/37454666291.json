@@ -1,0 +1,109 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T11:14:11.254Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37454666291",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37454666291",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b593e959391c5f7d77ef48e6c4fedbfd3411e0b9",
+  "source": "pr",
+  "pr_number": 132,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "248",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`openQuestion` runs for every session row, whatever its state. A worker that asks and is then killed, or merges, keeps `question: <text>` on its `pup status` line and in the TUI detail pane indefinitely, because a steer, the only thing that clears it, is refused for a session in a terminal state.",
+      "body": "**An open question outlives the session's `running` state and can never be cleared once the session is terminal.**\n\n`buildDashboardSnapshot` builds a row for every session (`listSessions(db)` with no state filter), and line 248 derives the question for each of them, regardless of state:\n\n```ts\nconst events = listEvents(db, row.id).reverse();\nconst lastSteer = newestSteer(events);\nconst question = openQuestion(events);\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/b593e959391c5f7d77ef48e6c4fedbfd3411e0b9/src/core/dashboard.service.ts#L245-L248\n\nThe other per-run fields on this row are gated on the running state: `activity` and `contextTokens` check `row.state === 'running'`, and stalls come from `listSessions(db, ['running'])`. `openQuestion` (L317-L326) clears only on a later `steer`, and both steer paths go through `requireLiveSession`, which throws `TerminalSessionError` for `merged`/`killed`. So the question is permanent on those rows, and `printDashboard` (`src/cli/index.ts` L1180-L1183) prints every snapshot row, merged and killed included.\n\nHow you get there:\n- The worker asks, and the operator kills the session instead of answering.\n- The operator answers by attaching to the pane (TUI `a attach`), which records no steer. The worker then runs `pup session done`, so the row shows a stale \"open\" question through `awaiting-review` (in `pup status` and in the TUI detail pane) and after the merge (in `pup status`).\n- A worker runs `ask` after `done`, since `ownSession` does not check state.\n\nDecision 76 says asking \"leaves the session `running`\". Its *Not changed here* list does not cover non-running rows. The new tests seed only running sessions.\n\nGating the question on `running` matches how `activity` and `contextTokens` are handled.",
+      "suggestion": "    const question = row.state === 'running' ? openQuestion(events) : undefined;"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1985-1998",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup session ask \"\"` (or `\"  \"`) is accepted and records `{text: \"\"}`, so `pup status` prints a bare `question: ` and the TUI draws an empty \"question\" section. `openQuestion` also returns `''` rather than `undefined` for a non-string `text` payload, with the same result.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3835-3837",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 74 has no inline `*Amended by decision 76:*` note, although decision 76 amends it. The file annotates amended entries elsewhere (e.g. \"*Amended by decision 78:*\", \"*Amended by decision 72:*\"), so a reader of 74 is still told to write the question as plain text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1985-1998",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above `markSessionQuestion(...)` in the `session ask` action repeats `markSessionQuestion`'s JSDoc (the session stays running, ends its turn, the next steer answers). Delete it, or keep only a \"Decision 76\" pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1180-1183",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The status-loop comment \"the snapshot has already scrubbed and cut it, and cleared it once a steer answered\" repeats the `DashboardSession.question` type doc and the `openQuestion` JSDoc. Delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/detail.component.tsx",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSX comment above the `question` Section (\"what the worker is blocked on, until a steer answers it\") restates the `question` field doc and the section title, and adds no WHY. Delete it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5985796000000005,
+  "duration_ms": 167618,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 8319,
+    "cache_read": 163246,
+    "cache_creation": 33826,
+    "total": 205401
+  }
+}
