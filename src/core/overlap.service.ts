@@ -1,7 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
 
-import { GIT_SAFE_CONFIG, gitDiffPaths, scrubbedGitEnv } from './git-diff.client.js';
+import { currentBranch, gitDiffPaths, runGit } from './git-diff.client.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { projectId } from './paths.utils.js';
 import { scopedPaths } from './scope-audit.utils.js';
@@ -38,14 +37,7 @@ export function intersectSessionFiles(filesBySession: Record<string, string[]>):
  * skipped rather than failing the sweep.
  */
 export function scanOverlaps(db: Database, repoPath: string, now = new Date()): OverlapPair[] {
-  const target = execFileSync(
-    'git',
-    [...GIT_SAFE_CONFIG, '-C', repoPath, 'branch', '--show-current'],
-    {
-      encoding: 'utf8',
-      env: scrubbedGitEnv(),
-    },
-  ).trim();
+  const target = currentBranch(repoPath);
   const live = listSessions(db, ['running', 'awaiting-review']);
   const filesBySession: Record<string, string[]> = {};
   for (const session of live) {
@@ -119,10 +111,5 @@ export function scopeConflicts(
  * different globs than the real one.
  */
 function trackedFiles(repoPath: string): string[] {
-  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repoPath, 'ls-files', '-z'], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
-  })
-    .split('\0')
-    .filter(Boolean);
+  return runGit(repoPath, ['ls-files', '-z']).split('\0').filter(Boolean);
 }

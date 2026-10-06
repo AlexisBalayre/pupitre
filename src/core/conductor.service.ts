@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -12,7 +11,7 @@ import {
   launchWatcher,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { assertNoArmedGitDrivers, GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { assertNoArmedGitDrivers, currentBranch, runGit } from './git-diff.client.js';
 import { getWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -23,16 +22,6 @@ import {
 } from './profile-compiler.service.js';
 import { isRefusedSteer, rollBackRefusedLaunch } from './session-lifecycle.errors.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
-
-// Hooks off and the GIT_DIR family scrubbed, like every other git call pup
-// makes: `worktree add` fires post-checkout, and a hook planted by an earlier
-// session lives in the shared common dir, untracked (decision 28).
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
-  }).trim();
-}
 
 /**
  * The conductor's private detached checkout of the merge target — the only thing
@@ -84,21 +73,21 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): string
   // The branch the main checkout is on IS the merge target — the same rule
   // `runMergeGate` reads it by, so the conductor's graph and the gate's
   // destination can never disagree about which branch that is.
-  const target = git(repoPath, 'branch', '--show-current');
+  const target = currentBranch(repoPath);
   if (!target) {
     throw new Error(`Main worktree at ${repoPath} is not on a branch; no merge target to index.`);
   }
   if (existsSync(join(checkoutDir, '.git'))) {
-    git(checkoutDir, 'checkout', '--detach', target);
+    runGit(checkoutDir, ['checkout', '--detach', target]);
   } else {
     // An operator who clears `~/.pupitre` leaves the registration behind, and
     // `worktree add` then refuses the path forever ("missing but already
     // registered") — the conductor would silently never get a graph again.
     // Prune drops only registrations whose directory is already gone, so it
     // heals that and touches nothing that still exists.
-    git(repoPath, 'worktree', 'prune');
+    runGit(repoPath, ['worktree', 'prune']);
     mkdirSync(dirname(checkoutDir), { recursive: true });
-    git(repoPath, 'worktree', 'add', '--detach', checkoutDir, target);
+    runGit(repoPath, ['worktree', 'add', '--detach', checkoutDir, target]);
   }
   return checkoutDir;
 }

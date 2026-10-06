@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { localContext } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
-import { GIT_SAFE_CONFIG, scrubbedGitEnv } from './git-diff.client.js';
+import { runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import type { CodeMapNode } from './types/code-map.types.js';
@@ -21,19 +20,7 @@ function moduleOf(file: string): string {
 
 /** Commits per module in the churn window — one git call for the whole repo. */
 function churnByModule(repoPath: string): Map<string, number> {
-  const output = execFileSync(
-    'git',
-    [
-      ...GIT_SAFE_CONFIG,
-      '-C',
-      repoPath,
-      'log',
-      `--since=${CHURN_WINDOW}`,
-      '--name-only',
-      '--format=%H',
-    ],
-    { encoding: 'utf8', env: scrubbedGitEnv() },
-  );
+  const output = runGit(repoPath, ['log', `--since=${CHURN_WINDOW}`, '--name-only', '--format=%H']);
   const churn = new Map<string, number>();
   let commitModules = new Set<string>();
   const flush = () => {

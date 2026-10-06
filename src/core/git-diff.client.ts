@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { type ExecFileSyncOptions, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -19,6 +19,7 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
 
 /**
  * The config every pup git call overrides, the argv half of `scrubbedGitEnv`.
+ * Private: `runGit` is the one place it is applied (decision 73).
  * Linked worktrees share `$GIT_COMMON_DIR/config` and `.git/**` is untracked,
  * so a session can set either of these keys without the scope hooks or the
  * gate seeing it, and the operator's next git call would run what it names.
@@ -31,13 +32,13 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * the gate's rebase recreates whenever `commit.gpgsign` is on, and clearing
  * the sign flag is the lever, because `gpg.program` has no safe empty value.
  * `diff.external` and `textconv` are disarmed per diff call instead — see
- * `git()` below — because an empty `diff.external` makes every diff die.
+ * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
  * A smudge filter or merge driver armed through the untracked `info/attributes`
  * has no `-c` disarm at all — its driver name is chosen by whoever wrote it —
  * so it is refused rather than disarmed; see `armedGitDrivers` (decision 50).
  */
-export const GIT_SAFE_CONFIG = [
+const GIT_SAFE_CONFIG = [
   '-c',
   'core.hooksPath=/dev/null',
   '-c',
@@ -69,12 +70,42 @@ const DIFF_SAFE_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-color', '--text
  */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', [...GIT_SAFE_CONFIG, '-C', cwd, ...args], {
-    encoding: 'utf8',
-    env: scrubbedGitEnv(),
+/**
+ * What a call site may add to a git spawn. `env` is laid over the scrubbed
+ * environment rather than replacing it, so a caller names only what it adds.
+ */
+export interface RunGitOptions {
+  env?: NodeJS.ProcessEnv;
+  stdio?: ExecFileSyncOptions['stdio'];
+  timeout?: number;
+}
+
+/**
+ * The one way pup runs git: `GIT_SAFE_CONFIG` in argv and `scrubbedGitEnv` in
+ * env, which every call site used to remember by hand (decision 73). Output is
+ * returned untrimmed — a `-z` listing whose first path starts with a space
+ * must reach its parser whole — so a caller reading one value trims it.
+ */
+export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
+  return execFileSync('git', safeArgv(cwd, args), { ...spawnOptions(opts), encoding: 'utf8' });
+}
+
+function safeArgv(cwd: string, args: string[]): string[] {
+  return [...GIT_SAFE_CONFIG, '-C', cwd, ...args];
+}
+
+function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
+  return {
+    env: { ...scrubbedGitEnv(), ...opts.env },
     maxBuffer: GIT_MAX_BUFFER,
-  }).trim();
+    stdio: opts.stdio,
+    timeout: opts.timeout,
+  };
+}
+
+/** The branch checked out at `cwd`, empty on a detached HEAD. */
+export function currentBranch(cwd: string): string {
+  return runGit(cwd, ['branch', '--show-current']).trim();
 }
 
 /**
@@ -84,7 +115,14 @@ function git(cwd: string, ...args: string[]): string {
  * protected-glob backstop.
  */
 export function gitDiffPaths(repoPath: string, target: string, branch: string): string[] {
-  return git(repoPath, 'diff', ...DIFF_SAFE_FLAGS, '-z', '--name-only', `${target}...${branch}`)
+  return runGit(repoPath, [
+    'diff',
+    ...DIFF_SAFE_FLAGS,
+    '-z',
+    '--name-only',
+    `${target}...${branch}`,
+  ])
+    .trim()
     .split('\0')
     .filter(Boolean);
 }
@@ -101,15 +139,14 @@ function diffHunks(
   branch: string,
   path: string,
 ): { start: number; added: number; deleted: number }[] {
-  const patch = git(
-    repoPath,
+  const patch = runGit(repoPath, [
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-U0',
     `${target}...${branch}`,
     '--',
     path,
-  );
+  ]).trim();
   const hunks: { start: number; added: number; deleted: number }[] = [];
   for (const line of patch.split('\n')) {
     const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
@@ -148,14 +185,15 @@ export function gitDiffAddedLines(
 export function gitDiffNumstat(repoPath: string, target: string, branch: string): DiffFileStat[] {
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
   // paths as two separate NUL fields.
-  const fields = git(
-    repoPath,
+  const fields = runGit(repoPath, [
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-z',
     '--numstat',
     `${target}...${branch}`,
-  ).split('\0');
+  ])
+    .trim()
+    .split('\0');
   const stats: DiffFileStat[] = [];
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];
@@ -183,13 +221,14 @@ const BINARY_SNIFF_BYTES = 8000;
 function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
   const spec = `${rev}:${path}`;
   try {
-    git(repoPath, 'cat-file', '-e', spec);
+    runGit(repoPath, ['cat-file', '-e', spec]);
   } catch {
     return false;
   }
-  const blob = execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repoPath, 'cat-file', 'blob', spec], {
-    env: scrubbedGitEnv(),
-    maxBuffer: GIT_MAX_BUFFER,
+  // `runGit`'s argv and env, read as bytes: a NUL is the whole question.
+  const blob = execFileSync('git', safeArgv(repoPath, ['cat-file', 'blob', spec]), {
+    ...spawnOptions({}),
+    encoding: 'buffer',
   });
   return blob.subarray(0, BINARY_SNIFF_BYTES).includes(0);
 }
@@ -213,7 +252,7 @@ export function gitDiffBinaryRecount(
   branch: string,
   path: string,
 ): { added: number; deleted: number } | null {
-  const base = git(repoPath, 'merge-base', target, branch);
+  const base = runGit(repoPath, ['merge-base', target, branch]).trim();
   if (blobIsBinary(repoPath, base, path) || blobIsBinary(repoPath, branch, path)) return null;
   let added = 0;
   let deleted = 0;
@@ -283,14 +322,18 @@ export class ArmedGitDriverError extends Error {
  */
 export function armedGitDrivers(gitPath: string): string[] {
   const armed: string[] = [];
-  const commonDir = git(gitPath, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+  const commonDir = runGit(gitPath, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-common-dir',
+  ]).trim();
   const [pattern] = attributePatterns(join(commonDir, 'info', 'attributes'));
   if (pattern) armed.push(`info/attributes (${sanitizeReason(pattern)})`);
   // `--list --show-scope` rather than `--local --get-regexp`: `--worktree`
   // silently falls back to the local file when `extensions.worktreeConfig` is
   // off, so it cannot be read on its own, and one listing covers both scopes.
   // Entries are `<scope>\0<key>\n<value>\0`, so they come out in pairs.
-  const listed = git(gitPath, 'config', '--list', '--show-scope', '-z').split('\0');
+  const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z']).trim().split('\0');
   for (let i = 0; i + 1 < listed.length; i += 2) {
     const [key] = (listed[i + 1] as string).split('\n');
     if (!SESSION_WRITABLE_SCOPES.includes(listed[i] as string)) continue;

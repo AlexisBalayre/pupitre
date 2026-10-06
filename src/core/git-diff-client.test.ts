@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,10 +15,12 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  runGit,
 } from './git-diff.client.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
@@ -312,5 +322,114 @@ describe('armedGitDrivers', () => {
     writeFileSync(join(repo, '.git', 'info', 'attributes'), '*\u001b[2J filter=pwn\n');
 
     expect(armedGitDrivers(repo)[0]).toBe('info/attributes (* [2J filter=pwn)');
+  });
+});
+
+// Both keys are writable from a worktree with a plain `git config` and both
+// run a command of the writer's choosing: `core.hooksPath` on a commit,
+// `core.fsmonitor` on any index read (decisions 28 and 41).
+describe('runGit', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function armedRepo(): { repo: string; fired: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    const fired = join(repo, '.git', 'fired');
+    const hooks = join(repo, '.git', 'planted-hooks');
+    mkdirSync(hooks);
+    writeFileSync(join(hooks, 'pre-commit'), `#!/bin/sh\necho hook >> ${fired}\n`, { mode: 0o755 });
+    const monitor = join(repo, '.git', 'planted-fsmonitor');
+    writeFileSync(monitor, `#!/bin/sh\necho fsmonitor >> ${fired}\nexit 1\n`, { mode: 0o755 });
+    sh(repo, 'git', 'config', 'core.hooksPath', hooks);
+    sh(repo, 'git', 'config', 'core.fsmonitor', monitor);
+    return { repo, fired };
+  }
+
+  // The control: a plain git call in the same repo runs both, so the planted
+  // config is live and a quiet `runGit` is a disarm, not a dud.
+  it('runs in a repo where a plain git call fires the planted hook and fsmonitor', () => {
+    const { repo, fired } = armedRepo();
+    sh(repo, 'git', 'status');
+    sh(repo, 'git', 'commit', '--allow-empty', '-m', 'plain');
+
+    expect(readFileSync(fired, 'utf8')).toMatch(/fsmonitor[\s\S]*hook/);
+  });
+
+  it('runs neither the planted core.hooksPath nor the planted core.fsmonitor', () => {
+    const { repo, fired } = armedRepo();
+
+    runGit(repo, ['status']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'through runGit']);
+
+    expect(runGit(repo, ['log', '-1', '--format=%s']).trim()).toBe('through runGit');
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  // A hook that runs pup inherits GIT_DIR, which would aim every git call pup
+  // makes at the hook's repo instead of the path it was handed.
+  it('answers for the path it is given, not an inherited GIT_DIR', () => {
+    const repo = makeRepo();
+    const other = makeRepo();
+    sh(other, 'git', 'checkout', '-q', '-b', 'elsewhere');
+    vi.stubEnv('GIT_DIR', join(other, '.git'));
+
+    expect(currentBranch(repo)).toBe('main');
+  });
+});
+
+/** Every `file:line` that spawns git directly, rather than through `runGit`. */
+function gitSpawns(file: string, source: string): string[] {
+  const spawn =
+    /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\(\s*(['"`])git(?:\1|\s)/g;
+  return [...source.matchAll(spawn)].map(
+    (match) => `${file}:${source.slice(0, match.index).split('\n').length}`,
+  );
+}
+
+/** Production sources under `src/`, the one module allowed to spawn git excepted. */
+function productionSources(): string[] {
+  const root = join(process.cwd(), 'src');
+  return readdirSync(root, { recursive: true, encoding: 'utf8' })
+    .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+    .map((file) => join('src', file))
+    .filter((file) => file !== join('src', 'core', 'git-diff.client.ts'));
+}
+
+/**
+ * Sixteen call sites each remembered `GIT_SAFE_CONFIG` and `scrubbedGitEnv` by
+ * hand, and one that forgot either would run whatever a session wrote into the
+ * shared config. This reads the source so the next direct spawn fails the suite
+ * instead of shipping (decision 73, in the style of decision 68).
+ */
+describe('the single git entry point', () => {
+  it('finds no git spawn outside git-diff.client.ts', () => {
+    const found = productionSources().flatMap((file) =>
+      gitSpawns(file, readFileSync(join(process.cwd(), file), 'utf8')),
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it('flags a planted git spawn, and leaves runGit and other binaries alone', () => {
+    const source = [
+      `execFileSync('git', ['status'], { encoding: 'utf8' });`,
+      `runGit(repoPath, ['status']);`,
+      `execFileSync('gh', ['--version']);`,
+      `spawnSync(`,
+      `  "git",`,
+      `  ['log'],`,
+      `);`,
+      `execSync('git status');`,
+      `execFileSync('gitleaks', ['detect']);`,
+    ].join('\n');
+
+    expect(gitSpawns('planted.ts', source)).toEqual([
+      'planted.ts:1',
+      'planted.ts:4',
+      'planted.ts:8',
+    ]);
   });
 });
