@@ -1,0 +1,131 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T10:24:46.787Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37449062683",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37449062683",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f5e29fc6a0e1b9ee65f434f9545a03d370ed2fb3",
+  "source": "pr",
+  "pr_number": 131,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1697-1708",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Off darwin without `PUP_SANDBOX=vm`, `pup map` on a repo whose `.pupitre/adapter.yml` declares `depGraph` now crashes with an uncaught stack trace that blames the adapter command, instead of printing decision 78's one-line refusal.",
+      "body": "**`pup map` now crashes off darwin instead of refusing in one line.** Decision 78 says \"`runGateChild` hits the same throw, so no other caller runs a child bare either.\" `pup map` is one of those other callers, and this PR gives it no refusal handling. Before this PR, `pup map` worked on Linux: base `sandboxMode()` returned `'unsupported'` and the child ran bare.\n\nHow the error gets out:\n- `detectAdapters` puts the custom adapter first (`custom ? [custom, ...builtIn] : builtIn`). The `map` action takes `const [adapter] = detectAdapters(repoPath)` and calls `buildCodeMap(...)` with no try/catch. It also never calls `refusedUnsandboxed()`.\n- `buildCodeMap` calls `adapter.depGraph(...)`. The custom adapter's `runJson` runs it through `runGateChild('sh', ['-c', command], …)`, so `sandboxMode()` → `declaredMode()` throws `UndeclaredSandboxError`.\n- `runJson`'s catch rewraps every error:\n  ```ts\n  } catch (error) {\n    const failure = error as { stderr?: string; message?: string };\n    throw new CustomAdapterCommandError(capability, command, …);\n  }\n  ```\n  The error is no longer an `UndeclaredSandboxError`, and its message reads `Custom adapter depGraph command (<cmd>) failed: No sandbox on linux, …`. That blames the operator's adapter command when the real cause is the missing declaration.\n- `fatalExitCode` handles only `CommanderError` and `ProjectResolutionError` and rethrows everything else, so Node prints a stack trace.\n\nThe same root cause hits `knowledgeSliceFor` (src/core/session-lifecycle.service.ts L177-190), but more quietly. Its catch-all means `pup new`, `pup launch` and `--sweep` launch custom-adapter repos with no code-map slice and give no reason.\n\n**Suggested direction:**\n- Make `runJson` rethrow `UndeclaredSandboxError` without wrapping it.\n- Have the `map` action turn that error into `refuse(error.message)`, the way `refusedUnsandboxed` does.\n- Don't call `refusedUnsandboxed()` up front: the TypeScript adapter builds `depGraph` in-process, so that would refuse runs that need no sandbox.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f5e29fc6a0e1b9ee65f434f9545a03d370ed2fb3/src/cli/index.ts#L1697-L1708\nhttps://github.com/AlexisBalayre/pupitre/blob/f5e29fc6a0e1b9ee65f434f9545a03d370ed2fb3/src/adapters/custom.adapter.ts#L37-L61",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "135-138",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "On Linux, most of pupitre's own test suite now needs PUP_SANDBOX=vm. Pup's gate strips that variable from the child that runs `pnpm test`, so `pup merge` on this repo fails its test stage even on a VM the operator declared.",
+      "body": "**Self-gating pupitre on a declared Linux VM fails its test stage by default.** `declaredMode()` reads the declaration only from pup's own environment:\n```ts\nfunction declaredMode(): SandboxMode {\n  if (process.env[DECLARATION_VAR] === 'vm') return 'declared-vm';\n  throw new UndeclaredSandboxError();\n}\n```\nOff darwin, many tests reach `sandboxLabel()`, `initProject` or `runGateChild` without stubbing `PUP_SANDBOX`, and `vitest.config.ts` has no `setupFiles` that sets it. Examples:\n- in `src/core/merge-gate.test.ts`, \"merges a clean in-scope branch ff-only…\" (L201). Its `beforeEach` never stubs the variable.\n- in `src/core/sandbox-utils.test.ts`, the `runGateChild` tests at L180, L199 and L251. They have no `runIf` guard.\n- init, audit and adapter tests that reach `runGateChild`.\n\nThose tests throw `UndeclaredSandboxError` on Linux.\n\nWhen pup gates this repo, `pnpm test` runs as a gate child. Its env comes from `gateChildEnv`, and `ALLOWED_VARS` (src/core/gate-env.utils.ts L25-38) does not include `PUP_SANDBOX`. An operator who sets `PUP_SANDBOX=vm` and runs `pup merge` on pupitre therefore runs the suite without the declaration. The test stage fails, so the gate rejects (and later parks) every session.\n\nThe operator can work around this with `pup merge --gate-env PUP_SANDBOX`, which `PUP_SANDBOX` is not barred from. Nothing documents that, though, and decision 78 exists to enable exactly this Linux VM setup. It is the Linux twin of the darwin nested-sandbox problem that decision 36's `inherited` mode solved through dogfooding. The repo has no Linux CI test job that would have caught it.\n\n**Fix options:**\n- Default the variable for the suite with `process.env.PUP_SANDBOX ??= 'vm'` in a vitest setup file. Tests that need it unset already `vi.stubEnv('PUP_SANDBOX', undefined)`.\n- Or have the gate pass `PUP_SANDBOX` through to its children when pup itself runs in `declared-vm`.\n- Or at least document `--gate-env PUP_SANDBOX` for self-gating in decision 78.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f5e29fc6a0e1b9ee65f434f9545a03d370ed2fb3/src/core/sandbox.utils.ts#L135-L138\nhttps://github.com/AlexisBalayre/pupitre/blob/f5e29fc6a0e1b9ee65f434f9545a03d370ed2fb3/src/core/gate-env.utils.ts#L25-L38",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1511-1522",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test \"refuses in one line naming PUP_SANDBOX=vm, and stores nothing\" only checks the exit code, stderr and an empty stdout. Nothing asserts that no project row or baseline was written, or that no child ran. The core tests in init.test.ts and audit.test.ts do cover this, but at the CLI level a `refusedUnsandboxed` placed after some store write would still pass.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1501-1505",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same `Object.getOwnPropertyDescriptor(process,'platform')` / `defineProperty` override-and-restore block is pasted into five test files. A grep found no existing helper to reuse. This is past the project's third-use threshold, so extract it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "436-451",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refusedUnsandboxed` calls `sandboxLabel()` and discards the result, relying on its throw as the guard. A name that returns a label now also works as a precondition check, which is an obscure contract. `initProject` and `runMergeGate` already refuse via the same throw. The CLI therefore pre-checks something core enforces anyway, only to turn the error into a one-line refusal. Another approach is to catch `UndeclaredSandboxError` around the `initProject` and `auditProject` calls the CLI already wraps (`runOrReportNoAdapter`). That would drop the double evaluation and the pre-check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "194-201",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The runGateChild JSDoc has a sentence spliced mid-paragraph. The new 'Elsewhere it runs bare only under the operator's VM declaration, and throws without it.' sits before 'The invariant is about gate *children*, and', which leaves one over-long line and breaks the flow from the darwin sentence into the invariant sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "108-116",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc on DECLARATION_VAR begins 'The declaration, and the only place it is read', but the constant is only the variable's name. The reading happens in declaredMode, and the 'any value but vm' rule is enforced there and repeated in decision 78. Reword to describe the name, for example 'Name of the env var carrying the operator's declaration; read only in declaredMode, from pup's own environment, ...'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "211-214",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment 'First of the refusals that spawn nothing: everything below runs children...' is vague. 'First of the refusals' is not true in a useful sense, because the session-state throw sits just above. Its payload (refuse before any child) is already in the sandboxLabel JSDoc ('each of the three calls it before its first child'). Trim it to the call-site-specific WHY, for example '// Before the adapter check and the lock: refuses without spawning anything (decision 78).' The init.service.ts comment at lines 185-186 overlaps the same seam doc and could be shortened the same way.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.1926181,
+  "duration_ms": 254065,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 14174,
+    "cache_read": 173055,
+    "cache_creation": 45356,
+    "total": 232595
+  }
+}
