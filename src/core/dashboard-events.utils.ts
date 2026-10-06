@@ -5,9 +5,9 @@ import type { DashboardGate } from './types/dashboard.types.js';
 /**
  * What an event's payload says, in the words a person reads it in: the
  * transition and the verdict on a gate result, the kind and sender of a steer,
- * the summary a session finished with. Ids, hashes and file lists stay in the
- * store — `pup report` is where they are read — and a payload with nothing to
- * say leaves the line as its type and its time.
+ * the summary a session finished with, the question it asked. Ids, hashes and
+ * file lists stay in the store — `pup report` is where they are read — and a
+ * payload with nothing to say leaves the line as its type and its time.
  *
  * `gate` is the run a `gate_result` event reports, as the snapshot service
  * read it: the verdict here and the stage list on the row come from one
@@ -47,6 +47,8 @@ export function eventDetail(
       return line(text('reason'), text('refusal'));
     case 'session_done':
       return text('summary');
+    case 'question':
+      return text('text');
     case 'merge': {
       const target = text('target');
       return text('prUrl') ?? (target && `into ${target}`);

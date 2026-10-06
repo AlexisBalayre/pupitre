@@ -310,6 +310,16 @@ export function markSessionDone(db: Database, sessionId: string, summary: string
 }
 
 /**
+ * Record a question a session is blocked on (run by the agent via `pup session
+ * ask`, decision 76). The session stays running: the agent ends its turn, and
+ * the next steer is the answer — which is also what clears the question from
+ * the dashboard.
+ */
+export function markSessionQuestion(db: Database, sessionId: string, text: string): void {
+  appendEvent(db, sessionId, 'question', { text });
+}
+
+/**
  * The pane a session's window was opened in, as `launchSession` recorded it.
  * The only way a row's pane reaches the runtime, so a steer, interrupt or
  * kickoff is addressed to the pane pinned at launch and never to the session,

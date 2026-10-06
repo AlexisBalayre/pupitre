@@ -461,6 +461,78 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
 
+    // Decision 76: a question stands until a steer answers it, and the
+    // session's own words are scrubbed and cut like every derived line.
+    describe('question', () => {
+      const questionOf = () => buildDashboardSnapshot(db, repo, NOW).sessions[0]?.question;
+
+      beforeEach(() => {
+        seedSession(db, repo, 's1');
+        transitionSession(db, 's1', 'running');
+        appendEvent(db, 's1', 'steer', { kind: 'kickoff', delivered: true });
+      });
+
+      it('carries the newest question no steer has answered', () => {
+        appendEvent(db, 's1', 'question', { text: 'first?' });
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        appendEvent(db, 's1', 'tool_call', {});
+
+        expect(questionOf()).toBe('rebase or merge?');
+      });
+
+      it('clears once a steer comes after it', () => {
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        appendEvent(db, 's1', 'steer', { kind: 'message', by: 'operator' });
+
+        expect(questionOf()).toBeUndefined();
+      });
+
+      it('carries a question asked after the last steer', () => {
+        appendEvent(db, 's1', 'question', { text: 'answered?' });
+        appendEvent(db, 's1', 'steer', { kind: 'message' });
+        appendEvent(db, 's1', 'question', { text: 'and now?' });
+
+        expect(questionOf()).toBe('and now?');
+      });
+
+      it('is absent on a session that never asked', () => {
+        expect(questionOf()).toBeUndefined();
+      });
+
+      // Nothing can answer a terminal session (steers refuse it), so a question
+      // asked before the kill or the merge must not sit on the row for good.
+      it.each(['killed', 'merged'] as const)('is absent once the session is %s', (state) => {
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        transitionSession(db, 's1', state === 'merged' ? 'awaiting-review' : state);
+        if (state === 'merged') transitionSession(db, 's1', 'merged');
+
+        expect(questionOf()).toBeUndefined();
+      });
+
+      it('is absent when the recorded text is blank', () => {
+        appendEvent(db, 's1', 'question', { text: '  ' });
+
+        expect(questionOf()).toBeUndefined();
+      });
+
+      it('scrubs and cuts the text', () => {
+        appendEvent(db, 's1', 'question', { text: `\u001b[2Jwhich\n${'x'.repeat(400)}` });
+
+        const question = questionOf() ?? '';
+        expect(question).not.toContain('\u001b');
+        expect(question.startsWith('[2Jwhich x')).toBe(true);
+        expect(question).toHaveLength(300);
+      });
+
+      it('reads the question under last events', () => {
+        appendEvent(db, 's1', 'question', { text: 'rebase\u0007 or merge?' });
+
+        expect(
+          buildDashboardSnapshot(db, repo, NOW).sessions[0]?.recentEvents.at(-1),
+        ).toMatchObject({ type: 'question', detail: 'rebase or merge?' });
+      });
+    });
+
     it('reports the newest steer with its kind and its sender', () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');

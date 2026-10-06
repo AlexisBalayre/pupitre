@@ -54,6 +54,11 @@ export function Detail({ row }: { row: DetailRow }) {
       </Section>
       {row.kind === 'session' ? (
         <>
+          {row.session.question === undefined ? null : (
+            <Section title="question">
+              <Text color="yellow">{row.session.question}</Text>
+            </Section>
+          )}
           <LastGate session={row.session} />
           <RecentEvents session={row.session} />
         </>

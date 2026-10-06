@@ -63,6 +63,7 @@ import {
   interruptSession,
   killSession,
   launchTask,
+  markSessionQuestion,
   planTask,
   recordSteerMessage,
   sessionPane,
@@ -884,6 +885,15 @@ describe('steer, interrupt and kill by session id', () => {
 
     expect(killTmux).toHaveBeenCalledWith('s-1', '%7');
     expect(getSession(db, 's-1')?.state).toBe('killed');
+  });
+
+  // Decision 76: asking is not finishing. The worker ends its turn and the
+  // next steer answers, so the row stays where a steer can reach it.
+  it('records a question with its text and leaves the session running', () => {
+    markSessionQuestion(db, 's-1', 'rebase onto main or merge it?');
+
+    expect(events('question')).toEqual([{ text: 'rebase onto main or merge it?' }]);
+    expect(getSession(db, 's-1')?.state).toBe('running');
   });
 });
 
