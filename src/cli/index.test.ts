@@ -4578,19 +4578,20 @@ describe('CLI commands', () => {
       expect(request.openPr).toBeUndefined();
     });
 
-    // Whole: pup's own refusals carry remediation steps past the scrubber's
-    // 300-character cut, and only the spec refusal below is store text.
-    it('reports a thrown gate error whole and exits 1', () => {
+    // Whole but clean: pup's own refusals carry remediation steps past the
+    // scrubber's 300-character cut, and an adapter command's stderr from the
+    // session's worktree can ride in the same message (decision 68).
+    it('reports a thrown gate error whole, with control characters stripped', () => {
       useCwd(initRepoWithAdapter());
       const long = `worktree has a held lock; ${'run `git config --unset x`. '.repeat(14)}`;
       vi.mocked(runMergeGate).mockImplementation(() => {
-        throw new Error(long);
+        throw new Error(`${long}\u001b]52;c;payload\u0007 tail`);
       });
 
       buildProgram().parse(['merge', 's1'], { from: 'user' });
 
       expect(long.length).toBeGreaterThan(300);
-      expect(errors).toEqual([long]);
+      expect(errors).toEqual([`${long} ]52;c;payload  tail`]);
       expect(process.exitCode).toBe(1);
       expect(logs).toEqual([]);
     });

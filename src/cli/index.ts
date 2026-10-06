@@ -1616,10 +1616,13 @@ export function buildProgram(): Command {
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          // Only the spec refusal is store text; the rest are pup's own lines,
-          // whose remediation steps run past the scrubber's cut (decision 68).
-          if (error instanceof MalformedTaskSpecError) return refuse(sanitizeLines(error.message));
-          return refuse(error instanceof Error ? error.message : String(error));
+          // Store-read and child-read text reaches here too (the spec refusal, an
+          // adapter command's stderr from the session's worktree), so control
+          // characters are stripped — but not cut to a line: pup's own refusals
+          // carry remediation steps past the scrubber's 300 (decision 68).
+          const message = error instanceof Error ? error.message : String(error);
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+          return refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
         } finally {
           // The gate has released its own lock by now, so a later signal must
           // not reach a handler that would delete the next run's.
