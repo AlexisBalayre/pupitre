@@ -560,6 +560,27 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe(SESSION_ID);
   });
 
+  // The approver is a relay's word (`--approved-by`, decision 75); the store
+  // keeps it scrubbed, whichever caller built the request.
+  it('scrubs control characters out of the acceptor before the ledger keeps it', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+
+    const outcome = runMergeGate(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      acceptDebt: {
+        reason: 'deadline',
+        reviewBy: 'before v2',
+        acceptedBy: 'tg:\u001b[2Jalexis\u009b',
+      },
+    });
+
+    expect(outcome.status).toBe('merged');
+    expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe('tg: [2Jalexis');
+  });
+
   it('counts a lockfile-named file outside the repo root toward the diff size', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/pnpm-lock.yaml', 'generated: line\n'.repeat(700));
@@ -1509,6 +1530,40 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('merged');
     expect(outcome.prUrl).toBe(openPrOnMain.url);
     expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
+  });
+
+  // The approver can differ between the conductor's attempt and the operator's
+  // retry (decision 75); the debt is the same debt, and the first approver stands.
+  it('with openPr retries under another approver without filing the debt twice', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+    addOrigin();
+    const debt = { reason: 'deadline', reviewBy: 'before v2' };
+    const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
+    expect(() =>
+      withFakeGh(ghDyingOnCreate, () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          acceptDebt: { ...debt, acceptedBy: 'tg:alexis' },
+          openPr: true,
+        }),
+      ),
+    ).toThrow();
+
+    const outcome = withFakeGh(fakeGh([openPrOnMain]), () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        acceptDebt: { ...debt, acceptedBy: 'human' },
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(listLedgerEntries(db, 'proj-1').map((e) => e.accepted_by)).toEqual(['tg:alexis']);
   });
 
   it('with openPr retries after the target moved, when the rebase rewrote the pushed branch', () => {

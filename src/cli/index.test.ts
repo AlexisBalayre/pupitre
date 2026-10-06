@@ -2964,14 +2964,16 @@ describe('CLI commands', () => {
       });
     });
 
-    it('is refused the merge, and told the operator merges', () => {
+    // The fast-forward moves main; the conductor gates through --pr and the
+    // human merges the PR (decision 75).
+    it('is refused the local merge, and told to use --pr', () => {
       useCwd(initRepoWithAdapter());
 
       buildProgram().parse(['merge', 's1'], { from: 'user' });
 
       expect(runMergeGate).not.toHaveBeenCalled();
       expect(errors).toEqual([
-        '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it.',
+        '`pup merge` is operator-only; the conductor reports a finished branch and the operator merges it. Use --pr to gate it and open a pull request.',
       ]);
       expect(process.exitCode).toBe(1);
     });
@@ -4851,6 +4853,166 @@ describe('CLI commands', () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
       expect(() => buildProgram().parse(['merge', 's1'], { from: 'user' })).toThrow();
+    });
+
+    it('records the approver an operator names instead of human', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+
+      buildProgram().parse(
+        ['merge', 's1', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', 'tg:alexis'],
+        { from: 'user' },
+      );
+
+      expect(firstCall(runMergeGate)[1].acceptDebt?.acceptedBy).toBe('tg:alexis');
+    });
+
+    it('refuses --approved-by without --accept-debt', () => {
+      useCwd(initRepoWithAdapter());
+
+      buildProgram().parse(['merge', 's1', '--approved-by', 'tg:alexis'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '--approved-by names who accepted the debt; pass it with --accept-debt.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(runMergeGate).not.toHaveBeenCalled();
+    });
+
+    // Scrubbing to nothing must not fall back to the operator's `human`.
+    it.each([[''], ['\u001b\u0007 ']])(
+      'refuses an --approved-by that scrubs to nothing (%j)',
+      (who) => {
+        useCwd(initRepoWithAdapter());
+
+        buildProgram().parse(
+          ['merge', 's1', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', who],
+          { from: 'user' },
+        );
+
+        expect(errors).toEqual(['--approved-by needs a name, such as tg:<user>.']);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      },
+    );
+
+    /**
+     * The conductor gates with --pr and relays a human's debt approval, which
+     * arrives from outside the VM (a Telegram click); the ledger names that
+     * approver rather than the operator's `human` (decision 75).
+     */
+    describe('from the conductor', () => {
+      beforeEach(() => {
+        vi.stubEnv('PUP_CONDUCTOR', 'p1');
+      });
+
+      it('runs the gate and opens the PR with --pr', () => {
+        useCwd(initRepoWithAdapter());
+        vi.mocked(runMergeGate).mockReturnValue(
+          mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
+        );
+
+        buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+
+        expect(firstCall(runMergeGate)[1].openPr).toBe(true);
+        expect(logs).toContain(
+          'Gate passed; opened https://github.com/acme/repo/pull/7 — merge it there, then run `pup audit`.',
+        );
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      it('is refused accepting debt without naming the approver', () => {
+        useCwd(initRepoWithAdapter());
+
+        buildProgram().parse(['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c'], {
+          from: 'user',
+        });
+
+        expect(errors).toEqual([
+          'The conductor relays a debt approval, it does not give one: pass --approved-by <who> with --accept-debt.',
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      });
+
+      it.each(['human', 'Human'])("is refused wearing the operator's own entry (%s)", (who) => {
+        useCwd(initRepoWithAdapter());
+
+        buildProgram().parse(
+          ['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', who],
+          { from: 'user' },
+        );
+
+        expect(errors).toEqual([
+          '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      });
+
+      it('records the approver it names, and `pup debt` prints it', () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        // Stands in for the gate's ledger write, which merge-gate.test.ts
+        // covers: the entry carries whatever acceptor the request names.
+        vi.mocked(runMergeGate).mockImplementation((db, request) => {
+          ensureProject(db, projectId(repo), repo);
+          insertLedgerEntry(db, {
+            projectId: projectId(repo),
+            description: 'diff-size flagged',
+            files: ['src/a.ts'],
+            reason: request.acceptDebt?.reason ?? '',
+            acceptedBy: request.acceptDebt?.acceptedBy ?? '',
+            reviewBy: request.acceptDebt?.reviewBy ?? '',
+          });
+          return mergedOutcome();
+        });
+
+        buildProgram().parse(
+          [
+            'merge',
+            's1',
+            '--pr',
+            '--accept-debt',
+            'deadline',
+            '--review-by',
+            'before v2',
+            '--approved-by',
+            'tg:alexis',
+          ],
+          { from: 'user' },
+        );
+        logs.length = 0;
+        buildProgram().parse(['debt'], { from: 'user' });
+
+        expect(firstCall(runMergeGate)[1].acceptDebt).toEqual({
+          reason: 'deadline',
+          reviewBy: 'before v2',
+          acceptedBy: 'tg:alexis',
+        });
+        expect(logs.some((l) => l.includes('accepted by: tg:alexis'))).toBe(true);
+      });
+
+      it('scrubs a control character out of the approver before the gate sees it', () => {
+        useCwd(initRepoWithAdapter());
+        vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+
+        buildProgram().parse(
+          [
+            'merge',
+            's1',
+            '--pr',
+            '--accept-debt',
+            'r',
+            '--review-by',
+            'c',
+            '--approved-by',
+            '\u001b[2Jtg:alexis\n',
+          ],
+          { from: 'user' },
+        );
+
+        expect(firstCall(runMergeGate)[1].acceptDebt?.acceptedBy).toBe('[2Jtg:alexis');
+      });
     });
   });
 });

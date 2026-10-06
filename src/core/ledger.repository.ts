@@ -35,7 +35,7 @@ export function hasOpenLedgerEntry(db: Database, input: NewLedgerEntryInput): bo
     db
       .prepare(
         `SELECT 1 FROM ledger_entries WHERE project_id = @projectId AND description = @description
-         AND files = @files AND reason = @reason AND accepted_by = @acceptedBy
+         AND files = @files AND reason = @reason
          AND review_by = @reviewBy AND status = 'open' LIMIT 1`,
       )
       .get({ ...input, files: JSON.stringify(input.files) }) !== undefined

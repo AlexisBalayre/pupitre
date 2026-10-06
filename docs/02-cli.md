@@ -147,7 +147,8 @@ instead (decisions 60, 61, addendum to decision 43).
   project's conductor: one Claude Code window in the main checkout that plans, launches,
   steers and kills sessions and hands each finished branch to the operator. It reaches a
   session by its peer name `pup-<id>` over Claude Code's cross-session messaging, edits
-  nothing (a hook refuses every Edit and Write), and is refused `pup merge`, `pup respawn`,
+  nothing (a hook refuses every Edit and Write), and is refused a local `pup merge` (it may gate
+  with `--pr`, decision 75), `pup respawn`,
   `pup unblock` and `--project`. Tasks it plans are recorded `origin = conductor`.
   `start` cuts a private detached checkout of the merge target under
   `~/.pupitre/<id>/conductor/checkout`, indexes it, and launches with `codegraph_explore` over
@@ -179,12 +180,12 @@ instead (decisions 60, 61, addendum to decision 43).
 
 - `pup review` — the queue: pending branches ordered by risk score, each with generated diff summary, gate results, debt delta.
 - `pup review <session>` — full detail for one branch.
-- `pup merge <session>` — run the gate pipeline; on pass, merge and write knowledge layer in the same transaction; on fail, move to rejected and inject the report. Operator-only, `--pr` included: the verdict moves another session's branch (decisions 26, 44).
+- `pup merge <session>` — run the gate pipeline; on pass, merge and write knowledge layer in the same transaction; on fail, move to rejected and inject the report. Operator-only without `--pr`: the verdict moves another session's branch (decisions 26, 44). With `--pr` the conductor may run it too, since the human still merges the pull request (decision 75).
   `--pr` pushes to the URL `pup init` recorded, from a git dir that reads no shared config
   (decision 54), and refuses before running a single stage — naming both values, having pushed
   nothing — when the repo's `remote.origin.url` no longer matches the record, or when no push
   target was ever recorded (decision 56).
-- `pup merge <session> --accept-debt "<reason>" --review-by "<condition>"` — merge despite a flagged shortcut, creating a ledger entry.
+- `pup merge <session> --accept-debt "<reason>" --review-by "<condition>" [--approved-by <who>]` — merge despite a flagged shortcut, creating a ledger entry. `--approved-by` names who accepted the debt: required from the conductor (which relays a human's approval and may not say `human`), defaults to `human` for the operator (decision 75).
 
 ## Session protocol
 

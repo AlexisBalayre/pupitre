@@ -1750,7 +1750,8 @@ changes back into those docs is pending.
     *The tier.* A session is refused `plan add|drop|edit`, `new`, `launch`, `kill`, `merge`,
     `respawn` and `--project` (decisions 40, 42, 43, 44). The conductor is allowed the first
     four and `steer`, `interrupt`, `status`, `review`, `debt`, `log`; it is refused `merge`,
-    `respawn`, `kill --respawn`, `debt close`, `--project` and `pup conductor` itself. The
+    `respawn`, `kill --respawn`, `debt close`, `--project` and `pup conductor` itself
+    (*amended by decision 75:* it may run `merge --pr`, never the local merge). The
     operator has everything. The merge stays with the operator because the verdict moves a
     branch onto main and the human is the reviewer — the product is the operator's
     understanding, not throughput, and a conductor that merged would be a session merging
@@ -3846,6 +3847,37 @@ changes back into those docs is pending.
     mode drops all three tools on its own, so the check has to run in an interactive pane. If a
     later Claude Code stops honouring the rule, the protocol line still covers a worker that
     follows its instructions. Re-run the two-pane check before trusting the deny alone.
+
+75. **The conductor gates a branch with `pup merge --pr`, and accepted debt names its approver
+    (2026-10-06).** Settled while grilling Copiste, which drives pupitre as the conductor tier
+    with no human in its VM: the human reviews on GitHub and approves flagged debt from a
+    Telegram click. Decision 47 refused the conductor the whole merge, so every finished branch
+    waited on an operator shell that Copiste does not have. What decision 47 protects is main,
+    and `--pr` never moves main: the gate runs, the branch is pushed, and a human merges the PR.
+    So a conductor caller (`PUP_CONDUCTOR`) is now allowed `pup merge <s> --pr` and still refused
+    the local fast-forward, with the old wording plus "Use --pr to gate it and open a pull
+    request". A session is refused both, as before (decision 44).
+    *`--accept-debt` gains `--approved-by <who>`.* The ledger's `accepted_by` was always
+    `'human'`, true while only the operator could reach that line. A conductor accepting debt is
+    relaying someone else's call, so it must name the approver (`tg:alexis`), and `pup merge`
+    refuses before the gate runs when it does not. The operator may name one too, and defaults
+    to `human` as before. `--approved-by` without `--accept-debt` is refused, and so is a value
+    that scrubs to nothing: an empty approver must not read as the operator's `human`.
+    *The approver is scrubbed before it is stored,* not only where it prints (decision 68). The
+    CLI scrubs it before the request is built, and `runMergeGate` scrubs `acceptedBy` again where
+    it writes the ledger entry, because that is the seam every caller shares. `pup debt` and the
+    report already scrubbed the column on the way out.
+    *The value is the conductor's word,* at decision 27's ceiling, like `PUP_CONDUCTOR` itself:
+    pupitre cannot check that the Telegram click happened. What the field buys is an honest
+    trail: an entry no longer claims the operator approved a debt the operator never saw.
+    Two edges closed on review: the conductor may not pass `human` as the approver, since that
+    is the operator's own entry and the trail would read as the operator's; and the ledger's
+    open-entry dedupe no longer keys on `accepted_by`, so a `--pr` retry after a partial
+    failure with a different approver does not file the same debt twice — the first approver
+    stands.
+    *Not changed here:* the conductor's compiled kickoff (`profile-compiler.service.ts`) still
+    lists `pup merge` among its refusals and says never to run it. That file was out of this
+    task's scope, so the kickoff needs a follow-up before a conductor learns of `--pr` from it.
 
 77. **A profile layer can deny tools, and can only add to decision 74's denials, never remove one
     (2026-10-06).** From the Copiste grilling: Copiste wants Agent kept out of its workers, and

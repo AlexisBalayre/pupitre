@@ -589,7 +589,9 @@ function gateAndMerge(
         description: flag.description,
         files: flag.files,
         reason: req.acceptDebt.reason,
-        acceptedBy: req.acceptDebt.acceptedBy,
+        // The approver arrives from a flag a relay fills in (decision 75), so
+        // it is scrubbed before the store keeps it, not only where it prints.
+        acceptedBy: sanitizeReason(req.acceptDebt.acceptedBy),
         reviewBy: req.acceptDebt.reviewBy,
       };
       // A retry after a partial failure (gh died after the push) re-runs the
