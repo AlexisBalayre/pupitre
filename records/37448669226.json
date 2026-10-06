@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T10:18:36.075Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37448669226",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37448669226",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e76a2b9f28a1f9064cd33d7d8159dfc3f04ee34f",
+  "source": "pr",
+  "pr_number": 130,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e536243e8ed7b8573523c577bca911e0bc5a0318",
+  "prior_importants": [
+    {
+      "file": "docs/02-cli.md",
+      "line": "182",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ledger.repository.ts",
+      "line": "28-30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `hasOpenLedgerEntry` JSDoc still says \"Every field is in the key\", but the delta removed `accepted_by` from the WHERE clause, so the doc now contradicts the query.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ledger.repository.ts",
+      "line": "38",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Since dedupe no longer keys on `accepted_by`, an operator retry with the same reason and review-by after a conductor `--pr` run that failed partway files nothing new. The ledger keeps only the approver the conductor claimed, so the operator's own acceptance never gets recorded and they aren't told.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "506-509",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `callingConductor` JSDoc edit left one line well past the paragraph's wrap width (\"(it may gate with `--pr`, decision 75), the respawn and other projects; what it plans is recorded as its own. The\"). Re-wrap the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "1754",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The amendment note on decision 47 is a parenthetical \"(*amended by decision 75:* ...)\" in mid-sentence. The other inline amendment (line 441) is a sentence-level \"*Amended by decision 72:* ...\" with a capital A and no parentheses.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9642820999999998,
+  "duration_ms": 88240,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6390,
+    "cache_read": 211689,
+    "cache_creation": 37914,
+    "total": 256005
+  }
+}
