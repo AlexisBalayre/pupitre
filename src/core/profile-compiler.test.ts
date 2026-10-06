@@ -123,6 +123,51 @@ describe('compileProfile', () => {
         'text and end your turn. pup cannot answer a selector or a plan approval.',
     );
   });
+
+  // Decision 77: a layer adds denials after decision 74's and never removes one.
+  describe('layer denials', () => {
+    const denyOf = (input: CompileInput) =>
+      JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string).permissions
+        .deny;
+
+    it('appends a parsed layer deny after the unanswerable tools', () => {
+      const role = ProfileCompiler.parseProfileLayer('name: copiste\ndeny: [Agent]\n');
+
+      expect(denyOf(makeInput({ role }))).toEqual([
+        'AskUserQuestion',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'Agent',
+      ]);
+    });
+
+    it("unions a child layer's deny with its parent's", () => {
+      const input = makeInput({
+        base: { name: 'base', deny: ['Agent'] },
+        role: { name: 'copiste', deny: ['WebFetch', 'Agent'] },
+      });
+
+      expect(denyOf(input)).toEqual([
+        'AskUserQuestion',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'Agent',
+        'WebFetch',
+      ]);
+    });
+
+    it('keeps a base-only deny when no role is given', () => {
+      const input = makeInput({ base: { name: 'base', deny: ['Agent'] }, role: undefined });
+
+      expect(denyOf(input)).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Agent']);
+    });
+
+    it('does not duplicate a denial the layer repeats', () => {
+      const input = makeInput({ role: { name: 'copiste', deny: ['AskUserQuestion', 'Agent'] } });
+
+      expect(denyOf(input)).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Agent']);
+    });
+  });
 });
 
 describe('compileProfile with a code graph (decision 51)', () => {
@@ -580,6 +625,22 @@ describe('parseProfileLayer', () => {
       expect(() =>
         ProfileCompiler.parseProfileLayer(`name: backend\ncontextBudget: ${value}\n`),
       ).toThrow(/Profile field `contextBudget` must be a positive integer\./);
+    },
+  );
+
+  it('parses a layer deny list', () => {
+    expect(ProfileCompiler.parseProfileLayer('name: copiste\ndeny: [Agent, WebFetch]\n')).toEqual({
+      name: 'copiste',
+      deny: ['Agent', 'WebFetch'],
+    });
+  });
+
+  it.each(['Agent', '""', '{tool: Agent}', '[Agent, 5]', '[Agent, null]', '[[Agent]]', '[""]'])(
+    'refuses deny: %s',
+    (value) => {
+      expect(() => ProfileCompiler.parseProfileLayer(`name: copiste\ndeny: ${value}\n`)).toThrow(
+        /Profile field `deny` must be a list of tool names\./,
+      );
     },
   );
 

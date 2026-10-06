@@ -27,6 +27,11 @@ export interface ProfileLayer {
   hooks?: Record<string, HookMatcherEntry[]>;
   mcp?: string[];
   contextBudget?: number;
+  /**
+   * Tools taken out of the session's toolset. Additive only, like hooks: they
+   * follow decision 74's denials and can never remove one (decision 77).
+   */
+  deny?: string[];
 }
 
 export interface TaskSpec {

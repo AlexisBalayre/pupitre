@@ -57,4 +57,11 @@ describe('profile store', () => {
     expect(() => listProfileLayers(profilesDir)).toThrow(InvalidProfileError);
     expect(() => getProfileLayer(profilesDir, 'broken')).toThrow(/broken\.yml/);
   });
+
+  it('refuses a layer file whose deny is not a list of tool names, naming file and field', () => {
+    writeFileSync(join(profilesDir, 'copiste.yml'), 'name: copiste\ndeny: Agent\n');
+
+    expect(() => getProfileLayer(profilesDir, 'copiste')).toThrow(InvalidProfileError);
+    expect(() => getProfileLayer(profilesDir, 'copiste')).toThrow(/copiste\.yml: .*`deny`/);
+  });
 });

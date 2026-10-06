@@ -63,6 +63,14 @@ export function parseProfileLayer(yamlText: string): ProfileLayer {
   ) {
     throw new InvalidProfileError('Profile field `contextBudget` must be a positive integer.');
   }
+  // Each entry lands verbatim in permissions.deny, where a non-string rule is
+  // not a denial Claude Code can apply, so the tool it meant stays available.
+  if (
+    raw.deny !== undefined &&
+    !(Array.isArray(raw.deny) && raw.deny.every((tool) => typeof tool === 'string' && tool))
+  ) {
+    throw new InvalidProfileError('Profile field `deny` must be a list of tool names.');
+  }
   return raw as unknown as ProfileLayer;
 }
 
@@ -111,6 +119,7 @@ function mergeLayers(base: ProfileLayer, role?: ProfileLayer): ProfileLayer {
     hooks: { ...base.hooks, ...role.hooks },
     mcp: [...new Set([...(base.mcp ?? []), ...(role.mcp ?? [])])],
     contextBudget: role.contextBudget ?? base.contextBudget,
+    deny: [...new Set([...(base.deny ?? []), ...(role.deny ?? [])])],
   };
 }
 
@@ -469,7 +478,8 @@ export function compileProfile(input: CompileInput): CompiledProfile {
       Stop: [...eventEntry, ...(layerHooks.Stop ?? [])],
       Notification: [...eventEntry, ...(layerHooks.Notification ?? [])],
     },
-    permissions: { deny: UNANSWERABLE_TOOLS },
+    // A layer adds denials after decision 74's and can never drop one (decision 77).
+    permissions: { deny: [...new Set([...UNANSWERABLE_TOOLS, ...(merged.deny ?? [])])] },
   };
 
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());
