@@ -31,6 +31,7 @@ import {
 import { openStore } from './db.client.js';
 import { projectPaths } from './paths.utils.js';
 import {
+  appendEvent,
   ensureProject,
   getSession,
   insertSession,
@@ -172,6 +173,16 @@ describe('session handoff', () => {
   // could write another session's handoff, mark it ready, and have `pup respawn`
   // relaunch that session on its text without ever steering it (decision 44).
   it('is not ready when no handoff was requested', () => {
+    writeHandoff();
+    markHandoffReady(db, repoPath, 's1', stateBase);
+
+    expect(readyWithTestPaths()).toBe(false);
+  });
+
+  // The `by` of a steer is whatever PUP_SESSION_ID the typing process carried,
+  // so a session can put the marker there; only the request's own `kind` asks.
+  it('is not ready when only a non-request steer carries the marker', () => {
+    appendEvent(db, 's1', 'steer', { kind: 'message', by: 'handoff-request' });
     writeHandoff();
     markHandoffReady(db, repoPath, 's1', stateBase);
 
