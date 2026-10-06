@@ -61,6 +61,7 @@ import { getProfileLayer, listProfileLayers } from '../core/profile-store.servic
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
+import { sandboxLabel, UndeclaredSandboxError } from '../core/sandbox.utils.js';
 import {
   deleteTask,
   editTaskSpec,
@@ -432,6 +433,23 @@ function refuse(message: string): void {
   process.exitCode = 1;
 }
 
+/**
+ * `pup init` and `pup audit` ask before measuring anything: off macOS without
+ * the operator's `PUP_SANDBOX=vm` nothing confines their children, and the
+ * refusal is one line rather than a stack trace under a push-target line
+ * (decision 78). `pup merge` gets the same line from the gate's own refusal.
+ */
+function refusedUnsandboxed(): boolean {
+  try {
+    sandboxLabel();
+    return false;
+  } catch (error) {
+    if (!(error instanceof UndeclaredSandboxError)) throw error;
+    refuse(error.message);
+    return true;
+  }
+}
+
 /** An error class a launch answers for rather than crashes on. */
 type ExpectedLaunchError = new (...args: never[]) => Error;
 
@@ -649,6 +667,7 @@ export function buildProgram(): Command {
       if (callingSession(db)) {
         return refuse('`pup init` is operator-only; sessions cannot move the baseline.');
       }
+      if (refusedUnsandboxed()) return;
       const recording = opts.originMoved ? 're-record' : 'record';
       const report = withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
@@ -1721,7 +1740,15 @@ export function buildProgram(): Command {
           'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
         );
       }
-      const nodes = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
+      let nodes: ReturnType<typeof buildCodeMap>;
+      try {
+        nodes = buildCodeMap(db, projectId(repoPath), repoPath, adapter);
+      } catch (error) {
+        // Only the custom adapter runs a child here; the built-in ones build
+        // the graph in-process and need no declaration (decision 78).
+        if (!(error instanceof UndeclaredSandboxError)) throw error;
+        return refuse(error.message);
+      }
       if (!opts.open) {
         console.log(renderCodeMap(nodes, module));
         return;
@@ -1877,6 +1904,7 @@ export function buildProgram(): Command {
       if (callingSession(db)) {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
+      if (refusedUnsandboxed()) return;
       const report = withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
           auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),

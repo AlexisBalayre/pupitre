@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -45,6 +45,7 @@ import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate } from './merge-gate.service.js';
+import { UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   ensureProject,
   getProject,
@@ -156,6 +157,15 @@ function debtAdapter(overrides: Partial<Adapter> = {}): Adapter {
   };
 }
 
+/** Pretend to be another platform for one test; `process.platform` is a plain property. */
+function onPlatform(platform: NodeJS.Platform): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  onTestFinished(() => {
+    Object.defineProperty(process, 'platform', original);
+  });
+}
+
 // Real git repos + worktrees per test — generous timeout so machine load can't flake it.
 describe('runMergeGate', { timeout: 20_000 }, () => {
   let db: Database;
@@ -205,6 +215,54 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(worktree)).toBe(false);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+  });
+
+  describe('off darwin (decision 78)', () => {
+    it('refuses before running any child unless the operator declared the VM', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+      vi.mocked(execFileSync).mockClear();
+
+      expect(() => merge()).toThrow(UndeclaredSandboxError);
+      expect(() => merge()).toThrow(/PUP_SANDBOX=vm/);
+      // Not a git call, not a stage: nothing was spawned at all.
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('runs the gate under the declaration and names it in the report', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+
+      const outcome = merge();
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.sandbox).toBe('vm (declared by operator)');
+    });
+
+    it('treats any value but vm as no declaration', () => {
+      seedSession(db, repo);
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'yes');
+
+      expect(() => merge()).toThrow(UndeclaredSandboxError);
+    });
+  });
+
+  it.runIf(process.platform === 'darwin')('ignores the declaration on darwin', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    vi.stubEnv('PUP_SANDBOX', 'vm');
+
+    const outcome = merge();
+
+    expect(outcome.report.sandbox).toMatch(
+      /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/,
+    );
   });
 
   it('writes a decision record for the merged files even when the draft utility fails', () => {

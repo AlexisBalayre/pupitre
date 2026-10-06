@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { UndeclaredSandboxError } from '../core/sandbox.utils.js';
 import { localContext } from './capability.utils.js';
 import { loadCustomAdapter } from './custom.adapter.js';
 import { CustomAdapterCommandError, CustomAdapterConfigError } from './custom-adapter.errors.js';
@@ -72,6 +73,24 @@ describe('loadCustomAdapter', () => {
 
     expect(() => loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toThrow(
       CustomAdapterCommandError,
+    );
+  });
+
+  // Off darwin without the declaration pup refuses to run the child at all;
+  // that refusal carries the operator's instructions and must not be rewrapped
+  // as the command failing (decision 78).
+  it('lets the sandbox refusal through unwrapped', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+    Object.defineProperty(process, 'platform', { ...original, value: 'linux' });
+    vi.stubEnv('PUP_SANDBOX', undefined);
+    onTestFinished(() => {
+      Object.defineProperty(process, 'platform', original);
+      vi.unstubAllEnvs();
+    });
+    const repo = makeRepo("deadCode: echo '[]'\n");
+
+    expect(() => loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toThrow(
+      UndeclaredSandboxError,
     );
   });
 

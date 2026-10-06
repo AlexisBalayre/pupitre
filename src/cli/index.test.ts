@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { CommanderError } from 'commander';
 import type { ReactElement } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -130,6 +130,7 @@ import { runMergeGate } from '../core/merge-gate.service.js';
 import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
+import { UndeclaredSandboxError } from '../core/sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -1490,6 +1491,64 @@ describe('CLI commands', () => {
       expect(line).toContain('[2Js2');
       expect(line).not.toContain('\u001b');
     });
+  });
+
+  /** Pretend to be another platform for one test; `process.platform` is a plain property. */
+  function onPlatform(platform: NodeJS.Platform): void {
+    // better-sqlite3 picks its native prebuild by platform on first open, so it
+    // is loaded for the real one before the command opens the store.
+    new Database(':memory:').close();
+    const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+    Object.defineProperty(process, 'platform', { ...original, value: platform });
+    onTestFinished(() => {
+      Object.defineProperty(process, 'platform', original);
+    });
+  }
+
+  // Off darwin with no declaration, both refuse in one line before measuring
+  // anything; with it, both print the declared label (decision 78).
+  describe.each(['init', 'audit'])('%s off darwin', (command) => {
+    it('refuses in one line naming PUP_SANDBOX=vm, and stores nothing', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+
+      buildProgram().parse([command], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
+      expect(errors[0]).toContain('unconfined');
+      expect(logs).toEqual([]);
+    });
+
+    it('runs under the declaration and prints the declared label', () => {
+      useCwd(initRepoWithAdapter());
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+
+      buildProgram().parse([command], { from: 'user' });
+
+      expect(logs).toContain('sandbox: vm (declared by operator)');
+    });
+  });
+
+  // The custom adapter's depGraph is a gate child; the refusal must come out
+  // as pup's one line, not wrapped as the operator's command failing.
+  it('map off darwin refuses in one line when a custom adapter would run a child', () => {
+    const repo = initRepo();
+    useCwd(repo);
+    mkdirSync(join(repo, '.pupitre'), { recursive: true });
+    writeFileSync(join(repo, '.pupitre', 'adapter.yml'), "depGraph: echo '{}'\n");
+    onPlatform('linux');
+    vi.stubEnv('PUP_SANDBOX', undefined);
+
+    buildProgram().parse(['map'], { from: 'user' });
+
+    expect(process.exitCode).toBe(1);
+    expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
+    expect(errors[0]).not.toContain('Custom adapter');
+    expect(logs).toEqual([]);
   });
 
   describe('init', () => {
@@ -4502,6 +4561,39 @@ describe('CLI commands', () => {
 
         expect(process.listeners('SIGINT')).toHaveLength(before);
       });
+    });
+
+    // The gate refuses before running a child (decision 78); the command turns
+    // that into one line on stderr, like every other gate refusal.
+    it('refuses in one line when the gate finds no sandbox and no declaration', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockImplementation(() => {
+        throw new UndeclaredSandboxError();
+      });
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
+      expect(logs).toEqual([]);
+    });
+
+    it('prints the declared label on the gate report', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockReturnValue(
+        mergedOutcome({
+          report: {
+            sessionId: 's1',
+            passed: true,
+            sandbox: 'vm (declared by operator)',
+            stages: [],
+          },
+        }),
+      );
+
+      buildProgram().parse(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(`  ${'sandbox'.padEnd(16)} vm (declared by operator)`);
     });
 
     it('rejects --accept-debt without --review-by', () => {

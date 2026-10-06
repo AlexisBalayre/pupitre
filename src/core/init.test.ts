@@ -1,15 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
+import { UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   ensureProject,
   getProject,
@@ -70,6 +71,16 @@ function seedPreHistoryBaseline(
   return legacy;
 }
 
+/** Pretend to be another platform for one test; `process.platform` is a plain property. */
+function onPlatform(platform: NodeJS.Platform): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  onTestFinished(() => {
+    Object.defineProperty(process, 'platform', original);
+    vi.unstubAllEnvs();
+  });
+}
+
 describe('initProject', () => {
   let db: Database;
   let repo: string;
@@ -88,6 +99,34 @@ describe('initProject', () => {
     expect(JSON.parse(row?.adapters ?? '[]')).toEqual(['fake']);
     const stored = JSON.parse(row?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.stages).toHaveLength(3);
+  });
+
+  describe('off darwin (decision 78)', () => {
+    it('refuses before detecting or running anything unless the operator declared the VM', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+      const marker = join(repo, 'ran');
+      const detect = vi.fn(() => true);
+      const adapter = makeAdapter({
+        detect,
+        gateCommands: () => [{ stage: 'build', command: 'touch', args: [marker] }],
+      });
+
+      expect(() => initProject(db, repo, [adapter])).toThrow(UndeclaredSandboxError);
+      expect(detect).not.toHaveBeenCalled();
+      expect(existsSync(marker)).toBe(false);
+      expect(getProject(db, projectId(repo))).toBeUndefined();
+    });
+
+    it('stores the baseline under the declaration and names it', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+
+      const report = initProject(db, repo, [makeAdapter()]);
+
+      expect(report.sandbox).toBe('vm (declared by operator)');
+      expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
+    });
   });
 
   it('records a failing stage and surfaces it as a finding, without throwing', () => {
