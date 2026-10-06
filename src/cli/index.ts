@@ -793,7 +793,8 @@ export function buildProgram(): Command {
             });
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
-            return refuse(error.message);
+            // Store text either way: the stored spec's glob, or the task id.
+            return refuse(sanitizeLines(error.message));
           }
           if (outcome === 'unknown') {
             return refuse(`No task ${target}.`);
@@ -1615,7 +1616,8 @@ export function buildProgram(): Command {
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          return refuse(error instanceof Error ? error.message : String(error));
+          // Scrubbed: a MalformedTaskSpecError quotes store text (decision 68).
+          return refuse(sanitizeLines(error instanceof Error ? error.message : String(error)));
         } finally {
           // The gate has released its own lock by now, so a later signal must
           // not reach a handler that would delete the next run's.

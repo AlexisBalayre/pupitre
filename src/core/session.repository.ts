@@ -32,8 +32,10 @@ export class InvalidTransitionError extends Error {
  * or failing the checks `pup plan add` runs. An InvalidProfileError, so every
  * command that already refuses an unplannable spec refuses this one too.
  *
- * The message never quotes the stored text: the store is session-writable, and
- * a SyntaxError's message carries the bytes it choked on (decision 29).
+ * The message is store text: it names the task id, and through
+ * `assertPlannableSpec` the glob that failed, so whoever prints it scrubs it
+ * (decision 68). What it never carries is the raw blob — a SyntaxError's
+ * message quotes the bytes it choked on, and that one is swallowed here.
  */
 export class MalformedTaskSpecError extends InvalidProfileError {
   constructor(
