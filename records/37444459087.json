@@ -1,0 +1,94 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T09:44:54.385Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37444459087",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37444459087",
+  "actor": "AlexisBalayre",
+  "commit_sha": "765fa591f9e23c4e390647adf43018b00f37a844",
+  "source": "pr",
+  "pr_number": 128,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "43fcafa390ecc6ae664b333d39efa6f051a93579",
+  "prior_importants": [
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "35-36",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1616-1620",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The merge catch now runs every refusal through `sanitizeLines`. `sanitizeReason` cuts each line to 300 code points, so the single-line armed-driver refusal always loses its remediation and its \"treat a session that wrote them as compromised\" warning.",
+      "body": "**Every `pup merge` refusal is now cut to 300 characters per line, not just the spec refusal.**\n\n`sanitizeLines` (`src/cli/index.ts:146-152`) splits the message on `\\n` and passes each line through `sanitizeReason`. That function collapses whitespace and returns `[...oneLine].slice(0, FAILURE_SUMMARY_CHARS)`, where `FAILURE_SUMMARY_CHARS = 300` (`src/adapters/capability.utils.ts:24,42`).\n\nThe new catch scrubs every error `runMergeGate` throws, not only `MalformedTaskSpecError`. Some of those errors are pup-authored single lines with operator instructions, and they run past 300 characters:\n\n- **`ArmedGitDriverError`** (`src/core/git-diff.client.ts:252-257`) is thrown before the lock by `assertNoArmedGitDrivers` (`merge-gate.service.ts:229-230`). Its fixed text alone is about 323 characters, before `gitPath` and the key names are added, so the cut always lands in the tail. The remediation (``git config --unset <key>``, ``rm .git/info/attributes``) gets truncated, and the closing \"treat a session that wrote them as compromised.\" is dropped. This is the security refusal for a session that may be compromised.\n- **\"No push target is recorded\"** (`merge-gate.service.ts:294-299`) is about 246 characters plus the origin URL. Any URL over roughly 54 characters cuts \"Run `pup init` … Nothing was pushed.\"\n\nBefore this commit, `refuse` printed both in full. Decision 68's \"a single line over 300 characters is cut\" covers gate details, not these refusals, and the catch's own comment says their instructions must reach the operator. The CLI tests mock `runMergeGate`, so no test covers these paths.\n\nThe fix is to scrub only the store-text error. `MalformedTaskSpecError` is already imported here. The other option is a scrubber with no length cap.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/765fa591f9e23c4e390647adf43018b00f37a844/src/cli/index.ts#L1616-L1620",
+      "suggestion": null
+    },
+    {
+      "file": "node_modules",
+      "line": "1",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The delta commits a symlink `node_modules -> ../../node_modules` (mode 120000) at the repo root. `.gitignore`'s `node_modules/` does not cover it, and at the root the symlink points two directories above the checkout.",
+      "body": "**A worktree artifact was committed: `node_modules` is a tracked symlink to `../../node_modules`.**\n\n`git ls-tree HEAD node_modules` shows `120000 blob 02d9ad6… node_modules`. It came in with 765fa59, and nothing in the commit message or the PR body mentions it. In a session worktree at `<repo>/.worktrees/<id>`, that relative target is the main checkout's `node_modules`. At the root of a clone, it points outside the repository, for example `/home/runner/work/node_modules` on Actions.\n\nIt got past `.gitignore` because line 1 is `node_modules/`. A trailing-slash pattern only matches directories, and git records a symlink as a file. `git check-ignore` confirms the path is not ignored.\n\nOnce this merges:\n- Fresh clones get a dangling link, or one that resolves to a directory outside the repo that no lockfile or install controls. `pnpm dev`, the test, lint and typecheck commands, and `scripts/pre-commit` (which checks `node_modules/.bin`) would load dependency code from there.\n- Fast-forwarding a checkout that has a real, ignored `node_modules/` directory puts a tracked file at that path. The merge either refuses or replaces the operator's install.\n\nTo fix, run `git rm --cached node_modules` (or drop the file from the commit). Then change the ignore entry to `node_modules` with no trailing slash, so a symlink of that name is ignored too.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/765fa591f9e23c4e390647adf43018b00f37a844/node_modules#L1",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "796",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pup plan edit` call-site comment \"Store text either way: the stored spec's glob, or the task id.\" largely restates MalformedTaskSpecError's new JSDoc (AGENTS.md: delete call-site copies of the callee's docs); drop it or reword it to say why this broader InvalidProfileError catch scrubs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/capability.utils.ts",
+      "line": "39",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`sanitizeReason` strips C0, DEL and C1 (so ESC/CSI/OSC are defanged) but lets Unicode bidi overrides/isolates (U+202A–202E, U+2066–2069) and zero-width characters (U+200B–200F, U+FEFF) through, so store text can still visually reorder on bidi-aware terminals.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4589267000000006,
+  "duration_ms": 290281,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 8509,
+    "cache_read": 253385,
+    "cache_creation": 40831,
+    "total": 302739
+  }
+}
