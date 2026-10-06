@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T11:34:05.369Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37457043632",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37457043632",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f9bb58ac5143264310add805535294c015b3016f",
+  "source": "pr",
+  "pr_number": 132,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "docs"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "b593e959391c5f7d77ef48e6c4fedbfd3411e0b9",
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "248",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "250",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The question now shows only on a running row, but `pup session ask` (src/cli/index.ts:1988-1994) never checks the session's state: a worker that asks while awaiting-review, rejected or blocked is told 'Session … asked: …', yet no surface shows the question, and a steer recorded on the way back to running may clear it unseen. Either refuse non-running sessions in `ask`, or gate on `!isTerminal(row.state)` like steers do.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5579381,
+  "duration_ms": 78731,
+  "num_turns": 7,
+  "tokens": {
+    "input": 10,
+    "output": 2820,
+    "cache_read": 161245,
+    "cache_creation": 26450,
+    "total": 190525
+  }
+}
