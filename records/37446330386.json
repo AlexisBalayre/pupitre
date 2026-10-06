@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T09:59:36.864Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37446330386",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37446330386",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ef5af2a420b6970443f2d140a5cf162fae6af396",
+  "source": "pr",
+  "pr_number": 128,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "765fa591f9e23c4e390647adf43018b00f37a844",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1616-1620",
+      "status": "resolved"
+    },
+    {
+      "file": "node_modules",
+      "line": "1",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1617-1620",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new comment claims \"Only the spec refusal is store text; the rest are pup's own lines\", but other errors reaching the `pup merge` catch interpolate store-read and child-read text (e.g. `CustomAdapterCommandError` quoting the session worktree's adapter stdout/stderr), which the catch now prints raw.",
+      "body": "**The comment says the non-spec errors are safe to print raw. Some of them are not.**\n\nThe new comment says: *\"Only the spec refusal is store text; the rest are pup's own lines.\"* Several other errors that reach this catch contain text pup did not write:\n\n- **Child-read text:** `CustomAdapterCommandError` (`src/adapters/custom.adapter.ts:55-82`) includes up to 200 characters of stderr or stdout from the adapter's `deadCode` / `duplication` / `complexity` commands. Those commands run with `cwd` set to the **session's worktree**, so the session controls the script they run. `measureDebt` (`src/core/debt.service.ts`) and `merge-gate.service.ts:535-549` don't catch the error, so it reaches this catch and goes to `refuse(error.message)` without scrubbing. A session could use that to send OSC 52, OSC 8 or clear-screen sequences to the operator's terminal.\n- **Store-read text:** `merge-gate.service.ts:280` (`session.id`) and `:288-289` (`task.project_id`, `project.repo_path`).\n\nDecision 68 (`docs/09-decisions.md:3508`) says *\"Every store-read, repo-read and child-read string is scrubbed where it prints\"*. It names a failing command's stderr from the session's own worktree as a sink it closed. Its first cut dropped the provenance carve-out (\"values pup had computed in the same process\") for exactly this reason.\n\nThe merge base already printed this catch raw, so the unscrubbed path isn't new. What's new in this delta is a comment that cites decision 68 while stating the opposite of what it says, so a maintainer reading it will leave the path unscrubbed.\n\nThere are two fixes, and either keeps the remediation text whole:\n- Scrub each line with a variant that has no 300-character cut, so control characters are stripped but nothing is truncated.\n- Also scrub `CustomAdapterCommandError`. Its message has no remediation text to lose:\n  ```ts\n  if (error instanceof MalformedTaskSpecError || error instanceof CustomAdapterCommandError) return refuse(sanitizeLines(error.message));\n  ```\n\nWhichever you pick, reword the comment so it no longer claims the other errors are pup's own text.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/ef5af2a420b6970443f2d140a5cf162fae6af396/src/cli/index.ts#L1617-L1622",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1619-1622",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The non-spec branch prints `error.message` unscrubbed because the text is \"pup's own lines\". That is the provenance carve-out decision 68 rejected (\"whatever its provenance\"), and merge-gate.service.ts:288-289 interpolates store-read `task.project_id`/`project.repo_path` into errors that now print raw. Scrub each line without the 300-char cut, or scrub at those throw sites.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4581-4582",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment repeats the inaccurate \"only the spec refusal below is store text\" claim from the production comment. The test title (\"whole\") and the `toBeGreaterThan(300)` assertion already show the intent, so cut the comment down to the fact that the message must run past 300 characters, or drop it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/custom.adapter.ts",
+      "line": "55-82",
+      "area": "security",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`CustomAdapterCommandError` quotes up to 200 chars of stdout/stderr from deadCode/duplication/complexity commands run in the session's worktree. It propagates uncaught through measureDebt/runMergeGate into the `pup merge` catch, which prints it raw, so a session can put terminal escapes on the operator's screen. This was already true at the merge base; 765fa59's blanket scrub covered it by accident and ef5af2a removed that cover.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3933351,
+  "duration_ms": 192019,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 7817,
+    "cache_read": 167423,
+    "cache_creation": 34428,
+    "total": 209678
+  }
+}
