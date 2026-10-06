@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T14:18:19.652Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37477096529",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37477096529",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d069b1308b255871797a0156cc5e3e74c49c5409",
+  "source": "pr",
+  "pr_number": 135,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "715-717",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The sentence \"Hooks are off for the same reason they are everywhere else in the gate (decision 28)\" now describes something `runGit` does automatically. At a `runGit` call site it reads as if the hooks setting were this call's own choice. The first sentence (the timeout, held while the merge lock is taken) is a genuine WHY and should stay.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "107-109",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The merge target from `branch --show-current` is read from HEAD in the shared, session-writable git dir and is passed to `git rebase`/`merge-base`/`checkout` with no option terminator, so a branch name like `--exec=...` would run as a git option outside the sandbox.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "117-128",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "gitDiffPaths trims its -z listing, which strips leading whitespace from the first changed path, so an out-of-scope path like ' src/evil.sh' reaches auditScope as 'src/evil.sh' and passes a 'src/**' scope.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "139-170",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`gh pr create` runs in the trusted checkout with only `scrubbedGitEnv()`. gh then runs its own git, without GIT_SAFE_CONFIG, including what I believe is an unconditional `git status --porcelain` (`UncommittedChangeCount`). A `core.fsmonitor` a session plants in the shared `$GIT_COMMON_DIR/config` would then run unsandboxed as the operator, under the merge lock. Neither `runGit` nor the source scan can see a git process that gh starts. Decision 73 keeps gh on 'the scrub without git's argv', but git also reads command-scope config from `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (git 2.31+), so the same disarm can reach gh through env. The same applies to the `gh pr edit` and `gh pr list` spawns in this file.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.4056065999999996,
+  "duration_ms": 281365,
+  "num_turns": 16,
+  "tokens": {
+    "input": 16,
+    "output": 10968,
+    "cache_read": 320532,
+    "cache_creation": 44293,
+    "total": 375809
+  }
+}
