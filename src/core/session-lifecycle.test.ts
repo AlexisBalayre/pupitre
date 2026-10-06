@@ -837,6 +837,12 @@ describe('steer, interrupt and kill by session id', () => {
     expect(steerEvents()).toEqual([{ kind: 'interrupt' }]);
   });
 
+  it('names the sender of the steer behind Escape where the caller gives one', () => {
+    interruptSession(db, 's-1', 'do X instead', 'session:s-2');
+
+    expect(steerEvents()).toEqual([{ kind: 'interrupt', by: 'session:s-2' }]);
+  });
+
   // Escape landed before the paste was refused, so the interrupt is on record
   // and the steer is not — the one thing the two-call front-end version of
   // this had to remember to do.

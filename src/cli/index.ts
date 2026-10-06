@@ -1315,8 +1315,12 @@ export function buildProgram(): Command {
     .description("Abort the session's in-flight tool call (Escape), optionally steering a message")
     .action((session: string, message?: string) => {
       const { db } = project();
+      // The steer behind Escape is named as pup steer names one (decisions 44,
+      // 47).
+      const sender = callingSession(db);
+      const by = sender ? `session:${sender}` : callingConductor() ? 'conductor' : 'operator';
       steerOrRefuse(
-        () => interruptSession(db, session, message),
+        () => interruptSession(db, session, message, by),
         message ? `Interrupted and steered session ${session}.` : `Interrupted session ${session}.`,
       );
     });

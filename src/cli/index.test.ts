@@ -3255,7 +3255,12 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
 
-      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1', 'retry the fetch');
+      expect(interruptSession).toHaveBeenCalledWith(
+        expect.anything(),
+        's1',
+        'retry the fetch',
+        'operator',
+      );
       expect(steerSession).not.toHaveBeenCalled();
       expect(logs).toContain('Interrupted and steered session s1.');
       expect(process.exitCode).toBeUndefined();
@@ -3268,9 +3273,29 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['interrupt', 's1'], { from: 'user' });
 
-      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1', undefined);
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1', undefined, 'operator');
       expect(logs).toContain('Interrupted session s1.');
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // The steer behind Escape is someone's, named as pup steer names one: a
+    // record naming nobody would show the session corrected by nobody
+    // (decisions 44, 47).
+    it.each([
+      ['operator', '', ''],
+      ['conductor', 'p1', ''],
+      ['session:s1', 'p1', 's1'],
+    ])('names the %s that sent the steer behind Escape', (by, conductor, session) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_CONDUCTOR', conductor);
+      vi.stubEnv('PUP_SESSION_ID', session);
+
+      buildProgram().parse(['interrupt', 's1', 'retry the fetch'], { from: 'user' });
+
+      expect(interruptSession).toHaveBeenCalledWith(expect.anything(), 's1', 'retry the fetch', by);
+      expect(logs).toContain('Interrupted and steered session s1.');
     });
 
     it.each([
