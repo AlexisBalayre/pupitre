@@ -1228,7 +1228,8 @@ changes back into those docs is pending.
     functional cost worth saying: an operator who signs every commit gets the gate's rebase
     rewriting theirs unsigned, and a branch rule requiring signatures then rejects the push
     — loud, and the right trade. `GIT_SAFE_CONFIG` (`git-diff.client.ts`)
-    carries `hooksPath`, `fsmonitor` and both `gpgsign` keys, and every pup git call now
+    carries `hooksPath`, `fsmonitor` and both `gpgsign` keys (decision 79 adds
+    `log.showSignature=false` and `merge.verifySignatures=false`), and every pup git call now
     spreads it — including `pushBranch`'s two, which the first version of this text claimed
     were converted and were not, and the three read-only calls (`log`, two `rev-parse`)
     that consult none of these keys today but cost nothing to cover. This was a
@@ -3966,6 +3967,34 @@ changes back into those docs is pending.
     pup sets `PUP_SANDBOX=vm` in the shell; a vitest default waits for a Linux CI job. And the
     custom adapter lets `UndeclaredSandboxError` through unwrapped, so `pup map` refuses in pup's
     one line instead of blaming the operator's `depGraph` command.
+
+79. **`GIT_SAFE_CONFIG` turns off signature verification, not only signing, and `-z` listings
+    are no longer trimmed (2026-10-06).** Both from the security review of decision 73's PR.
+    *Verification runs `gpg.program` too.* Decision 41 cleared `commit.gpgsign` and
+    `tag.gpgsign` because the gate's rebase would sign with whatever program a session named,
+    but git also runs that program to check a signature, on any commit whose object carries a
+    `gpgsig` header, and the header is just text a session can write with `git hash-object`.
+    With `gpg.program`, `log.showSignature=true` and `merge.verifySignatures=true` set in the
+    shared `$GIT_COMMON_DIR/config`, the gate's `git log` (`commitSubjects` in
+    `merge-gate.service.ts`, and the code map's) and `git merge --ff-only` ran it in the main
+    checkout, outside the sandbox; reproduced on Apple Git 2.39.5. `merge.verifySignatures`
+    runs it and then refuses the unsigned-by-a-real-key commit, so the merge failing is no
+    comfort. `GIT_SAFE_CONFIG` now adds `-c log.showSignature=false -c
+    merge.verifySignatures=false`, which turns both checks off rather than defanging the
+    program, for the same reason as the sign flags: `gpg.program` has no safe empty value.
+    The test forges a signed commit in a temp repo, shows a plain `log` and `merge --ff-only`
+    each fire the planted program, and shows `runGit` fires neither. An operator who relies
+    on `merge.verifySignatures` to reject unsigned branches loses that check inside `pup
+    merge`; the gate is the check pup applies, and a branch rule on the remote is the place
+    for a signature requirement.
+    *The `-z` trim.* Decision 73 made `runGit` return its output untrimmed so a `-z` listing
+    whose first path starts with a space would reach its parser whole, but `gitDiffPaths` and
+    `gitDiffNumstat` still called `.trim()` before splitting on NUL, so a branch adding
+    ` a.ts` was audited as `a.ts` and its hunks were asked of a path that does not exist,
+    which patch coverage read as no changed lines. Both now split the raw output; the NUL
+    terminator leaves one empty tail that the existing empty-field filters already drop. A
+    test adds ` a.ts` on a branch and expects it whole from both listings and its two lines
+    from `gitDiffAddedLines`.
 
 ## Implementation notes
 

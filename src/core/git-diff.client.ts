@@ -31,6 +31,9 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * `-c core.fsmonitor` alone means `true`; `gpg.program` runs once per commit
  * the gate's rebase recreates whenever `commit.gpgsign` is on, and clearing
  * the sign flag is the lever, because `gpg.program` has no safe empty value.
+ * Verifying runs it too, on any commit carrying a `gpgsig` header, forged or
+ * not: `log.showSignature` on the gate's `git log` and the code map's, and
+ * `merge.verifySignatures` on `git merge --ff-only` (decision 79).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
@@ -47,6 +50,10 @@ const GIT_SAFE_CONFIG = [
   'commit.gpgsign=false',
   '-c',
   'tag.gpgsign=false',
+  '-c',
+  'log.showSignature=false',
+  '-c',
+  'merge.verifySignatures=false',
 ] as const;
 
 /**
@@ -122,7 +129,6 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
     '--name-only',
     `${target}...${branch}`,
   ])
-    .trim()
     .split('\0')
     .filter(Boolean);
 }
@@ -191,9 +197,7 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
     '-z',
     '--numstat',
     `${target}...${branch}`,
-  ])
-    .trim()
-    .split('\0');
+  ]).split('\0');
   const stats: DiffFileStat[] = [];
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];

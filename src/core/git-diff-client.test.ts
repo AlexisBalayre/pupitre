@@ -80,6 +80,34 @@ describe('gitDiffAddedLines', () => {
 // untracked `$GIT_COMMON_DIR/config` and `info/attributes`. Without the
 // per-call disarm git runs the command and emits no hunks, and an empty
 // `added` map reads as "no instrumentable changed lines" — a pass (decision 41).
+// `-z` output must not be trimmed: a leading space is part of the first path.
+describe('a changed path that starts with a space', () => {
+  function spacedRepo(): string {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, ' a.ts'), 'one\ntwo\n');
+    commitAll(repo, 'spaced');
+    return repo;
+  }
+
+  it('is listed whole by gitDiffPaths and gitDiffNumstat', () => {
+    const repo = spacedRepo();
+
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual([' a.ts']);
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: ' a.ts', added: 2, deleted: 0 },
+    ]);
+  });
+
+  it('has its hunk read, so patch coverage counts its lines', () => {
+    const repo = spacedRepo();
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ' a.ts': [1, 2] });
+  });
+});
+
 describe('gitDiffAddedLines under a session-armed diff driver', () => {
   function armedRepo(): string {
     const repo = makeRepo();
@@ -377,6 +405,55 @@ describe('runGit', () => {
     vi.stubEnv('GIT_DIR', join(other, '.git'));
 
     expect(currentBranch(repo)).toBe('main');
+  });
+
+  // Verifying a signature runs `gpg.program` as surely as signing does, and a
+  // session can forge the `gpgsig` header it verifies (decision 79).
+  function signatureArmedRepo(): { repo: string; fired: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    const tree = runGit(repo, ['rev-parse', 'HEAD^{tree}']).trim();
+    const parent = runGit(repo, ['rev-parse', 'HEAD']).trim();
+    const forged = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: GIT_ENV,
+      input:
+        `tree ${tree}\nparent ${parent}\n` +
+        'author f <f@test> 1 +0000\ncommitter f <f@test> 1 +0000\n' +
+        'gpgsig -----BEGIN PGP SIGNATURE-----\n \n AAAA\n -----END PGP SIGNATURE-----\n' +
+        '\nforged\n',
+    }).trim();
+    sh(repo, 'git', 'branch', 'feature', forged);
+    const fired = join(repo, '.git', 'fired');
+    const gpg = join(repo, '.git', 'planted-gpg');
+    writeFileSync(gpg, `#!/bin/sh\necho gpg >> ${fired}\nexit 1\n`, { mode: 0o755 });
+    sh(repo, 'git', 'config', 'gpg.program', gpg);
+    sh(repo, 'git', 'config', 'log.showSignature', 'true');
+    sh(repo, 'git', 'config', 'merge.verifySignatures', 'true');
+    return { repo, fired };
+  }
+
+  // The control: without the two `-c` pairs, `log` and `merge` both run it.
+  it('runs in a repo where a plain log and ff-only merge fire the planted gpg.program', () => {
+    const { repo, fired } = signatureArmedRepo();
+    sh(repo, 'git', 'log', '-1', '--format=%s', 'feature');
+    expect(readFileSync(fired, 'utf8')).toBe('gpg\n');
+
+    expect(() => sh(repo, 'git', 'merge', '--ff-only', 'feature')).toThrow();
+    expect(readFileSync(fired, 'utf8')).toBe('gpg\ngpg\n');
+  });
+
+  it('verifies no signature on log or ff-only merge, so the planted gpg.program never runs', () => {
+    const { repo, fired } = signatureArmedRepo();
+
+    expect(runGit(repo, ['log', '-1', '--format=%s', 'feature']).trim()).toBe('forged');
+    runGit(repo, ['merge', '--ff-only', 'feature'], { stdio: 'pipe' });
+
+    expect(currentBranch(repo)).toBe('main');
+    expect(runGit(repo, ['log', '-1', '--format=%s']).trim()).toBe('forged');
+    expect(existsSync(fired)).toBe(false);
   });
 });
 
