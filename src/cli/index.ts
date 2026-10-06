@@ -491,7 +491,7 @@ function reportLaunched(sessionId: string, what = 'session'): void {
  * The session running this command, if any — worktree first, then the env var
  * it declares. Any non-empty declaration counts: it once had to name a session
  * that exists so it could not write garbage into the ledger's acceptor, but the
- * acceptor is the constant `human` now, and a variable naming no session is a
+ * acceptor is `human` or a named approver now, and a variable naming no session is a
  * session that changed it, not an operator (decision 44). Best effort against
  * a determined session, which can `cd` out of its worktree and unset the
  * variable; it makes the audit trail honest, not tamper-proof (decisions 26, 27).
@@ -504,8 +504,8 @@ function callingSession(db: Database): string | undefined {
 /**
  * The conductor running this command, if any: the project id its launch
  * exported as `PUP_CONDUCTOR`. The conductor is the operator's delegate for
- * planning, launching, steering and killing, and is refused the merge, the
- * respawn and other projects; what it plans is recorded as its own. The
+ * planning, launching, steering and killing, and is refused the local merge
+ * (it may gate with `--pr`, decision 75), the respawn and other projects; what it plans is recorded as its own. The
  * variable is its word, at decision 27's ceiling, like a session's (decision 47).
  */
 function callingConductor(): string | undefined {
@@ -1160,7 +1160,7 @@ export function buildProgram(): Command {
   /**
    * Why this caller gets the dashboard without its controls, or nothing at all
    * for the operator. Every key `pup ui` binds runs a command that is
-   * operator-only somewhere — the merge, the respawn and the unblock are
+   * operator-only somewhere — the local merge, the respawn and the unblock are
    * refused to the conductor as well as to sessions, and the launch, the kill
    * and the steer are refused to sessions (decisions 42, 44, 47). A screen
    * that offered them and refused each keystroke one at a time would be a menu
@@ -1172,7 +1172,7 @@ export function buildProgram(): Command {
       return 'read-only: sessions do not drive sessions (decisions 42, 44).';
     }
     if (callingConductor()) {
-      return "read-only: the conductor drives sessions with `pup` commands, and the merge, respawn and unblock are the operator's (decision 47).";
+      return "read-only: the conductor drives sessions with `pup` commands, and the local merge, respawn and unblock are the operator's (decisions 47, 75).";
     }
     return undefined;
   }
@@ -1564,10 +1564,10 @@ export function buildProgram(): Command {
         }
         const { repoPath, db } = project();
         // The gate's verdict moves another session's branch and parks it
-        // `blocked` on failure, so the whole command is operator-only, not only
-        // `--pr` (decisions 26, 44). Best effort against a determined session
-        // (decision 27): the guard refuses the plain path and keeps the ledger's
-        // acceptor honest.
+        // `blocked` on failure, so the command is operator-only for a session, and
+        // for the conductor without `--pr` (decisions 26, 44, 75). Best effort
+        // against a determined session (decision 27): the guard refuses the plain
+        // path and keeps the ledger's acceptor honest.
         if (callingSession(db)) {
           return refuse('`pup merge` is operator-only; sessions cannot merge sessions.');
         }
@@ -1585,6 +1585,13 @@ export function buildProgram(): Command {
         if (conductor && opts.acceptDebt && !approvedBy) {
           return refuse(
             'The conductor relays a debt approval, it does not give one: pass --approved-by <who> with --accept-debt.',
+          );
+        }
+        // `human` is the operator's own entry; a relay wearing it would make the
+        // trail decision 75 exists for say the operator saw a debt it never did.
+        if (conductor && approvedBy?.toLowerCase() === 'human') {
+          return refuse(
+            '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
           );
         }
         // Every detected adapter, not just the first: the gate measures debt
@@ -1622,7 +1629,6 @@ export function buildProgram(): Command {
                 ? {
                     reason: opts.acceptDebt,
                     reviewBy: opts.reviewBy,
-                    // Only the operator reaches this line without an approver.
                     acceptedBy: approvedBy ?? 'human',
                   }
                 : undefined,
@@ -1666,7 +1672,7 @@ export function buildProgram(): Command {
               .map((s) => sanitizeReason(s.stage))
               .join(', ');
             console.log(
-              `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address the flags.`,
+              `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>"${conductor ? ' --approved-by <who>' : ''}, or steer the session to address the flags.`,
             );
             break;
           }

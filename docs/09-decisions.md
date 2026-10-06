@@ -1750,7 +1750,8 @@ changes back into those docs is pending.
     *The tier.* A session is refused `plan add|drop|edit`, `new`, `launch`, `kill`, `merge`,
     `respawn` and `--project` (decisions 40, 42, 43, 44). The conductor is allowed the first
     four and `steer`, `interrupt`, `status`, `review`, `debt`, `log`; it is refused `merge`,
-    `respawn`, `kill --respawn`, `debt close`, `--project` and `pup conductor` itself. The
+    `respawn`, `kill --respawn`, `debt close`, `--project` and `pup conductor` itself
+    (*amended by decision 75:* it may run `merge --pr`, never the local merge). The
     operator has everything. The merge stays with the operator because the verdict moves a
     branch onto main and the human is the reviewer — the product is the operator's
     understanding, not throughput, and a conductor that merged would be a session merging
@@ -3869,6 +3870,11 @@ changes back into those docs is pending.
     *The value is the conductor's word,* at decision 27's ceiling, like `PUP_CONDUCTOR` itself:
     pupitre cannot check that the Telegram click happened. What the field buys is an honest
     trail: an entry no longer claims the operator approved a debt the operator never saw.
+    Two edges closed on review: the conductor may not pass `human` as the approver, since that
+    is the operator's own entry and the trail would read as the operator's; and the ledger's
+    open-entry dedupe no longer keys on `accepted_by`, so a `--pr` retry after a partial
+    failure with a different approver does not file the same debt twice — the first approver
+    stands.
     *Not changed here:* the conductor's compiled kickoff (`profile-compiler.service.ts`) still
     lists `pup merge` among its refusals and says never to run it. That file was out of this
     task's scope, so the kickoff needs a follow-up before a conductor learns of `--pr` from it.

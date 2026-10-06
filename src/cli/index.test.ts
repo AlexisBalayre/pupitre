@@ -4862,6 +4862,21 @@ describe('CLI commands', () => {
         expect(runMergeGate).not.toHaveBeenCalled();
       });
 
+      it.each(['human', 'Human'])("is refused wearing the operator's own entry (%s)", (who) => {
+        useCwd(initRepoWithAdapter());
+
+        buildProgram().parse(
+          ['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', who],
+          { from: 'user' },
+        );
+
+        expect(errors).toEqual([
+          '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      });
+
       it('records the approver it names, and `pup debt` prints it', () => {
         const repo = initRepoWithAdapter();
         useCwd(repo);
