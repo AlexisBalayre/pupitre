@@ -5,7 +5,6 @@ import {
   conductorPane,
   deadTurnError,
   SessionPaneMissingError,
-  SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { findStalledSessions } from './dashboard.service.js';
@@ -19,6 +18,7 @@ import {
   type SessionRow,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
+import { isRefusedSteer, TerminalSessionError } from './session-lifecycle.errors.js';
 import { sessionPane, steerSession } from './session-lifecycle.service.js';
 
 /**
@@ -125,7 +125,11 @@ function resumeSession(
   try {
     steerSession(db, sessionId, RESUME_MESSAGE);
   } catch (error) {
-    if (!isRefusedSteer(error)) throw error;
+    // A session killed or merged since the sweep listed it is refused too:
+    // nothing was typed, and one dead session must not end the sweep for the
+    // rest. Widened here rather than in the shared predicate, because a
+    // kickoff or an operator's steer has no such race to excuse.
+    if (!isRefusedSteer(error) && !(error instanceof TerminalSessionError)) throw error;
     refusal = sanitizeReason(error.message);
   }
   // One event per stall, written once the outcome is known, so a refusal is on
@@ -226,14 +230,4 @@ function deadTurnEvents(
         at: new Date(Date.parse(toIsoUtc(event.created_at))),
       };
     });
-}
-
-/**
- * The two ways a steer is refused with nothing typed — the paste never landed
- * whole (decision 45), or the pane is not there to type into (decision 46).
- * Both leave the session running untouched, which is what makes them a
- * refusal to record rather than a failure to crash the sweep on.
- */
-function isRefusedSteer(error: unknown): error is SteerNotDeliveredError | SessionPaneMissingError {
-  return error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError;
 }
