@@ -462,6 +462,47 @@ describe('dashboard components', () => {
       expect(frame).toContain('no events yet');
     });
 
+    // Decision 76: the snapshot carries a question only while no steer has
+    // answered it, already scrubbed (dashboard.test.ts proves both); the pane
+    // draws what it is handed, under its own heading above the gate.
+    it('draws an open question under its own heading', () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: {
+            kind: 'session',
+            session: sessionFixture({
+              question: '[2Jrebase or merge?',
+              recentEvents: [
+                { type: 'question', at: '2026-09-13T09:00:00.000Z', detail: '[2Jrebase or merge?' },
+              ],
+            }),
+          },
+        }),
+      );
+
+      expect(frame).toMatch(/^│question\s*│\n│ {2}\[2Jrebase or merge\?\s*│$/m);
+      expect(frame.indexOf('question')).toBeLessThan(frame.indexOf('last gate'));
+    });
+
+    it('draws no question once a steer has answered it', () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: {
+            kind: 'session',
+            session: sessionFixture({
+              recentEvents: [
+                { type: 'question', at: '2026-09-13T09:00:00.000Z', detail: 'rebase or merge?' },
+                { type: 'steer', at: '2026-09-13T09:05:00.000Z', detail: 'merge' },
+              ],
+            }),
+          },
+        }),
+      );
+
+      expect(frame).not.toMatch(/^│question\s*│$/m);
+      expect(frame).toMatch(/2026-09-13T09:00:00.000Z question\s+rebase or merge\?/);
+    });
+
     // The snapshot carries no gate and no events for a task nobody has
     // launched, so the pane has none to draw — and says why.
     it('draws a planned task with its intent and no history', () => {
