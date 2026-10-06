@@ -102,6 +102,7 @@ import {
   killSession,
   launchTask,
   markSessionDone,
+  markSessionQuestion,
   planTask,
   recordSteerMessage,
   steerSession,
@@ -1174,7 +1175,12 @@ export function buildProgram(): Command {
       console.log('Nothing running and nothing planned.');
       return;
     }
-    for (const session of snapshot.sessions) console.log(sessionLine(session));
+    // A worker's open question rides on its row (decision 76): the snapshot
+    // has already scrubbed and cut it, and cleared it once a steer answered.
+    for (const session of snapshot.sessions) {
+      const question = session.question === undefined ? '' : `question: ${session.question}`;
+      console.log(`${sessionLine(session)}${trailing(question)}`);
+    }
     // Planned tasks share the session table's columns under `planned`, the
     // state docs/01 gives a task with no session row: what will be built
     // belongs beside what is being built, not in a separate command
@@ -1975,6 +1981,20 @@ export function buildProgram(): Command {
       if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
       console.log(`Session ${sanitizeReason(sessionId)} marked done: ${sanitizeReason(summary)}`);
+    });
+  session
+    .command('ask <question>')
+    .description(
+      'Ask the operator a question and stay running; a steer answers it (run by the agent)',
+    )
+    .action((question: string) => {
+      const { db } = project();
+      const sessionId = ownSession(db, 'ask');
+      if (!sessionId) return;
+      // Decision 76: the one way a blocked worker asks. The session stays
+      // running and ends its turn; the next steer is the answer.
+      markSessionQuestion(db, sessionId, question);
+      console.log(`Session ${sanitizeReason(sessionId)} asked: ${sanitizeReason(question)}`);
     });
   session
     .command('handoff-done')

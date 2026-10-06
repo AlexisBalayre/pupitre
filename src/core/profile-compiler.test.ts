@@ -112,15 +112,16 @@ describe('compileProfile', () => {
 
   // Decision 74: a selector or a plan approval leaves the pane without an
   // input box, so no steer reaches it. The tools are denied, and the protocol
-  // says what to do instead.
+  // names the one way to ask instead (decision 76).
   it('denies the tools that open a screen pup cannot answer', () => {
     const compiled = ProfileCompiler.compileProfile(makeInput());
 
     const settings = JSON.parse(compiled.files['settings.json'] as string);
     expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
     expect(compiled.contextMarkdown).toContain(
-      '- If you are blocked on something only a human can decide, write your question as plain ' +
-        'text and end your turn. pup cannot answer a selector or a plan approval.',
+      '- If you are blocked on something only a human can decide, run ' +
+        '`pup session ask "<question>"` and end your turn; a steer answers it. ' +
+        'pup cannot answer a selector or a plan approval.',
     );
   });
 

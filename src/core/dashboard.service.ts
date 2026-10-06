@@ -245,6 +245,7 @@ function dashboardSession(
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);
+  const question = openQuestion(events);
   const lastGate = newestGate(events);
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
@@ -270,6 +271,7 @@ function dashboardSession(
     ...(deadTurn ? { deadTurn } : {}),
     ...(contextTokens === undefined ? {} : { contextTokens }),
     ...(lastSteer ? { lastSteer } : {}),
+    ...(question === undefined ? {} : { question }),
     ...(lastGate ? { lastGate } : {}),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     needsHuman:
@@ -302,6 +304,23 @@ function newestDeadTurn(newestFirst: EventRow[], stalledAt: string): DashboardDe
       at: toIsoUtc(event.created_at),
       ...(typeof payload.refusal === 'string' ? { refusal: sanitizeReason(payload.refusal) } : {}),
     };
+  }
+  return undefined;
+}
+
+/**
+ * The question a session asked with `pup session ask` and nobody has answered
+ * yet (decision 76): the newest `question` event, unless a `steer` came after
+ * it — a steer is the answer, whoever sent it and however it was delivered.
+ * Derived off the store like a stall, so both surfaces read one answer.
+ */
+function openQuestion(newestFirst: EventRow[]): string | undefined {
+  for (const event of newestFirst) {
+    if (event.type === 'steer') return undefined;
+    if (event.type !== 'question') continue;
+    const payload = parseJsonOr<{ text?: unknown }>(event.payload, {});
+    // Session-written text bound for the operator's terminal (decision 29).
+    return typeof payload.text === 'string' ? sanitizeReason(payload.text) : '';
   }
   return undefined;
 }

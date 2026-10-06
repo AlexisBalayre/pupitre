@@ -197,8 +197,9 @@ function buildContextMarkdown(
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
       '  `pup session done "<one-line summary>"`\n' +
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
-      '- If you are blocked on something only a human can decide, write your question as plain ' +
-      'text and end your turn. pup cannot answer a selector or a plan approval.',
+      '- If you are blocked on something only a human can decide, run ' +
+      '`pup session ask "<question>"` and end your turn; a steer answers it. ' +
+      'pup cannot answer a selector or a plan approval.',
     // LAST, below every rule it could contradict, and framed as reference.
     // The file is store-resident and a session's shell can reach it, so the
     // `pup brief` guard does not keep a session from writing it (decision 57's

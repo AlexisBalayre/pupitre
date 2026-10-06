@@ -91,6 +91,7 @@ vi.mock('../core/session-lifecycle.service.js', () => ({
   killSession: vi.fn(),
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
+  markSessionQuestion: vi.fn(),
   planTask: vi.fn(),
   recordSteerMessage: vi.fn(),
   sessionPane: vi.fn(),
@@ -168,6 +169,7 @@ import {
   killSession,
   launchTask,
   markSessionDone,
+  markSessionQuestion,
   planTask,
   recordSteerMessage,
   sessionPane,
@@ -533,6 +535,33 @@ describe('CLI commands', () => {
 
       expect(logs).not.toContain('Nothing running and nothing planned.');
       expect(logs.join('\n')).toContain('the only intent there is');
+    });
+
+    // Decision 76: the question a worker asked rides on its row, scrubbed,
+    // until a steer answers it.
+    it('shows an open question on the session line until a steer answers it', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      appendEvent(db, 's1', 'question', { text: 'rebase\u001b[2J or\nmerge?' });
+      db.close();
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const line = logs.find((entry) => entry.includes('s1')) ?? '';
+      expect(line).toMatch(/pup\/s1 {2}question: rebase \[2J or merge\?$/);
+      expect(logs.join('\n')).not.toContain('\u001b');
+
+      const again = resolveProject(repo).db;
+      appendEvent(again, 's1', 'steer', { kind: 'message', by: 'operator' });
+      again.close();
+      logs.length = 0;
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).not.toContain('question');
     });
 
     it('drops a task from the backlog once a session claims it', () => {
@@ -4402,6 +4431,70 @@ describe('CLI commands', () => {
           '`pup session done` reports only its own session; this worktree belongs to s2, not s1.',
         ]);
         expect(logs).toEqual([]);
+        expect(process.exitCode).toBe(1);
+      });
+    });
+
+    // Decision 76: guarded exactly like `done`, and the session stays running.
+    describe('ask', () => {
+      it('requires PUP_SESSION_ID', () => {
+        useCwd(initRepo());
+        vi.stubEnv('PUP_SESSION_ID', '');
+
+        buildProgram().parse(['session', 'ask', 'which base?'], { from: 'user' });
+
+        expect(process.exitCode).toBe(1);
+        expect(errors).toEqual([
+          'pup session ask must run inside a Pupitre session (PUP_SESSION_ID unset).',
+        ]);
+        expect(markSessionQuestion).not.toHaveBeenCalled();
+      });
+
+      it('records the question from inside its own worktree, scrubbing the echo', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'ask', 'rebase\u001b[2J or\nmerge?'], { from: 'user' });
+
+        expect(markSessionQuestion).toHaveBeenCalledTimes(1);
+        const [, sessionId, text] = firstCall(markSessionQuestion);
+        expect(sessionId).toBe('s1');
+        expect(text).toBe('rebase\u001b[2J or\nmerge?');
+        expect(logs).toEqual(['Session s1 asked: rebase [2J or merge?']);
+        expect(markSessionDone).not.toHaveBeenCalled();
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      it('refuses from the repo root, inside no worktree', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(repo);
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'ask', 'which base?'], { from: 'user' });
+
+        expect(markSessionQuestion).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          "`pup session ask` reports only its own session; this directory is not inside s1's worktree.",
+        ]);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('refuses when the worktree around cwd belongs to another session', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        seedSession(repo, 's2');
+        useCwd(worktreeOf(repo, 's2'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'ask', 'which base?'], { from: 'user' });
+
+        expect(markSessionQuestion).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          '`pup session ask` reports only its own session; this worktree belongs to s2, not s1.',
+        ]);
         expect(process.exitCode).toBe(1);
       });
     });

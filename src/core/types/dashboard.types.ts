@@ -115,6 +115,11 @@ export interface DashboardSession {
   /** Tokens the last turn carried, for running sessions with a transcript. */
   contextTokens?: number;
   lastSteer?: DashboardSteer;
+  /**
+   * The question the session asked with `pup session ask` that no steer has
+   * answered yet, scrubbed and cut (decision 76).
+   */
+  question?: string;
   lastGate?: DashboardGate;
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];

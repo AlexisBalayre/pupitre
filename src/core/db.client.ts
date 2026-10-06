@@ -20,6 +20,7 @@ export type EventType =
   | 'interrupt'
   | 'config_drift'
   | 'session_done'
+  | 'question'
   | 'handoff_ready'
   | 'respawn'
   | 'scope_overlap'
