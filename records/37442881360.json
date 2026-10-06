@@ -1,0 +1,193 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T09:30:28.013Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37442881360",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37442881360",
+  "actor": "AlexisBalayre",
+  "commit_sha": "43fcafa390ecc6ae664b333d39efa6f051a93579",
+  "source": "pr",
+  "pr_number": 128,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "35-36",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "MalformedTaskSpecError's JSDoc says the message never quotes stored text, but readTaskSpec forwards assertPlannableSpec's message (which embeds the stored glob) and the message carries the stored task id.",
+      "body": "The new class doc for `MalformedTaskSpecError` claims:\n\n> The message never quotes the stored text: the store is session-writable, and a SyntaxError's message carries the bytes it choked on (decision 29).\n\nThat is not true for every path that builds this error:\n\n- `readTaskSpec` catches the `InvalidProfileError` from `assertPlannableSpec` and rethrows `new MalformedTaskSpecError(row.id, error.message)`. `assertPlannableSpec` builds that message as `` `Scope glob contains a control character: ${JSON.stringify(glob)}` `` (`src/core/task-spec.utils.ts:28-30`), so a glob from the stored `scopeIn`/`scopeOut` ends up in the message.\n- The message also starts with `Task ${taskId} has an unusable spec: ...`, and the task id is stored text too.\n\nThe CLI's own `refuseMalformedSpec` comment (`src/cli/index.ts:473-477`) says the opposite: \"the message quotes the task id and the glob that failed, which are store text\". It scrubs with `sanitizeLines` for that reason.\n\nTwo existing sinks print this message without scrubbing:\n- `pup merge`'s catch (~`src/cli/index.ts:1615`): `refuse(error instanceof Error ? error.message : String(error))`\n- `pup plan edit`'s catch (~`src/cli/index.ts:795`)\n\nIn both, `refuse` is a plain `console.error`. `JSON.stringify` escapes C0 controls, which limits the damage. But a reader who trusts the class doc has no reason to scrub, and the two comments now contradict each other.\n\nOnly the JSON-parse and shape messages in `decodeTaskSpec` avoid quoting stored text. Either narrow the doc to say the message may carry the task id and the failing glob and callers must scrub it, or scrub at those two `refuse` sites.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/43fcafa390ecc6ae664b333d39efa6f051a93579/src/core/session.repository.ts#L30-L37",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "325-327",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "taskSpecForDisplay skips the strict decoder's shape checks (its doc's 'Shape only' claim notwithstanding), so a stored {\"scopeIn\":\"src/**\"} still throws in `pup plan list`'s `(spec.scopeIn ?? []).join`; reuse decodeTaskSpec inside a try/catch returning {} instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "248",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "updateTaskSpec writes a raw unvalidated spec and its only production caller is now editTaskSpec in the same module; keep it module-private so future callers cannot bypass editTaskSpec's validation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "340-344",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "editTaskSpec shape-checks the stored scopeIn/scopeOut before merging, so a row with a non-array stored scopeIn is refused even when --scope would replace it, contradicting the JSDoc's 'edit is how a row that fails it gets repaired' (old code wrote the repair).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "466-469",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The gate now runs a hand-written `SELECT project_id` (duplicating getTask) and then readTaskSpec re-reads the same row; `specRow` no longer holds a spec.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "104-114",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "launchTask already holds the task row from getTask, then readTaskSpec(db, row.id) looks it up again; a row-taking strict decoder would avoid the double read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "306-308",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The three new spec functions report an unknown task three different ways: readTaskSpec throws MalformedTaskSpecError('no such task is stored.') instead of the existing UnknownTaskError, editTaskSpec returns 'unknown', and taskSpecForDisplay takes a row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1485-1486",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup review` with no argument now refuses the whole queue if any one queued session's spec fails readTaskSpec (including assertPlannableSpec), hiding every other reviewable session even though the queue entry only needs `.goal`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "287-298",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "decodeTaskSpec casts the parsed value twice and finishes with `as TaskSpec`, asserting goal/acceptance are present though nothing checks them; one narrowed view would keep the decoded contract honest.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "284-291",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "decodeTaskSpec's JSDoc omits that it defaults scopeIn/scopeOut to [] (which callers rely on), and cites decision 68 (scrub-where-printed) for 'shape-checked only'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The rewritten scopeConflicts comment has one line far over the wrap width, and 'Both refusals' now sits beside a single throw since the second moved into readTaskSpec.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "466-470",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The gate reads the spec deep inside gateAndMerge, so a malformed spec is refused only after the auto-rebase and every build/test/lint stage have run; reading it with runMergeGate's other pre-lock refusals would make it free.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "618-619",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "readTaskSpec does not check goal/acceptance, so a valid-JSON spec missing `acceptance` still hits a TypeError at `input.spec.acceptance.join` after the ff-merge (non-PR mode), in prTitle/prBody (PR mode), and in `pup review <id>`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "18-20",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The `?? []` comment's stored-spec rationale is stale now that decodeTaskSpec defaults scopeIn before assertPlannableSpec runs; only plan add's unvalidated input still needs it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.9460644000000005,
+  "duration_ms": 239241,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 12214,
+    "cache_read": 170480,
+    "cache_creation": 41965,
+    "total": 224669
+  }
+}
