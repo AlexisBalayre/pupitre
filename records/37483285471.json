@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T15:02:15.178Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37483285471",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37483285471",
+  "actor": "AlexisBalayre",
+  "commit_sha": "427beb6a2518346d15c45e88ba0b3c284c85c686",
+  "source": "pr",
+  "pr_number": 136,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "44-57",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The `-c` overrides turn off `log.showSignature` and `merge.verifySignatures`, but a session-set `rebase.instructionFormat` containing `%G?` still verifies every rebased commit with the planted `gpg.program`, outside the sandbox.",
+      "body": "[`GIT_SAFE_CONFIG`](https://github.com/AlexisBalayre/pupitre/blob/427beb6a2518346d15c45e88ba0b3c284c85c686/src/core/git-diff.client.ts#L44-L57) now turns off `log.showSignature` and `merge.verifySignatures`. The gate's own path has a third way to trigger signature verification: `rebase.instructionFormat`.\n\nWhy it fires:\n- A non-interactive `git rebase <target>` on the default merge backend (git ≥ 2.26, which includes the Apple Git 2.39.5 decision 79 cites) still builds its todo list through `sequencer_make_script`.\n- That function reads `rebase.instructionFormat` from config. It falls back to `%s` only when the key is unset or empty, and pretty-prints every commit it will pick with that format.\n- A `%G?` in the format calls `check_commit_signature`, which runs `gpg.program` on any commit that carries a `gpgsig` header. This is the forged-header trick decision 79 describes, and `log.showSignature` has no effect on it.\n\nHow a session gets there:\n1. It sets `rebase.instructionFormat=%G?%s` (or `pretty.foo=%G?` together with `instructionFormat=foo`) and `gpg.program=<payload>` in the shared `$GIT_COMMON_DIR/config`.\n2. It commits a forged `gpgsig` object with `git hash-object`.\n3. It bases its work so the target is not an ancestor.\n4. `pup merge` then runs [`runGit(worktree, ['rebase', target])`](https://github.com/AlexisBalayre/pupitre/blob/427beb6a2518346d15c45e88ba0b3c284c85c686/src/core/merge-gate.service.ts#L340-L345). Per the comment at L211-216, that call runs with the operator's environment, before the sandbox. The payload runs once per replayed commit.\n\n`assertNoArmedGitDrivers` matches only filter and merge drivers, so neither key is refused. `instructionFormat` appears nowhere in the decisions.\n\nThe fix is to pin the key at command scope, the same way as the others. `%s` contains `%`, so git uses it as a literal format and never looks up a `pretty.<alias>`, which closes the alias variant too. Please also:\n- name the key in the JSDoc above `GIT_SAFE_CONFIG` and in decision 79;\n- extend the forged-signature test with a control case where plain `git rebase` fires the program and `runGit(..., ['rebase', target])` does not.\n\nThis is medium confidence: the git-internals claim comes from reading sequencer source, not from a run under CI's static review.",
+      "suggestion": "  '-c',\n  'merge.verifySignatures=false',\n  '-c',\n  'rebase.instructionFormat=%s',\n] as const;"
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "79-83",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new spaced-path `describe` was inserted between the decision-41 `diff.external`/textconv comment (L79-82) and the armed-diff-driver `describe` it documents (now L111). That comment now heads the wrong suite and runs into the new `-z` line. Move the decision-41 comment back above L111.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "95-102",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `gitDiffNumstat` assertion would also pass on the pre-PR code. Every `--numstat -z` record starts with a digit or `-`, and the output ends in `\\0`, which `trim()` does not strip. So only the `gitDiffPaths` and `gitDiffAddedLines` assertions guard the trim fix.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported that the injected .claude/rules files contained only @-references to docs/conventions/*.md, with no inlined content. It fell back to reading testing.md and the general.md Comments section through Bash, and did not read naming.md."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8545178999999998,
+  "duration_ms": 253886,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8488,
+    "cache_read": 214900,
+    "cache_creation": 39980,
+    "total": 263380
+  }
+}
