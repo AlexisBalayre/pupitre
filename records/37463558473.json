@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T12:32:02.158Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37463558473",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37463558473",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9f98b73bc674234fd7d2e845bfc92fce7464616e",
+  "source": "pr",
+  "pr_number": 134,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-dossier.service.ts",
+      "line": "138-144",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The dossier's fallback branch is documented as showing type plus raw payload, but it now prints the decoder's projection (`JSON.stringify({ ...event, type: undefined })`). Any key the decoder doesn't extract (such as the conductor's `target` on `turn_died`, or extra keys on `question`) drops out of the dossier silently. This also makes `decodeEvent`'s `turn_died` key order (session.repository.ts:486-495) a display concern. Either render `row.payload` here, or update the `timelineDatum` comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "247-375",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`dashboardSession` passes raw `EventRow[]` to five readers (newestSteer, openQuestion, newestGate, newestDeadTurn, dashboardEvent), and each one calls `decodeEvent` on the same rows again. Decoding once where `events` is built (keeping `created_at` alongside each decoded event) would remove the repeated work and the row/event pairing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-dossier.service.ts",
+      "line": "43-46, 94",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`renderSessionDossierHtml` decodes every event to find the latest merge, then `timelineDatum` decodes each row again. Decode the list once and pass the decoded events to both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/report.service.ts",
+      "line": "102-104",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`events.flatMap(... ? [event.report] : [])[0]` builds a whole array just to take its first element. Use `find(...)` then `?.report`, or the same early-return loop that `review.service`'s `lastGateReport` and `dashboard.service`'s `newestGate` use.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "342-350",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "Three places still each compute \"newest gate_result with a report\": dashboard.service `newestGate`, report.service (100-104) and review.service `lastGateReport` (46-52). The overlap predates this PR, which moved all three onto `decodeEvent` but kept them as separate lookups.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported partial coverage. It read only the session.repository.ts and session-event.types.ts diffs plus a grep over the other non-test sources. It did not read the changed test files against docs/conventions/testing.md, and it did not read docs/09-decisions.md decision 68 directly. The security and correctness reviewers independently confirmed that every renderer still sanitizes (the decision 68 obligation)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The review-context reviewer was not spawned: the diff touches no spec, protocol or infra surface (only src/core and src/cli TypeScript)."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.1956725999999995,
+  "duration_ms": 145132,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 9433,
+    "cache_read": 170671,
+    "cache_creation": 37520,
+    "total": 217634
+  }
+}
