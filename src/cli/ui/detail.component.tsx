@@ -55,7 +55,6 @@ export function Detail({ row }: { row: DetailRow }) {
       {row.kind === 'session' ? (
         <>
           {row.session.question === undefined ? null : (
-            // Decision 76: what the worker is blocked on, until a steer answers it.
             <Section title="question">
               <Text color="yellow">{row.session.question}</Text>
             </Section>

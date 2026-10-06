@@ -3848,6 +3848,8 @@ changes back into those docs is pending.
     mode drops all three tools on its own, so the check has to run in an interactive pane. If a
     later Claude Code stops honouring the rule, the protocol line still covers a worker that
     follows its instructions. Re-run the two-pane check before trusting the deny alone.
+    *Amended by decision 76:* the protocol line names `pup session ask "<question>"` instead of
+    plain text; the deny list is unchanged.
 
 75. **The conductor gates a branch with `pup merge --pr`, and accepted debt names its approver
     (2026-10-06).** Settled while grilling Copiste, which drives pupitre as the conductor tier

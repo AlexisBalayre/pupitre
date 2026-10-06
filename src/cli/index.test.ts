@@ -4467,6 +4467,19 @@ describe('CLI commands', () => {
         expect(process.exitCode).toBeUndefined();
       });
 
+      it('refuses a blank question and records nothing', () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+
+        buildProgram().parse(['session', 'ask', '  '], { from: 'user' });
+
+        expect(markSessionQuestion).not.toHaveBeenCalled();
+        expect(errors).toEqual(['pup session ask needs the question itself.']);
+        expect(process.exitCode).toBe(1);
+      });
+
       it('refuses from the repo root, inside no worktree', () => {
         const repo = initRepo();
         seedSession(repo, 's1');

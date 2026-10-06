@@ -1175,8 +1175,6 @@ export function buildProgram(): Command {
       console.log('Nothing running and nothing planned.');
       return;
     }
-    // A worker's open question rides on its row (decision 76): the snapshot
-    // has already scrubbed and cut it, and cleared it once a steer answered.
     for (const session of snapshot.sessions) {
       const question = session.question === undefined ? '' : `question: ${session.question}`;
       console.log(`${sessionLine(session)}${trailing(question)}`);
@@ -1991,8 +1989,7 @@ export function buildProgram(): Command {
       const { db } = project();
       const sessionId = ownSession(db, 'ask');
       if (!sessionId) return;
-      // Decision 76: the one way a blocked worker asks. The session stays
-      // running and ends its turn; the next steer is the answer.
+      if (!question.trim()) return refuse('pup session ask needs the question itself.');
       markSessionQuestion(db, sessionId, question);
       console.log(`Session ${sanitizeReason(sessionId)} asked: ${sanitizeReason(question)}`);
     });

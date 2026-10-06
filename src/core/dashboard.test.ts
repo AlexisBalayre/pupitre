@@ -499,6 +499,22 @@ describe('buildDashboardSnapshot', () => {
         expect(questionOf()).toBeUndefined();
       });
 
+      // Nothing can answer a terminal session (steers refuse it), so a question
+      // asked before the kill or the merge must not sit on the row for good.
+      it.each(['killed', 'merged'] as const)('is absent once the session is %s', (state) => {
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        transitionSession(db, 's1', state === 'merged' ? 'awaiting-review' : state);
+        if (state === 'merged') transitionSession(db, 's1', 'merged');
+
+        expect(questionOf()).toBeUndefined();
+      });
+
+      it('is absent when the recorded text is blank', () => {
+        appendEvent(db, 's1', 'question', { text: '  ' });
+
+        expect(questionOf()).toBeUndefined();
+      });
+
       it('scrubs and cuts the text', () => {
         appendEvent(db, 's1', 'question', { text: `\u001b[2Jwhich\n${'x'.repeat(400)}` });
 
