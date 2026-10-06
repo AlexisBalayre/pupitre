@@ -182,6 +182,9 @@ export function initProject(
   gateEnv?: string[],
   recording: OriginRecording = 'record',
 ): InitReport {
+  // Before anything runs, so a platform pup cannot confine and the operator has
+  // not declared refuses whole, not after half a baseline (decision 78).
+  const sandbox = sandboxLabel();
   const detected = adapters.filter((a) => a.detect(repoPath));
   if (detected.length === 0) throw new NoAdapterError(repoPath);
 
@@ -262,5 +265,5 @@ export function initProject(
     debt: baseline.debt,
   });
   saveProjectBaseline(db, pid, baseline.adapters, JSON.stringify(baseline));
-  return { projectId: pid, baseline, findings, sandbox: sandboxLabel() };
+  return { projectId: pid, baseline, findings, sandbox };
 }

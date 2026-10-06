@@ -325,7 +325,8 @@ changes back into those docs is pending.
     all — the hooks and the gate are its enforcement layer, not this. Everywhere else children run
     unsandboxed and the gate report, `pup init` and `pup audit` each print `sandbox: none
     (unsupported platform)` — decision 29's honesty rule applied to the platform gap, since a
-    silent absence reads exactly like the guarantee.
+    silent absence reads exactly like the guarantee. *Amended by decision 78:* off darwin pup now
+    refuses unless the operator declares the machine itself the sandbox with `PUP_SANDBOX=vm`.
     **A third mode, found by dogfooding.** macOS refuses a nested `sandbox_apply` unless the inner
     profile is identical to the outer one, and pupitre's own gate is precisely that case: `pnpm
     test` runs as a sandboxed stage and the suite spawns gate children of its own, which failed 52
@@ -3858,6 +3859,22 @@ changes back into those docs is pending.
     additive-only invariant (docs/03-profiles.md) now covers denials too. A layer without `deny`
     compiles exactly as before. `compileConductorProfile` is unchanged: the conductor is not built
     from layers, and its denials stay decision 74's three.
+
+78. **Off macOS the gate refuses unless the operator declares the VM as the sandbox (2026-10-06).**
+    From the Copiste grilling. Decision 36 let gate children run unconfined on any platform without
+    `sandbox-exec` and printed `sandbox: none (unsupported platform)` in the gate report, the
+    `pup init` line and the `pup audit` line. Nobody reads that line on a machine that already
+    merged, so it was a silent absence after all. `sandboxMode` now has no `unsupported` mode. Off
+    darwin it is `declared-vm`, labelled `vm (declared by operator)`, when `PUP_SANDBOX=vm` is in
+    the environment of the pup process, and otherwise it throws one line naming the variable and
+    saying the children would run unconfined. Any other value counts as unset. The variable is read
+    from pup's own environment and never from the store or the repo, because a session can write
+    both and must not be able to declare its own containment. `runMergeGate` and `initProject`
+    (which `pup audit` runs) take the label before they spawn anything, so the refusal comes before
+    any child, rebase or baseline stage; `runGateChild` hits the same throw, so no other caller
+    runs a child bare either. The off-darwin answer is read on every call and not cached with the
+    darwin probe: there is nothing to measure, only the operator's word. On darwin nothing changes:
+    `sandbox-exec` is applied or inherited and the variable is ignored.
 
 ## Implementation notes
 

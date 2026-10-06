@@ -10,23 +10,79 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { projectId } from './paths.utils.js';
-import { isSandboxSupported, runGateChild, sandboxLabel } from './sandbox.utils.js';
+import {
+  isSandboxSupported,
+  runGateChild,
+  sandboxLabel,
+  UndeclaredSandboxError,
+} from './sandbox.utils.js';
 
 /** The label pup reports when it applied its own profile rather than inheriting one. */
 const APPLIED_LABEL = 'sandbox-exec (macOS)';
 
+/** Both darwin answers: which one depends on whether this suite runs inside pup's own gate. */
+const DARWIN_LABEL = /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/;
+
+/** Pretend to be another platform for one test; `process.platform` is a plain property. */
+function onPlatform(platform: NodeJS.Platform): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  onTestFinished(() => {
+    Object.defineProperty(process, 'platform', original);
+  });
+}
+
 describe('sandboxLabel', () => {
-  it('names the mechanism, or says plainly that there is none', () => {
+  it.runIf(isSandboxSupported())('names the mechanism on darwin', () => {
     // Measured, not assumed: on darwin it is `applied` normally and `inherited`
     // when pup's own gate runs this suite as a sandboxed stage, and the two are
     // different guarantees, so the report has to distinguish them.
-    expect(sandboxLabel()).toMatch(
-      isSandboxSupported()
-        ? /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/
-        : /^none \(unsupported platform\)$/,
-    );
+    expect(sandboxLabel()).toMatch(DARWIN_LABEL);
+  });
+
+  it.runIf(isSandboxSupported())('ignores the VM declaration on darwin', () => {
+    vi.stubEnv('PUP_SANDBOX', 'vm');
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+
+    expect(sandboxLabel()).toMatch(DARWIN_LABEL);
+  });
+
+  describe('off darwin (decision 78)', () => {
+    it('refuses without the declaration, naming the variable and the risk', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+
+      expect(() => sandboxLabel()).toThrow(UndeclaredSandboxError);
+      expect(() => sandboxLabel()).toThrow(/PUP_SANDBOX=vm/);
+      expect(() => sandboxLabel()).toThrow(/unconfined/);
+    });
+
+    it('names the declared VM when the operator sets PUP_SANDBOX=vm', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+
+      expect(sandboxLabel()).toBe('vm (declared by operator)');
+    });
+
+    it.each(['VM', '1', 'true', ' vm', ''])('treats PUP_SANDBOX=%j as unset', (value) => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', value);
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+
+      expect(() => sandboxLabel()).toThrow(UndeclaredSandboxError);
+    });
   });
 });
 
@@ -163,6 +219,33 @@ describe('runGateChild', () => {
     // The control: a healthy install next to it stays where corepack looks.
     expect(entries[1]).toBe('9.15.0');
     expect(seen.trim().split('\n').sort()).toEqual(entries);
+  });
+
+  describe('off darwin (decision 78)', () => {
+    it('runs nothing without the declaration', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      const cwd = fakeCheckout();
+
+      expect(() => runGateChild('sh', ['-c', 'printf x > ran'], { cwd, repoPath: cwd })).toThrow(
+        UndeclaredSandboxError,
+      );
+      expect(existsSync(join(cwd, 'ran'))).toBe(false);
+    });
+
+    it('runs the child bare under the declaration', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      const cwd = fakeCheckout();
+
+      expect(runGateChild('sh', ['-c', 'printf ok'], { cwd, repoPath: cwd })).toBe('ok');
+    });
   });
 
   it('hands the child a var pup computed, which the operator never exported', () => {

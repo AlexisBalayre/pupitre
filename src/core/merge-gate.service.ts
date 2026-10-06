@@ -208,6 +208,10 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (session.state !== 'awaiting-review') {
     throw new SessionNotReviewableError(req.sessionId, session.state);
   }
+  // First of the refusals that spawn nothing: everything below runs children,
+  // and a platform with no sandbox and no operator declaration runs none of
+  // them (decision 78).
+  const sandbox = sandboxLabel();
   // Refused, not run: with no adapter the three hard stages skip as "no command
   // available" and every debt stage as "adapter cannot measure", so the gate
   // would merge anything it was handed while reporting a full set of stages
@@ -249,7 +253,9 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     // would then abort (decision 27).
     pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return withMergeLock(req.repoPath, () => gateAndMerge(db, req, session, target, pullRequest));
+  return withMergeLock(req.repoPath, () =>
+    gateAndMerge(db, req, session, target, sandbox, pullRequest),
+  );
 }
 
 const PUSH_TARGET_HELP =
@@ -320,6 +326,7 @@ function gateAndMerge(
   req: MergeRequest,
   session: SessionRow,
   target: string,
+  sandbox: string,
   pullRequest?: PullRequestPlan,
 ): MergeOutcome {
   const worktree = session.worktree_path;
@@ -331,7 +338,6 @@ function gateAndMerge(
     configPath: req.repoPath,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
-  const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
   const failed = (): MergeOutcome =>
     rejectOrBlock(db, { sessionId: session.id, passed: false, sandbox, stages });

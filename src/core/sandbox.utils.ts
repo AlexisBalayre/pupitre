@@ -26,8 +26,9 @@ import { resolvePath, writeProfile } from './sandbox-profile.utils.js';
  * One seam, so there is one answer to "what can a gate child touch": every
  * call site that used to build a `gateChildEnv()` runs through `runGateChild`.
  * On darwin that means `sandbox-exec` with a pup-generated profile (the policy
- * itself lives in sandbox-profile.utils.ts); on every other platform the child
- * runs unsandboxed and the gate report says so.
+ * itself lives in sandbox-profile.utils.ts). Every other platform has no
+ * mechanism, so pup refuses there unless the operator declares the machine
+ * itself the sandbox (decision 78).
  */
 
 /** macOS ships this. Its absence on darwin fails the run, it is not a fallback. */
@@ -90,11 +91,12 @@ interface GateChildOptions {
 /**
  * `applied` — pup wrapped the child in its own profile. `inherited` — pup is
  * itself sandboxed, so the child runs under *that* profile (see `sandboxMode`).
- * `unsupported` — no mechanism on this platform, and the reports say so.
+ * `declared-vm` — no mechanism on this platform, and the operator said the
+ * machine pup runs on is the disposable boundary (see `declaredMode`).
  */
-type SandboxMode = 'applied' | 'inherited' | 'unsupported';
+type SandboxMode = 'applied' | 'inherited' | 'declared-vm';
 
-/** True where pup can confine a child at all. Everywhere else it says so. */
+/** True where pup can confine a child at all. Everywhere else it needs the operator's word. */
 export function isSandboxSupported(): boolean {
   return process.platform === 'darwin';
 }
@@ -102,14 +104,45 @@ export function isSandboxSupported(): boolean {
 const MODE_LABELS: Record<SandboxMode, string> = {
   applied: 'sandbox-exec (macOS)',
   inherited: 'inherited (pup is itself sandboxed)',
-  unsupported: 'none (unsupported platform)',
+  'declared-vm': 'vm (declared by operator)',
 };
+
+/**
+ * The declaration, and the only place it is read. From pup's own environment
+ * and nowhere else: the store and the repo are both writable by the sessions
+ * whose code the children run, and a session must not be able to declare its
+ * own containment. Any value but `vm` is no declaration at all.
+ */
+const DECLARATION_VAR = 'PUP_SANDBOX';
+
+/** A refusal with operator instructions in it, so the CLI prints it as one line. */
+export class UndeclaredSandboxError extends Error {
+  constructor() {
+    super(
+      `No sandbox on ${process.platform}, so gate children would run unconfined; refusing. ` +
+        `Set ${DECLARATION_VAR}=vm if this machine is a disposable VM that is itself the sandbox.`,
+    );
+    this.name = 'UndeclaredSandboxError';
+  }
+}
+
+/**
+ * Off darwin, read on every call rather than cached with the probe: there is
+ * nothing to probe, and the answer is the operator's word, not a measurement.
+ * Without it pup refuses — a report line saying `none` was the old answer, and
+ * nobody reads the report on a machine that already merged (decision 78).
+ */
+function declaredMode(): SandboxMode {
+  if (process.env[DECLARATION_VAR] === 'vm') return 'declared-vm';
+  throw new UndeclaredSandboxError();
+}
 
 /**
  * One line for the gate report, `pup init` and `pup audit`. Measured rather
  * than assumed — it names what pup actually did, because a run that could not
  * confine anything must not read like one that did (decision 29's honesty
- * rule).
+ * rule). Throws where there is nothing to name, so each of the three calls it
+ * before its first child and refuses whole rather than part-way.
  */
 export function sandboxLabel(): string {
   return MODE_LABELS[sandboxMode()];
@@ -129,11 +162,8 @@ let mode: SandboxMode | undefined;
  * stage, and the suite spawns gate children of its own.
  */
 function sandboxMode(): SandboxMode {
+  if (!isSandboxSupported()) return declaredMode();
   if (mode) return mode;
-  if (!isSandboxSupported()) {
-    mode = 'unsupported';
-    return mode;
-  }
   if (!existsSync(SANDBOX_EXEC)) {
     // Fail closed, and say which half broke: the alternative — running the
     // session's own build command with the operator's home wide open because a
@@ -164,7 +194,8 @@ function sandboxMode(): SandboxMode {
 /**
  * Run one gate child. On darwin it is wrapped in `sandbox-exec`; a sandbox that
  * cannot be set up throws rather than degrading to an unconfined run, so the
- * stage fails and the merge refuses. The invariant is about gate *children*, and
+ * stage fails and the merge refuses. Elsewhere it runs bare only under the
+ * operator's VM declaration, and throws without it. The invariant is about gate *children*, and
  * only them: no child pup spawns to measure a session's code runs unconfined on
  * a platform pup claims to confine. The session process itself is not covered —
  * it runs with permissions bypassed by design (decision 5). The one degradation

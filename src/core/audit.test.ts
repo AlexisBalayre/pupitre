@@ -2,13 +2,14 @@ import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
+import { UndeclaredSandboxError } from './sandbox.utils.js';
 import { getProject } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskId } from './types/profile.types.js';
@@ -37,6 +38,16 @@ function coverageReport(covered: number, instrumented: number): CoverageReport {
   };
 }
 
+/** Pretend to be another platform for one test; `process.platform` is a plain property. */
+function onPlatform(platform: NodeJS.Platform): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  onTestFinished(() => {
+    Object.defineProperty(process, 'platform', original);
+    vi.unstubAllEnvs();
+  });
+}
+
 describe('auditProject', () => {
   let db: Database;
   let repo: string;
@@ -44,6 +55,29 @@ describe('auditProject', () => {
   beforeEach(() => {
     db = openStore(':memory:');
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-audit-')));
+  });
+
+  describe('off darwin (decision 78)', () => {
+    it('refuses without the declaration and leaves the stored baseline alone', () => {
+      initProject(db, repo, [makeAdapter()]);
+      const stored = getProject(db, projectId(repo))?.baseline;
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+      const detect = vi.fn(() => true);
+
+      expect(() => auditProject(db, repo, [makeAdapter({ detect })])).toThrow(
+        UndeclaredSandboxError,
+      );
+      expect(detect).not.toHaveBeenCalled();
+      expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    });
+
+    it('re-runs under the declaration and names it', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+
+      expect(auditProject(db, repo, [makeAdapter()]).sandbox).toBe('vm (declared by operator)');
+    });
   });
 
   it('flags a stage that went pass -> fail as a regression and refreshes the baseline', () => {
