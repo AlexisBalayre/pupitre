@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T08:10:28.444Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37434101740",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37434101740",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6f055a8eba3d6d7df10f01c08186194df1e27be5",
+  "source": "pr",
+  "pr_number": 124,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "113-125",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test `denies the tools that open a screen pup cannot answer` also asserts the rewritten session-protocol line in `contextMarkdown`. That is a second behaviour under a name that covers only the deny rule. `docs/conventions/testing.md` line 88 says \"One logical assertion focus per test. A test verifies a single behaviour\". Its next line says to name the test after the behaviour. Moving the protocol-line `expect` into its own `it` would fix both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "113-115",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new comment over the `compileProfile` test repeats the decision and the JSDoc, and adds no WHY. Both the `UNANSWERABLE_TOOLS` JSDoc and decision 74 already say this. Reduce it to `// Decision 74.` or delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "30-37",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `UNANSWERABLE_TOOLS` JSDoc retells the mechanism already in decision 74: no input box, steer refused, watchdog never resumes. Two facts are not in the name and are worth keeping: a deny rule removes the tool from the toolset, and the conductor gets the same list. Trim it to those two facts plus the pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3822-3848",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 74 is long for a one-rule change. The sentence \"A turn that ends goes through the Stop hook and reads as a turn pup and the operator can see\" adds little, and the verification paragraph could be shorter. Keep the `claude -p` aside and the closing \"Re-run the two-pane check\", which carry a real WHY and a maintenance instruction.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/01-architecture.md",
+      "line": "44",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "It describes `.claude/settings.json` as \"(hooks)\", but the compiled file now also carries `permissions.deny`. Decision 74 covers it and wins over 00–08, so this is only a stale parenthetical for the pending decisions-to-docs merge-back.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-maintainability was not spawned: the code change is a 13-line constant plus two settings keys and adds no structural logic. Correctness, security, conventions, docs and context covered the diff."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9646747000000001,
+  "duration_ms": 83646,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 5970,
+    "cache_read": 164520,
+    "cache_creation": 32055,
+    "total": 202555
+  }
+}
