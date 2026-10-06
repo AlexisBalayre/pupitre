@@ -13,9 +13,14 @@ import {
   parseJsonOr,
   toIsoUtc,
 } from './report-data.utils.js';
-import { type EventRow, listEvents, listTasks, type SessionRow } from './session.repository.js';
+import {
+  type EventRow,
+  listEvents,
+  listTasks,
+  type SessionRow,
+  taskSpecForDisplay,
+} from './session.repository.js';
 import type { GateReport } from './types/merge-gate.types.js';
-import type { TaskSpec } from './types/profile.types.js';
 
 /**
  * One session's dossier page — the report's per-session detail view
@@ -31,7 +36,7 @@ export function renderSessionDossierHtml(
   session: SessionRow,
 ): string {
   const task = listTasks(db, projectId(repoPath)).find((row) => row.id === session.task_id);
-  const spec = task ? parseJsonOr<Partial<TaskSpec>>(task.spec, {}) : {};
+  const spec = taskSpecForDisplay(task);
   const events = listEvents(db, session.id);
   // Newest first, so `find` returns the latest merge — a respawned session can
   // in principle merge more than once, and the latest is what stands.

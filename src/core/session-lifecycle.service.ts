@@ -31,6 +31,7 @@ import {
   getTask,
   insertSession,
   insertTask,
+  readTaskSpec,
   type SessionRow,
   transitionSession,
 } from './session.repository.js';
@@ -45,7 +46,7 @@ import {
 } from './session-lifecycle.errors.js';
 import { isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
-import type { SessionId, TaskId, TaskSpec } from './types/profile.types.js';
+import type { SessionId, TaskSpec } from './types/profile.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
@@ -107,17 +108,10 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   // (decision 7). Only a killed session leaves its task launchable again.
   const claimedBy = claimingSession(db, row.id);
   if (claimedBy) throw new TaskAlreadyClaimedError(row.id, claimedBy);
-  // The row key wins over the blob: identity comes from the trusted primary
-  // key, the spec is authoritative only for intent. A spec whose `id` had
-  // drifted would compile one task's hooks under another task's session row,
-  // leaving the gate auditing a different spec than the hooks enforce.
-  const task: TaskSpec = { ...(JSON.parse(row.spec) as TaskSpec), id: row.id as TaskId };
-  // The conflict check is now the first thing to read a stored spec's globs, so
-  // it runs after the same validation `pup plan add` did. A row written before
-  // that validation existed would otherwise reach `scopedPaths` with no
-  // `scopeIn` and throw a bare TypeError, where `compileProfile` used to raise
-  // a legible InvalidProfileError.
-  assertPlannableSpec(task);
+  // Validated before the conflict check, the first thing to read the stored
+  // spec's globs: a row written before `pup plan add` validated would otherwise
+  // reach `scopedPaths` with no `scopeIn` and throw a bare TypeError.
+  const task = readTaskSpec(db, row.id);
   // Before `git worktree add`, which checks out every file in HEAD and runs a
   // smudge filter on each one with the operator's environment. The shared
   // config and `info/attributes` arm it, `.git/**` is untracked, and the

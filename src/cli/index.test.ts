@@ -1984,6 +1984,7 @@ describe('CLI commands', () => {
         id: 't-1',
         goal: 'sharper thought',
         scopeIn: ['src/**'],
+        scopeOut: [],
         acceptance: ['tests pass'],
       });
     });
@@ -2349,6 +2350,27 @@ describe('CLI commands', () => {
       expect(row).not.toContain('second line of the goal');
       expect(row).not.toContain('\u001b');
     });
+
+    // A malformed row the report survives used to kill `pup review` with a
+    // SyntaxError; it is a refusal naming the task, its id scrubbed.
+    it.each([[[]], [[NOISY_ID]]])(
+      'refuses a spec that is not JSON, naming the task (%j)',
+      (args) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedReviewable(repo);
+        const { db } = resolveProject(repo);
+        db.prepare("UPDATE tasks SET spec = 'not json {'").run();
+        db.close();
+
+        buildProgram().parse(['review', ...args], { from: 'user' });
+
+        const refusal = errors.join('\n');
+        expect(refusal).toContain('Task t- [2Js1 has an unusable spec: it is not valid JSON.');
+        expect(refusal).not.toContain('\u001b');
+        expect(process.exitCode).toBe(1);
+      },
+    );
 
     it("scrubs every stored string on one branch's page", () => {
       const repo = initRepo();

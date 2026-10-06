@@ -676,6 +676,17 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).backlog[0]?.acceptance).toEqual(['[31mred [0m']);
     });
 
+    it('lists a task whose spec is not JSON with empty intent instead of throwing', () => {
+      seedTask(db, repo, 't-plan', 'a goal');
+      seedSession(db, repo, 's1');
+      db.prepare("UPDATE tasks SET spec = 'not json {'").run();
+
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      expect(snapshot.backlog[0]).toMatchObject({ id: 't-plan', goal: '', scope: [] });
+      expect(snapshot.sessions[0]).toMatchObject({ id: 's1', goal: '', scope: [] });
+    });
+
     it('drops a task once a session claims it', () => {
       seedSession(db, repo, 's1');
 

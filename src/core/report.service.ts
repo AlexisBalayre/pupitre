@@ -20,6 +20,7 @@ import {
   listSessions,
   listTasks,
   type SessionRow,
+  taskSpecForDisplay,
 } from './session.repository.js';
 import { dossierFileName } from './session-dossier.service.js';
 import type { DebtBaseline } from './types/init.types.js';
@@ -41,7 +42,7 @@ export function renderReportHtml(db: Database, repoPath: string): string {
     // Oldest first, the order `pup plan` lists them in: the backlog is a queue,
     // and the thing waiting longest is the one to answer for (decision 41).
     backlog: listBacklogTasks(db, pid).map((task) => {
-      const spec = parseJsonOr<Partial<TaskSpec>>(task.spec, {});
+      const spec = taskSpecForDisplay(task);
       return {
         id: displayText(task.id),
         goal: typeof spec.goal === 'string' ? displayText(spec.goal) : '',
@@ -58,7 +59,7 @@ export function renderReportHtml(db: Database, repoPath: string): string {
       .reverse()
       .map((session) => {
         const task = tasks.get(session.task_id);
-        return sessionDatum(db, session, task ? parseJsonOr<Partial<TaskSpec>>(task.spec, {}) : {});
+        return sessionDatum(db, session, taskSpecForDisplay(task));
       }),
     // Oldest first (trend order); captured_at is already ISO UTC, see toIsoUtc.
     baselines: listBaselineHistory(db, pid).map((row: BaselineHistoryRow) => {

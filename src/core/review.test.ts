@@ -12,6 +12,7 @@ import {
   incrementRejectCount,
   insertSession,
   insertTask,
+  MalformedTaskSpecError,
   transitionSession,
 } from './session.repository.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
@@ -78,6 +79,16 @@ describe('review service', { timeout: 20_000 }, () => {
   beforeEach(() => {
     db = openStore(':memory:');
     repo = initRepo();
+  });
+
+  it('refuses a session whose stored spec is not JSON with a typed error naming its task', () => {
+    seedSession(db, repo, 's1');
+    db.prepare("UPDATE tasks SET spec = 'not json {' WHERE id = 'task-s1'").run();
+
+    expect(() => buildReviewQueue(db, repo)).toThrow(MalformedTaskSpecError);
+    expect(() => buildSessionReview(db, repo, 's1')).toThrow(
+      'Task task-s1 has an unusable spec: it is not valid JSON.',
+    );
   });
 
   it('queues only awaiting-review sessions, riskiest first', () => {

@@ -54,6 +54,7 @@ import {
   insertTask,
   listBacklogTasks,
   listEvents,
+  MalformedTaskSpecError,
   saveProjectBaseline,
   saveProjectOriginUrl,
   transitionSession,
@@ -426,6 +427,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
     expect(outcome.report.stages.at(-1)?.detail).toContain('notes.txt');
+  });
+
+  // The store is session-writable: a spec that is not JSON is a refusal naming
+  // the task, with the lock released and the session left reviewable.
+  it('refuses a task whose stored spec is not JSON with a typed error', () => {
+    seedSession(db, repo);
+    db.prepare("UPDATE tasks SET spec = 'not json {' WHERE id = ?").run(`task-${SESSION_ID}`);
+
+    expect(() => merge()).toThrow(MalformedTaskSpecError);
+    expect(() => merge()).toThrow(`Task task-${SESSION_ID} has an unusable spec`);
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
   it('hard-fails a session that edits the adapter escape-hatch config', () => {

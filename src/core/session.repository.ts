@@ -1,6 +1,10 @@
 import type { Database } from 'better-sqlite3';
 import type { EventType, SessionState } from './db.client.js';
+import { InvalidProfileError } from './profile.errors.js';
+import { parseJsonOr } from './report-data.utils.js';
 import { canTransition, claimedStates } from './session-state.utils.js';
+import { assertPlannableSpec } from './task-spec.utils.js';
+import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 export interface SessionRow {
   id: string;
@@ -20,6 +24,24 @@ export class InvalidTransitionError extends Error {
   constructor(from: SessionState, to: SessionState) {
     super(`Illegal session transition ${from} -> ${to}.`);
     this.name = 'InvalidTransitionError';
+  }
+}
+
+/**
+ * A stored spec a command that acts on it cannot use: not JSON, the wrong shape,
+ * or failing the checks `pup plan add` runs. An InvalidProfileError, so every
+ * command that already refuses an unplannable spec refuses this one too.
+ *
+ * The message never quotes the stored text: the store is session-writable, and
+ * a SyntaxError's message carries the bytes it choked on (decision 29).
+ */
+export class MalformedTaskSpecError extends InvalidProfileError {
+  constructor(
+    readonly taskId: string,
+    reason: string,
+  ) {
+    super(`Task ${taskId} has an unusable spec: ${reason}`);
+    this.name = 'MalformedTaskSpecError';
   }
 }
 
@@ -237,6 +259,99 @@ export function updateTaskSpec(db: Database, id: string, spec: string): boolean 
       )
       .run(spec, id, ...claimed).changes > 0
   );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+/**
+ * The spec as stored, shape-checked only (decision 68). The row key wins over
+ * the blob: identity comes from the trusted primary key, the spec is
+ * authoritative only for intent. A spec whose `id` had drifted would compile
+ * one task's hooks under another task's session row, leaving the gate auditing
+ * a different spec than the hooks enforce.
+ */
+function decodeTaskSpec(row: TaskRow): TaskSpec {
+  let value: unknown;
+  try {
+    value = JSON.parse(row.spec);
+  } catch {
+    throw new MalformedTaskSpecError(row.id, 'it is not valid JSON.');
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new MalformedTaskSpecError(row.id, 'it is not a JSON object.');
+  }
+  const spec = value as Partial<Record<keyof TaskSpec, unknown>>;
+  for (const field of ['scopeIn', 'scopeOut'] as const) {
+    if (spec[field] !== undefined && !isStringArray(spec[field])) {
+      throw new MalformedTaskSpecError(row.id, `its ${field} is not a list of globs.`);
+    }
+  }
+  const decoded = value as Partial<TaskSpec>;
+  return {
+    ...(decoded as TaskSpec),
+    id: row.id as TaskId,
+    scopeIn: decoded.scopeIn ?? [],
+    scopeOut: decoded.scopeOut ?? [],
+  };
+}
+
+/**
+ * The one reader of a stored spec for a command that acts on it — launch, the
+ * gate, review, the overlap check. Strict: a spec this cannot use is a refusal
+ * naming the task, never a SyntaxError or a TypeError further down. Runs the
+ * checks `pup plan add` ran, because a row can predate them (decision 40).
+ */
+export function readTaskSpec(db: Database, taskId: string): TaskSpec {
+  const row = getTask(db, taskId);
+  if (!row) throw new MalformedTaskSpecError(taskId, 'no such task is stored.');
+  const spec = decodeTaskSpec(row);
+  try {
+    assertPlannableSpec(spec);
+  } catch (error) {
+    if (!(error instanceof InvalidProfileError)) throw error;
+    throw new MalformedTaskSpecError(row.id, error.message);
+  }
+  return spec;
+}
+
+/**
+ * The spec for a page that only shows it — the report, the dossier, the
+ * dashboard, the backlog listing. Tolerant: one bad row degrades to the empty
+ * copy instead of killing the page. Shape only; renderers keep their own
+ * scrubbing (decision 68).
+ */
+export function taskSpecForDisplay(row: Pick<TaskRow, 'spec'> | undefined): Partial<TaskSpec> {
+  return row ? parseJsonOr<Partial<TaskSpec>>(row.spec, {}) : {};
+}
+
+export type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'acceptance'>>;
+
+/**
+ * `pup plan edit`: merge the given fields over the stored spec, validate the
+ * result, write it. The only `UPDATE tasks SET spec` there is, so it runs
+ * exactly the validation `plan add` runs — otherwise edit could store a spec
+ * add would have refused, and the failure would surface at launch. The stored
+ * spec is not validated first: edit is how a row that fails it gets repaired.
+ */
+export function editTaskSpec(
+  db: Database,
+  id: string,
+  patch: TaskSpecPatch,
+): 'updated' | 'unknown' | 'claimed' {
+  const row = getTask(db, id);
+  if (!row) return 'unknown';
+  const spec = decodeTaskSpec(row);
+  const edited: TaskSpec = {
+    ...spec,
+    goal: patch.goal ?? spec.goal,
+    scopeIn: patch.scopeIn ?? spec.scopeIn,
+    scopeOut: patch.scopeOut ?? spec.scopeOut,
+    acceptance: patch.acceptance ?? spec.acceptance,
+  };
+  assertPlannableSpec(edited);
+  return updateTaskSpec(db, id, JSON.stringify(edited)) ? 'updated' : 'claimed';
 }
 
 export function insertSession(db: Database, input: NewSessionInput): void {

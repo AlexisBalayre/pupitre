@@ -403,6 +403,15 @@ describe('launchTask scope-conflict guard', () => {
     expect(launch).toThrow(InvalidProfileError);
   });
 
+  it('refuses a stored spec that is not JSON, naming the task, rather than a SyntaxError', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    db.prepare("UPDATE tasks SET spec = 'not json {' WHERE id = 't-1'").run();
+
+    expect(launch).toThrow(InvalidProfileError);
+    expect(launch).toThrow('Task t-1 has an unusable spec: it is not valid JSON.');
+    expect(getTask(db, 't-1')).toBeDefined();
+  });
+
   // `createSession` admits before the row exists and cannot refuse after, so a
   // holder that appears between its read and `launchTask`'s is recorded — but
   // as raced, not as something the operator accepted (decision 41). The race
