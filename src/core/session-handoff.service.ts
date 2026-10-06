@@ -94,14 +94,17 @@ export function requestHandoff(
  * The hash the session signalled for, from the latest `handoff_ready` that
  * follows the request steer. With no request on record `MAX(id)` is NULL and
  * the comparison is never true, so a `handoff_ready` nobody asked for names no
- * hash and no session is ready by it (decision 44).
+ * hash and no session is ready by it (decision 44). The request is matched on
+ * the `kind` it was written with, never on its text anywhere in the payload: a
+ * session controls the `by` of a steer it types, and a marker planted there
+ * must not stand in for a request nobody made.
  */
 function signalledHash(db: Database, sessionId: string): string | undefined {
   const row = db
     .prepare(
       `SELECT payload FROM events WHERE session_id = ? AND type = 'handoff_ready'
        AND id > (SELECT MAX(id) FROM events WHERE session_id = ? AND type = 'steer'
-                 AND payload LIKE '%handoff-request%')
+                 AND json_extract(payload, '$.kind') = 'handoff-request')
        ORDER BY id DESC LIMIT 1`,
     )
     .get(sessionId, sessionId) as { payload: string } | undefined;
