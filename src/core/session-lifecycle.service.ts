@@ -35,10 +35,15 @@ import {
   transitionSession,
 } from './session.repository.js';
 import {
+  isRefusedSteer,
+  rollBackRefusedLaunch,
   ScopeConflictError,
   TaskAlreadyClaimedError,
+  TerminalSessionError,
+  UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
+import { isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { SessionId, TaskId, TaskSpec } from './types/profile.types.js';
 import type {
@@ -256,9 +261,51 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
   db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);
   transitionSession(db, sessionId, 'running', { profileHash: compiled.hash });
 
-  // Deliver the compiled task context as the opening prompt once the UI is ready.
-  const started = kickoff(pane, compiled.contextMarkdown);
-  appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered: started });
+  return deliverKickoff(db, sessionId, pane, compiled.contextMarkdown);
+}
+
+/**
+ * Deliver the compiled task context as the opening prompt once the UI is
+ * ready, or undo the launch. Both ways it can fail land here and nowhere
+ * earlier: the task is claimed, the row is `running` and the window is up by
+ * the time the first character is typed, so left as they are the task reads as
+ * claimed (a re-launch raises TaskAlreadyClaimedError) and the window sits
+ * empty, on a bypass-permissions agent that has read none of its task.
+ *
+ * Killing the session undoes all of it — the window goes, the row is `killed`,
+ * and the task returns to the backlog (decision 40) — which is why every front
+ * end's retry is a fresh launch of the same task. The two failures differ only
+ * in whether there is a refusal to read: a paste that never landed whole says
+ * so itself (decision 45), while a window that never showed its input box
+ * never said anything, so the rollback line is the whole of it.
+ */
+function deliverKickoff(
+  db: Database,
+  sessionId: string,
+  pane: SessionPane,
+  context: string,
+): string {
+  let delivered: boolean;
+  try {
+    delivered = kickoff(pane, context);
+  } catch (error) {
+    if (!isRefusedSteer(error)) throw error;
+    throw rollBackRefusedLaunch(
+      () => killSession(db, sessionId),
+      `Launch rolled back (session ${sessionId} killed)`,
+      error,
+    );
+  }
+  // Recorded before the rollback below, and kept through it: a launch that was
+  // undone still leaves on the session it killed the trace of why.
+  appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered });
+  if (!delivered) {
+    throw rollBackRefusedLaunch(
+      () => killSession(db, sessionId),
+      `Session ${sessionId}'s window never became ready, so its context was not delivered ` +
+        'and the session was killed',
+    );
+  }
   return sessionId;
 }
 
@@ -282,18 +329,77 @@ export function sessionPane(row: SessionRow): SessionPane {
 }
 
 /**
- * Steer a session by id, into the pane recorded at its launch. The session
- * half of `steerPane`: resolves the row, refuses one with no pane recorded,
- * and lets the runtime's own refusals (a gone pane, a paste that never landed)
- * through untouched for the caller to print.
+ * How a delivered steer is recorded: what kind of steer it was, and who sent
+ * it where the caller can name a sender — a typed steer is not the operator's
+ * just because it was typed, and a conductor or session pup can identify is
+ * named as one before its word is taken (decisions 44, 47).
  */
-export function steerSession(db: Database, sessionId: string, message: string): void {
-  steerPane(sessionPane(requireSession(db, sessionId)), message);
+type SteerRecord = {
+  kind: string;
+  by?: string;
+};
+
+/**
+ * Steer a session by id, into the pane recorded at its launch. The session
+ * half of `steerPane`: resolves the row, refuses a session that has stopped or
+ * has no pane recorded, and lets the runtime's own refusals (a gone pane, a
+ * paste that never landed) through untouched for the caller to print.
+ *
+ * `record` is the event the delivered steer is written as, and is what the
+ * front ends pass instead of appending their own — a steer nobody recorded is
+ * a session the report and the last-steer queries show as corrected by
+ * nobody. It is optional because the two callers inside core record the
+ * outcome of something larger than the paste: the watchdog's resume is written
+ * once the sweep knows whether it was refused, and the gate's re-steer only
+ * once the session is back to `running`. Nothing is recorded unless the paste
+ * landed.
+ */
+export function steerSession(
+  db: Database,
+  sessionId: string,
+  message: string,
+  record?: SteerRecord,
+): void {
+  steerPane(sessionPane(requireLiveSession(db, sessionId, 'steer')), message);
+  if (record) appendEvent(db, sessionId, 'steer', record);
 }
 
-/** Send Escape to a session's launch pane; see `steerSession` for the shape. */
-export function interruptSession(db: Database, sessionId: string): void {
-  interruptPane(sessionPane(requireSession(db, sessionId)));
+/**
+ * Record a steer that reached the session over the peer socket, where nothing
+ * was typed. A message lands whole and never touches the input box, so it
+ * needs no paste — but it needs the record, or the report and last-steer
+ * queries would show a session corrected by nobody. `by` names the sender the
+ * caller identified (decisions 44, 47).
+ */
+export function recordSteerMessage(db: Database, sessionId: string, by: string): void {
+  requireLiveSession(db, sessionId, 'steer');
+  appendEvent(db, sessionId, 'steer', { kind: 'message', by });
+}
+
+/**
+ * Send Escape to a session's launch pane, optionally steering a message once
+ * the UI is back at its input box, and record what landed. The two are one
+ * call because their records are one story: an Escape that landed is on record
+ * even when the steer behind it is refused.
+ */
+export function interruptSession(db: Database, sessionId: string, message?: string): void {
+  const pane = sessionPane(requireLiveSession(db, sessionId, 'interrupt'));
+  // Nothing landed yet, so nothing is on record if this refuses.
+  interruptPane(pane);
+  if (message) {
+    try {
+      steerPane(pane, message);
+    } catch (error) {
+      // Escape already landed, so the interrupt is on record; only the steer
+      // is refused.
+      appendEvent(db, sessionId, 'interrupt', { steered: false });
+      throw error;
+    }
+  }
+  appendEvent(db, sessionId, 'interrupt', { steered: Boolean(message) });
+  // The message is a real steer — record it as one too, so last-steer queries
+  // see it no matter which path delivered it.
+  if (message) appendEvent(db, sessionId, 'steer', { kind: 'interrupt' });
 }
 
 export function killSession(db: Database, sessionId: string): void {
@@ -306,6 +412,19 @@ export function killSession(db: Database, sessionId: string): void {
 
 function requireSession(db: Database, sessionId: string): SessionRow {
   const row = getSession(db, sessionId);
-  if (!row) throw new Error(`No session ${sessionId}.`);
+  if (!row) throw new UnknownSessionError(sessionId);
+  return row;
+}
+
+/**
+ * The row a steer or an interrupt may act on. A terminal session has nothing
+ * to correct: its window is gone or its work is already on the branch, and
+ * typing into the pane it left behind reaches whatever holds that id now.
+ * Asked in core rather than at each front end, so `pup steer` and the
+ * dashboard's `s` refuse the same sessions.
+ */
+function requireLiveSession(db: Database, sessionId: string, verb: string): SessionRow {
+  const row = requireSession(db, sessionId);
+  if (isTerminal(row.state)) throw new TerminalSessionError(sessionId, row.state, verb);
   return row;
 }
