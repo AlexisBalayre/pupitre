@@ -4578,15 +4578,19 @@ describe('CLI commands', () => {
       expect(request.openPr).toBeUndefined();
     });
 
-    it('reports a thrown gate error and exits 1', () => {
+    // Whole: pup's own refusals carry remediation steps past the scrubber's
+    // 300-character cut, and only the spec refusal below is store text.
+    it('reports a thrown gate error whole and exits 1', () => {
       useCwd(initRepoWithAdapter());
+      const long = `worktree has a held lock; ${'run `git config --unset x`. '.repeat(14)}`;
       vi.mocked(runMergeGate).mockImplementation(() => {
-        throw new Error('worktree has a held lock');
+        throw new Error(long);
       });
 
       buildProgram().parse(['merge', 's1'], { from: 'user' });
 
-      expect(errors).toEqual(['worktree has a held lock']);
+      expect(long.length).toBeGreaterThan(300);
+      expect(errors).toEqual([long]);
       expect(process.exitCode).toBe(1);
       expect(logs).toEqual([]);
     });

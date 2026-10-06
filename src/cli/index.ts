@@ -1616,8 +1616,10 @@ export function buildProgram(): Command {
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          // Scrubbed: a MalformedTaskSpecError quotes store text (decision 68).
-          return refuse(sanitizeLines(error instanceof Error ? error.message : String(error)));
+          // Only the spec refusal is store text; the rest are pup's own lines,
+          // whose remediation steps run past the scrubber's cut (decision 68).
+          if (error instanceof MalformedTaskSpecError) return refuse(sanitizeLines(error.message));
+          return refuse(error instanceof Error ? error.message : String(error));
         } finally {
           // The gate has released its own lock by now, so a later signal must
           // not reach a handler that would delete the next run's.
