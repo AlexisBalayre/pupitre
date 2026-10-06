@@ -235,6 +235,37 @@ describe('sweepDeadTurns', () => {
       expect(steerPane).toHaveBeenCalledTimes(1);
     });
 
+    it('records a session killed before its resume as refused, and resumes the next', () => {
+      seedRunningSession(db, repo, 's2', { pane: '%8' });
+      seedEventsFile(repo, 's2', STALL_AGE_MS);
+      // The operator kills s1 between the sweep listing it and its resume.
+      vi.mocked(deadTurnError).mockImplementation((pane: SessionPane) => {
+        if (pane.sessionId === 's1') transitionSession(db, 's1', 'killed');
+        return API_ERROR;
+      });
+
+      const resumed = sweepDeadTurns(db, repo, now());
+
+      expect(resumed).toEqual([
+        { id: 's1', reason: API_ERROR, refusal: expect.stringContaining('is killed') },
+        { id: 's2', reason: API_ERROR },
+      ]);
+      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([
+        {
+          reason: API_ERROR,
+          stalledAt: stallStampOf(repo, 's1'),
+          refusal: expect.stringContaining('is killed'),
+        },
+      ]);
+      expect(eventsOfType(db, 's1', 'steer')).toEqual([]);
+      expect(eventsOfType(db, 's2', 'steer')).toEqual([{ kind: 'resume', by: 'watch' }]);
+      expect(steerPane).toHaveBeenCalledTimes(1);
+      expect(steerPane).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 's2' }),
+        RESUME_MESSAGE,
+      );
+    });
+
     it('sanitizes the error line before recording it', () => {
       const esc = String.fromCharCode(27);
       vi.mocked(deadTurnError).mockReturnValue(`⏺ API Error: ${esc}[31mgone${esc}[0m`);
