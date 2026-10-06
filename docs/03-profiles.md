@@ -27,6 +27,7 @@ conventions: |
 skills: [api-testing, sql-review]
 subagents: [test-runner]
 hooks: []            # additive only; base hooks cannot be removed
+deny: [Agent]        # additive only; decision 74's denials cannot be removed
 mcp: []
 contextBudget: 6000   # hard cap for the compiled result, tokens
 ```
@@ -37,6 +38,14 @@ field, because a `contextBudget` that is not a number reaches the budget check a
 against `NaN` and turns the refusal off instead of failing loudly. Leaving either one out is fine;
 writing the key with an empty value is not, since YAML reads a bare `contextBudget:` as null rather
 than as an absent field, and it would otherwise fall back to the default budget.
+
+`deny` follows the same additive-only rule as `hooks` (decision 77). It lists tool names taken out
+of the session's toolset. The layers' lists are unioned, base first, and `compileProfile` writes
+`permissions.deny` as decision 74's `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode` followed
+by the layer denials, deduplicated in that order. A layer can therefore add a denial and never
+remove one. The parser refuses a `deny` that is not a list of non-empty strings with an
+`InvalidProfileError` naming the field, since a rule Claude Code cannot apply would leave the tool
+available. The conductor's settings are not compiled from layers, so `deny` never reaches it.
 
 ## Scope enforcement in a session (decisions 6, 63)
 
