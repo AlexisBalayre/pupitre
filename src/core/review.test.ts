@@ -147,19 +147,34 @@ describe('review service', { timeout: 20_000 }, () => {
   it('returns spec, per-file stats, and the last gate report in the detail view', () => {
     const worktree = seedSession(db, repo, 's-detail');
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\nexport const extra = 2;\n');
-    const report = {
-      sessionId: 's-detail',
-      passed: false,
-      stages: [{ stage: 'build', status: 'fail' as const, detail: 'boom' }],
-    };
-    appendEvent(db, 's-detail', 'gate_result', { report });
+    const stages = [{ stage: 'build', status: 'fail' as const, detail: 'boom' }];
+    appendEvent(db, 's-detail', 'gate_result', {
+      outcome: 'refused',
+      report: { sessionId: 's-detail', passed: false, sandbox: 'none', stages },
+    });
 
     const detail = buildSessionReview(db, repo, 's-detail');
 
     expect(detail.spec.goal).toBe('goal for s-detail');
     expect(detail.files).toEqual([{ path: 'src/feature.ts', added: 2, deleted: 0 }]);
-    expect(detail.lastGateReport).toEqual(report);
+    expect(detail.lastGateReport).toEqual({ passed: false, stages });
     expect(detail.state).toBe('awaiting-review');
+  });
+
+  // The payload is session-writable: a torn newest row is a gate result with
+  // no report, so the run before it is the last report on record.
+  it('reads past a gate_result whose payload is not JSON instead of throwing', () => {
+    seedSession(db, repo, 's-torn');
+    const stages = [{ stage: 'build', status: 'pass' as const }];
+    appendEvent(db, 's-torn', 'gate_result', {
+      outcome: 'refused',
+      report: { sessionId: 's-torn', passed: true, sandbox: 'none', stages },
+    });
+    db.prepare(
+      "INSERT INTO events (session_id, type, payload) VALUES ('s-torn', 'gate_result', '{\"report\":')",
+    ).run();
+
+    expect(buildSessionReview(db, repo, 's-torn').lastGateReport).toEqual({ passed: true, stages });
   });
 
   it('throws for a session that is not live', () => {

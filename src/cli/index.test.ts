@@ -2441,6 +2441,7 @@ describe('CLI commands', () => {
       transitionSession(db, NOISY_ID, 'running');
       transitionSession(db, NOISY_ID, 'awaiting-review');
       appendEvent(db, NOISY_ID, 'gate_result', {
+        outcome: 'refused',
         report: {
           sessionId: NOISY_ID,
           passed: false,

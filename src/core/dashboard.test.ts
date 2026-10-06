@@ -549,6 +549,7 @@ describe('buildDashboardSnapshot', () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');
       appendEvent(db, 's1', 'gate_result', {
+        outcome: 'refused',
         report: {
           sessionId: 's1',
           passed: false,
@@ -573,20 +574,18 @@ describe('buildDashboardSnapshot', () => {
       });
     });
 
-    // A stage detail is a failing test's own output, and the report is a
-    // payload a session can write: a torn member drops out, the rest is one
-    // terminal-safe line each.
-    it("lists the last gate's stages, dropping a malformed one and sanitizing the rest", () => {
+    // A stage detail is a failing test's own output: each is one
+    // terminal-safe line.
+    it("lists the last gate's stages, sanitized", () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');
       appendEvent(db, 's1', 'gate_result', {
+        outcome: 'refused',
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'none',
           stages: [
-            null,
-            { stage: 'build' },
             { stage: 'tests', status: 'fail', detail: '\u001b[31mFAIL\u001b[0m\n  at a.test.ts' },
           ],
         },

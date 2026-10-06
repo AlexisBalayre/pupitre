@@ -1,10 +1,17 @@
 import type { Database } from 'better-sqlite3';
 import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
-import { parseJsonOr } from './report-data.utils.js';
+import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { canTransition, claimedStates } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
+import type {
+  EventPayloads,
+  SessionEvent,
+  StoredGateReport,
+  StoredGateStage,
+  TransitionPayload,
+} from './types/session-event.types.js';
 
 export interface SessionRow {
   id: string;
@@ -405,7 +412,7 @@ export function transitionSession(
   db: Database,
   id: string,
   to: SessionState,
-  eventPayload: Record<string, unknown> = {},
+  eventPayload: TransitionPayload = {},
 ): SessionRow {
   const tx = db.transaction((sessionId: string, target: SessionState) => {
     const row = getSession(db, sessionId);
@@ -419,11 +426,11 @@ export function transitionSession(
   return tx(id, to);
 }
 
-export function appendEvent(
+export function appendEvent<TType extends EventType>(
   db: Database,
   sessionId: string | null,
-  type: EventType,
-  payload: Record<string, unknown> = {},
+  type: TType,
+  payload: EventPayloads[TType],
 ): void {
   db.prepare('INSERT INTO events (session_id, type, payload) VALUES (?, ?, ?)').run(
     sessionId,
@@ -437,6 +444,81 @@ export function listEvents(db: Database, sessionId: string): EventRow[] {
   return db
     .prepare('SELECT * FROM events WHERE session_id = ? ORDER BY id')
     .all(sessionId) as EventRow[];
+}
+
+/**
+ * Read one stored event back as the shape its type was written with — the one
+ * place a payload is parsed. A payload is session-writable: one that is not
+ * JSON, or a field of the wrong type, reads as absent rather than throwing, so
+ * a torn row degrades the reader that meets it instead of ending it. It guards
+ * shape and never sanitizes (decision 68).
+ */
+export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEvent {
+  const parsed = parseJsonOr<Record<string, unknown>>(row.payload, {});
+  // Every writer stores an object; a top-level array is a torn row like any other.
+  const fields = Array.isArray(parsed) ? {} : parsed;
+  const text = (key: string): string | undefined => {
+    const value = fields[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+  switch (row.type) {
+    case 'gate_result':
+      return {
+        type: 'gate_result',
+        report: decodeGateReport(fields.report),
+        from: text('from'),
+        to: text('to'),
+        outcome: text('outcome'),
+        reason: text('reason'),
+      };
+    case 'merge':
+      return {
+        type: 'merge',
+        target: text('target'),
+        files: asStringArray(fields.files),
+        prUrl: text('prUrl'),
+      };
+    case 'steer':
+      return { type: 'steer', kind: text('kind'), by: text('by') };
+    case 'session_done':
+      return { type: 'session_done', summary: text('summary') };
+    case 'question':
+      return { type: 'question', text: text('text') };
+    case 'turn_died':
+      // Keys in the order the watchdog writes them: the dossier prints this
+      // event as the JSON it was stored as.
+      return {
+        type: 'turn_died',
+        reason: text('reason'),
+        stalledAt: text('stalledAt'),
+        refusal: text('refusal'),
+      };
+    case 'handoff_ready':
+      return { type: 'handoff_ready', hash: text('hash') };
+    default:
+      return { type: 'other', eventType: row.type, fields };
+  }
+}
+
+function decodeGateReport(value: unknown): StoredGateReport | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const report = value as { passed?: unknown; stages?: unknown };
+  return {
+    passed: report.passed === true,
+    stages: Array.isArray(report.stages) ? report.stages.flatMap(decodeGateStage) : [],
+  };
+}
+
+/** One `null` member, or a stage with no `status`, drops out rather than ending the list. */
+function decodeGateStage(member: unknown): StoredGateStage[] {
+  if (member === null || typeof member !== 'object') return [];
+  const { stage, status, detail } = member as {
+    stage?: unknown;
+    status?: unknown;
+    detail?: unknown;
+  };
+  if (typeof stage !== 'string' || typeof status !== 'string') return [];
+  return [{ stage, status, ...(typeof detail === 'string' ? { detail } : {}) }];
 }
 
 export function incrementRejectCount(db: Database, id: string): number {

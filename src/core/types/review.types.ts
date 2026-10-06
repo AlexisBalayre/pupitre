@@ -1,6 +1,6 @@
 import type { DiffFileStat } from './git-diff.types.js';
-import type { GateReport } from './merge-gate.types.js';
 import type { TaskSpec } from './profile.types.js';
+import type { StoredGateReport } from './session-event.types.js';
 
 export interface ReviewQueueEntry {
   sessionId: string;
@@ -24,5 +24,5 @@ export interface SessionReviewDetail {
   worktreePath: string;
   files: DiffFileStat[];
   /** Most recent gate report, if the session has been through the gate. */
-  lastGateReport?: GateReport;
+  lastGateReport?: StoredGateReport;
 }

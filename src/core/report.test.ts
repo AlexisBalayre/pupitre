@@ -126,6 +126,7 @@ describe('renderReportHtml', () => {
   it('renders the outcome: session_done summary and the last gate report with stages', () => {
     seedSession(db, 's1', 'ship the widget');
     appendEvent(db, 's1', 'gate_result', {
+      outcome: 'refused',
       report: {
         sessionId: 's1',
         passed: false,
@@ -139,17 +140,6 @@ describe('renderReportHtml', () => {
 
     expect(session.doneSummary).toBe('widget shipped behind a flag');
     expect(session.gateStages).toEqual([{ stage: 'test', status: 'fail', detail: '2 failing' }]);
-  });
-
-  it('drops poisoned gate-stage members instead of killing the whole report', () => {
-    seedSession(db, 's1', 'goal');
-    appendEvent(db, 's1', 'gate_result', {
-      report: { sessionId: 's1', passed: false, sandbox: 'none', stages: [null, { stage: 'x' }] },
-    });
-
-    const [session] = embeddedData(renderReportHtml(db, REPO)).sessions;
-
-    expect(session.gateStages).toEqual([]);
   });
 
   it('normalises SQLite timestamps to ISO UTC and keeps capture timestamps as-is', () => {

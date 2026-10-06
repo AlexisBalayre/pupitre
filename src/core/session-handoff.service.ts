@@ -10,7 +10,13 @@ import {
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { projectPaths } from './paths.utils.js';
-import { appendEvent, getSession, type SessionRow } from './session.repository.js';
+import {
+  appendEvent,
+  decodeEvent,
+  getSession,
+  listEvents,
+  type SessionRow,
+} from './session.repository.js';
 import { sessionPane } from './session-lifecycle.service.js';
 
 const HANDOFF_POLL_MS = 5_000;
@@ -92,24 +98,22 @@ export function requestHandoff(
 
 /**
  * The hash the session signalled for, from the latest `handoff_ready` that
- * follows the request steer. With no request on record `MAX(id)` is NULL and
- * the comparison is never true, so a `handoff_ready` nobody asked for names no
- * hash and no session is ready by it (decision 44). The request is matched on
- * the `kind` it was written with, never on its text anywhere in the payload: a
+ * follows the request steer. Walking back from the newest event, a
+ * `handoff_ready` counts only once a request turns up behind it, so one nobody
+ * asked for names no hash and no session is ready by it (decision 44). The
+ * request is matched on the `kind` it was written with, never on its text
+ * anywhere in the payload: a
  * session controls the `by` of a steer it types, and a marker planted there
  * must not stand in for a request nobody made.
  */
 function signalledHash(db: Database, sessionId: string): string | undefined {
-  const row = db
-    .prepare(
-      `SELECT payload FROM events WHERE session_id = ? AND type = 'handoff_ready'
-       AND id > (SELECT MAX(id) FROM events WHERE session_id = ? AND type = 'steer'
-                 AND json_extract(payload, '$.kind') = 'handoff-request')
-       ORDER BY id DESC LIMIT 1`,
-    )
-    .get(sessionId, sessionId) as { payload: string } | undefined;
-  const hash = row ? (JSON.parse(row.payload) as { hash?: unknown }).hash : undefined;
-  return typeof hash === 'string' ? hash : undefined;
+  let ready: { hash?: string } | undefined;
+  for (const row of listEvents(db, sessionId).reverse()) {
+    const event = decodeEvent(row);
+    if (event.type === 'handoff_ready') ready ??= event;
+    else if (event.type === 'steer' && event.kind === 'handoff-request') return ready?.hash;
+  }
+  return undefined;
 }
 
 /**
