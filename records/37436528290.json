@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-06T08:32:18.541Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37436528290",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37436528290",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bb91321854494e81c45f71e57a506828fed8251e",
+  "source": "pr",
+  "pr_number": 126,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-handoff.test.ts",
+      "line": "182-183",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above the new test restates the new `signalledHash` JSDoc (a session controls `by`, only the request's `kind` counts); AGENTS.md says a WHY comment repeating the seam's doc should be deleted or cut to a pointer such as `// decision 44: the marker in `by` must not count as a request`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "1776-1780",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Decision 47 says a `--sent` message steer must be recorded as `{kind: 'message', by}` so that `isHandoffReady`'s last-steer query sees a request sent by message, but that query never counted a message steer as a request, and after this PR it matches only `kind = 'handoff-request'`; the sentence contradicts the code and could be reworded.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer made only 2 tool calls and said it did not open docs/conventions/*.md or docs/09-decisions.md, so it checked against AGENTS.md alone. On an 18-line diff that is low risk, and the docs and correctness reviewers both read decision 44, but the conventions coverage was partial."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1033982000000002,
+  "duration_ms": 89952,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 5671,
+    "cache_read": 159071,
+    "cache_creation": 29100,
+    "total": 193852
+  }
+}
