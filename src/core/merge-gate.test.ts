@@ -217,6 +217,26 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
   });
 
+  // A session can write any merge option into the target's `mergeOptions` in the
+  // shared config; the gate's merge must still be the fast-forward it asked for,
+  // and must not sign or verify through a planted program (decision 79).
+  it('fast-forwards past a planted branch.<target>.mergeOptions, running no gpg', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const fired = join(repo, '.git', 'fired');
+    const gpg = join(repo, '.git', 'planted-gpg');
+    writeFileSync(gpg, `#!/bin/sh\necho gpg >> ${fired}\nexit 1\n`, { mode: 0o755 });
+    sh(repo, 'git', 'config', 'gpg.program', gpg);
+    sh(repo, 'git', 'config', 'branch.main.mergeOptions', '-s ours -S');
+    const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+
+    const outcome = merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
+    expect(existsSync(fired)).toBe(false);
+  });
+
   describe('off darwin (decision 78)', () => {
     it('refuses before running any child unless the operator declared the VM', () => {
       const worktree = seedSession(db, repo);

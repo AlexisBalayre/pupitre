@@ -3987,9 +3987,12 @@ changes back into those docs is pending.
     resolves through a `pretty.*` alias. The test forges a signed commit in a temp repo, shows a
     plain `log`, `merge --ff-only` and `rebase` each fire the planted program, and shows `runGit`
     fires none. A fourth, also from review: `branch.<name>.mergeOptions` is read after `-c` and
-    before argv, so a planted `--verify-signatures` there beats the pin; the gate's merge passes
-    `--no-verify-signatures` itself, the one place a flag rather than a `-c` is the lever, and
-    the test plants that key too. An operator who relies on `merge.verifySignatures` to reject
+    before argv and takes any merge option, so a planted `--verify-signatures` beats the
+    verification pin, `-S` beats the sign pin, and `-s ours` or `--squash` turns `--ff-only`
+    into a merge that records the session as merged without moving the target. The gate's
+    merge blanks the key with its own `-c` (last-wins, and `-c` is read last), which only it
+    can do because the branch name is only known there, and passes `--no-verify-signatures`
+    besides; the gate test plants `-s ours -S` and asserts a clean fast-forward. An operator who relies on `merge.verifySignatures` to reject
     unsigned branches loses that check inside `pup merge`; the gate is the check pup applies,
     and a branch rule on the remote is the place for a signature requirement.
     *The `-z` trim.* Decision 73 made `runGit` return its output untrimmed so a `-z` listing

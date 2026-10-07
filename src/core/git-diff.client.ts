@@ -36,9 +36,11 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * `merge.verifySignatures` on `git merge --ff-only`. A `%G?` in
  * `rebase.instructionFormat` verifies every commit the gate's rebase replays,
  * so it is pinned to `%s`, a literal format git never resolves through a
- * `pretty.*` alias. The merge is the one place a `-c` is not enough:
- * `branch.<name>.mergeOptions` is read after `-c` and before argv, so the
- * gate's merge also passes `--no-verify-signatures` itself (decision 79).
+ * `pretty.*` alias. `branch.<name>.mergeOptions` is read after `-c` and
+ * before argv and takes any merge option (`--verify-signatures`, `-S`, `-s
+ * ours`, `--squash`), so a `-c` on the verification key alone is not enough;
+ * the gate's merge blanks that key itself with a `-c` of its own, since the
+ * branch name is only known there (decision 79).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
