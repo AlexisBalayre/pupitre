@@ -1,0 +1,103 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-07T14:49:57.895Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37639068857",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37639068857",
+  "actor": "AlexisBalayre",
+  "commit_sha": "72d14ffb7868016c18ee5a48c2f5409cf012bfac",
+  "source": "pr",
+  "pr_number": 136,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "24b26d4056fdb1656e9762963bf47ef1a5dc84b4",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "622-625",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "219-222",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new `-c branch.${target}.mergeOptions=` uses the branch name read at L219, before the merge lock. `git merge` reads `mergeOptions` for whatever branch HEAD names when it runs. A live session that repoints the main checkout's HEAD during the gate gets past the blank, and a planted `-s ours -S` signs through `gpg.program` as the operator.",
+      "body": "**The `mergeOptions` blank is keyed on a branch name read before the lock, so a HEAD swap gets around it**\n\n<https://github.com/AlexisBalayre/pupitre/blob/72d14ffb7868016c18ee5a48c2f5409cf012bfac/src/core/merge-gate.service.ts#L219-L222>\n\n`target` comes from `currentBranch(req.repoPath)` at L219. That happens before `withMergeLock`, and `target` is never read again. The merge at [L623-L630](https://github.com/AlexisBalayre/pupitre/blob/72d14ffb7868016c18ee5a48c2f5409cf012bfac/src/core/merge-gate.service.ts#L623-L630) blanks `branch.${target}.mergeOptions`. But `git merge` looks up `branch.<name>.mergeoptions` for the branch HEAD points to *when it runs*.\n\nThe session can carry this out:\n\n- **It can write the shared `.git/`.** Decision 41 says so, and decision 79's own threat model assumes it.\n- **It is still alive.** `killTmux` only runs at L667, after the merge.\n- **It knows when to act.** It can watch `.git/pup-merge.lock` appear, and the gate's stages then run for minutes.\n\nThe attack:\n\n1. Create `z` at main's tip.\n2. Plant `branch.z.mergeOptions=-s ours -S` and `gpg.program`.\n3. Once the lock appears, point the main checkout's HEAD at `z`.\n\nThe `-c` then blanks the unused `branch.main.mergeOptions`. `-s ours` forces a merge commit despite `--ff-only`, and `-S` signs it through the planted program, outside the sandbox. That is the exposure this PR and decision 79 set out to close, and the revised decision text says it is closed.\n\nA HEAD swap with no `mergeOptions` at all is older than this PR. The fast-forward lands on `z` while `main` stays put, and the session is still recorded `merged`; `branch -d` at L670 passes too, since it checks against HEAD.\n\n**Fix:** inside the lock, right before the merge, re-read `currentBranch(req.repoPath)` and refuse if it is not `target`. After the merge, check that `rev-parse refs/heads/${target}` equals the session tip before `transitionSession`. That second check fails closed on every \"recorded a merge that didn't happen\" path: a HEAD swap, `-s ours`, or `pull.twohead`.\n\nMedium confidence: the claim that git keys `mergeoptions` on HEAD at merge time comes from git's `builtin/merge.c`, not from running it here.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "625",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Git splits a `-c` argument at the first `=`, and a branch name may contain `=`. For a target like `x=y`, `-c branch.${target}.mergeOptions=` sets `branch.x` instead, so a planted `branch.x=y.mergeOptions` is never blanked.",
+      "body": "**A target branch name containing `=` stops the `mergeOptions` blank from working**\n\n<https://github.com/AlexisBalayre/pupitre/blob/72d14ffb7868016c18ee5a48c2f5409cf012bfac/src/core/merge-gate.service.ts#L625>\n\nGit splits a `-c` argument at the first `=`. `x=y` is a legal branch name. Reproduced read-only on git 2.55.0:\n\n```\n$ git check-ref-format --branch 'x=y'\nx=y\n$ git -c 'branch.x=y.mergeOptions=' config --get branch.x\ny.mergeOptions=\n```\n\nWhen the checked-out target is `x=y`, the gate sets the harmless key `branch.x`. A planted `[branch \"x=y\"] mergeOptions = -s ours -S` still applies, so `gpg.program` runs as the operator.\n\nGetting there needs no race. Decision 41 accepts that a session can write the shared `$GIT_COMMON_DIR`. Running `git branch -m main x=y` from the session's worktree renames the operator's checked-out branch, and that checkout's HEAD follows the rename. Nothing upstream validates the name: [`currentBranch`](https://github.com/AlexisBalayre/pupitre/blob/72d14ffb7868016c18ee5a48c2f5409cf012bfac/src/core/git-diff.client.ts#L123-L125) only trims, and L220 only checks for an empty string.\n\n**Fix:** refuse a `target` containing `=` at the existing guard, with a message saying why. If you would rather not refuse those names, pass the key via `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`, which do not split on `=`.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3995",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In decision 79, the line \"the gate test plants `-s ours -S` and asserts a clean fast-forward. An operator who relies on `merge.verifySignatures` to reject\" runs to about 140 characters, while the rest of the paragraph wraps at about 100. It should be re-wrapped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "52",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`pull.twohead` is not pinned. `git merge` uses it as the default two-head strategy whenever argv has no `-s`, so a planted `pull.twohead=ours` turns the gate's `--ff-only` into an ours-merge commit. The target ends up without the session's changes, yet the session is recorded `merged`. No program runs, since signing is pinned off. Fix: pass `-s ort` on the merge argv, or add `-c pull.twohead=ort` to `GIT_SAFE_CONFIG`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-maintainability and review-context. The delta is about 40 lines: one argv change, a test, and JSDoc and decision text. It has no structural logic and touches no spec, protocol or infra surface."
+    },
+    {
+      "component": "validator",
+      "description": "The validator for the `=`-branch finding could not run an env-based spike to show git reading `branch.x=y.mergeOptions` (the command needed approval). That step rests on reading git's source, so the finding stays at medium confidence."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9823445999999998,
+  "duration_ms": 363687,
+  "num_turns": 10,
+  "tokens": {
+    "input": 8,
+    "output": 8779,
+    "cache_read": 133672,
+    "cache_creation": 38171,
+    "total": 180630
+  }
+}
