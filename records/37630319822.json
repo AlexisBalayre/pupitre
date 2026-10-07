@@ -1,0 +1,123 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-07T13:47:31.193Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37630319822",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37630319822",
+  "actor": "AlexisBalayre",
+  "commit_sha": "24b26d4056fdb1656e9762963bf47ef1a5dc84b4",
+  "source": "pr",
+  "pr_number": 136,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "12aaf05b9402aefb8f66f5af16242df9ef07a107",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "621-623",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "622-625",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`--no-verify-signatures` only overrides `--verify-signatures`. A planted `branch.<target>.mergeOptions=-s ours -S` still turns the gate's `--ff-only` merge into a signed merge commit, which runs a planted `gpg.program` in the main checkout.",
+      "body": "**`branch.<target>.mergeOptions` can still make the gate's merge run `gpg.program`**\n\n<https://github.com/AlexisBalayre/pupitre/blob/24b26d4056fdb1656e9762963bf47ef1a5dc84b4/src/core/merge-gate.service.ts#L622-L625>\n\n`--no-verify-signatures` beats a planted `--verify-signatures`. But `mergeOptions` accepts any `git merge` option, and two of them still lead to a planted program:\n\n- **`-s ours` / `-s subtree`:** these strategies are flagged `NO_FAST_FORWARD`. After option parsing, `cmd_merge` sets `fast_forward = FF_NO` for them, which overwrites the `FF_ONLY` that argv's `--ff-only` set. The fast-forward is then skipped, `die_ff_impossible()` never fires, and git makes a real merge commit.\n- **`-S`:** it sets `sign_commit` after config is read, so it beats the [`-c commit.gpgsign=false`](https://github.com/AlexisBalayre/pupitre/blob/24b26d4056fdb1656e9762963bf47ef1a5dc84b4/src/core/git-diff.client.ts#L49-L64) pin, and the merge commit is signed through the planted `gpg.program`. A planted `-e` together with `core.editor` reaches an editor the same way.\n\n```\ngit config gpg.program /path/evil\ngit config branch.main.mergeOptions '-s ours -S'\n```\n\nBoth keys get past [`ARMED_DRIVER_KEY`](https://github.com/AlexisBalayre/pupitre/blob/24b26d4056fdb1656e9762963bf47ef1a5dc84b4/src/core/merge-gate.service.ts#L281), which only matches filter and merge drivers. With `-s ours` alone, the gate also records `merged` after discarding the session's tree.\n\n**Fix:** blank the whole key for this one call. `mergeOptions` is last-wins, and `-c` is read last, so an empty value parses to no options. `target` is already in scope:\n\n```ts\nrunGit(req.repoPath, [\n  '-c', `branch.${target}.mergeOptions=`,\n  'merge', '--ff-only', '--no-verify-signatures', session.branch,\n]);\n```\n\nThat also makes \"the one place a `-c` is not enough\" inaccurate in [the `GIT_SAFE_CONFIG` JSDoc](https://github.com/AlexisBalayre/pupitre/blob/24b26d4056fdb1656e9762963bf47ef1a5dc84b4/src/core/git-diff.client.ts#L39-L41) and decision 79 (`docs/09-decisions.md` L3989-3994). A `-c` on `merge.verifySignatures` is too weak, but a `-c` on the `mergeOptions` key itself is enough. Please also plant `branch.main.mergeOptions '-s ours -S'` in `signatureArmedRepo()`, then assert that HEAD equals `feature` and that `fired` is absent.\n\nThis is medium confidence: the `builtin/merge.c` ordering and the strategy override come from reading git source in a static review, and I did not reproduce them.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "480",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test types `--no-verify-signatures` into its own `runGit` call instead of going through the gate's merge, so if the flag were dropped from `merge-gate.service.ts` L625 the test would still pass.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "622-624",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new 3-line comment restates the GIT_SAFE_CONFIG JSDoc at git-diff.client.ts L39-41, which already says \"`branch.<name>.mergeOptions` is read after `-c` and before argv, so the gate's merge also passes `--no-verify-signatures` itself (decision 79)\". AGENTS.md says \"A WHY comment that restates the callee's JSDoc is a duplicate... if the seam already says it, delete the call-site copy.\" Cut it to a one-line pointer such as `// --no-verify-signatures: -c loses to branch.*.mergeOptions (decision 79)`, or delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3992",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The decision text calls the merge flag 'the one place a flag rather than a `-c` is the lever'. The same paragraph, and the JSDoc ('the sign flag is the lever'), already say the sign flags are a flag-not-`-c` lever too. The claim should be narrowed to something like 'the one verification setting a flag has to pin'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "39",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "'The merge is the one place a `-c` is not enough' sits a few lines after 'the sign flag is the lever, because gpg.program has no safe empty value'. The sign flags are another case where `-c` is not enough, so the sentence should say 'the one verification setting where -c is not enough'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "625",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`branch.<target>.mergeOptions` accepts more than `--verify-signatures`. A planted `--squash` makes `merge --ff-only` exit 0 after updating the index and worktree without moving HEAD ('Squash commit -- not updating HEAD'). The gate then marks the session `merged`, logs the merge event, ratchets the baseline and removes the worktree, and only then does `branch -d` throw 'not fully merged'. The session is recorded as merged, the target branch has not moved, and the changes sit uncommitted in the operator's checkout.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-maintainability and review-context. The delta is about 21 lines: one argv flag, a comment, JSDoc and decision text, and a test-fixture key. It has no structural logic and touches no spec, protocol or infra surface."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The security reviewer also raised a low-confidence pre-existing finding: a planted `pull.twohead=ours` forces a merge commit that discards the session's tree. The schema allows only high or medium confidence, so it was dropped; the important finding's fix of blanking mergeOptions does not cover pull.twohead."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0327829000000004,
+  "duration_ms": 407436,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 9571,
+    "cache_read": 220923,
+    "cache_creation": 38675,
+    "total": 269181
+  }
+}
