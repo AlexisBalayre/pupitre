@@ -1,0 +1,183 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-07T15:25:42.519Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37642639095",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37642639095",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ceaf2a1a055d150bfe457612bf93e75841414df3",
+  "source": "pr",
+  "pr_number": 136,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "72d14ffb7868016c18ee5a48c2f5409cf012bfac",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "219-222",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "625",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "633",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The HEAD re-read and `git merge` are two separate git processes. A session that flips the main checkout's .git/HEAD in a loop once the lock dir appears can pass the re-read as `main` and have the merge read `branch.<other>.mergeOptions=-s ours -S`, so gpg.program runs outside the sandbox before the after-merge ref check can stop anything.",
+      "body": "**The re-read under the lock still leaves a race before the merge, and the ref check runs too late to prevent a program from running**\n\n<https://github.com/AlexisBalayre/pupitre/blob/ceaf2a1a055d150bfe457612bf93e75841414df3/src/core/merge-gate.service.ts#L630-L648>\n\nThe re-read stops a session that moves HEAD during the stages and leaves it moved. It does not stop a session that times the move. `currentBranch` ([git-diff.client.ts#L127-L129](https://github.com/AlexisBalayre/pupitre/blob/ceaf2a1a055d150bfe457612bf93e75841414df3/src/core/git-diff.client.ts#L127-L129)) and the `git merge` are two separate `execFileSync` spawns. `git merge` resolves HEAD again on its own and applies `branch.<HEAD's branch>.mergeoptions`, but the `-c` blank is keyed on the name `target`.\n\nThe attack:\n\n- **The session can write HEAD.** The main checkout's HEAD is in the shared git dir, which decision 41 says the session can write.\n- **It can tell when the merge is near.** The lock is a plain `mkdirSync` of `.git/<MERGE_LOCK_DIRNAME>` (L146-149), which the session can watch for.\n- **It flips HEAD.** It plants `branch.evil.mergeOptions=-s ours -S` plus `gpg.program`, then rewrites HEAD between `refs/heads/main` and `refs/heads/evil` in a tight loop.\n- **It wins some attempts.** On some of them the re-read sees `main` and the merge sees `evil`.\n- **The program runs.** `-s ours` overrides `--ff-only`, and `-S` beats `commit.gpgsign=false` (decision 79 says both). `GIT_SAFE_CONFIG` cannot blank `gpg.program` (comment at L31-33), so the planted program runs in the main checkout with the operator's environment.\n\nThe ref check at L649-662 runs after the merge. It stops the session from being recorded `merged`, but the program has already run, and a failed attempt costs the session nothing but a refusal.\n\nDecision 79 presents the re-read as closing the moved-HEAD case and does not mention this window.\n\n**Fix:** do the fast-forward without porcelain `git merge`, so nothing consults HEAD's branch config, strategies or signing:\n\n1. Check `merge-base --is-ancestor <oldTarget> <sha>`.\n2. Update the checkout with `read-tree -m -u <oldTarget> <sha>`.\n3. Move the ref with `update-ref refs/heads/<target> <sha> <oldTarget>`.\n\nIf `git merge` stays, record the race in decision 79 as an accepted exposure.\n\nMedium confidence: how git resolves `mergeoptions` comes from git's `builtin/merge.c`, not from running it here.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "649-662",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When the post-merge ref check throws, the merge has already moved `refs/heads/<target>` to the wrong commit. The check only keeps the session from being recorded as merged. The error never shows where the target was before the merge, and every retry fails the same way until someone resets the target by hand.",
+      "body": "**The fail-closed check throws after the target has already moved, and leaves the operator no way back**\n\n<https://github.com/AlexisBalayre/pupitre/blob/ceaf2a1a055d150bfe457612bf93e75841414df3/src/core/merge-gate.service.ts#L640-L662>\n\nThe ref check runs only after `git merge` has succeeded. By then `refs/heads/<target>` and the main checkout's working tree have moved, and nothing moves them back before the throw.\n\nA session can trigger this without racing anything:\n\n1. `runGit` passes `session.branch` to `git merge` unqualified ([git-diff.client.ts#L109-L115](https://github.com/AlexisBalayre/pupitre/blob/ceaf2a1a055d150bfe457612bf93e75841414df3/src/core/git-diff.client.ts#L109-L115)).\n2. Git resolves a bare name as `refs/tags/<name>` before `refs/heads/<name>`, and `refs/tags` is shared across worktrees.\n3. So the session creates a lightweight tag named `pup/<slug>`, on a descendant X of the target.\n4. `isAncestor`, the scope audit, `countChangedLines`, `gitDiffAddedLines` and the `log` all resolve that same tag. Build, test and lint ran on the worktree's checkout, not on X.\n5. The merge fast-forwards the target to X. `landed` (X) ≠ `tip` (`refs/heads/<branch>`), so the gate throws.\n\nThe result: the target and the main checkout now hold X's contents, which were never built or tested. pup reports a refusal, and the message gives `landed` but not the commit to reset to. A retry finds the merge already up to date and throws again.\n\nDecision 79 calls this \"the one check that fails closed\". That is true for session state, not for the target branch.\n\n**Fix:** read the target's commit under the lock before the merge, and put it in the error with a reset instruction. Restoring automatically is riskier, since the working tree has already moved. Separately, passing `refs/heads/${session.branch}` wherever the gate names the branch closes the tag ambiguity.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "267-279",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'does not record a merge whose target ref did not land on the branch tip' asserts `merged`. It exercises the `pull.twohead=ort` pin and still passes with the ref check deleted. No test reaches the `Merge did not fast-forward` throw: rename it after the pin, and add a case that trips the check (e.g. a tag named like the session branch).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "651-655",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The post-merge check compares the target to `refs/heads/<session.branch>`, a ref the live session can write. A session that wins the HEAD-flip race can then copy the target's new sha into its branch so `landed === tip`. That makes decision 79's \"fails closed on every merge\" an overclaim; comparing against a sha pinned at gate time would hold.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "68-69",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`-c pull.twohead=ort` makes every `pup merge` die with \"Could not find merge strategy 'ort'\" on git older than 2.33 (e.g. Debian 11's 2.30), and no minimum git version is recorded. Document the minimum or pin a strategy older gits know.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "223-224",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above the `=` check ends with \"and a session can rename the checked-out branch\". That clause belongs to the re-read under the lock, which already says it, and here it suggests a name check is a race guard. Drop the clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "43-45",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `GIT_SAFE_CONFIG` JSDoc now says the gate \"checks the target ref landed on the branch tip afterwards\". That describes `gateAndMerge`, not this constant, and repeats decision 79 and the service comment. Keep only the `pull.twohead` rationale.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4004-4005",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In decision 79, the inline code `` `pup merge` `` is split across a line break (\"`pup\" / \"merge`\"), which makes it awkward to grep. Re-wrap so the span stays on one line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "416-647",
+      "area": "security",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The gate never pins the session branch's commit. The scope audit, diffs, log and merge all re-resolve `session.branch` by name while the session is alive, so commits it adds after build/test/scope passed are merged ungated. Resolve the sha once after fresh-base and use it everywhere, including the new ref comparison.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "217",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`assertNoArmedGitDrivers` runs once, before the lock and before minutes of stages. The live session can then plant `info/attributes` plus `filter.x.smudge`, and the fast-forward checkout in the main checkout runs that filter outside the sandbox. Re-run the check under the lock next to the new HEAD re-read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "225",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The target check refuses `=` but not a leading `-`. A session can point HEAD at `refs/heads/-x/abs/evil.sh`, and the gate's `git rebase <target>` at L352 then parses it as `--exec`. Refuse a leading `-` (or use `check-ref-format --branch`), and pass `refs/heads/${target}` as positionals.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context: the delta (~100 lines over 4 files) touches no spec, protocol or infra surface. Maintainability ran on sonnet single-instance (below the size gate)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Validation downgraded two reviewer importants. The live-tip comparator finding was split: the ungated-commits half predates this PR (merge-by-name at base 1d8af73 L622), and the half the PR introduces needs two timed races, so it became a nit. The test-coverage finding became a nit because production code is correct and only the test's name and coverage are off."
+    },
+    {
+      "component": "validator",
+      "description": "All git-internals claims (mergeoptions resolution at runtime, ref dwim order with tags first, -s ours overriding --ff-only) rest on knowledge of git's source, not on a spike, because the CI path is static. Those findings stay at medium confidence."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.3111479999999984,
+  "duration_ms": 437844,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 18383,
+    "cache_read": 338701,
+    "cache_creation": 55513,
+    "total": 412613
+  }
+}
