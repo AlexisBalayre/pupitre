@@ -3992,9 +3992,18 @@ changes back into those docs is pending.
     into a merge that records the session as merged without moving the target. The gate's
     merge blanks the key with its own `-c` (last-wins, and `-c` is read last), which only it
     can do because the branch name is only known there, and passes `--no-verify-signatures`
-    besides; the gate test plants `-s ours -S` and asserts a clean fast-forward. An operator who relies on `merge.verifySignatures` to reject
-    unsigned branches loses that check inside `pup merge`; the gate is the check pup applies,
-    and a branch rule on the remote is the place for a signature requirement.
+    besides; the gate test plants `-s ours -S` and asserts a clean fast-forward. Three more edges
+    from the same review: the blank is keyed on the branch name read before the lock, and a
+    session alive during the stages can move the main checkout's HEAD, so the gate re-reads the
+    checked-out branch under the lock and refuses if it changed, and after the merge it checks
+    that `refs/heads/<target>` is at the session's tip before recording `merged` — the one check
+    that fails closed on every merge that ran and was not the fast-forward asked for (a moved
+    HEAD, `-s ours`, `pull.twohead`, `--squash`). A target name with `=` is refused, because
+    git splits a `-c` at the first `=` and the blank would land on another key. `pull.twohead`
+    is pinned to `ort` since it is the strategy git takes when argv names none. An operator who
+    relies on `merge.verifySignatures` to reject unsigned branches loses that check inside `pup
+    merge`; the gate is the check pup applies, and a branch rule on the remote is the place for
+    a signature requirement.
     *The `-z` trim.* Decision 73 made `runGit` return its output untrimmed so a `-z` listing
     whose first path starts with a space would reach its parser whole, but `gitDiffPaths` and
     `gitDiffNumstat` still called `.trim()` before splitting on NUL, so a branch adding

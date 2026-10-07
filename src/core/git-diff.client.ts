@@ -40,7 +40,9 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * before argv and takes any merge option (`--verify-signatures`, `-S`, `-s
  * ours`, `--squash`), so a `-c` on the verification key alone is not enough;
  * the gate's merge blanks that key itself with a `-c` of its own, since the
- * branch name is only known there (decision 79).
+ * branch name is only known there, and checks the target ref landed on the
+ * branch tip afterwards. `pull.twohead` is the default strategy when argv
+ * names none, so it is pinned to `ort` (decision 79).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
@@ -63,6 +65,8 @@ const GIT_SAFE_CONFIG = [
   'merge.verifySignatures=false',
   '-c',
   'rebase.instructionFormat=%s',
+  '-c',
+  'pull.twohead=ort',
 ] as const;
 
 /**
