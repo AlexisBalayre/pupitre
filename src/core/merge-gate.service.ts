@@ -619,7 +619,10 @@ function gateAndMerge(
       prUrl = createPullRequest(req.repoPath, newPr);
     }
   } else {
-    runGit(req.repoPath, ['merge', '--ff-only', session.branch]);
+    // The flag, not only GIT_SAFE_CONFIG's `-c`: git reads `branch.<name>.mergeOptions`
+    // after `-c` and before argv, so a planted `--verify-signatures` there beats
+    // the pin and only the command line outranks it (decision 79).
+    runGit(req.repoPath, ['merge', '--ff-only', '--no-verify-signatures', session.branch]);
   }
   transitionSession(db, session.id, 'merged', { report });
   appendEvent(db, session.id, 'merge', {

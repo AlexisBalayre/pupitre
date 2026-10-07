@@ -3986,10 +3986,12 @@ changes back into those docs is pending.
     rebase replays, and a `%G?` in it verifies each one; pinned to `%s`, a literal git never
     resolves through a `pretty.*` alias. The test forges a signed commit in a temp repo, shows a
     plain `log`, `merge --ff-only` and `rebase` each fire the planted program, and shows `runGit`
-    fires none. An operator who relies
-    on `merge.verifySignatures` to reject unsigned branches loses that check inside `pup
-    merge`; the gate is the check pup applies, and a branch rule on the remote is the place
-    for a signature requirement.
+    fires none. A fourth, also from review: `branch.<name>.mergeOptions` is read after `-c` and
+    before argv, so a planted `--verify-signatures` there beats the pin; the gate's merge passes
+    `--no-verify-signatures` itself, the one place a flag rather than a `-c` is the lever, and
+    the test plants that key too. An operator who relies on `merge.verifySignatures` to reject
+    unsigned branches loses that check inside `pup merge`; the gate is the check pup applies,
+    and a branch rule on the remote is the place for a signature requirement.
     *The `-z` trim.* Decision 73 made `runGit` return its output untrimmed so a `-z` listing
     whose first path starts with a space would reach its parser whole, but `gitDiffPaths` and
     `gitDiffNumstat` still called `.trim()` before splitting on NUL, so a branch adding

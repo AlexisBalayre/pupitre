@@ -433,10 +433,12 @@ describe('runGit', () => {
     sh(repo, 'git', 'config', 'log.showSignature', 'true');
     sh(repo, 'git', 'config', 'merge.verifySignatures', 'true');
     sh(repo, 'git', 'config', 'rebase.instructionFormat', '%G?%s');
+    // Read after `-c` and before argv, so only a flag outranks it.
+    sh(repo, 'git', 'config', 'branch.main.mergeOptions', '--verify-signatures');
     return { repo, fired };
   }
 
-  // The control: without the two `-c` pairs, `log` and `merge` both run it.
+  // The control: without the `-c` pairs, `log` and `merge` both run it.
   it('runs in a repo where a plain log and ff-only merge fire the planted gpg.program', () => {
     const { repo, fired } = signatureArmedRepo();
     sh(repo, 'git', 'log', '-1', '--format=%s', 'feature');
@@ -447,7 +449,7 @@ describe('runGit', () => {
   });
 
   // The gate rebases the session's branch; the todo list it builds formats
-  // every replayed commit, so this path is the one `pup merge` always takes.
+  // every replayed commit, so this path is taken whenever the target has moved.
   it('runs in a repo where a plain rebase onto a moved target fires it too', () => {
     const { repo, fired } = signatureArmedRepo();
     writeFileSync(join(repo, 'b.ts'), 'two\n');
@@ -475,7 +477,7 @@ describe('runGit', () => {
     const { repo, fired } = signatureArmedRepo();
 
     expect(runGit(repo, ['log', '-1', '--format=%s', 'feature']).trim()).toBe('forged');
-    runGit(repo, ['merge', '--ff-only', 'feature'], { stdio: 'pipe' });
+    runGit(repo, ['merge', '--ff-only', '--no-verify-signatures', 'feature'], { stdio: 'pipe' });
 
     expect(currentBranch(repo)).toBe('main');
     expect(runGit(repo, ['log', '-1', '--format=%s']).trim()).toBe('forged');
