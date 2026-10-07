@@ -1,0 +1,113 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-07T13:29:08.591Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37628037962",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37628037962",
+  "actor": "AlexisBalayre",
+  "commit_sha": "12aaf05b9402aefb8f66f5af16242df9ef07a107",
+  "source": "pr",
+  "pr_number": 136,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "427beb6a2518346d15c45e88ba0b3c284c85c686",
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "44-57",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "621-623",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`-c merge.verifySignatures=false` is only a config default: a session-planted `branch.<target>.mergeOptions=--verify-signatures` is parsed after config and re-arms verification on the gate's `merge --ff-only`, running the planted `gpg.program` outside the sandbox.",
+      "body": "**`branch.<target>.mergeOptions` gets around `merge.verifySignatures=false`**\n\n<https://github.com/AlexisBalayre/pupitre/blob/12aaf05b9402aefb8f66f5af16242df9ef07a107/src/core/merge-gate.service.ts#L621-L623>\n\nDecision 79 says the gate's `merge --ff-only` no longer runs a planted `gpg.program`. The protection is [`-c merge.verifySignatures=false`](https://github.com/AlexisBalayre/pupitre/blob/12aaf05b9402aefb8f66f5af16242df9ef07a107/src/core/git-diff.client.ts#L58-L59), but that only sets a config default.\n\n`git merge` (`builtin/merge.c`) reads options in this order:\n1. config, including `-c` values;\n2. `branch.<current-branch>.mergeOptions`, parsed with the same option table;\n3. the command-line arguments.\n\nSo a planted `--verify-signatures` beats the `-c` pin.\n\nHow a session gets there:\n- It writes `branch.main.mergeOptions=--verify-signatures` next to `gpg.program` in the shared `$GIT_COMMON_DIR/config`. [`ARMED_DRIVER_KEY`](https://github.com/AlexisBalayre/pupitre/blob/12aaf05b9402aefb8f66f5af16242df9ef07a107/src/core/merge-gate.service.ts#L281) only matches filter and merge drivers, so nothing refuses the key.\n- It bases its branch on the target itself, so the `isAncestor` check at L340 skips the rebase and the forged `gpgsig` tip reaches the merge unchanged.\n- The gate's merge then verifies that tip and runs the program in the main checkout. This is the exposure decision 79 sets out to close.\n\nA `-c` can't clear this in general, because the key contains the branch name. A command-line flag is parsed last, so pass `--no-verify-signatures` explicitly.\n\nPlease also:\n- say in the `GIT_SAFE_CONFIG` JSDoc and in decision 79 why this one is a flag rather than a `-c`;\n- add a case to `signatureArmedRepo()` with `git config branch.main.mergeOptions --verify-signatures`.\n\nThis is medium confidence: the option-order claim comes from reading git source under a static review, and the planted config was not reproduced.",
+      "suggestion": "  } else {\n    runGit(req.repoPath, ['merge', '--ff-only', '--no-verify-signatures', session.branch]);\n  }"
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "449-450",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new comment says the rebase is \"the one `pup merge` always takes\", but the gate skips the rebase when the branch is already based on the target (merge-gate.service.ts:340-344). Say \"whenever the target has moved\" to match the test name.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "439",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The control comment still says \"without the two `-c` pairs, `log` and `merge` both run it\". This delta added a third pair and a separate rebase control, so that wording is stale. Use \"without the `-c` pairs\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3985-3992",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision 79 paragraph edit leaves a short dangling line (\"fires none. An operator who relies\") before full-width lines. Re-wrap the paragraph to the surrounding width.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "33-39",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc sentence chains \"A on X, and B on Y, and a `%G?` in Z — pinned to `%s`…\". The em-dash aside belongs only to the rebase item but reads as if it covers the whole list. Make the rebase item its own sentence.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported that the .claude/rules injection returned only `@docs/conventions/...` import lines, not the rule text. It did not read general.md, naming.md or testing.md directly, so its review rested on AGENTS.md, decision text and sibling-file patterns."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-maintainability and review-context. The delta is about 37 lines: one config-constant entry, a JSDoc and decision-text edit, and two tests. It has no structural logic and touches no spec, protocol or infra surface."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8345014,
+  "duration_ms": 332666,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 8395,
+    "cache_read": 201901,
+    "cache_creation": 38559,
+    "total": 248867
+  }
+}
