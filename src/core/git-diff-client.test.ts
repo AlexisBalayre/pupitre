@@ -432,6 +432,7 @@ describe('runGit', () => {
     sh(repo, 'git', 'config', 'gpg.program', gpg);
     sh(repo, 'git', 'config', 'log.showSignature', 'true');
     sh(repo, 'git', 'config', 'merge.verifySignatures', 'true');
+    sh(repo, 'git', 'config', 'rebase.instructionFormat', '%G?%s');
     return { repo, fired };
   }
 
@@ -443,6 +444,31 @@ describe('runGit', () => {
 
     expect(() => sh(repo, 'git', 'merge', '--ff-only', 'feature')).toThrow();
     expect(readFileSync(fired, 'utf8')).toBe('gpg\ngpg\n');
+  });
+
+  // The gate rebases the session's branch; the todo list it builds formats
+  // every replayed commit, so this path is the one `pup merge` always takes.
+  it('runs in a repo where a plain rebase onto a moved target fires it too', () => {
+    const { repo, fired } = signatureArmedRepo();
+    writeFileSync(join(repo, 'b.ts'), 'two\n');
+    commitAll(repo, 'advance main');
+    sh(repo, 'git', 'checkout', '-q', 'feature');
+
+    sh(repo, 'git', 'rebase', 'main');
+
+    expect(readFileSync(fired, 'utf8')).toContain('gpg');
+  });
+
+  it('formats no signature on rebase, so the planted gpg.program never runs there', () => {
+    const { repo, fired } = signatureArmedRepo();
+    writeFileSync(join(repo, 'b.ts'), 'two\n');
+    commitAll(repo, 'advance main');
+    sh(repo, 'git', 'checkout', '-q', 'feature');
+
+    runGit(repo, ['rebase', 'main'], { stdio: 'pipe' });
+
+    expect(runGit(repo, ['log', '-1', '--format=%s']).trim()).toBe('forged');
+    expect(existsSync(fired)).toBe(false);
   });
 
   it('verifies no signature on log or ff-only merge, so the planted gpg.program never runs', () => {

@@ -33,7 +33,10 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * the sign flag is the lever, because `gpg.program` has no safe empty value.
  * Verifying runs it too, on any commit carrying a `gpgsig` header, forged or
  * not: `log.showSignature` on the gate's `git log` and the code map's, and
- * `merge.verifySignatures` on `git merge --ff-only` (decision 79).
+ * `merge.verifySignatures` on `git merge --ff-only`, and a `%G?` in
+ * `rebase.instructionFormat` on the todo list the gate's rebase builds — pinned
+ * to `%s`, a literal format git never resolves through a `pretty.*` alias
+ * (decision 79).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
@@ -54,6 +57,8 @@ const GIT_SAFE_CONFIG = [
   'log.showSignature=false',
   '-c',
   'merge.verifySignatures=false',
+  '-c',
+  'rebase.instructionFormat=%s',
 ] as const;
 
 /**

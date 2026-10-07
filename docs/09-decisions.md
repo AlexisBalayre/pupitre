@@ -3982,8 +3982,11 @@ changes back into those docs is pending.
     comfort. `GIT_SAFE_CONFIG` now adds `-c log.showSignature=false -c
     merge.verifySignatures=false`, which turns both checks off rather than defanging the
     program, for the same reason as the sign flags: `gpg.program` has no safe empty value.
-    The test forges a signed commit in a temp repo, shows a plain `log` and `merge --ff-only`
-    each fire the planted program, and shows `runGit` fires neither. An operator who relies
+    A third path, found on review: `rebase.instructionFormat` formats every commit the gate's
+    rebase replays, and a `%G?` in it verifies each one; pinned to `%s`, a literal git never
+    resolves through a `pretty.*` alias. The test forges a signed commit in a temp repo, shows a
+    plain `log`, `merge --ff-only` and `rebase` each fire the planted program, and shows `runGit`
+    fires none. An operator who relies
     on `merge.verifySignatures` to reject unsigned branches loses that check inside `pup
     merge`; the gate is the check pup applies, and a branch rule on the remote is the place
     for a signature requirement.
