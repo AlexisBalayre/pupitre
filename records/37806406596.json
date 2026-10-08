@@ -1,0 +1,110 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-08T16:12:00.146Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37806406596",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37806406596",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ac4220187a105d64755301ac62810d327f4df4dd",
+  "source": "pr",
+  "pr_number": 137,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "deb704ddba3e6a66e3a1a5e298710bd57178d8aa",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "413-418",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "45",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1273-1284",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the main checkout is detached, the new paused branch skips straight to the next loop iteration, so `sweepDeadTurns` (dead-turn resumes and the conductor nudge) and `findStalledSessions` (STALLED lines) never run. Neither one depends on the target branch, and at deb704d they still ran in this state.",
+      "body": "**On a detached main checkout, `pup watch` now also stops the turn watchdog and the STALLED report, not only the overlap radar.**\n\nWhen `scanOverlaps` returns `undefined`, the new branch prints \"radar paused\", waits, and `continue`s. That happens before `sweepDeadTurns` (L1295) and `findStalledSessions` (L1306), so neither runs for as long as the checkout stays detached.\n\n- **Neither function needs a target branch.** `sweepDeadTurns` (`src/core/turn-watchdog.service.ts` L84-94) and `findStalledSessions` (`src/core/dashboard.service.ts` L192-204) only read session rows, events-file mtimes, and panes. Neither calls `currentBranch` or reads HEAD.\n- **This is a regression in ac42201.** At deb704d, `scanOverlaps` returned `[]` and the loop had no early exit, so the watchdog still ran on a detached checkout.\n- **Ordinary actions trigger it.** A rebase, a bisect, or `git checkout <sha>` in the main checkout detaches HEAD. Until it reattaches:\n  - sessions whose turn died are not resumed;\n  - the conductor is not nudged;\n  - no STALLED lines are printed.\n\n  The operator sees only \"radar paused\", which reads as if only the overlap radar stopped.\n- **Nothing marks the skip as intended.** Decision 80's addendum skips \"the overlap sweep\". Decision 35's addendum has the watchdog ride `pup watch`'s sweep, with no exception. The comment edited at L1290-1293 (\"recorded this sweep's beat (or withheld it, above)\") assumes the watchdog still runs after a withheld beat, but the `continue` means that case never reaches it.\n\n**Fix:** remove the early `continue` and fold \"paused\" into the existing dedup. Delete L1274-1284, then change the dedup section like this:\n\n```ts\nconst snapshot = JSON.stringify({\n  pairs: pairs ?? 'paused',\n  stalledIds: stalled.map((s) => s.id).sort(),\n});\nif (snapshot !== previous) {\n  const stamp = new Date().toISOString();\n  if (pairs === undefined) {\n    // Nothing was scanned: the stored overlaps and the beat were kept,\n    // so `pup status` reads the radar as stale.\n    console.log(`${stamp}  radar paused — main checkout is detached`);\n  } else if (pairs.length === 0 && stalled.length === 0) {\n    console.log(`${stamp}  clear — no overlaps`);\n  }\n  for (const pair of pairs ?? []) {\n```\n\nThe existing \"radar paused … never clear\" test still passes with this change: it has no sessions, so exactly the one paused line is logged.\n\n<https://github.com/AlexisBalayre/pupitre/blob/ac4220187a105d64755301ac62810d327f4df4dd/src/cli/index.ts#L1273-L1284>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "397-418",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "If `armedGitDrivers` throws, `armed` becomes `[\"(driver check failed: X)\"]`, so the message reads \"was not put back because (driver check failed: X) is armed\". That presents a read failure as an armed driver. Skipping the restore here is correct (it fails closed); the wording should say the driver check failed instead of \"is armed\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "335",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The symref rethrow is chosen by `error.message.includes('symbolic ref')`, so a session that deletes the loose target ref and writes a packed-refs line containing 'symbolic ref' gets git's raw `Command failed: … rev-parse …` stderr, including its own packed-refs text, printed in place of the 'moved from X to nowhere' refusal. Nothing is checked out either way and control characters are stripped (by git and by the CLI catch at src/cli/index.ts:1696). A typed error class (as ArmedGitDriverError does) would make the match exact.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1275",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new call-site comment 'nothing was scanned, and the stored overlaps and the beat were kept' repeats the explanation just written at the seam in src/core/overlap.service.ts:46-49 ('the stored overlaps and the beat are kept, and the caller can say the radar is paused'). general.md:130-132 (Seam-duplication test) says the explanation should live at the seam. Keep only the part that is specific to the caller, that `pup status` reads the radar as stale, or move the 'returns undefined' contract into scanOverlaps's JSDoc, which still describes an always-array return.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1273-1283",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The paused branch copies the loop tail (`if (opts.once) return; Atomics.wait(...); continue;`) and keeps `'paused'` in the same `previous` slot as the JSON snapshot. Any later change to the wait or the snapshot format now has to be made in two places.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4958652999999997,
+  "duration_ms": 188227,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 8732,
+    "cache_read": 215103,
+    "cache_creation": 41283,
+    "total": 265130
+  }
+}
