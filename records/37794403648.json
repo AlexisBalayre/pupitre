@@ -1,0 +1,211 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-08T14:48:19.989Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37794403648",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37794403648",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2b0b36125d171e2d7f206a0bb7c85fa3c9956549",
+  "source": "pr",
+  "pr_number": 137,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "325-380",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A live session can force the compare-and-swap failure on purpose by moving refs/heads/<target> during the stages. The gate then prints a 'paste this' read-tree -u command, which runs whatever smudge filter the session arms before the operator pastes it, with no driver check.",
+      "body": "**The checkout is rewritten before anything checks that the target is still where it was pinned. A session can trigger this on purpose.**\n\n`targetSha` is read under the lock at L484, before fresh-base and all the stages. Nothing reads `refs/heads/<target>` again before `read-tree -m -u targetSha sha` (L338-346) rewrites the main checkout. The only checks before it are the HEAD re-read (L787-793) and `assertNoArmedGitDrivers` (L794). The `update-ref` CAS at L354-362 is the first thing that notices a moved target.\n\n**How a session exploits it.** The session shares `.git`, so it can run `git update-ref refs/heads/<target> <any>` during the stages:\n1. Under the lock, `read-tree` succeeds, because the index still matches `targetSha`.\n2. The CAS fails.\n3. The gate prints a recovery line containing `read-tree … -m -u <sha> <targetSha>` (L368-376) for the operator to paste.\n\nThat line disables hooks, fsmonitor and submodules, but nothing in it checks `filter.*`, `info/attributes` or `core.attributesFile`. The session is still alive, because `killTmux` only runs on success (L836). It can therefore arm a smudge driver before the operator pastes, and `read-tree -u` then runs the driver in the operator's environment, outside the sandbox.\n\nDecision 80 accepts a millisecond window between the driver re-check and the gate's own spawn. This window lasts until the operator acts, and the session opens it at will.\n\n**Smaller effects of the same gap:**\n- An operator commit or `git pull` on the target during the stages now leaves their checkout rewritten. Before this PR, `merge --ff-only` refused cleanly in that case.\n- When `read-tree` refuses, the message at L349-350 says the target \"is still at `targetSha`\", which nothing verified.\n\n**Fix.** Re-resolve the target at the top of `fastForward` and refuse before touching the checkout. The CAS then stays as a backstop for the remaining few-millisecond race. If a restore line is still printed, tell the operator to clear `filter.*` and `info/attributes` first (decision 50's wording), or have pup run the inverse `read-tree` itself, under the lock, after `assertNoArmedGitDrivers`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/2b0b36125d171e2d7f206a0bb7c85fa3c9956549/src/core/merge-gate.service.ts#L325-L380>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/review.service.ts",
+      "line": "61-62",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`pup review` and the review queue still diff the bare `session.branch`, so a lightweight tag named like the branch now makes review show one commit while the gate merges another.",
+      "body": "**Review and the gate now resolve the session branch differently.**\n\n`review.service.ts` passes bare names to the diff client at L61 (`gitDiffPaths(repoPath, target, session.branch)`), L62 (`countChangedLines`), L91 (`liveSessionDiffs`) and L128 (`gitDiffNumstat`). `git-diff.client.ts` builds `${target}...${branch}` from those values verbatim. For a bare name, git looks up `refs/tags/<name>` before `refs/heads/<name>`. This PR's own `resolveCommit` JSDoc and decision 80 rely on that same fact.\n\n**Before this PR,** the gate used bare names too, so it resolved to the same tag that review showed.\n\n**After this PR,** the gate pins `refs/heads/<branch>` (L483-508) but review still resolves the tag. A session can tag a harmless commit `pup/<id>` and keep its real work on the branch:\n- `pup review` shows the tag's files and line counts.\n- The operator runs `pup merge`.\n- The gate merges the real branch.\n\nThe gate's hard stages still measure the real branch, so only the operator's own review is misled. Decision 80's \"Not closed here\" doesn't mention review or overlap. `overlap.service.ts` L45 uses the same bare-name pattern, with lower impact.\n\n**Fix:** pass `refs/heads/${target}` and `refs/heads/${session.branch}` at these call sites.\n\n<https://github.com/AlexisBalayre/pupitre/blob/2b0b36125d171e2d7f206a0bb7c85fa3c9956549/src/core/review.service.ts#L61-L62>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "485-522",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the rebase succeeds but the pinned branch is still not based on the target (for example, a detached worktree), the report records 'fresh-base: PASS — auto-rebased onto main' followed by 'fresh-base: FAIL'. That contradictory pair goes to the terminal and the re-steer prompt, and the test's `stages.at(-1)` assertion hides it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "318-323",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fastForward comment, and decision 80, say the update-ref CAS covers the race the HEAD re-read leaves open. It doesn't: a HEAD flip after the re-read leaves refs/heads/<target> unchanged, so the CAS passes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "838-849",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the session committed past the pin, the CAS branch delete fails silently. Nothing in the outcome or the output tells the operator that unmeasured commits were left on pup/<slug>.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "788-792",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The moved-HEAD refusal prints `checkedOut` raw. The value is re-read under the lock and never goes through assertTargetName or sanitizeReason, so a refname containing a C1 CSI or a bidi character reaches the operator's terminal. That contradicts decision 80's scrubbing claim.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "501-502",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fresh-base conflict hint puts the target name into a copy-paste `git rebase` command without shell quoting. Branch names may contain ; $ | and backticks, so a session that points HEAD at a crafted branch and forces a conflict gets the operator a command that runs code when pasted. `shellWord` is already available in this file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "270-298",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "assertTargetName (L270-278) and resolveCommit (L292-298) add two more inline 'run git, return undefined on failure' wrappers next to pushBranch's `leased` (L880). That is the third use, so a small `tryGit` helper would replace all three.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "295-358",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The '-evil' target-name test (L295-307) duplicates the it.each body right after it. Fold it in as one more [label, name, errorPattern] row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "324-329",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment \"`submodule.recurse` is pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again\" restates the GIT_SAFE_CONFIG JSDoc, which breaks the general.md seam-duplication rule. Drop that clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "254-272",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The assertTargetName JSDoc narrates history ('decision 79's, from when the merge keyed a -c on the name'), which general.md's no-journal-comments rule forbids. Its in-body comment also repeats the JSDoc's terminal-safety reason.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "285, 308",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc summaries of resolveCommit and shellWord are noun phrases. general.md asks for an imperative verb phrase, e.g. 'Resolve `ref` to a full commit sha.'",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "182-185, 477-482",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The runMergeGate JSDoc and the pin comment in gateAndMerge both repeat decision 80's 'Not closed here' caveat about stages that read the live worktree. Three copies will drift, so keep it in the decision only.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "357-368",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The update-ref failure message presents a moved target as the cause, but the catch also wraps unrelated failures such as a lock file or a permission error.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4008-4058",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 80 lists `update-index -q --refresh` without the `--ignore-submodules` flag the code uses. Decision 79's rewritten pointer repeats its next sentence. Decision 79's body and decision 50 still describe the removed ff-only merge in the present tense, with no superseded marker.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "291",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The driver check skips global config (for git-lfs), so with a global git-lfs install a session can attach filter=lfs through core.attributesFile or a tracked .gitattributes. It can then set lfs.customtransfer/standalonetransferagent keys that ARMED_DRIVER_KEY doesn't match. Any checkout, rebase or read-tree that smudges an LFS pointer then runs a program the session chose.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.048833200000001,
+  "duration_ms": 377032,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 14413,
+    "cache_read": 225233,
+    "cache_creation": 46937,
+    "total": 286595
+  }
+}
