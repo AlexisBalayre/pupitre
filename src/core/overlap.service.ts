@@ -42,7 +42,12 @@ export function scanOverlaps(db: Database, repoPath: string, now = new Date()): 
   const filesBySession: Record<string, string[]> = {};
   for (const session of live) {
     try {
-      filesBySession[session.id] = gitDiffPaths(repoPath, target, session.branch);
+      // `refs/heads/`, as the gate and the review name them (decision 80).
+      filesBySession[session.id] = gitDiffPaths(
+        repoPath,
+        `refs/heads/${target}`,
+        `refs/heads/${session.branch}`,
+      );
     } catch {
       // branch may have just been merged/deleted; the next sweep self-corrects
     }

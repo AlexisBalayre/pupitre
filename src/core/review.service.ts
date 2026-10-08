@@ -58,8 +58,14 @@ function buildEntry(
   session: SessionRow,
   liveDiffs: Map<string, Set<string>>,
 ): ReviewQueueEntry {
-  const paths = gitDiffPaths(repoPath, target, session.branch);
-  const changedLines = countChangedLines(repoPath, target, session.branch).lines;
+  // `refs/heads/`, as the gate names them (decision 80): a bare name resolves
+  // a same-named tag first, and the review must show what the gate will merge.
+  const paths = gitDiffPaths(repoPath, `refs/heads/${target}`, `refs/heads/${session.branch}`);
+  const changedLines = countChangedLines(
+    repoPath,
+    `refs/heads/${target}`,
+    `refs/heads/${session.branch}`,
+  ).lines;
   const scopeViolations = scopeViolationCount(db, session.id);
   const overlaps = overlapCount(session, paths, liveDiffs);
   const risk =
@@ -88,7 +94,10 @@ function liveSessionDiffs(
 ): Map<string, Set<string>> {
   const diffs = new Map<string, Set<string>>();
   for (const session of sessions) {
-    diffs.set(session.id, new Set(gitDiffPaths(repoPath, target, session.branch)));
+    diffs.set(
+      session.id,
+      new Set(gitDiffPaths(repoPath, `refs/heads/${target}`, `refs/heads/${session.branch}`)),
+    );
   }
   return diffs;
 }
@@ -125,7 +134,7 @@ export function buildSessionReview(
     spec: readTaskSpec(db, session.task_id),
     state: session.state,
     worktreePath: session.worktree_path,
-    files: gitDiffNumstat(repoPath, target, session.branch),
+    files: gitDiffNumstat(repoPath, `refs/heads/${target}`, `refs/heads/${session.branch}`),
     lastGateReport: lastGateReport(db, session.id),
   };
 }

@@ -410,7 +410,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
       writeFileSync(join(repo, 'src', 'app.ts'), 'export const app = 3;\n');
 
-      expect(() => merge()).toThrow(/refused by the checkout; nothing moved, main is still at/);
+      expect(() => merge()).toThrow(/refused by the checkout; the ref was not moved/);
 
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(readFileSync(join(repo, 'src', 'app.ts'), 'utf8')).toBe('export const app = 3;\n');
@@ -454,7 +454,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).not.toBe(pinned);
     });
 
-    it('refuses a target moved under the lock with the compare-and-swap, recording nothing', () => {
+    // Refused before the checkout is touched: the target is re-read right
+    // before read-tree, so a moved target never leaves the main checkout on the
+    // new tree with a restore line for a live session to arm against.
+    it('refuses a target moved during the stages before touching the checkout', () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
@@ -484,15 +487,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }
       })();
 
-      expect(refusal).toMatch(/compare-and-swap refuses if main moved/);
-      // The pre-merge sha and the way back, on one line.
-      expect(refusal).toContain(`main was at ${before} before the merge`);
-      expect(refusal).toMatch(
-        new RegExp(
-          `read-tree --no-recurse-submodules --no-sparse-checkout -m -u \\w+ ${before}\\n`,
-        ),
-      );
+      expect(refusal).toContain(`main moved from ${before} to ${moved} while the gate ran`);
+      expect(refusal).toContain('nothing was checked out');
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(moved);
+      // The main checkout's files are the target's, untouched.
+      expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
       expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
       expect(existsSync(worktree)).toBe(true);

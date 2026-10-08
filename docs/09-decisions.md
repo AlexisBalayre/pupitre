@@ -4060,11 +4060,17 @@ changes back into those docs is pending.
     submodule.recurse=false`, because with it set a tracked `.gitmodules` let the checkout (and
     the rebase) recurse into a planted `.git/modules/<name>` whose own config and attributes arm a
     smudge filter no driver check reads (found on review, reproduced; it predates this decision).
-    Nothing is recorded on any failure. A refused checkout moved nothing and says so; a refused
-    compare-and-swap leaves the moved ref alone and prints the target's pre-merge sha and the one
-    line that puts the checkout back, the inverse `read-tree -m -u <sha> <targetSha>`, which
-    keeps local changes, with hooks, fsmonitor and submodules off since the operator runs it in
-    the shared repo.
+    Nothing is recorded on any failure. The target is read once more right before `read-tree`
+    (found on review): pinned before the stages, a session alive through them can move it on
+    purpose, and a refusal after the checkout would have left a restore line for the operator to
+    paste while the session arms a smudge filter against it; so a moved target is refused before
+    the checkout is touched, and the compare-and-swap is the backstop for the milliseconds in
+    between. A refused checkout moved nothing and says so. A refused compare-and-swap leaves the
+    moved ref alone and pup itself runs the inverse `read-tree -m -u <sha> <targetSha>` under the
+    lock, right after the driver check, keeping local changes; only when that inverse fails too
+    does it print the line, with the order to clear `filter.*` and `info/attributes` first
+    (decision 50). `pup review` and the overlap scan name `refs/heads/` too (found on review): a
+    bare name resolves a same-named tag first, and the review must show what the gate merges.
     *The driver check runs twice.* `assertNoArmedGitDrivers` runs again on the main checkout under
     the lock, next to the HEAD re-read and before the checkout, because `read-tree -u` runs a
     smudge filter on every file it writes. This narrows decision 50's window to the few

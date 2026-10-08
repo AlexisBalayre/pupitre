@@ -324,6 +324,16 @@ function shellWord(word: string): string {
  */
 function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
   const shown = sanitizeReason(target);
+  // Before the checkout is touched, not only at the compare-and-swap after it:
+  // the target was pinned before the stages, and a session alive through them
+  // can move it on purpose so that the restore line below is what runs next.
+  const now = resolveCommit(repoPath, `refs/heads/${target}`);
+  if (now !== targetSha) {
+    throw new Error(
+      `${shown} moved from ${targetSha} to ${now} while the gate ran; nothing was checked out ` +
+        'and nothing was recorded as merged.',
+    );
+  }
   // `--work-tree` because `core.worktree` sits in the shared config and would
   // aim the checkout's writes wherever a session chose; `submodule.recurse` is
   // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again; and
@@ -346,8 +356,8 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
     ]);
   } catch (error) {
     throw new Error(
-      `Fast-forward of ${shown} to ${sha} refused by the checkout; nothing moved, ${shown} is ` +
-        `still at ${targetSha}, and nothing was recorded as merged.\n${commandFailureDetail(error)}`,
+      `Fast-forward of ${shown} to ${sha} refused by the checkout; the ref was not moved and ` +
+        `nothing was recorded as merged.\n${commandFailureDetail(error)}`,
     );
   }
   try {
@@ -361,19 +371,38 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
       targetSha,
     ]);
   } catch (error) {
-    // The checkout already holds the new tree and the ref does not, so the way
-    // back is named rather than guessed at: the inverse two-way read-tree,
-    // which keeps local changes and leaves the moved ref alone. Hooks, the
-    // fsmonitor and submodules off, because the operator runs it in the shared repo.
+    // The checkout holds the new tree and the ref does not. The inverse two-way
+    // read-tree puts it back, run here under the lock right after the driver
+    // check rather than printed for later: a session alive meanwhile could arm
+    // a smudge filter for the operator's paste.
+    const restored = (() => {
+      try {
+        checkout([
+          'read-tree',
+          '--no-recurse-submodules',
+          '--no-sparse-checkout',
+          '-m',
+          '-u',
+          sha,
+          targetSha,
+        ]);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
     const git =
       `git -C ${shellWord(repoPath)} --work-tree ${shellWord(repoPath)} ` +
       '-c core.hooksPath=/dev/null -c core.fsmonitor= -c submodule.recurse=false';
     throw new Error(
       `Fast-forward of ${shown} to ${sha} failed, and nothing was recorded as merged: the ` +
         `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
-        `the ref was left where it is.\n${shown} was at ${targetSha} before the merge, and the ` +
-        `main checkout now holds ${sha}'s files. To put the checkout back:\n` +
-        `  ${git} read-tree --no-recurse-submodules --no-sparse-checkout -m -u ${sha} ${targetSha}\n` +
+        `the ref was left where it is.\n` +
+        (restored
+          ? `The main checkout was put back to ${targetSha}'s files.\n`
+          : `The main checkout still holds ${sha}'s files. Clear any filter.* config and ` +
+            `info/attributes first (decision 50), then put it back with:\n` +
+            `  ${git} read-tree --no-recurse-submodules --no-sparse-checkout -m -u ${sha} ${targetSha}\n`) +
         commandFailureDetail(error),
     );
   }
@@ -499,7 +528,7 @@ function gateAndMerge(
         status: 'fail',
         detail:
           `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
-          `\`git rebase refs/heads/${sanitizeReason(target)}\`, ` +
+          `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
           `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
       });
       return failed();
@@ -510,6 +539,8 @@ function gateAndMerge(
   // detached it or switched branch leaves the pinned branch behind the target:
   // no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
+    // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
+    stages.pop();
     stages.push({
       stage: 'fresh-base',
       status: 'fail',
@@ -787,7 +818,8 @@ function gateAndMerge(
     const checkedOut = currentBranch(req.repoPath);
     if (checkedOut !== target) {
       throw new Error(
-        `Main worktree moved from ${target} to ${checkedOut || 'no branch'} while the gate ran; ` +
+        `Main worktree moved from ${sanitizeReason(target)} to ` +
+          `${checkedOut ? sanitizeReason(checkedOut) : 'no branch'} while the gate ran; ` +
           'nothing was merged.',
       );
     }
