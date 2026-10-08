@@ -217,6 +217,77 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
   });
 
+  // A session can write any merge option into the target's `mergeOptions` in the
+  // shared config; the gate's merge must still be the fast-forward it asked for,
+  // and must not sign or verify through a planted program (decision 79).
+  it('fast-forwards past a planted branch.<target>.mergeOptions, running no gpg', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const fired = join(repo, '.git', 'fired');
+    const gpg = join(repo, '.git', 'planted-gpg');
+    writeFileSync(gpg, `#!/bin/sh\necho gpg >> ${fired}\nexit 1\n`, { mode: 0o755 });
+    sh(repo, 'git', 'config', 'gpg.program', gpg);
+    sh(repo, 'git', 'config', 'branch.main.mergeOptions', '-s ours -S');
+    const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+
+    const outcome = merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  // The target is read before the lock and the session outlives the stages, so
+  // the merge must run against the branch the gate was asked to move, or not at
+  // all; and what it recorded must be what the ref says (decision 79).
+  it('refuses when the main checkout changed branch during the stages, recording nothing', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(repo, 'git', 'branch', 'elsewhere');
+    // `gateCommands` runs in-process after the target was read and before the
+    // merge: the one seam a test can move the main checkout from, standing in
+    // for a session that does it while the stages run.
+    const movingAdapter: Adapter = {
+      ...passingAdapter,
+      gateCommands: (repoPath) => {
+        sh(repoPath, 'git', 'checkout', '-q', 'elsewhere');
+        return passingAdapter.gateCommands(repoPath);
+      },
+    };
+
+    expect(() => merge(movingAdapter)).toThrow(/moved from main to elsewhere/);
+
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(sh(repo, 'git', 'rev-parse', 'main').trim()).not.toBe(
+      sh(worktree, 'git', 'rev-parse', 'HEAD').trim(),
+    );
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  it('fast-forwards past a planted pull.twohead, the strategy git takes when argv names none', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    // A default strategy that keeps the target's tree: without the pin and the
+    // ref check this read as merged with the session's work discarded.
+    sh(repo, 'git', 'config', 'pull.twohead', 'ours');
+    const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+
+    const outcome = merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
+  });
+
+  it('refuses a target branch whose name contains =, before any stage runs', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(repo, 'git', 'branch', '-m', 'main', 'x=y');
+
+    expect(() => merge()).toThrow(/'=' in its name/);
+
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
   describe('off darwin (decision 78)', () => {
     it('refuses before running any child unless the operator declared the VM', () => {
       const worktree = seedSession(db, repo);

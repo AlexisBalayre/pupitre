@@ -220,6 +220,14 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
   }
+  // git splits a `-c` at the first `=`, so the mergeOptions blank below would
+  // land on another key; and a session can rename the checked-out branch.
+  if (target.includes('=')) {
+    throw new Error(
+      `Target branch ${target} has an '=' in its name, which no git -c can address; rename it ` +
+        'from the trusted checkout before merging.',
+    );
+  }
   let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
     assertGhAvailable();
@@ -619,7 +627,39 @@ function gateAndMerge(
       prUrl = createPullRequest(req.repoPath, newPr);
     }
   } else {
-    runGit(req.repoPath, ['merge', '--ff-only', session.branch]);
+    // Re-read under the lock: `target` was read before it, the session is
+    // still alive, and `mergeOptions` is keyed on whatever HEAD names when the
+    // merge runs (decision 79).
+    const checkedOut = currentBranch(req.repoPath);
+    if (checkedOut !== target) {
+      throw new Error(
+        `Main worktree moved from ${target} to ${checkedOut || 'no branch'} while the gate ran; ` +
+          'nothing was merged.',
+      );
+    }
+    // branch.<target>.mergeOptions blanked: it takes any merge option (decision 79).
+    runGit(req.repoPath, [
+      '-c',
+      `branch.${target}.mergeOptions=`,
+      'merge',
+      '--ff-only',
+      '--no-verify-signatures',
+      session.branch,
+    ]);
+    // The ref, not HEAD or the exit code: every way a merge can run and not
+    // be the fast-forward it was asked for leaves the target elsewhere.
+    const landed = runGit(req.repoPath, ['rev-parse', '--verify', `refs/heads/${target}`]).trim();
+    const tip = runGit(req.repoPath, [
+      'rev-parse',
+      '--verify',
+      `refs/heads/${session.branch}`,
+    ]).trim();
+    if (landed !== tip) {
+      throw new Error(
+        `Merge did not fast-forward ${target} to ${session.branch} (${target} is at ${landed}, ` +
+          `the branch at ${tip}); not recorded as merged.`,
+      );
+    }
   }
   transitionSession(db, session.id, 'merged', { report });
   appendEvent(db, session.id, 'merge', {
