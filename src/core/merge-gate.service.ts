@@ -394,14 +394,15 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
     ];
     // The driver read can itself fail on a config a session mangled; that must
     // not replace the report of what happened to the checkout.
-    let armed: string[];
+    let armed: string[] = [];
+    let unchecked: string | undefined;
     try {
       armed = armedGitDrivers(repoPath);
     } catch (failed) {
-      armed = [`(driver check failed: ${sanitizeReason(failureSummary(failed))})`];
+      unchecked = sanitizeReason(failureSummary(failed));
     }
     let restored = false;
-    if (armed.length === 0) {
+    if (armed.length === 0 && unchecked === undefined) {
       try {
         checkout(inverse);
         restored = true;
@@ -415,7 +416,12 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
     // The pasted line runs later, while sessions are alive, and a smudge filter
     // has no -c disarm: the order to clear drivers first is the line's only
     // protection, so it is printed whether or not one was armed just now.
-    const why = armed.length > 0 ? ` because ${armed.join(', ')} is armed` : '';
+    const why =
+      armed.length > 0
+        ? ` because ${armed.join(', ')} is armed`
+        : unchecked !== undefined
+          ? ` because the driver check failed: ${unchecked}`
+          : '';
     const checkoutState = restored
       ? `The main checkout was put back to ${targetSha}'s files.\n`
       : `The main checkout still holds ${sha}'s files and was not put back${why}. Clear any ` +
