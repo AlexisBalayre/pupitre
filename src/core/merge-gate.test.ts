@@ -264,7 +264,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(worktree)).toBe(true);
   });
 
-  it('does not record a merge whose target ref did not land on the branch tip', () => {
+  it('fast-forwards past a planted pull.twohead, the strategy git takes when argv names none', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     // A default strategy that keeps the target's tree: without the pin and the
