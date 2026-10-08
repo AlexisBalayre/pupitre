@@ -322,6 +322,70 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(existsSync(join(repo, 'notes.txt'))).toBe(false);
     });
 
+    it('refuses a target name check-ref-format rejects, though it has no - or =', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      // A valid refname but no branch name; the HEAD file is the session's to write.
+      sh(repo, 'git', 'update-ref', 'refs/heads/HEAD', 'main');
+      writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/HEAD\n');
+      const gateCommands = vi.fn(passingAdapter.gateCommands);
+
+      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(
+        /HEAD is not a name git accepts for a branch/,
+      );
+
+      expect(gateCommands).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    // check-ref-format accepts both, and the name is printed in every refusal.
+    it.each([
+      ['a bidi override', 'ma‮in'],
+      ['a C1 control', 'ma\u009bin'],
+    ])('refuses a target name carrying %s, before any stage runs', (_label, name) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      sh(repo, 'git', 'update-ref', `refs/heads/${name}`, 'main');
+      sh(repo, 'git', 'symbolic-ref', 'HEAD', `refs/heads/${name}`);
+      const gateCommands = vi.fn(passingAdapter.gateCommands);
+
+      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(
+        /has a control or format character in its name/,
+      );
+
+      expect(gateCommands).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    // The rebase runs on whatever the worktree has checked out; detached, it
+    // leaves the branch where it was, and the pin is then no fast-forward.
+    it('refuses a pinned branch the target is not an ancestor of, merging nothing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      commitIn(repo, 'README.md', '# hello\n');
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+      sh(worktree, 'git', 'checkout', '-q', '--detach');
+
+      expect(() => merge()).toThrow(/is not an ancestor of the gated/);
+
+      expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+    });
+
+    it('refuses when the checkout would overwrite a local change, moving nothing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+      writeFileSync(join(repo, 'src', 'app.ts'), 'export const app = 3;\n');
+
+      expect(() => merge()).toThrow(/refused by the checkout; nothing moved, main is still at/);
+
+      expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
+      expect(readFileSync(join(repo, 'src', 'app.ts'), 'utf8')).toBe('export const app = 3;\n');
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
     // Pinned through the symref, the branch would be main itself: an empty
     // diff passing every stage, then a delete through it that took main along.
     it('refuses a session branch turned into a symref to the target, and main survives', () => {

@@ -248,7 +248,8 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
 /**
  * Refuse a target name git would not create as a branch. A session can point
  * the main checkout's HEAD at any `refs/heads/` name by writing the file, and a
- * leading `-` reads as an option wherever the name is argv. `check-ref-format
+ * leading `-` reads as an option wherever the name is argv, and a control or
+ * bidi character would reach the operator's terminal. `check-ref-format
  * --branch` also expands `@{-N}`, so its answer must be the name it was asked
  * about. The `=` refusal is decision 79's, from when the merge keyed a `-c` on
  * the name; it stays because a refusal set only grows (decision 80).
@@ -262,6 +263,9 @@ function assertTargetName(repoPath: string, target: string): void {
   };
   if (target.startsWith('-')) refuse("starts with '-', which git would read as an option");
   if (target.includes('=')) refuse("has an '=' in its name, which no git -c can address");
+  // check-ref-format lets C1 controls and bidi overrides through, and the name
+  // is printed in every refusal and report line below.
+  if (/[\p{Cc}\p{Cf}]/u.test(target)) refuse('has a control or format character in its name');
   const checked = (() => {
     try {
       return runGit(repoPath, ['check-ref-format', '--branch', target], {
@@ -317,9 +321,10 @@ function shellWord(word: string): string {
  * target turned into a symref after the pin is rewritten, not followed.
  */
 function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
+  const shown = sanitizeReason(target);
   if (!isAncestor(repoPath, targetSha, sha)) {
     throw new Error(
-      `${target} at ${targetSha} is not an ancestor of the gated ${sha}, so this is no ` +
+      `${shown} at ${targetSha} is not an ancestor of the gated ${sha}, so this is no ` +
         'fast-forward; nothing was merged.',
     );
   }
@@ -335,7 +340,7 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
     checkout(['read-tree', '--no-recurse-submodules', '-m', '-u', targetSha, sha]);
   } catch (error) {
     throw new Error(
-      `Fast-forward of ${target} to ${sha} refused by the checkout; nothing moved, ${target} is ` +
+      `Fast-forward of ${shown} to ${sha} refused by the checkout; nothing moved, ${shown} is ` +
         `still at ${targetSha}, and nothing was recorded as merged.\n${commandFailureDetail(error)}`,
     );
   }
@@ -358,9 +363,9 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
       `git -C ${shellWord(repoPath)} --work-tree ${shellWord(repoPath)} ` +
       '-c core.hooksPath=/dev/null -c core.fsmonitor= -c submodule.recurse=false';
     throw new Error(
-      `Fast-forward of ${target} to ${sha} failed, and nothing was recorded as merged: the ` +
-        `compare-and-swap refuses if ${target} moved from ${targetSha} under the lock, and ` +
-        `the ref was left where it is.\n${target} was at ${targetSha} before the merge, and the ` +
+      `Fast-forward of ${shown} to ${sha} failed, and nothing was recorded as merged: the ` +
+        `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
+        `the ref was left where it is.\n${shown} was at ${targetSha} before the merge, and the ` +
         `main checkout now holds ${sha}'s files. To put the checkout back:\n` +
         `  ${git} read-tree --no-recurse-submodules -m -u ${sha} ${targetSha}\n` +
         commandFailureDetail(error),
@@ -486,7 +491,8 @@ function gateAndMerge(
         stage: 'fresh-base',
         status: 'fail',
         detail:
-          `Auto-rebase onto ${target} hit conflicts. Run \`git rebase ${target}\`, ` +
+          `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
+          `\`git rebase refs/heads/${sanitizeReason(target)}\`, ` +
           `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
       });
       return failed();
@@ -889,7 +895,9 @@ function pushBranch(repoPath: string, originUrl: string, branch: string, tip: st
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  runGit(repoPath, ['update-ref', tracking, tip]);
+  // `--no-deref`, like the gate's other ref writes: a tracking ref a session
+  // turned into a symref must not move the branch it points at.
+  runGit(repoPath, ['update-ref', '--no-deref', tracking, tip]);
 }
 
 function prTitle(goal: string): string {

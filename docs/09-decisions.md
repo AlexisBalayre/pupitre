@@ -4040,7 +4040,8 @@ changes back into those docs is pending.
     makes later changes nothing the gate measures or lands. Either ref being a symbolic ref is
     refused at the pin: a branch symref'd to `main` pins `main`'s own sha, passes every stage on
     an empty diff, and the delete below would have removed `main` through it (found on review,
-    reproduced). The ref updates also pass `--no-deref`, for a symref written after the pin.
+    reproduced). Every ref the gate writes passes `--no-deref`, for a symref written after the
+    pin: the target, the branch delete, and the `--pr` push's remote-tracking ref.
     *The fast-forward is plumbing.* `git merge-base --is-ancestor <targetSha> <sha>`, then `git
     read-tree -m -u <targetSha> <sha>` in the main checkout, then `git update-ref -m … refs/heads/
     <target> <sha> <targetSha>`. None of these reads per-branch config, so a HEAD flipped between
@@ -4068,7 +4069,11 @@ changes back into those docs is pending.
     *The target name is checked.* Before any stage, a target that starts with `-`, or that `git
     check-ref-format --branch` rejects or rewrites (it expands `@{-N}`), is refused, and decision
     79's `=` refusal stays though no `-c` is keyed on the name any more, because a refusal set only
-    grows. Wherever the target is an argument it is `refs/heads/<target>` or its sha.
+    grows. So is a name carrying a control or format character (`\p{Cc}`, `\p{Cf}`):
+    `check-ref-format` lets C1 controls and bidi overrides through, `sanitizeReason` strips the
+    first and not the second, and the name is printed in every refusal; the messages that name it
+    pass it through `sanitizeReason` besides. Wherever the target is an argument it is
+    `refs/heads/<target>` or its sha, the fresh-base conflict hint included.
     *The branch is deleted by compare-and-swap too.* `update-ref -d refs/heads/<branch> <sha>`
     replaces `git branch -d/-D`, so a branch the session moved past the pin is kept, its unmeasured
     commits left for the operator rather than merged or thrown away.
