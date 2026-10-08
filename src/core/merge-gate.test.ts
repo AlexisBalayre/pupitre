@@ -288,6 +288,142 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
+  // The gate pins the branch to one sha after fresh-base and fast-forwards
+  // with plumbing against it (decision 80); each test below is one way a live
+  // session used to change what porcelain `git merge <name>` landed.
+  describe('the pinned fast-forward', () => {
+    it('refuses a target branch whose name starts with -, before any stage runs', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      // git will not create such a branch, but the files are the session's to write.
+      sh(repo, 'git', 'update-ref', 'refs/heads/-evil', 'main');
+      sh(repo, 'git', 'symbolic-ref', 'HEAD', 'refs/heads/-evil');
+      const gateCommands = vi.fn(passingAdapter.gateCommands);
+
+      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(/starts with '-'/);
+
+      expect(gateCommands).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('measures and merges the branch, not a lightweight tag named like it', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      // A bare `pup/s1` resolves to the tag before the branch.
+      commitIn(worktree, 'notes.txt', 'off-scope\n');
+      sh(worktree, 'git', 'tag', BRANCH);
+      sh(worktree, 'git', 'reset', '-q', '--hard', tip);
+
+      const outcome = merge();
+
+      expect(outcome.status).toBe('merged');
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(tip);
+      expect(existsSync(join(repo, 'notes.txt'))).toBe(false);
+    });
+
+    // Pinned through the symref, the branch would be main itself: an empty
+    // diff passing every stage, then a delete through it that took main along.
+    it('refuses a session branch turned into a symref to the target, and main survives', () => {
+      seedSession(db, repo);
+      sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
+
+      expect(() => merge()).toThrow(/is a symbolic ref to refs\/heads\/main/);
+
+      expect(sh(repo, 'git', 'rev-parse', '--verify', 'refs/heads/main').trim()).not.toBe('');
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('does not merge a commit added to the branch after the stages, and records the pinned sha', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      // `gateCommands` runs in-process after the pin: the session committing
+      // while its stages run.
+      const lateAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const outcome = merge(lateAdapter);
+
+      expect(outcome.status).toBe('merged');
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
+      expect(existsSync(join(repo, 'src', 'late.ts'))).toBe(false);
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({ sha: pinned });
+      // Never measured, so kept for the operator rather than deleted.
+      expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).not.toBe(pinned);
+    });
+
+    it('refuses a target moved under the lock with the compare-and-swap, recording nothing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+      const moved = sh(
+        repo,
+        'git',
+        'commit-tree',
+        '-p',
+        before,
+        '-m',
+        'moved under the lock',
+        `${before}^{tree}`,
+      ).trim();
+      const movingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          sh(repoPath, 'git', 'update-ref', 'refs/heads/main', moved);
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const refusal = (() => {
+        try {
+          merge(movingAdapter);
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+
+      expect(refusal).toMatch(/compare-and-swap refuses if main moved/);
+      // The pre-merge sha and the way back, on one line.
+      expect(refusal).toContain(`main was at ${before} before the merge`);
+      expect(refusal).toMatch(
+        new RegExp(`read-tree --no-recurse-submodules -m -u \\w+ ${before}\\n`),
+      );
+      expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(moved);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+      expect(existsSync(worktree)).toBe(true);
+    });
+
+    it('refuses attributes armed during the stages before the checkout runs a smudge', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const fired = join(repo, '.git', 'fired');
+      const armingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          writeFileSync(join(repoPath, '.git', 'info', 'attributes'), '* filter=pwn\n');
+          sh(repoPath, 'git', 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${fired}; cat'`);
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+      expect(() => merge(armingAdapter)).toThrow(ArmedGitDriverError);
+
+      expect(existsSync(fired)).toBe(false);
+      expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
+      expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+  });
+
   describe('off darwin (decision 78)', () => {
     it('refuses before running any child unless the operator declared the VM', () => {
       const worktree = seedSession(db, repo);
