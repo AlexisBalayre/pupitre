@@ -1270,6 +1270,8 @@ export function buildProgram(): Command {
       const intervalMs = Math.max(1, Number(opts.interval)) * 1000;
       let previous = '';
       for (;;) {
+        // Undefined on a detached main checkout; the watchdog and the stall
+        // report below need no target branch and still run.
         const pairs = scanOverlaps(db, repoPath);
         // The turn watchdog rides the same sweep (addendum to decision 35).
         // Printed outside the dedup below: a resume happens once, and the
@@ -1277,8 +1279,9 @@ export function buildProgram(): Command {
         // events file only moves when the resumed session fires its next hook.
         // A sweep that throws — tmux failing some new way, a locked store —
         // is reported and the loop goes on: the overlap scan above has
-        // already recorded this sweep's beat, so a death here would be a
-        // radar `pup status` reads as running while nothing sweeps.
+        // already recorded this sweep's beat (or withheld it, above), so a
+        // death here would be a radar `pup status` reads as running while
+        // nothing sweeps.
         try {
           for (const turn of sweepDeadTurns(db, repoPath, Date.now())) {
             const outcome = turn.refusal ? `resume REFUSED (${turn.refusal})` : 'resumed';
@@ -1295,15 +1298,17 @@ export function buildProgram(): Command {
         // ageMs ticks up every sweep, so it's excluded from the dedup key —
         // only a session newly going stalled (or un-stalling) is a change.
         const snapshot = JSON.stringify({
-          pairs,
+          pairs: pairs ?? 'paused',
           stalledIds: stalled.map((s) => s.id).sort(),
         });
         if (snapshot !== previous) {
           const stamp = new Date().toISOString();
-          if (pairs.length === 0 && stalled.length === 0) {
+          if (pairs === undefined) {
+            console.log(`${stamp}  radar paused — main checkout is detached`);
+          } else if (pairs.length === 0 && stalled.length === 0) {
             console.log(`${stamp}  clear — no overlaps`);
           }
-          for (const pair of pairs) {
+          for (const pair of pairs ?? []) {
             console.log(
               `${stamp}  OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${sanitizeReason(pair.files.join(', '))}`,
             );

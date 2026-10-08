@@ -34,15 +34,27 @@ export function intersectSessionFiles(filesBySession: Record<string, string[]>):
  * merge-base diff the gate and review queue use), store the pairwise same-file
  * overlaps, and record a heartbeat so `pup status` can tell a silent radar
  * from a dead one. A session whose diff errors (branch gone mid-scan) is
- * skipped rather than failing the sweep.
+ * skipped rather than failing the sweep. Returns undefined, scanning nothing
+ * and keeping the stored overlaps and the beat, when the main checkout is
+ * detached: there is no target to diff against.
  */
-export function scanOverlaps(db: Database, repoPath: string, now = new Date()): OverlapPair[] {
+export function scanOverlaps(
+  db: Database,
+  repoPath: string,
+  now = new Date(),
+): OverlapPair[] | undefined {
   const target = currentBranch(repoPath);
+  if (!target) return undefined;
   const live = listSessions(db, ['running', 'awaiting-review']);
   const filesBySession: Record<string, string[]> = {};
   for (const session of live) {
     try {
-      filesBySession[session.id] = gitDiffPaths(repoPath, target, session.branch);
+      // `refs/heads/`, as the gate and the review name them (decision 80).
+      filesBySession[session.id] = gitDiffPaths(
+        repoPath,
+        `refs/heads/${target}`,
+        `refs/heads/${session.branch}`,
+      );
     } catch {
       // branch may have just been merged/deleted; the next sweep self-corrects
     }
