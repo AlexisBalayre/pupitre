@@ -179,9 +179,10 @@ function formatGateReport(report: GateReport): string {
  * hard stages — build, tests, lint, a touched nested package's own test and
  * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
- * decision 21). Pass: a plumbing fast-forward of the commit the stages measured
- * (decision 80), full cleanup (decision 16), and the debt
- * baseline ratchets to the merged state. Hard fail: re-steer with the report, cap
+ * decision 21). Pass: a plumbing fast-forward of the commit the diffs and the
+ * scope audit named (decision 80; build, test, lint, the nested-package stages
+ * and the debt capabilities read the live worktree), full cleanup (decision
+ * 16), and the debt baseline ratchets to what those capabilities measured. Hard fail: re-steer with the report, cap
  * at two rejections then park as blocked (decisions 7, 15). Any soft flag without
  * --accept-debt refuses the merge but leaves the session reviewable (decision 17);
  * with it, each flag writes a ledger entry. The whole run holds the per-repo
@@ -310,7 +311,8 @@ function shellWord(word: string): string {
 }
 
 /**
- * Fast-forward `target` from `targetSha` to `sha` with plumbing (decision 80).
+ * Fast-forward `target` from `targetSha` to `sha` with plumbing (decision 80);
+ * the caller has checked `sha` descends from `targetSha` right after the pin.
  * The porcelain merge reads `branch.<HEAD>.mergeOptions` for whatever HEAD
  * names when it runs, which a live session can flip between any check and the
  * spawn; nothing here reads per-branch config. `read-tree -m -u` moves the main
@@ -322,22 +324,26 @@ function shellWord(word: string): string {
  */
 function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
   const shown = sanitizeReason(target);
-  if (!isAncestor(repoPath, targetSha, sha)) {
-    throw new Error(
-      `${shown} at ${targetSha} is not an ancestor of the gated ${sha}, so this is no ` +
-        'fast-forward; nothing was merged.',
-    );
-  }
   // `--work-tree` because `core.worktree` sits in the shared config and would
   // aim the checkout's writes wherever a session chose; `submodule.recurse` is
-  // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again.
+  // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again; and
+  // `--no-sparse-checkout` because a planted `core.sparseCheckout` would have
+  // the checkout delete trusted files the pattern leaves out.
   const checkout = (args: string[]): string =>
     runGit(repoPath, ['--work-tree', repoPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     // A stale stat (an editor's rewrite, a `touch`) would otherwise read as a
     // local change and refuse the checkout, as the porcelain merge never did.
     checkout(['update-index', '-q', '--ignore-submodules', '--refresh']);
-    checkout(['read-tree', '--no-recurse-submodules', '-m', '-u', targetSha, sha]);
+    checkout([
+      'read-tree',
+      '--no-recurse-submodules',
+      '--no-sparse-checkout',
+      '-m',
+      '-u',
+      targetSha,
+      sha,
+    ]);
   } catch (error) {
     throw new Error(
       `Fast-forward of ${shown} to ${sha} refused by the checkout; nothing moved, ${shown} is ` +
@@ -367,7 +373,7 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
         `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
         `the ref was left where it is.\n${shown} was at ${targetSha} before the merge, and the ` +
         `main checkout now holds ${sha}'s files. To put the checkout back:\n` +
-        `  ${git} read-tree --no-recurse-submodules -m -u ${sha} ${targetSha}\n` +
+        `  ${git} read-tree --no-recurse-submodules --no-sparse-checkout -m -u ${sha} ${targetSha}\n` +
         commandFailureDetail(error),
     );
   }
@@ -471,8 +477,9 @@ function gateAndMerge(
   // Both ends pinned under the lock, and every later git call names a sha
   // (decision 80): the target here, so the rebase, the diffs and the
   // compare-and-swap all mean one commit; the branch once the rebase settled
-  // it, so what the stages measured is what lands, whatever the live session
-  // commits or tags meanwhile.
+  // it, so what the diffs and the scope audit named is what lands, whatever the
+  // live session commits or tags meanwhile. The command and debt stages still
+  // read the worktree's files, which that session can change while they run.
   const branchRef = `refs/heads/${session.branch}`;
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
@@ -499,6 +506,20 @@ function gateAndMerge(
     }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
+  // The rebase moves whatever the worktree has checked out, so a session that
+  // detached it or switched branch leaves the pinned branch behind the target:
+  // no fast-forward, and the diffs would measure against the wrong base.
+  if (!isAncestor(req.repoPath, targetSha, sha)) {
+    stages.push({
+      stage: 'fresh-base',
+      status: 'fail',
+      detail:
+        `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
+        `after the auto-rebase. Check out ${session.branch} in this worktree and rebase it onto ` +
+        `refs/heads/${sanitizeReason(target)}.`,
+    });
+    return failed();
+  }
 
   /** Runs one hard stage; false once it has recorded the failure. */
   const commandStage = (

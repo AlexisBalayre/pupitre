@@ -4042,7 +4042,9 @@ changes back into those docs is pending.
     an empty diff, and the delete below would have removed `main` through it (found on review,
     reproduced). Every ref the gate writes passes `--no-deref`, for a symref written after the
     pin: the target, the branch delete, and the `--pr` push's remote-tracking ref.
-    *The fast-forward is plumbing.* `git merge-base --is-ancestor <targetSha> <sha>`, then `git
+    *The fast-forward is plumbing.* `git merge-base --is-ancestor <targetSha> <sha>` right after
+    the pin, failing fresh-base (a re-steer, in both modes) when the rebase left the branch behind
+    because the worktree had something else checked out; then `git
     read-tree -m -u <targetSha> <sha>` in the main checkout, then `git update-ref -m … refs/heads/
     <target> <sha> <targetSha>`. None of these reads per-branch config, so a HEAD flipped between
     any check and any spawn cannot bring `mergeOptions` back; the old-value argument makes the
@@ -4051,7 +4053,10 @@ changes back into those docs is pending.
     refuses to overwrite a local change in the main checkout, as the porcelain merge did, after an
     `update-index -q --refresh` so a stale stat is not taken for one. Both run with
     `--work-tree <repoPath>`, since `core.worktree` in the shared config would otherwise aim the
-    checkout's writes elsewhere, and `--no-recurse-submodules`; `GIT_SAFE_CONFIG` gains `-c
+    checkout's writes elsewhere, `--no-sparse-checkout`, since a planted `core.sparseCheckout`
+    would have the checkout delete trusted files from the main checkout (found on review,
+    reproduced) — an operator who uses sparse-checkout there gets a full tree after a merge —
+    and `--no-recurse-submodules`; `GIT_SAFE_CONFIG` gains `-c
     submodule.recurse=false`, because with it set a tracked `.gitmodules` let the checkout (and
     the rebase) recurse into a planted `.git/modules/<name>` whose own config and attributes arm a
     smudge filter no driver check reads (found on review, reproduced; it predates this decision).
@@ -4085,9 +4090,12 @@ changes back into those docs is pending.
     refused and `main` survives. `GIT_SAFE_CONFIG` keeps
     `merge.verifySignatures=false` and `pull.twohead=ort`: they cost nothing and cover any
     porcelain merge pup may run elsewhere.
-    *Not closed here:* the stages still run in the session's worktree, whose files a live session
-    can change while they run, so the pin guarantees the merged commit is the one the diffs
-    measured, not the one build and test saw. And the `merge` event's `sha` is written but not yet
+    *Not closed here:* the pin covers what git names — the scope audit, the diff-size count, the
+    patch the coverage stage reads, the commit log and the merge. Build, test, lint, the
+    nested-package stages and every debt capability (dead code, duplication, complexity,
+    coverage) still read the live worktree, whose files the session can change while they run,
+    and the baseline ratchet comes from those capabilities, so the merged commit is the one the
+    diffs named, not necessarily the one those stages saw. And the `merge` event's `sha` is written but not yet
     named by `EventPayloads` or `decodeEvent` (`session-event.types.ts`, `session.repository.ts`,
     out of this task's scope), so nothing reads it back yet.
 

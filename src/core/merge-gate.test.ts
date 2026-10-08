@@ -359,18 +359,49 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // The rebase runs on whatever the worktree has checked out; detached, it
     // leaves the branch where it was, and the pin is then no fast-forward.
-    it('refuses a pinned branch the target is not an ancestor of, merging nothing', () => {
+    it.each([false, true])(
+      'fails fresh-base for a pinned branch the target is not an ancestor of (openPr: %s)',
+      (openPr) => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        commitIn(repo, 'README.md', '# hello\n');
+        const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+        sh(worktree, 'git', 'checkout', '-q', '--detach');
+        if (openPr) {
+          seedDebtBaseline({});
+          addOrigin();
+        }
+        const gateCommands = vi.fn(passingAdapter.gateCommands);
+
+        const outcome = withFakeGh(fakeGh([]), () =>
+          runMergeGate(db, {
+            repoPath: repo,
+            sessionId: SESSION_ID,
+            adapters: [{ ...passingAdapter, gateCommands }],
+            openPr,
+          }),
+        );
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'fresh-base', status: 'fail' });
+        expect(outcome.report.stages.at(-1)?.detail).toMatch(/is not based on main at/);
+        expect(gateCommands).not.toHaveBeenCalled();
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
+        expect(ghCalls().some((call) => call.includes('pr create'))).toBe(false);
+        expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+      },
+    );
+
+    it('checks out the full tree past a planted sparse-checkout, deleting no trusted file', () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      commitIn(repo, 'README.md', '# hello\n');
-      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
-      sh(worktree, 'git', 'checkout', '-q', '--detach');
+      sh(repo, 'git', 'config', 'core.sparseCheckout', 'true');
+      writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), 'src/feature.ts\n');
 
-      expect(() => merge()).toThrow(/is not an ancestor of the gated/);
+      expect(merge().status).toBe('merged');
 
-      expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
-      expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+      expect(existsSync(join(repo, 'src', 'app.ts'))).toBe(true);
+      expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(true);
     });
 
     it('refuses when the checkout would overwrite a local change, moving nothing', () => {
@@ -457,7 +488,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // The pre-merge sha and the way back, on one line.
       expect(refusal).toContain(`main was at ${before} before the merge`);
       expect(refusal).toMatch(
-        new RegExp(`read-tree --no-recurse-submodules -m -u \\w+ ${before}\\n`),
+        new RegExp(
+          `read-tree --no-recurse-submodules --no-sparse-checkout -m -u \\w+ ${before}\\n`,
+        ),
       );
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(moved);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
