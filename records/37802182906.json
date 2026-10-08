@@ -1,0 +1,160 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-08T15:40:12.595Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37802182906",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37802182906",
+  "actor": "AlexisBalayre",
+  "commit_sha": "deb704ddba3e6a66e3a1a5e298710bd57178d8aa",
+  "source": "pr",
+  "pr_number": 137,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "97c7fd88e838fe7eeedbbac69c2806853e7b382e",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "374-393",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "40-53",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "413-418",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When no driver is armed but the inverse `read-tree` itself fails, the printed fallback now says only \". Put it back with:\". The old order to clear `filter.*` and `info/attributes` before pasting is gone. Decision 80, rewritten in this same commit, says the line is printed with that order \"as it is when the inverse fails\".",
+      "body": "**The restore line printed for a later paste no longer says to clear drivers first.**\n\nAt 97c7fd8, the fallback always said *\"Clear any filter.\\* config and info/attributes first (decision 50), then put it back with:\"*. Now that order appears only in the `armed.length > 0` branch. If no driver is armed but `checkout(inverse)` throws, the message says only `. Put it back with:` and gives the command.\n\nThat case is reachable: the inverse two-way `read-tree -m -u` refuses whenever a file it would rewrite has a local change in the main checkout.\n\nThe `armed` value is a snapshot taken inside the catch. The operator pastes the command later, while sessions are still alive. In that gap a session can arm a `filter.<x>.smudge` plus `info/attributes`. The pasted `read-tree -u` then runs that filter on every file it rewrites, as the operator.\n\nThe printed `git` prefix can't prevent this. It sets only `core.hooksPath`, `core.fsmonitor` and `submodule.recurse`. The `armedGitDrivers` JSDoc (`git-diff.client.ts` L323-326) says smudge filters have no `-c` disarm. So the clear-first instruction is the only protection this line offers.\n\nThe code also contradicts decision 80 as rewritten in this commit (`docs/09-decisions.md` ~L4070-4073): \"…the line is printed with the order to clear `filter.*` and `info/attributes` first (decision 50), **as it is when the inverse fails**.\"\n\n**Fix:** in the not-armed branch, keep decision 50's order, e.g. `. Clear any filter.* config and info/attributes first (decision 50), then put it back with:\\n`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/deb704ddba3e6a66e3a1a5e298710bd57178d8aa/src/core/merge-gate.service.ts#L411-L418>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "45",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Returning `[]` on a detached checkout looks exactly like a real sweep that found nothing. So the watch loop prints \"clear — no overlaps\" while the stored overlaps are still there and nothing was scanned.",
+      "body": "**On a detached main checkout, `pup watch` now reports \"clear — no overlaps\" even though nothing was scanned.**\n\nThe fix keeps the stored overlaps and withholds the beat, which is right for `pup status`. But `if (!target) return [];` gives the only caller the same value a real empty sweep gives.\n\nIn `pup watch` (`src/cli/index.ts` L1273-1305), the snapshot is `JSON.stringify({ pairs, stalledIds })`. With `pairs = []` and no stalled session, L1303-1304 print `${stamp}  clear — no overlaps`. That happens:\n- on the first sweep, and with `--once`;\n- whenever the checkout detaches after a sweep that had found overlaps.\n\nThe loop never reads the stored overlaps or the beat, so the operator gets a positive all-clear exactly while the radar is blind. Ordinary actions trigger this: `git checkout <sha>`, a bisect, or an interactive rebase on the main checkout.\n\nThe comment at index.ts L1279-1281 (\"the overlap scan above has already recorded this sweep's beat\") is also no longer always true.\n\n**Fix:** let the caller tell a skipped sweep from an empty one. For example, return `undefined` (or throw) on a detached checkout, and have the watch loop print something like `radar paused — main checkout is detached` instead of the clear line. Update the L1279-1281 comment to match.\n\n<https://github.com/AlexisBalayre/pupitre/blob/deb704ddba3e6a66e3a1a5e298710bd57178d8aa/src/core/overlap.service.ts#L41-L45>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "331-336",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The bare `catch { return 'nowhere' }` also swallows `resolveCommit`'s symbolic-ref refusal. A target turned into a symref after the pin is now reported as \"moved from X to nowhere\" instead of \"is a symbolic ref to Y … Treat a session that wrote it as compromised\". It still refuses, but it misnames the state and drops the compromise warning.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "394",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`armedGitDrivers` runs unguarded inside the catch. If it throws, for example because a session made the config unparseable or turned `info/attributes` into a directory (EISDIR), its error replaces the whole report. The operator loses the update-ref failure, the note that the checkout holds `${sha}`'s files, and the paste line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "41-44",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `!target` early return cites \"(decision 80)\" for the detached-checkout skip. The decision 80 text in `docs/09-decisions.md` (edited in this delta) says nothing about skipping the overlap sweep or withholding the beat when the main checkout is detached. It only covers the `refs/heads/` naming for review and overlap, the second driver check, and the restore.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "41-44",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The four-line comment partly narrates what the code does (\"Skipped whole instead\") alongside the WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.test.ts",
+      "line": "137-138",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above the detached-checkout test restates the test name, which already says 'skips the sweep on a detached main checkout, keeping overlaps and withholding the beat'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "410-420",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The failure message now nests a ternary (`restored ? … : …`) around a second ternary (`armed.length > 0 ? … : …`). That is three message variants built by string concatenation inside one `throw`, which is hard to read and to test branch by branch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "330",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fastForward` wraps `resolveCommit` in an inline IIFE with try/catch to turn a deleted target into the string `'nowhere'`, and the restore block just below it gets a second IIFE-style `let restored` flow.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "82, 91",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The literal `refs/heads/${target}` is now built inline in about 12 places across `merge-gate.service.ts`, `review.service.ts`, `overlap.service.ts` and `conductor.service.ts`. This diff adds two more in `conductor.service.ts` (lines 82 and 91) and re-adds one in `merge-gate.service.ts`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5099398999999996,
+  "duration_ms": 169605,
+  "num_turns": 14,
+  "tokens": {
+    "input": 16,
+    "output": 10159,
+    "cache_read": 288886,
+    "cache_creation": 55392,
+    "total": 354453
+  }
+}
