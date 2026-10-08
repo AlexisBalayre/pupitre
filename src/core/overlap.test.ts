@@ -133,6 +133,22 @@ describe('scanOverlaps', () => {
     expect(pairs).toEqual([]);
     expect(listOverlaps(db)).toEqual([]);
   });
+
+  // A detached main checkout: the sweep is skipped whole, keeping what the
+  // last one stored and withholding the beat, rather than wiping and beating.
+  it('skips the sweep on a detached main checkout, keeping overlaps and withholding the beat', () => {
+    seedWorktreeSession('s1', 'src/shared.ts');
+    seedWorktreeSession('s2', 'src/shared.ts');
+    scanOverlaps(db, repo, new Date('2026-10-08T10:00:00Z'));
+    const before = listOverlaps(db);
+    execFileSync('git', ['checkout', '-q', '--detach'], { cwd: repo, env: GIT_ENV });
+
+    const pairs = scanOverlaps(db, repo, new Date('2026-10-08T11:00:00Z'));
+
+    expect(pairs).toEqual([]);
+    expect(listOverlaps(db)).toEqual(before);
+    expect(getWatcherBeat(db, projectId(repo))?.toISOString()).toBe('2026-10-08T10:00:00.000Z');
+  });
 });
 
 describe('scopeConflicts', () => {

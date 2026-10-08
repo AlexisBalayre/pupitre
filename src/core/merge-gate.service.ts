@@ -12,6 +12,7 @@ import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
+  armedGitDrivers,
   assertNoArmedGitDrivers,
   currentBranch,
   gitDiffAddedLines,
@@ -324,10 +325,15 @@ function shellWord(word: string): string {
  */
 function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
   const shown = sanitizeReason(target);
-  // Before the checkout is touched, not only at the compare-and-swap after it:
-  // the target was pinned before the stages, and a session alive through them
-  // can move it on purpose so that the restore line below is what runs next.
-  const now = resolveCommit(repoPath, `refs/heads/${target}`);
+  // Before the checkout is touched, not only at the compare-and-swap after it
+  // (decision 80). A deleted target reads as moved to nowhere, not as a stack.
+  const now = (() => {
+    try {
+      return resolveCommit(repoPath, `refs/heads/${target}`);
+    } catch {
+      return 'nowhere';
+    }
+  })();
   if (now !== targetSha) {
     throw new Error(
       `${shown} moved from ${targetSha} to ${now} while the gate ran; nothing was checked out ` +
@@ -372,25 +378,29 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
     ]);
   } catch (error) {
     // The checkout holds the new tree and the ref does not. The inverse two-way
-    // read-tree puts it back, run here under the lock right after the driver
-    // check rather than printed for later: a session alive meanwhile could arm
-    // a smudge filter for the operator's paste.
-    const restored = (() => {
+    // read-tree puts it back here, under the lock, rather than printed for
+    // later — but the forward checkout was a window the session controlled,
+    // so the drivers are checked again first: a smudge filter armed meanwhile
+    // would run on every file the restore rewrites (decision 50).
+    const inverse = [
+      'read-tree',
+      '--no-recurse-submodules',
+      '--no-sparse-checkout',
+      '-m',
+      '-u',
+      sha,
+      targetSha,
+    ];
+    const armed = armedGitDrivers(repoPath);
+    let restored = false;
+    if (armed.length === 0) {
       try {
-        checkout([
-          'read-tree',
-          '--no-recurse-submodules',
-          '--no-sparse-checkout',
-          '-m',
-          '-u',
-          sha,
-          targetSha,
-        ]);
-        return true;
+        checkout(inverse);
+        restored = true;
       } catch {
-        return false;
+        // reported below, with the line to run by hand
       }
-    })();
+    }
     const git =
       `git -C ${shellWord(repoPath)} --work-tree ${shellWord(repoPath)} ` +
       '-c core.hooksPath=/dev/null -c core.fsmonitor= -c submodule.recurse=false';
@@ -400,9 +410,12 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
         `the ref was left where it is.\n` +
         (restored
           ? `The main checkout was put back to ${targetSha}'s files.\n`
-          : `The main checkout still holds ${sha}'s files. Clear any filter.* config and ` +
-            `info/attributes first (decision 50), then put it back with:\n` +
-            `  ${git} read-tree --no-recurse-submodules --no-sparse-checkout -m -u ${sha} ${targetSha}\n`) +
+          : `The main checkout still holds ${sha}'s files` +
+            (armed.length > 0
+              ? `, and it was not put back because ${armed.join(', ')} is armed; treat the ` +
+                'session that wrote it as compromised (decision 50). Clear it, then run:\n'
+              : '. Put it back with:\n') +
+            `  ${git} ${inverse.join(' ')}\n`) +
         commandFailureDetail(error),
     );
   }

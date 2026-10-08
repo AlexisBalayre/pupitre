@@ -4067,9 +4067,10 @@ changes back into those docs is pending.
     the checkout is touched, and the compare-and-swap is the backstop for the milliseconds in
     between. A refused checkout moved nothing and says so. A refused compare-and-swap leaves the
     moved ref alone and pup itself runs the inverse `read-tree -m -u <sha> <targetSha>` under the
-    lock, right after the driver check, keeping local changes; only when that inverse fails too
-    does it print the line, with the order to clear `filter.*` and `info/attributes` first
-    (decision 50). `pup review` and the overlap scan name `refs/heads/` too (found on review): a
+    lock, keeping local changes — after checking the drivers once more, because the forward
+    checkout of the session's own tree is a window the session controls (found on review); with
+    a driver armed the restore is skipped and the line is printed with the order to clear
+    `filter.*` and `info/attributes` first (decision 50), as it is when the inverse fails. `pup review` and the overlap scan name `refs/heads/` too (found on review): a
     bare name resolves a same-named tag first, and the review must show what the gate merges.
     *The driver check runs twice.* `assertNoArmedGitDrivers` runs again on the main checkout under
     the lock, next to the HEAD re-read and before the checkout, because `read-tree -u` runs a

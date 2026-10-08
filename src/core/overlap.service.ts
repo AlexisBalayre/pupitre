@@ -38,6 +38,11 @@ export function intersectSessionFiles(filesBySession: Record<string, string[]>):
  */
 export function scanOverlaps(db: Database, repoPath: string, now = new Date()): OverlapPair[] {
   const target = currentBranch(repoPath);
+  // A detached main checkout has no target to diff against; `refs/heads/` of
+  // nothing would make every diff fail and the sweep wipe the stored overlaps
+  // while still beating. Skipped whole instead, beat withheld, so the radar
+  // reads stale rather than healthy (decision 80).
+  if (!target) return [];
   const live = listSessions(db, ['running', 'awaiting-review']);
   const filesBySession: Record<string, string[]> = {};
   for (const session of live) {
