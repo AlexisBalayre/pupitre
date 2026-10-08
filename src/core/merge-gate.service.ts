@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
 import {
   killSession as killTmux,
@@ -326,14 +326,15 @@ function shellWord(word: string): string {
 function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
   const shown = sanitizeReason(target);
   // Before the checkout is touched, not only at the compare-and-swap after it
-  // (decision 80). A deleted target reads as moved to nowhere, not as a stack.
-  const now = (() => {
-    try {
-      return resolveCommit(repoPath, `refs/heads/${target}`);
-    } catch {
-      return 'nowhere';
-    }
-  })();
+  // (decision 80). A deleted target reads as moved to nowhere, not as a stack;
+  // a symref keeps its own refusal, which names the compromise.
+  let now: string;
+  try {
+    now = resolveCommit(repoPath, `refs/heads/${target}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
+    now = 'nowhere';
+  }
   if (now !== targetSha) {
     throw new Error(
       `${shown} moved from ${targetSha} to ${now} while the gate ran; nothing was checked out ` +
@@ -391,7 +392,14 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
       sha,
       targetSha,
     ];
-    const armed = armedGitDrivers(repoPath);
+    // The driver read can itself fail on a config a session mangled; that must
+    // not replace the report of what happened to the checkout.
+    let armed: string[];
+    try {
+      armed = armedGitDrivers(repoPath);
+    } catch (failed) {
+      armed = [`(driver check failed: ${sanitizeReason(failureSummary(failed))})`];
+    }
     let restored = false;
     if (armed.length === 0) {
       try {
@@ -404,19 +412,19 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
     const git =
       `git -C ${shellWord(repoPath)} --work-tree ${shellWord(repoPath)} ` +
       '-c core.hooksPath=/dev/null -c core.fsmonitor= -c submodule.recurse=false';
+    // The pasted line runs later, while sessions are alive, and a smudge filter
+    // has no -c disarm: the order to clear drivers first is the line's only
+    // protection, so it is printed whether or not one was armed just now.
+    const why = armed.length > 0 ? ` because ${armed.join(', ')} is armed` : '';
+    const checkoutState = restored
+      ? `The main checkout was put back to ${targetSha}'s files.\n`
+      : `The main checkout still holds ${sha}'s files and was not put back${why}. Clear any ` +
+        'filter.* config and info/attributes first and treat a session that wrote them as ' +
+        `compromised (decision 50), then run:\n  ${git} ${inverse.join(' ')}\n`;
     throw new Error(
       `Fast-forward of ${shown} to ${sha} failed, and nothing was recorded as merged: the ` +
         `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
-        `the ref was left where it is.\n` +
-        (restored
-          ? `The main checkout was put back to ${targetSha}'s files.\n`
-          : `The main checkout still holds ${sha}'s files` +
-            (armed.length > 0
-              ? `, and it was not put back because ${armed.join(', ')} is armed; treat the ` +
-                'session that wrote it as compromised (decision 50). Clear it, then run:\n'
-              : '. Put it back with:\n') +
-            `  ${git} ${inverse.join(' ')}\n`) +
-        commandFailureDetail(error),
+        `the ref was left where it is.\n${checkoutState}${commandFailureDetail(error)}`,
     );
   }
 }

@@ -4072,6 +4072,9 @@ changes back into those docs is pending.
     a driver armed the restore is skipped and the line is printed with the order to clear
     `filter.*` and `info/attributes` first (decision 50), as it is when the inverse fails. `pup review` and the overlap scan name `refs/heads/` too (found on review): a
     bare name resolves a same-named tag first, and the review must show what the gate merges.
+    On a detached main checkout the overlap sweep is skipped whole rather than run against
+    `refs/heads/` of nothing: the stored overlaps and the beat are kept, `scanOverlaps` returns
+    undefined, and `pup watch` says the radar is paused instead of printing an all-clear.
     *The driver check runs twice.* `assertNoArmedGitDrivers` runs again on the main checkout under
     the lock, next to the HEAD re-read and before the checkout, because `read-tree -u` runs a
     smudge filter on every file it writes. This narrows decision 50's window to the few

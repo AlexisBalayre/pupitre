@@ -1271,14 +1271,26 @@ export function buildProgram(): Command {
       let previous = '';
       for (;;) {
         const pairs = scanOverlaps(db, repoPath);
+        if (pairs === undefined) {
+          // Not an empty sweep: nothing was scanned, and the stored overlaps and
+          // the beat were kept, so `pup status` reads the radar as stale.
+          if (previous !== 'paused') {
+            console.log(`${new Date().toISOString()}  radar paused — main checkout is detached`);
+            previous = 'paused';
+          }
+          if (opts.once) return;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, intervalMs);
+          continue;
+        }
         // The turn watchdog rides the same sweep (addendum to decision 35).
         // Printed outside the dedup below: a resume happens once, and the
         // STALLED line that follows it on this sweep is still true — the
         // events file only moves when the resumed session fires its next hook.
         // A sweep that throws — tmux failing some new way, a locked store —
         // is reported and the loop goes on: the overlap scan above has
-        // already recorded this sweep's beat, so a death here would be a
-        // radar `pup status` reads as running while nothing sweeps.
+        // already recorded this sweep's beat (or withheld it, above), so a
+        // death here would be a radar `pup status` reads as running while
+        // nothing sweeps.
         try {
           for (const turn of sweepDeadTurns(db, repoPath, Date.now())) {
             const outcome = turn.refusal ? `resume REFUSED (${turn.refusal})` : 'resumed';
