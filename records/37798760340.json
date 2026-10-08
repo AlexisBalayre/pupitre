@@ -1,0 +1,160 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-08T15:17:01.333Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37798760340",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37798760340",
+  "actor": "AlexisBalayre",
+  "commit_sha": "97c7fd88e838fe7eeedbbac69c2806853e7b382e",
+  "source": "pr",
+  "pr_number": 137,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "2b0b36125d171e2d7f206a0bb7c85fa3c9956549",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "325-380",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/review.service.ts",
+      "line": "61-62",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "374-393",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "pup now runs the inverse `read-tree -m -u` itself when the compare-and-swap fails. That runs after the whole forward checkout and the `update-ref` spawn, not \"right after the driver check\". A live session that moves the target and arms a smudge filter during the forward checkout gets that filter run as the operator, outside the sandbox.",
+      "body": "**The automatic restore runs `read-tree -u` well after the only driver check, and a session can trigger it.**\n\n`assertNoArmedGitDrivers` runs once, at L826. `fastForward` then runs these spawns before the restore at L378-393:\n- the target re-read (L330)\n- `update-index --refresh`\n- the forward `read-tree -m -u targetSha sha`, a full checkout of the session's tree\n- `update-ref`\n\nNothing re-checks drivers in between. `checkout` goes through `runGit`, whose `GIT_SAFE_CONFIG` has no `filter.*` override. The file's own docs say a smudge filter can only be refused through `armedGitDrivers`.\n\n**How a session triggers it.** The session is still alive, because `killTmux` only runs after `fastForward`.\n1. After the L330 re-read, during the forward checkout, it moves `refs/heads/<target>`, which makes the compare-and-swap fail.\n2. In the same window it arms `filter.x.smudge` plus `* filter=x` in `info/attributes`.\n3. The restore is a fresh git process, so it reads both. It rewrites every file the session changed through the filter, with the operator's environment and outside the sandbox (decision 50).\n\nThe forward checkout is the session's own tree, so the session controls how long that window lasts. Decision 80 accepts only the few milliseconds between the check and the forward checkout's spawn.\n\nThe new comment (L374-377) and decision 80 (`docs/09-decisions.md` ~L4069-4073) both say the restore runs \"right after the driver check\", which overstates the guarantee. *(Raised by both the security and docs reviewers.)*\n\n**Fix:**\n- Re-run the driver check right before the restore. If anything is armed, skip the restore and print the manual line, naming the armed keys.\n- Correct the comment and decision 80 to describe the order the code actually runs in.\n\n<https://github.com/AlexisBalayre/pupitre/blob/97c7fd88e838fe7eeedbbac69c2806853e7b382e/src/core/merge-gate.service.ts#L374-L393>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "40-53",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "With a detached HEAD, `currentBranch` returns `''`, so the new prefix builds `refs/heads/...refs/heads/pup/<id>`. Git rejects that, the per-session catch swallows it for every session, and the sweep stores zero overlaps while still recording a healthy heartbeat. Before this change, the bare `...pup/<id>` defaulted the left side to HEAD and the radar kept working.",
+      "body": "**On a detached main checkout, the overlap radar now fails open without any error.**\n\n`scanOverlaps` uses `currentBranch(repoPath)` (L40) without checking it. On a detached HEAD that value is `''` (see `git-diff.client.ts` L128-131). The new `` `refs/heads/${target}` `` (L46-50) then builds `refs/heads/...refs/heads/pup/<id>`:\n- `git diff --name-only 'refs/heads/...HEAD'` exits 128 with `unknown revision`.\n- The old bare form, `...HEAD`, succeeded, because an empty side of `...` defaults to HEAD.\n\nThe per-session `catch`, meant for a branch deleted mid-scan, swallows the error for every session. Then L56-57 still call `replaceOverlaps(db, [])` and `recordWatcherBeat`. The stored overlaps are wiped and `pup status` reports a healthy radar with no overlaps.\n\nThe review queue (`targetBranch`), the gate and the conductor all refuse a detached HEAD loudly. The radar is the one consumer that now goes silent instead.\n\n**Fix:** check for an empty `currentBranch` before the loop. Either skip the sweep without recording a heartbeat, or surface the same \"not on a branch\" refusal the review queue gives. Keep in mind that `pup watch` calls `scanOverlaps` outside its try (`src/cli/index.ts` ~L1273).\n\n<https://github.com/AlexisBalayre/pupitre/blob/97c7fd88e838fe7eeedbbac69c2806853e7b382e/src/core/overlap.service.ts#L40-L53>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "327-329",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The pre-`read-tree` comment ends \"so that the restore line below is what runs next\". That is stale, because pup now runs the restore itself and only prints a line if the restore fails. It also repeats the decision 80 rationale.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "330",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "If `refs/heads/<target>` is deleted while the stages run, the new re-read surfaces a raw `rev-parse --verify` command failure instead of the \"moved while the gate ran; nothing was merged\" wording. It is safe, since nothing is touched or recorded, but the operator gets no explanation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "542-543",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`stages.pop()` removes whatever was pushed last and assumes it is the fresh-base PASS. That holds today, but it breaks silently if a stage is ever pushed in between. Deferring the PASS push until the ancestry check holds avoids changing the list after the fact.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "378-405",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The inverse read-tree argv is written twice, once in the restore and once in the printed fallback line, so the two can drift. Also, the one-use IIFE that returns a boolean would read more plainly as `let restored = false; try { …; restored = true } catch {}`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/review.service.ts",
+      "line": "63-67, 99, 137",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refs/heads/${…}` is now hand-built at several diff-client call sites in review.service.ts and overlap.service.ts, as well as in the gate. A small helper, or having the diff client qualify the names itself, would keep decision 80's rule in one place so the next call site can't slip back to a bare name.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/review.service.ts",
+      "line": "61-62",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'a bare name resolves a same-named tag first' rationale appears in review.service.ts, review.test.ts L164-165, and decision 80. Keep it in the decision and at most one code site, and cut the other copies down to a \"(decision 80)\" pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "821-823",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The moved-HEAD refusal now runs `checkedOut` through `sanitizeReason`, which strips C0/C1 controls but not `\\p{Cf}` bidi or format characters. A session can still point HEAD at a branch whose name flips text direction in this error line on the operator's terminal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "81, 90",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`refreshConductorCheckout` still runs `checkout --detach <target>` and `worktree add --detach <dir> <target>` with the bare branch name. A same-named tag resolves first, so the conductor's view can be cut from a tag a session created. This is the same issue this PR fixed in review and overlap.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2736773,
+  "duration_ms": 253994,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11170,
+    "cache_read": 285826,
+    "cache_creation": 50267,
+    "total": 347277
+  }
+}
