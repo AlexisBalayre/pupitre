@@ -1,0 +1,86 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-08T12:53:41.553Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37779950901",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37779950901",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b1b1bebe2ee98795cb164e1723bcf4cb6a75b52f",
+  "source": "pr",
+  "pr_number": 136,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "ceaf2a1a055d150bfe457612bf93e75841414df3",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "633",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "649-662",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4008-4010",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"closed by decision 80\" points to a decision that doesn't exist yet: 79 is the last entry. Every other \"closed by decision N\" in the file points to an existing decision. Consider \"*Accepted here, deferred to its own task:*\" until 80 is written.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4015",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"rather than a fifth review round on this one\" describes this PR's review history, not the design, and will read oddly once the PR is gone. Consider ending at \"...and is its own task.\"",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "docs",
+      "description": "The docs reviewer did not read src/core/merge-gate.service.ts or src/core/git-diff.client.ts. The new decision-79 prose's claims about the code (the re-read and the merge are two spawns; the ref check fires after the target has moved) were not checked against the code."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped correctness, security, maintainability and context: the delta is decision prose plus one test rename, with no logic, trust-boundary or infra change."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.4393881,
+  "duration_ms": 62416,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 4630,
+    "cache_read": 192912,
+    "cache_creation": 28429,
+    "total": 225983
+  }
+}
