@@ -1,0 +1,105 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-08T16:39:10.507Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "37810171169",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/37810171169",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5fa87aa64bb2eacbedd38db7608c631190c22261",
+  "source": "pr",
+  "pr_number": 137,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "ac4220187a105d64755301ac62810d327f4df4dd",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1273-1284",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1280-1284",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The watchdog try-block comment still says the overlap scan 'has already recorded this sweep's beat (or withheld it, above)'. In ac42201, 'withheld it, above' pointed at the removed paused branch, whose comment explained that the beat and stored overlaps are kept on a detached checkout. Now the nearest comment above (lines 1273-1274) only says scanOverlaps returns undefined on a detached checkout and never mentions the beat. A reader looking 'above' for the withheld beat finds nothing; that explanation now exists only in the scanOverlaps JSDoc. Either drop ', above' or fold 'and records no beat' into the 1273-1274 comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1273",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The first half of the new call-site comment, 'Undefined on a detached main checkout', restates the contract that the `scanOverlaps` JSDoc now carries. AGENTS.md §Comments says: 'A WHY comment that restates the callee's JSDoc is a duplicate: read the callee's docs before keeping it; if the seam already says it, delete the call-site copy.' The second half, that the watchdog and stall report need no target branch and still run, is a real WHY and should stay. Trim it to something like '// The watchdog and stall report below need no target branch, so they run even when the scan is skipped.'",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "419",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fastForward` now tracks the driver-check outcome in two parallel variables, `armed` and `unchecked`. It tests them together twice: `armed.length === 0 && unchecked === undefined` for the restore gate, and a nested ternary for `why`. Both conditions encode the single fact that the driver state is not known to be clean. A single `blockers: string[]`, with the failure pushed as one entry such as `driver check failed: …`, would keep one gate (`blockers.length === 0`). It would also avoid the nested ternary. The old code did roughly that but used a sentinel string inside `armed`, and its `why` then read `(driver check failed: …) is armed`. The new wording fixes that, but the structure is now more branched than a list with distinct message phrasing would be. This is style only: behavior is correct and the trigger is not harmful.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4075",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The decision 80 addendum (lines 4075-4077) says that on a detached checkout 'the overlap sweep is skipped whole' and 'pup watch says the radar is paused'. After this delta only the overlap scan is skipped. The watchdog and stall report keep running on that sweep. Decision 35's addendum (around line 119) calls the radar the watchdog's host, but neither addendum says a paused radar keeps hosting it. The same addendum (lines 4070-4073) says the restore is skipped 'with a driver armed'. It does not cover the new case where the driver check itself fails, which now also skips the restore and prints 'because the driver check failed: …'. No rule I found makes this doc update mandatory, so it is a nit. The ADR should still match the shipped behaviour, since it wins over docs 00-08.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1301",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `pup watch` loop, `pairs` is now `OverlapPair[] | undefined`. It is handled three separate ways: `pairs ?? 'paused'` in the snapshot, `pairs === undefined` in the print branch, and `pairs ?? []` in the loop. The `'paused'` literal in the dedup key and the `=== undefined` branch must agree, but nothing ties them together. This is a small, local, readable shape and I would not change it. The removed early-return duplicate of the loop tail was the worse structure. I noted it only because the paused state is now encoded in more than one place.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8704987,
+  "duration_ms": 102406,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 7064,
+    "cache_read": 203047,
+    "cache_creation": 33494,
+    "total": 243617
+  }
+}
