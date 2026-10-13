@@ -869,6 +869,25 @@ describe('compileConductorProfile', () => {
     expect(compiled.contextMarkdown).not.toContain('pup session done "<one-line summary>"');
   });
 
+  // Decision 75: `--pr` never moves main, so the conductor may gate a branch
+  // with it; the local merge and an unnamed or borrowed approver stay refused.
+  it('lets the conductor gate with pup merge --pr and nothing else of the merge', () => {
+    const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    expect(compiled.contextMarkdown).toContain(
+      'The one exception: you may run `pup merge <task> --pr`.',
+    );
+    expect(compiled.contextMarkdown).toContain('- Never run `pup merge` without `--pr`.');
+    expect(compiled.contextMarkdown).toContain(
+      '- Never pass `--accept-debt` without `--approved-by <who>`',
+    );
+    expect(compiled.contextMarkdown).toContain('- Never pass `--approved-by human`');
+    expect(compiled.contextMarkdown).toContain(
+      '4. Never edit, commit or push from this checkout. Never run `pup merge` without `--pr`.',
+    );
+    expect(compiled.contextMarkdown).not.toContain('Never run `pup merge`.');
+  });
+
   it('launches on the default model when no worker model is set', () => {
     const compiled = ProfileCompiler.compileConductorProfile({
       ...conductorInput,

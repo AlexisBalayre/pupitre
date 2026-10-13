@@ -570,6 +570,11 @@ function buildConductorContext(input: ConductorCompileInput, brief: string | und
       'Refused to you: `pup merge`, `pup respawn`, `--project`. When a session is ' +
       '`awaiting-review`, summarise its branch for the operator in one paragraph and stop; ' +
       'the operator merges.\n' +
+      'The one exception: you may run `pup merge <task> --pr`. It runs the gate, pushes the ' +
+      'branch and opens a pull request that a human merges.\n' +
+      '- Never run `pup merge` without `--pr`.\n' +
+      '- Never pass `--accept-debt` without `--approved-by <who>`, naming who approved it.\n' +
+      "- Never pass `--approved-by human`: that is the operator's own entry.\n" +
       'If `pup` is not on PATH, run `node "$PUP_BIN" <command>` instead.',
     '## Protocol\n' +
       '1. `pup status`, then `pup plan`. Launch at most one session per backlog task and ' +
@@ -580,7 +585,7 @@ function buildConductorContext(input: ConductorCompileInput, brief: string | und
       '3. A session that stopped short of its acceptance criteria: steer it with the exact ' +
       'evidence — which file is unchanged, which criterion is unmet. A session stalled, or ' +
       'blocked on something only a human can decide: report it to the operator.\n' +
-      '4. Never edit, commit or push from this checkout. Never run `pup merge`.\n' +
+      '4. Never edit, commit or push from this checkout. Never run `pup merge` without `--pr`.\n' +
       '5. When every session you launched is `awaiting-review`, killed or blocked, report ' +
       'and stop.',
     input.codegraphBinary ? codeGraphSection(CONDUCTOR_GRAPH) : undefined,
