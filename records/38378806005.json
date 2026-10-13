@@ -1,0 +1,199 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T09:54:04.011Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38378806005",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38378806005",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e2beda8846dc16729f74a95727833b7ee7eeb951",
+  "source": "pr",
+  "pr_number": 138,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "322-330",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Only the root node_modules is linked into the gate checkout, so a nested package with its own dependencies (this repo's tools/review) fails its test/typecheck stages on every gate that touches it, even after the operator installs them in the main checkout.",
+      "body": "**Nested packages lose their dependencies in the gate checkout.**\n\n`cutGateCheckout` links only the entries of `<repoPath>/node_modules` into `<checkout>/node_modules`. The nested-package stages (decision 59) still run `pnpm run test` and `pnpm run typecheck` with `cwd = join(checkout, pkg.dir)` (around L739-743), for every package that `touchedNestedPackages` returns.\n\n`tools/review` in this repo is a standalone package with its own `package.json` and `pnpm-lock.yaml`. There is no `pnpm-workspace.yaml`, so its dependencies live only in `<repo>/tools/review/node_modules`.\n- It imports `zod` (`tools/review/src/review-metrics.schemas.ts:1`), which the root doesn't declare.\n- It pins `vitest ^3` and `@types/node ^22`, which differ from the root's versions.\n\nThe checkout sits under `mkdtemp(tmpdir())`, so Node's walk up from `<checkout>/tools/review` only reaches the root-linked `<checkout>/node_modules`.\n\n**Before this PR:** the stage ran in `join(worktree, pkg.dir)` and found that package's own `node_modules`.\n\n**Now:** any branch touching `tools/review/**` fails `test (tools/review)` / `typecheck (tools/review)`, which counts toward the rejection cap. Decision 81's remedy (\"until the operator installs them in the main checkout\") doesn't help, because `<repo>/tools/review/node_modules` is never linked. The nested-package test only asserts `pwd`, so the suite doesn't catch this.\n\n**Fix direction:** apply the same per-entry linking from `join(repoPath, pkg.dir, 'node_modules')` to `join(checkout, pkg.dir, 'node_modules')` for each touched nested package. Also mention nested packages in decision 81's *Dependencies* paragraph.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e2beda8846dc16729f74a95727833b7ee7eeb951/src/core/merge-gate.service.ts#L322-L330",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "312-329",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The gate checkout gets no Python environment, so a poetry project whose venv is the session's in-project .venv, or is keyed by the worktree's path, now fails its build/test/lint stages (`poetry run` finds no installed packages) on every gate.",
+      "body": "**Python projects get no environment in the gate checkout.**\n\nOnly `node_modules` is provided to the fresh `mkdtemp` checkout. `.venv` is gitignored, so `read-tree` never writes one. The Python adapter (`src/adapters/python.adapter.ts`, `runnerPrefix` around L92) runs its stages as `poetry run …` whenever `poetry.lock` exists, and `cwd` is now the checkout. `ALLOWED_VARS` in `src/core/gate-env.utils.ts` passes no `VIRTUAL_ENV`, `POETRY_*` or `PYTHONPATH`.\n\nBased on poetry's documented behaviour (pinned-version knowledge, hence medium confidence):\n- **In-project `.venv`:** poetry used to find `{worktree}/.venv`. In the checkout there is none, so poetry either creates an empty venv (Linux, under the redirected `XDG_CACHE_HOME`) or fails to create one (macOS, where writes under `HOME` are denied).\n- **Cache venv:** poetry names it `{name}-{hash(project path)}-py{ver}`, and the `mkdtemp` path changes on every gate, so the operator's existing venv is never found.\n\nEither way the build stage (`poetry run python -m compileall`) fails first. The path changes on every gate, so no operator action fixes it. Decision 81 covers only Node's `node_modules`.\n\n**Fix direction:** give the checkout the main checkout's environment, the way `node_modules` is handled (for example, link `<repoPath>/.venv`, or set `VIRTUAL_ENV` / `POETRY_VIRTUALENVS_PATH` for the stages). At minimum, record the Python ceiling in decision 81.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e2beda8846dc16729f74a95727833b7ee7eeb951/src/core/merge-gate.service.ts#L312-L329",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4124-4130",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 81 (and the mkdtemp comment at merge-gate.service.ts:258) calls the gate checkout \"private and unguessable\", but the live session runs as the same OS user, can see the path via `git worktree list` or `ls $TMPDIR`, and has no hook blocking Bash writes there. Same-user editing during the stages remains possible, so the decision should state the OS-user ceiling the way decisions 47 and 63 do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "321-329",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "If the pinned tree commits a node_modules entry, the `!lstatSync(local)` guard skips linking and the gate silently runs the committed copy. That copy could be a symlink into the session worktree, so the check should refuse it rather than waive it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "255-282",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A gate killed mid-run (SIGKILL, or a Ctrl-C that skips the finally) leaves a full pup-gate-checkout-* copy in tmp. Its worktree registration survives later prunes because the directory still exists, and nothing sweeps old pup-gate-checkout-* dirs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "702-716",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "'keeps the outcome when the checkout cannot be dropped' relies on chmod 000 blocking rmSync, which doesn't hold when tests run as root. Its onTestFinished only restores permissions and never removes the leaked pup-gate-checkout-* tmp dir, so every run leaves one behind.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "263",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `// see above` comment in the empty catch after dropGateCheckout adds nothing, because the WHY is already in the comment above the try. general.md §Comments: if deleting a comment wouldn't confuse a reader, delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "299-331",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "cutGateCheckout returns the `dir` argument it was given, so the caller's `checkout` always equals `checkoutDir`. The function could return void (general.md §Altitude).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "337-340",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "dropGateCheckout is a two-line helper with a single caller. general.md §Altitude says inline by default, and its rmSync-vs-worktree-remove WHY could move to an inline comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "322-331",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new path fragments ('.cache', '.vite' prefix exclusions, 'pup-gate-checkout-', 'checkout') are inlined at the use site instead of living in merge-gate.constants.ts, which general.md §No hardcoded values requires. The prefix is also duplicated in the test regex.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "305",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--work-tree <dir> read-tree --no-recurse-submodules --no-sparse-checkout` now appears three times (twice in fastForward, once in cutGateCheckout), each with its own rationale prose. This is the third use, so a shared hardened read-tree helper would keep a future caller from dropping a flag.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "262-286",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Creating, cutting and dropping the gate checkout is split across runMergeGate, gateAndMerge (a new positional checkoutDir param) and two helpers. A single withGateCheckout(repoPath, sha, fn) would own the lifecycle and the swallowed-error finally.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "322-331",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 10-line node_modules comment in cutGateCheckout restates most of decision 81's Dependencies paragraph. Keep only the WHY: link the main checkout's packages rather than the worktree's, and use a directory of links so .vite-temp writes stay in the checkout.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "286-298",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The cutGateCheckout JSDoc re-explains the read-tree flags and the smudge-filter re-check, which fastForward and decision 81 already document. Shorten it to the contract and point at fastForward.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "302-311",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The gate checkout is cut with --no-recurse-submodules, so in a repo whose build or tests need a submodule, every stage now sees empty submodule directories and fails, where it used to run against the worktree's initialised submodules.",
+      "refutation": "Pupitre never initialises submodules. Session worktrees are created via runGit with GIT_SAFE_CONFIG pinning submodule.recurse=false (session-lifecycle.service.ts:218, git-diff.client.ts:70-71), and nothing in src runs `git submodule update`. So session worktrees already had empty submodule dirs before this PR. Decision 81 also explicitly scopes submodules out, matching the fast-forward."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.7836945999999987,
+  "duration_ms": 371843,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 11330,
+    "cache_read": 195618,
+    "cache_creation": 55908,
+    "total": 262868
+  }
+}
