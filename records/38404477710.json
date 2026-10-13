@@ -1,0 +1,235 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T13:33:09.789Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38404477710",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38404477710",
+  "actor": "AlexisBalayre",
+  "commit_sha": "92149eb7dbf1692b2b93619ade67677bbe67d4c3",
+  "source": "pr",
+  "pr_number": 139,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "313-314",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "ARMED_DRIVER_KEY can be bypassed for git-lfs custom transfer agents: the check is case-sensitive and anchored, but git-lfs matches `customtransfer` case-insensitively and anywhere in the key, and also reads a URL-scoped standalonetransferagent.",
+      "body": "**git-lfs transfer-agent keys can get past `ARMED_DRIVER_KEY` through case and placement**\n\n`armedGitDrivers` tests the raw keys from `git config --list` against a pattern that is anchored and case-sensitive:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/git-diff.client.ts#L313-L314\n\n```ts\nlfs\\.customtransfer\\..+\\.(?:path|args)|lfs\\.standalonetransferagent\n```\n\nGit keeps the subsection's case in `--list` output. So `git config lfs.CustomTransfer.pwn.path /tmp/pwn` lists as `lfs.CustomTransfer.pwn.path`, and that key passes the check. git-lfs still registers the agent, because it matches keys without regard to case and without anchoring (`tq/custom.go`):\n\n```go\npathRegex := regexp.MustCompile(`lfs\\.((?i)customtransfer\\.([^.]+))\\.path`)\nfor k, _ := range git.All() { match := pathRegex.FindStringSubmatch(k) ... path, _ := git.Get(k)\n```\n\nTwo other forms also get past the check:\n- a prefixed key such as `x.lfs.customtransfer.pwn.path`, which the unanchored regex still matches;\n- `lfs.<url>.standalonetransferagent`, which git-lfs reads through `uc.Get(\"lfs\", ep.Url, \"standalonetransferagent\")` in `tq/manifest.go`.\n\n`GIT_SAFE_CONFIG` keeps git-lfs out of pup's own git calls. These keys still sit in the shared local config, though, and the operator's own `git lfs pull` reads them after a fast-forward, which is the step decision 82 tells the operator to take. A session can therefore plant a transfer agent without tripping the \"second layer\" refusal decision 82 describes.\n\nSuggested fix: match what git-lfs actually accepts (see the suggestion). Adding `/i` to the `filter.` and `merge.` alternatives changes nothing, because git already lowercases section and variable names. The existing \"names no program\" cases still pass. Consider adding `lfs.CustomTransfer.pwn.path`, `x.lfs.customtransfer.pwn.path` and `lfs.https://example.com.standalonetransferagent` to the `it.each` in `src/core/git-diff-client.test.ts`.\n\n*(git-lfs behaviour read from upstream `main` source; not run locally.)*",
+      "suggestion": "const ARMED_DRIVER_KEY =\n  /^(?:filter\\..+\\.(?:clean|smudge|process)|merge\\..+\\.driver|lfs\\.(?:.+\\.)?standalonetransferagent|lfs\\.extension\\..+\\.(?:clean|smudge))$|lfs\\.customtransfer\\.[^.]+\\.(?:path|args)/i;"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "78-85",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Emptying `filter.lfs.*` in `GIT_SAFE_CONFIG` also changes `pup start`. In an LFS repo with a global `git lfs install`, `runGit(... 'worktree', 'add', '-b', ...)` used to give the session real LFS content. Now every new session worktree holds pointer files, and decision 82 only lists the gate checkout, the rebase and the fast-forward as affected.",
+      "body": "**Session worktrees now start on LFS pointers, and decision 82 doesn't say so**\n\nThe new `filter.lfs.*` pins in `GIT_SAFE_CONFIG` apply to every `runGit` call, not just the gate's:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/git-diff.client.ts#L78-L85\n\n`pup start` creates the session worktree through `runGit`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/session-lifecycle.service.ts#L218\n\nTake a repo whose `.gitattributes` uses `filter=lfs`, on a machine where the operator ran a global `git lfs install`. Before this PR, that `worktree add` smudged real LFS content into the session. Now the session's worktree holds pointer files. The conductor's graph checkout changes the same way:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/conductor.service.ts#L80-L92\n\nDecision 82 says \"no pup git call runs git-lfs at all\". Its consequence paragraph, though, lists only \"the gate's checkout, the rebase and the fast-forward\":\n\nhttps://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/docs/09-decisions.md#L4197-L4207\n\nSo in an LFS repo whose build or tests need the binaries, a session now fails until someone runs `git lfs pull` inside the worktree, and pup gives no sign of why. The pull works there because the session's own git doesn't carry pup's `-c` pins. The new test (`git-diff-client.test.ts`) covers the gate and conductor `worktree add --detach` form, not the session's `-b` form.\n\nPinning at `worktree add` is defensible on security grounds, because another live session can write the shared config. So the fix is probably not to drop the pin. Please do one of these:\n- extend decision 82 to cover session and conductor worktrees, and tell the session or operator to run `git lfs pull` (for example in the compiled profile or in `pup start`'s output);\n- record why sessions should start without LFS content.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "188-193",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "with `--accept-debt`, several refusal messages say \"Nothing was recorded as merged\" or \"nothing was merged\", and `withLedgerKept` then appends \"ledger entries were kept\". The operator reads two statements that look contradictory.",
+      "body": "**With `--accept-debt`, refusals say \"nothing was recorded as merged\" right before saying ledger entries were kept**\n\nWith `--accept-debt`, several refusals say \"Nothing was recorded as merged\". `withLedgerKept` then appends \"The accepted-debt ledger entry was kept for the retry… this session is not merged.\" The entries it kept have descriptions that read \"… merged from session X\" (see `merge-gate.service.ts` L834, L897 and L909, and `debt.service.ts`). Decision 82 itself calls them \"entries reading as merged\". The operator therefore reads \"nothing recorded as merged\" next to a ledger entry that reads merged, which is the contradiction this PR set out to remove.\n\nEach of these messages is raised after the ledger write, inside the `withLedgerKept` try blocks:\n- [`github.client.ts` L188-L193](https://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/github.client.ts#L188-L193): `assertPullRequestHead` (new)\n- [`merge-gate.service.ts` L488-L491](https://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/merge-gate.service.ts#L488-L491): `assertTargetAt`. The early call before the ledger write is fine, but the call from `fastForward` runs after it.\n- [`merge-gate.service.ts` L537-L541](https://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/merge-gate.service.ts#L537-L541): the checkout failure in `fastForward`\n- [`merge-gate.service.ts` L603-L607](https://github.com/AlexisBalayre/pupitre/blob/92149eb7dbf1692b2b93619ade67677bbe67d4c3/src/core/merge-gate.service.ts#L603-L607): the compare-and-swap failure in `fastForward`\n\nSuggested fix: say only what is true and make no claim about records:\n- \"The session is not merged\" (or \"Nothing was merged\") in `assertPullRequestHead`;\n- \"nothing was checked out and the session is not merged\" in `assertTargetAt`;\n- \"failed, and the session is not merged: …\" for the compare-and-swap failure.\n\nEach base message still reads correctly without the suffix, which is what you get when `--accept-debt` is off.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1006-1015",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `commitSubjects` `git log` runs after the `--accept-debt` ledger write but outside both `withLedgerKept` try blocks, so a failure there (e.g. a session-written invalid `log.date`) leaves entries filed with no kept note; moving it above the ledger write closes the gap.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1231-1232",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "withLedgerKept's single-entry note reads \"The accepted-debt ledger entry was kept for the retry, which will not file them twice\": \"them\" should be \"it\" when `kept === 1`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "984, 1002",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`ledgerKept` is incremented unconditionally once per flag, so it always equals `req.acceptDebt ? flaggedDebt.length : 0`; pass that expression to `withLedgerKept` and drop the mutable counter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1022-1058",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The two `try { … } catch (error) { throw withLedgerKept(error, ledgerKept); }` wrappers could be one around the whole `if (pullRequest) … else …` block, which would also cover `prBody` and the rest of the PR branch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "525-536",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "With the lfs clean filter emptied, a racy or stale-stat LFS file in the operator's checkout (real content) re-hashes as raw content, so `update-index --refresh` can no longer clear it and `read-tree -m -u` refuses the fast-forward as \"not uptodate\"; the failure is loud but the comment at L525 no longer holds for LFS paths.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "313-314",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Repos whose operator set `lfs.customtransfer.<name>.path`/`.args` and `lfs.standalonetransferagent` in local config (as lfs-folderstore and lfs-s3 setups instruct) now get refused at start, conductor and merge with \"treat a session that wrote them as compromised\" wording; decision 82 doesn't mention this cost.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "530-538",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The lfs-disarm test plants only a smudge marker; add one for `filter.lfs.process`, the path a global `git lfs install` actually configures and the least certain empty-value case.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4190-4210",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82's git-lfs sentence \"…and runs the program they name; so are the `lfs.extension.<name>.clean` and `.smudge` commands…\" has no clear subject; rewrite as \"and so are the … commands, which git-lfs runs on every lfs object\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4234-4236",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82's \"Tests:\" paragraph has one line far longer than its neighbours, which wrap at about 100 columns like decisions 80 and 81.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1213-1214",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The prBody comment \"What the report answers for: GitHub can move the head after the gate read it back (decision 82)\" restates assertPullRequestHead's JSDoc and can be deleted per AGENTS.md's duplicate-WHY rule.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "182-190",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "assertPullRequestHead reads `headRefOid` through an inline cast plus a typeof-object guard and a nested ternary, where the same file types `ghJson` results with a named interface cast once (`ListedPullRequest`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2351-2378",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new 'refuses a PR whose head is not the pushed sha' test hand-rolls an IIFE try/catch that returns the error message. The same diff adds the `refusalOf` helper (lines ~530-540) for exactly this. `refusalOf` sits inside the 'accepted debt and the refusals under the lock' describe, so the openPr test can't reach it. Hoisting it to the enclosing `runMergeGate` describe would let both reuse it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "530-660",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The four new 'accepted debt and the refusals under the lock' tests each repeat the same seedSession + 700-line big.ts commit + mutating-gateCommands adapter setup; a small `adapterThatDoes(mutate)` factory would remove the repetition.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "230-235",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR edits the shared `fakeGh` helper (new `head` param, a `pr view` branch that runs `git ls-remote` against origin), so every existing `--pr` test now depends on it; \"every existing test passes untouched\" holds only for the `it(...)` bodies.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "46-59, 139-166",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Every gh call runs with cwd set to the main checkout and no `-c` pins, and `gh pr create` runs `git status --porcelain` there, so a session-planted `core.fsmonitor` in the shared config could run unsandboxed during `pup merge --pr`; running gh from a neutral cwd (every call already pins `--repo`) would close it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.771227299999999,
+  "duration_ms": 572193,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 20852,
+    "cache_read": 206929,
+    "cache_creation": 78148,
+    "total": 305941
+  }
+}
