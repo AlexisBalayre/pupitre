@@ -1,0 +1,155 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T11:34:40.052Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38390316282",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38390316282",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5da2fcb2864a409a86494e1459c8c268ec9cb126",
+  "source": "pr",
+  "pr_number": 138,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "1f4adeb7d23d8c283a7f5bcb27caa47a08ab341c",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "754-759",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "316-346",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "329-346",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "337-347",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`escapes` runs `realpathSync` on the committed `node_modules` and its top-level entries only, so a deeper committed symlink reaches the session's live worktree, and so does any committed symlink outside `node_modules`.",
+      "body": "**The committed-`node_modules` guard checks only one level, but the JSDoc and decision 81 promise it checks everything inside.**\n\n```ts\nconst linksOut =\n  escapes(local) || readdirSync(local).some((name) => escapes(join(local, name)));\n```\n\n`readdirSync(local)` lists only the top-level names, and in a committed tree `.bin/`, `@scope/` and `<pkg>/` are real directories. Their realpath stays inside the checkout, so the guard passes, and nothing below them is checked.\n\nSuppose a branch commits `node_modules/.bin/vitest` (mode `120000`) with an absolute target in the session's worktree:\n\n- the guard passes and `linkEnvironment` returns at L346 with the committed directory kept, so the main checkout's packages are not linked in;\n- the test stage (`pnpm run test`, cwd = checkout) resolves `vitest` through that link, to a file the live session can rewrite while the stage runs;\n- the sandbox allows reads by default (`sandbox-profile.utils.ts:123-125`), so the worktree is readable;\n- the scope audit runs only after build, test and lint. It blocks the merge only when scope-in does not cover `node_modules/**`.\n\nThis delta introduced the gap: at 1f4adeb every committed `node_modules` was refused, and now the directory is kept after a top-level check. The JSDoc (L324-326) and decision 81 (`docs/09-decisions.md` L4154-4155) both say \"unless something in it links outside the checkout\", a guarantee the code doesn't provide.\n\nThe delta also keeps a vendored regular-file `.bin/vitest`, so a deliberately malicious session has other ways to fake a pass. Either make the check match the stated guarantee, or narrow the wording to what is checked and record the rest as part of the ceiling.\n\n**Fix direction:** before any stage, resolve every mode-`120000` entry in the pinned tree once (`git ls-tree -r -z <sha>`) and refuse any that resolves outside the checkout. A recursive `readdirSync` of `node_modules` alone doesn't close it: `.bin -> ../tools/bin`, with `tools/bin/vitest` pointing into the worktree, would still pass.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5da2fcb2864a409a86494e1459c8c268ec9cb126/src/core/merge-gate.service.ts#L337-L347",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "333-336",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`escapes` calls `realpathSync`, which throws a raw ENOENT on a dangling top-level link in a committed `node_modules`, so the gate fails closed with no gate message or report instead of its own refusal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1556-1559",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "No test covers the delta's main safety claim, that every environment (nested ones included) is linked before any stage runs, nor the `dirname(local)` guard. The nested `node_modules` test passes whether linking happens before or after the root stages, so a root `build` stage that asserts the nested package's `node_modules` entry already exists would pin the ordering.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "696-700",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"Every stage and debt capability measures the pinned sha's files…\" comment used to sit above `cutGateCheckout`. The delta moved that call to ~L740, so the comment now sits above the `commandStage` helper and describes nothing nearby. Move it above the `capabilityContext`/`cutGateCheckout` lines.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "348-349",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The parent is a committed directory a stage has not run in yet; still, a link is only ever written under the checkout itself.\" The \"still\" hedge leaves the reader to infer the point. It would be clearer as \"a committed parent could itself be a link out; check it before writing under it\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "326-328",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `linkEnvironment` JSDoc, \"so `.vite*` is skipped, and `.cache` with it so a stage writes its cache here\" is hard to parse, and it is the only place the `.cache` reason is given.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "332-358",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`linkEnvironment` now does three jobs: it decides whether a committed `node_modules` escapes the checkout, it checks that the parent stays inside, and it creates the links. Splitting the escape guard into its own helper would make it readable and testable on its own.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "719-771",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The two new tests repeat the same `git hash-object -w --stdin` / `update-index --cacheinfo` / `commit` sequence and then mirror the entry into the worktree. That is two uses, so extraction isn't required yet, but a small `commitRawEntry(worktree, mode, content, path)` helper is the obvious move if a third test appears.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "293-314",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Committed symlinks outside `node_modules` (for example `src/feature.test.ts -> <worktree>/src/feature.test.ts`) are checked out as-is into the gate checkout and nothing resolves them, so a stage can read files the live session edits. This gap dates from the detached-checkout commit, not this delta.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7802667999999997,
+  "duration_ms": 407253,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11495,
+    "cache_read": 302346,
+    "cache_creation": 58053,
+    "total": 371908
+  }
+}
