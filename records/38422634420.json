@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T15:33:45.795Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38422634420",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38422634420",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c9f51d7351c5d49f4092a2344f457fa30b869436",
+  "source": "pr",
+  "pr_number": 140,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "570-590",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup merge --pr` only runs on an `awaiting-review` session, and the sentence just before the new exception tells the conductor to stop on that exact state. Protocol step 5 says the same, so the text never says when to use `--pr`.",
+      "body": "**The new permission contradicts the awaiting-review instruction just before it.**\n\n`runMergeGate` refuses any session that is not `awaiting-review` (`src/core/merge-gate.service.ts:208-210`), so that is the only state where `pup merge … --pr` can run. The kickoff still says, right before the new exception:\n\n```\n'Refused to you: `pup merge`, `pup respawn`, `--project`. When a session is ' +\n'`awaiting-review`, summarise its branch for the operator in one paragraph and stop; ' +\n'the operator merges.\\n' +\n'The one exception: you may run `pup merge <task> --pr`. ...'\n```\n\nProtocol step 5 (lines 589-590) also still says \"When every session you launched is `awaiting-review`, killed or blocked, report and stop.\" So the only instruction for the state where `--pr` applies is \"stop; the operator merges\". The exception never says when it overrides that instruction.\n\nDecision 75 (`docs/09-decisions.md` ~L3884-3913) exists because \"every finished branch waited on an operator shell that Copiste does not have\". A conductor that follows these orders literally never gates. One that reads \"exception\" as an override has to guess whether to gate every finished branch or wait to be asked.\n\nMake the awaiting-review sentence (and step 5) say what to do. For example: gate the session with `pup merge <session-id> --pr`, then summarise the branch and the PR link for the operator. If the operator should ask first, say that instead. The tests at `src/core/profile-compiler.test.ts:867` and `:877-879` pin the current wording and need the same edit.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c9f51d7351c5d49f4092a2344f457fa30b869436/src/core/profile-compiler.service.ts#L570-L590",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "573",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The text says `pup merge <task> --pr`, but the CLI is `merge <session>`, and a session id only equals the task id on a task's first launch.",
+      "body": "**`pup merge` takes a session id, not a task id.**\n\nThe CLI declares `.command('merge <session>')` and passes the argument as `sessionId: session` (`src/cli/index.ts:1573`, `:1667`). `runMergeGate` looks it up with `getSession(db, req.sessionId)`, an exact `WHERE id = ?` match with no task-to-session resolution.\n\nSession ids come from `sessionSlug` (`src/core/session-lifecycle.service.ts:56-59`). A relaunched task's session is `<task>-1`, `<task>-2`, and so on. Even on a first launch the stem is the task id with non-alphanumerics replaced and cut to 24 characters, so the two can differ. When they differ, `pup merge <task> --pr` either finds no session or refuses an earlier, killed one, and the session actually in `awaiting-review` never gets gated.\n\nEvery other per-session command in this kickoff uses `<session-id>` (`pup steer`, `pup kill`, `pup review`, …), and decision 75 writes `pup merge <s> --pr`. Change `<task>` to `<session-id>` here and in the assertion at `src/core/profile-compiler.test.ts:877-879`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c9f51d7351c5d49f4092a2344f457fa30b869436/src/core/profile-compiler.service.ts#L573-L574",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "576",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The bullet only says to name an approver, so it does not stop the conductor from approving debt itself and naming itself (e.g. `--approved-by conductor`). The CLI's refusal message even suggests `--approved-by <who>` to it (`src/cli/index.ts:1723`), and decision 75 says the conductor only relays someone else's approval.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "518-523",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The JSDoc on `buildConductorContext` still says \"with the merge kept out of it (decision 47)\", which is no longer true now that the text grants `pup merge --pr` (decision 75).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3911-3913",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The note says the kickoff \"still lists `pup merge` among its refusals and says never to run it\" and needs a follow-up. This PR is that follow-up and leaves the note in place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "872-873",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The second half of the test comment (\"the local merge and an unnamed or borrowed approver stay refused\") restates the `it()` title; \"Decision 75: `--pr` never moves main\" carries the WHY on its own.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1616-1638",
+      "area": "security",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The conductor's merge refusals key off `process.env.PUP_CONDUCTOR` alone, so a conductor running with bypass permissions could unset it (`env -u PUP_CONDUCTOR pup merge <s>`) and be treated as the operator. Decisions 27 and 75 accept this as best effort, and this PR does not change it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4234215000000001,
+  "duration_ms": 167218,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 8662,
+    "cache_read": 210786,
+    "cache_creation": 34699,
+    "total": 254159
+  }
+}
