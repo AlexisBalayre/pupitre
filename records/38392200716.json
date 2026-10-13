@@ -1,0 +1,110 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T11:48:25.797Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38392200716",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38392200716",
+  "actor": "AlexisBalayre",
+  "commit_sha": "522a2042e56c5508a5591de11bc26783b1918b2b",
+  "source": "pr",
+  "pr_number": 138,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "5da2fcb2864a409a86494e1459c8c268ec9cb126",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "337-347",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "329",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`refuseEscapingLinks` reads each path with `entry.split('\\t', 2)`, and JS `split` with a limit throws away everything after the limit. So for a committed link whose path contains a tab, only the part before the tab is vetted: a decoy `lib` plus a link `lib<TAB>x -> <session worktree>` passes the check.",
+      "body": "**A committed link whose path contains a tab is vetted under the wrong path**\n\n```ts\nconst [meta, path] = entry.split('\\t', 2) as [string, string];\n```\n\nIn JavaScript, `String.prototype.split(sep, limit)` cuts the result off at the limit. It does not keep the rest of the string in the last element. So `'120000 blob <oid>\\tlib\\tx'.split('\\t', 2)` gives `path === 'lib'`.\n\nWhy that is reachable:\n- With `-z`, `git ls-tree` prints paths as they are, tabs included.\n- `runGit` returns the output unchanged.\n- On Linux and macOS, git accepts a tab in a tree path.\n- `read-tree -u` writes the link into the checkout before this check runs.\n\nSuppose a branch commits a harmless `lib` and also a link `lib<TAB>x -> /abs/path/to/session/worktree`:\n- `realpathSync(checkout/lib)` resolves inside the checkout, so the check passes;\n- the escaping link is never resolved;\n- a stage that reads `lib<TAB>x/...` follows it into the worktree the live session edits while the stage runs.\n\nDecision 81 now promises that *every* committed symlink is vetted, and this case breaks that promise. Without the decoy, the shortened path dangles and the tree is refused (fail closed, though the message names the wrong path).\n\nThe mode, type and oid never contain a tab, so the path is everything after the first one. Splitting there closes the gap and drops the cast.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/522a2042e56c5508a5591de11bc26783b1918b2b/src/core/merge-gate.service.ts#L325-L343",
+      "suggestion": "    const tab = entry.indexOf('\\t');\n    const meta = entry.slice(0, tab);\n    const path = entry.slice(tab + 1);"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "331-342",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The tree-wide vet also refuses links the target branch already carries, such as `.env -> .env.local` (gitignored) or `types.d.ts -> dist/types.d.ts` (build output). Those two merged before and are now refused on every merge, and the message says \"Treat the session that wrote it as compromised\" about a link the session never wrote. Refusing dangling links is declared in decision 81. Still, a dangling relative link whose target stays inside the checkout adds no reach, and the wording could point out a link already on the target branch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "776-792",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Outside `node_modules`, only the resolves-nowhere case is tested. No test commits a link outside `node_modules` that resolves to a real path outside the checkout, or a link whose path contains a tab.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "363-366",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `escapes` closure in `linkEnvironment` now has a single caller (`escapes(dirname(local))`), and its inside-the-checkout prefix test duplicates the one in `refuseEscapingLinks`. Inlining it would drop a closure that no longer earns its name.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "367-373",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "If a session deletes a whole nested package that has a `node_modules` in the main checkout, the package still counts as touched. `realpathSync(dirname(local))` then throws a raw ENOENT instead of the gate's own refusal.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "context",
+      "description": "Not spawned: the delta touches no spec, protocol or infra surface (only merge-gate.service.ts, its test, and decision 81)."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9663838999999996,
+  "duration_ms": 257463,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 9532,
+    "cache_read": 266737,
+    "cache_creation": 41963,
+    "total": 318246
+  }
+}
