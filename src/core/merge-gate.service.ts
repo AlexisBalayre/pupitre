@@ -4,13 +4,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmdirSync,
   rmSync,
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
@@ -314,30 +315,47 @@ function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
   return dir;
 }
 
+/** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
+function escapesCheckout(inside: string, path: string): boolean {
+  const real = realpathSync(path);
+  return real !== inside && !real.startsWith(`${inside}/`);
+}
+
 /**
- * Refuse a pinned tree whose committed symlinks resolve outside the checkout:
+ * Refuse a pinned tree whose committed symlinks reach outside the checkout:
  * a stage would read through them into the session's worktree, which the live
  * session edits while the stage runs. Every `120000` entry of the tree, not a
  * walk of one directory: a link can sit anywhere, and a chain through a
- * committed directory link would hide from a walk. A dangling link resolves
- * nowhere and is refused the same way (decision 81).
+ * committed directory link would hide from a walk. A dangling link is judged
+ * by where it points: one whose target stays inside the checkout (`.env ->
+ * .env.local`, a build output) adds no reach and is kept; one pointing out is
+ * refused like a resolving one (decision 81).
  */
 function refuseEscapingLinks(checkout: string, sha: string): void {
   const inside = realpathSync(checkout);
   const entries = runGit(checkout, ['ls-tree', '-r', '-z', sha]).split('\0').filter(Boolean);
   for (const entry of entries) {
-    const [meta, path] = entry.split('\t', 2) as [string, string];
+    // The path is everything after the first tab: mode, type and oid never hold
+    // one, a path can.
+    const tab = entry.indexOf('\t');
+    const meta = entry.slice(0, tab);
+    const path = entry.slice(tab + 1);
     if (!meta.startsWith('120000')) continue;
-    let real: string | undefined;
+    const at = join(checkout, path);
+    let out: boolean;
     try {
-      real = realpathSync(join(checkout, path));
+      out = escapesCheckout(inside, at);
     } catch {
-      real = undefined;
+      // Dangling: judged lexically, from where the link would land.
+      const target = readlinkSync(at);
+      const lands = resolve(realpathSync(dirname(at)), target);
+      out = lands !== inside && !lands.startsWith(`${inside}/`);
     }
-    if (real === undefined || (real !== inside && !real.startsWith(`${inside}/`))) {
+    if (out) {
       throw new Error(
-        `${quotePath(path)} is a committed link that resolves ${real === undefined ? 'nowhere' : 'outside the gate checkout'}; ` +
-          'nothing was merged. Treat the session that wrote it as compromised.',
+        `${quotePath(path)} is a committed link that reaches outside the gate checkout; nothing ` +
+          'was merged. If the target branch already carries it, the gate cannot run on this ' +
+          'repo until it is replaced; otherwise treat the session that wrote it as compromised.',
       );
     }
   }
@@ -359,16 +377,14 @@ function refuseEscapingLinks(checkout: string, sha: string): void {
 function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
   const source = join(repoPath, rel, GATE_ENVIRONMENT_DIR);
   const local = join(checkout, rel, GATE_ENVIRONMENT_DIR);
-  const inside = realpathSync(checkout);
-  const escapes = (path: string): boolean => {
-    const real = realpathSync(path);
-    return real !== inside && !real.startsWith(`${inside}/`);
-  };
   if (lstatSync(local, { throwIfNoEntry: false })) return;
   if (!existsSync(source)) return;
+  // A package the branch deleted has no directory to link into; its stages
+  // will say so in their own words.
+  if (!existsSync(dirname(local))) return;
   // A committed parent could itself be a link out: checked before anything is
   // written under it.
-  if (escapes(dirname(local))) {
+  if (escapesCheckout(realpathSync(checkout), dirname(local))) {
     throw new Error(`${quotePath(rel)} resolves outside the gate checkout; nothing was merged.`);
   }
   mkdirSync(local, { recursive: true });

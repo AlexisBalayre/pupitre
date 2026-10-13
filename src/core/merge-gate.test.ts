@@ -747,48 +747,50 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(merge(adapter).status).toBe('merged');
     });
 
-    // A committed link out of the checkout would reach the session's worktree.
-    it('refuses a committed node_modules that links outside the checkout', () => {
-      const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'node_modules/**'] });
-      const target = sh(
+    /** Commits a symlink at `path` pointing at `target` and mirrors it in the worktree. */
+    function commitLink(worktree: string, path: string, target: string): void {
+      const blob = sh(
         worktree,
         'sh',
         '-c',
-        `printf %s ${JSON.stringify(worktree)} | git hash-object -w --stdin`,
+        `printf %s ${JSON.stringify(target)} | git hash-object -w --stdin`,
       ).trim();
-      sh(
-        worktree,
-        'git',
-        'update-index',
-        '--add',
-        '--cacheinfo',
-        `120000,${target},node_modules/out`,
-      );
-      sh(worktree, 'git', 'commit', '-q', '-m', 'link out');
-      mkdirSync(join(worktree, 'node_modules'), { recursive: true });
-      symlinkSync(worktree, join(worktree, 'node_modules', 'out'));
+      sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `120000,${blob},${path}`);
+      sh(worktree, 'git', 'commit', '-q', '-m', `link ${path}`);
+      mkdirSync(dirname(join(worktree, path)), { recursive: true });
+      symlinkSync(target, join(worktree, path));
+    }
 
-      expect(() => merge()).toThrow(/node_modules\/out.*resolves outside the gate checkout/);
+    // A committed link out of the checkout would reach the session's worktree,
+    // wherever in the tree it sits, and whatever its path holds.
+    it.each([
+      ['under node_modules', 'node_modules/out'],
+      ['anywhere in the tree', 'src/out'],
+      ['with a tab in its path, beside a decoy', 'lib\tx'],
+    ])('refuses a committed link that reaches outside the checkout, %s', (_where, path) => {
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      if (path.includes('\t')) commitIn(worktree, 'lib', 'decoy\n');
+      commitLink(worktree, path, worktree);
+
+      expect(() => merge()).toThrow(/is a committed link that reaches outside the gate checkout/);
 
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    // Anywhere in the tree, not only under node_modules, and a dangling one too.
-    it('refuses a committed link anywhere in the tree that resolves nowhere', () => {
+    it('refuses a dangling committed link that points outside the checkout', () => {
       const worktree = seedSession(db, repo);
-      const target = sh(
-        worktree,
-        'sh',
-        '-c',
-        'printf /nowhere/at/all | git hash-object -w --stdin',
-      ).trim();
-      sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `120000,${target},src/dangling`);
-      sh(worktree, 'git', 'commit', '-q', '-m', 'dangling');
-      symlinkSync('/nowhere/at/all', join(worktree, 'src', 'dangling'));
+      commitLink(worktree, 'src/dangling', '/nowhere/at/all');
 
-      expect(() => merge()).toThrow(/src\/dangling is a committed link that resolves nowhere/);
+      expect(() => merge()).toThrow(/src\/dangling is a committed link that reaches outside/);
+    });
 
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    // A dangling link whose target stays inside adds no reach: build output,
+    // a gitignored file, as the target branch may already carry.
+    it('keeps a dangling committed link whose target stays inside the checkout', () => {
+      const worktree = seedSession(db, repo);
+      commitLink(worktree, 'src/types.d.ts', '../dist/types.d.ts');
+
+      expect(merge().status).toBe('merged');
     });
   });
 
