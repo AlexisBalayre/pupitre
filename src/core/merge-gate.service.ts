@@ -1076,24 +1076,6 @@ function gateAndMerge(
     }
   }
   transitionSession(db, session.id, 'merged', { report });
-  // The pinned sha is what landed; a commit the session added after it was
-  // never measured, so it stays on the branch (see the delete below) and the
-  // operator is told how many, rather than finding them later.
-  const leftBehind = commitsPastPin(req.repoPath, branchRef, sha);
-  if (leftBehind > 0) {
-    console.error(
-      `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
-        `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
-    );
-  }
-  appendEvent(db, session.id, 'merge', {
-    branch: session.branch,
-    sha,
-    target,
-    files: changedPaths,
-    ...(prUrl !== undefined ? { prUrl } : {}),
-    ...(leftBehind > 0 ? { leftBehind } : {}),
-  });
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
     // the next `pup audit` after the PR lands ratchets it (decision 26).
@@ -1120,21 +1102,44 @@ function gateAndMerge(
     commitSubjects,
   });
 
-  // By pane as well as name: a rename from inside the session would leave
-  // the name pointing at nothing while the window ran on (decision 46).
-  killTmux(session.id, session.tmux_target);
-  runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
-  // Deleted only while it still names the gated commit, in both modes: a
-  // commit the session added after the pin was never measured, so it is left
-  // on the branch for the operator rather than merged or thrown away.
+  let deleted = false;
   try {
-    // `--no-deref`: a branch turned into a symref after the pin must not
-    // delete the branch it points at.
-    runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    // By pane as well as name: a rename from inside the session would leave
+    // the name pointing at nothing while the window ran on (decision 46).
+    killTmux(session.id, session.tmux_target);
+    runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    // Deleted only while it still names the gated commit, in both modes: a
+    // commit the session added after the pin was never measured, so it is left
+    // on the branch for the operator rather than merged or thrown away.
+    try {
+      // `--no-deref`: a branch turned into a symref after the pin must not
+      // delete the branch it points at.
+      runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      deleted = true;
+    } catch {
+      // moved past the pin — kept, see above
+    }
+  } finally {
+    // Counted only once the session is killed and its worktree gone, so no
+    // commit can land after the count; recorded even if the teardown threw,
+    // since the target already holds the pinned sha.
+    const leftBehind = deleted ? 0 : commitsPastPin(req.repoPath, branchRef, sha);
+    if (leftBehind > 0) {
+      console.error(
+        `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
+          `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
+      );
+    }
+    appendEvent(db, session.id, 'merge', {
+      branch: session.branch,
+      sha,
+      target,
+      files: changedPaths,
+      ...(prUrl !== undefined ? { prUrl } : {}),
+      ...(leftBehind > 0 ? { leftBehind } : {}),
     });
-  } catch {
-    // moved past the pin — kept, see above
   }
   return {
     status: 'merged',
