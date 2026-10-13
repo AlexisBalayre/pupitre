@@ -4189,10 +4189,11 @@ changes back into those docs is pending.
     armed for every checkout git runs, the gate's rebase, its checkout's `read-tree` and the
     fast-forward included, and decision 50 leaves global drivers to the operator. But git-lfs
     reads `lfs.customtransfer.<name>.path` and `.args`, and `lfs.standalonetransferagent`, from
-    the same shared config a session can write, and runs the program they name. So
-    `armedGitDrivers` refuses those three keys in local or worktree scope, beside `filter.*` and
-    `merge.*` and under the same message; other `lfs.*` keys (`concurrent`, `fetchexclude`) name
-    no program and stay allowed. Not covered: the transfer-agent keys git-lfs accepts from a
+    the same shared config a session can write, and runs the program they name; so are the
+    `lfs.extension.<name>.clean` and `.smudge` commands git-lfs runs on every lfs object. So
+    `armedGitDrivers` refuses those five keys in local or worktree scope, beside `filter.*` and
+    `merge.*` and under the same message; other `lfs.*` keys (`concurrent`, `fetchexclude`, an
+    extension's `priority`) name no program and stay allowed. Not covered: the transfer-agent keys git-lfs accepts from a
     tracked `.lfsconfig`, which it limits to an allowlist that, as far as we know, leaves them
     out; that is git-lfs's to keep.
     *The PR head.* After `gh pr create` or the adopt-and-rewrite, the gate reads `headRefOid` back
@@ -4216,7 +4217,7 @@ changes back into those docs is pending.
     `hasOpenLedgerEntry` dedupes); the message is extended in place so the error keeps its type.
     The entries are not rolled back: the retry needs them unchanged, and the first approver
     stands (decision 75).
-    Tests: each of the three lfs keys is refused with the armed-driver wording and two lfs keys
+    Tests: each of the five lfs keys is refused with the armed-driver wording and three lfs keys
     that run nothing are not; a PR head read back as another sha is refused naming both and saying
     the entry was kept, and a matching head passes, the fake gh serving origin's branch by
     default; an `--accept-debt` merge whose target moved during the stages files no entry; one

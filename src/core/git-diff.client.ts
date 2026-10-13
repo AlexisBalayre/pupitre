@@ -292,10 +292,12 @@ export function gitDiffBinaryRecount(
  * program it runs: an operator's global `git lfs install` arms the lfs smudge
  * filter for every checkout, rebase and read-tree, and that filter runs
  * whatever `lfs.customtransfer.<name>.path` names, with `.args`, once
- * `lfs.standalonetransferagent` or the remote selects it (decision 82).
+ * `lfs.standalonetransferagent` or the remote selects it, and the
+ * `lfs.extension.<name>.clean` and `.smudge` commands on every lfs object;
+ * an extension's `.priority` names no program (decision 82).
  */
 const ARMED_DRIVER_KEY =
-  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.customtransfer\..+\.(?:path|args)|lfs\.standalonetransferagent)$/;
+  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.customtransfer\..+\.(?:path|args)|lfs\.standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$/;
 
 /**
  * The config scopes a session can reach. Both files sit inside the shared

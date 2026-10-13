@@ -2306,8 +2306,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
   });
 
-  // The approver can differ between the conductor's attempt and the operator's
-  // retry (decision 75); the debt is the same debt, and the first approver stands.
   // The body vouches for the commit the gate pushed; a head anything else put
   // there is refused loudly, naming both (decision 82).
   it('with openPr refuses a PR whose head is not the pushed sha, naming both', () => {
@@ -2361,6 +2359,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  // The approver can differ between the conductor's attempt and the operator's
+  // retry (decision 75); the debt is the same debt, and the first approver stands.
   it('with openPr retries under another approver without filing the debt twice', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));

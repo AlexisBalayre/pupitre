@@ -278,6 +278,8 @@ describe('armedGitDrivers', () => {
     ['lfs.customtransfer.pwn.path', '/usr/bin/true'],
     ['lfs.customtransfer.pwn.args', '--pwn'],
     ['lfs.standalonetransferagent', 'pwn'],
+    ['lfs.extension.pwn.clean', '/usr/bin/true %f'],
+    ['lfs.extension.pwn.smudge', '/usr/bin/true %f'],
   ])('names %s, which git-lfs runs from the shared config', (key, value) => {
     const repo = repoWithCommit();
     sh(repo, 'git', 'config', key, value);
@@ -292,6 +294,7 @@ describe('armedGitDrivers', () => {
     const repo = repoWithCommit();
     sh(repo, 'git', 'config', 'lfs.customtransfer.pwn.concurrent', 'false');
     sh(repo, 'git', 'config', 'lfs.fetchexclude', '*');
+    sh(repo, 'git', 'config', 'lfs.extension.pwn.priority', '0');
 
     expect(armedGitDrivers(repo)).toEqual([]);
   });
