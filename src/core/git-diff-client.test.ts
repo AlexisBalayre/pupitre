@@ -272,6 +272,74 @@ describe('armedGitDrivers', () => {
     expect(armedGitDrivers(repo)).toEqual(['merge.pwn.driver']);
   });
 
+  // An operator's global `git lfs install` arms the lfs smudge filter for every
+  // checkout, and git-lfs runs the transfer agent these keys name (decision 82).
+  it.each([
+    ['lfs.customtransfer.pwn.path', '/usr/bin/true'],
+    ['lfs.customtransfer.pwn.args', '--pwn'],
+    ['lfs.standalonetransferagent', 'pwn'],
+    ['lfs.extension.pwn.clean', '/usr/bin/true %f'],
+    ['lfs.extension.pwn.smudge', '/usr/bin/true %f'],
+    // The looser forms git-lfs accepts (see `ARMED_DRIVER_KEY`, decision 82).
+    ['lfs.CustomTransfer.pwn.path', '/usr/bin/true'],
+    ['x.lfs.customtransfer.pwn.path', '/usr/bin/true'],
+    ['lfs.customtransfer pwn.path', '/usr/bin/true'],
+    ['lfs.https://example.com.standalonetransferagent', 'pwn'],
+  ])('names %s, which git-lfs runs from the shared config', (key, value) => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', key, value);
+
+    expect(armedGitDrivers(repo)).toEqual([key]);
+    expect(() => assertNoArmedGitDrivers(repo)).toThrow(
+      new RegExp(`a filter or merge driver is armed.*${key.replaceAll('.', '\\.')}`),
+    );
+  });
+
+  // git allows `\r` and the Unicode line separators in a subsection, and its
+  // attribute parser keeps them in a filter name; a `.` without `s` skips them.
+  it.each(['filter.a\u2028b.smudge', 'lfs.https://example.com/?\u2029.standalonetransferagent'])(
+    'names %s, whose subsection holds a line terminator',
+    (key) => {
+      const repo = repoWithCommit();
+      sh(repo, 'git', 'config', key, '/usr/bin/true');
+
+      expect(armedGitDrivers(repo)).toHaveLength(1);
+    },
+  );
+
+  // git-lfs reads plain `git config -l`, so a line inside a value, or an `=`
+  // inside a subsection, is a key to it; a line without `=` is not (decision 82).
+  it("names an lfs key hidden on a second line of another key's value", () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'pup.note', 'x\nlfs.customtransfer.pwn.path=/usr/bin/true');
+
+    expect(armedGitDrivers(repo)).toEqual(['lfs.customtransfer.pwn.path']);
+  });
+
+  it('ignores a line without = in a value, as git-lfs does', () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'alias.note', '!echo\nlfs.customtransfer.pwn.path');
+
+    expect(armedGitDrivers(repo)).toEqual([]);
+  });
+
+  it('names an lfs key an = in its subsection hides from the listed key', () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'lfs.extension.pwn.clean=/usr/bin/true.x', '1');
+
+    expect(armedGitDrivers(repo)).toEqual(['lfs.extension.pwn.clean']);
+  });
+
+  it('ignores lfs keys that name no program', () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'lfs.customtransfer.pwn.concurrent', 'false');
+    sh(repo, 'git', 'config', 'branch.feature/customtransfer-agent.remote', 'origin');
+    sh(repo, 'git', 'config', 'lfs.fetchexclude', '*');
+    sh(repo, 'git', 'config', 'lfs.extension.pwn.priority', '0');
+
+    expect(armedGitDrivers(repo)).toEqual([]);
+  });
+
   // The file is inert until a driver is named, but nothing else writes it, and
   // a `-diff` pattern there already forges the diff the coverage stage reads.
   it('names info/attributes on its own, quoting the pattern that armed it', () => {
@@ -472,6 +540,61 @@ describe('runGit', () => {
     expect(runGit(repo, ['log', '-1', '--format=%s']).trim()).toBe('forged');
     expect(existsSync(fired)).toBe(false);
   });
+
+  // A repo tracking `*.bin filter=lfs`, with a pointer committed before the
+  // filter was armed, and the lfs filter then pointed at a marker, standing in
+  // for the operator's global `git lfs install` whose download runs programs
+  // the shared config names (decision 82).
+  function lfsArmedRepo(filter: 'smudge' | 'process' = 'smudge'): {
+    repo: string;
+    fired: string;
+    pointer: string;
+  } {
+    const repo = makeRepo();
+    const pointer = `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 12\n`;
+    writeFileSync(join(repo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n');
+    writeFileSync(join(repo, 'asset.bin'), pointer);
+    commitAll(repo, 'base');
+    const fired = join(repo, '.git', 'fired');
+    const lfs = join(repo, '.git', 'planted-lfs');
+    writeFileSync(lfs, `#!/bin/sh\necho lfs >> ${fired}\ncat\n`, { mode: 0o755 });
+    sh(repo, 'git', 'config', `filter.lfs.${filter}`, filter === 'smudge' ? `${lfs} %f` : lfs);
+    sh(repo, 'git', 'config', 'filter.lfs.required', 'true');
+    return { repo, fired, pointer };
+  }
+
+  // The control: a plain checkout runs the lfs smudge on the pointer.
+  it('runs in a repo where a plain worktree add fires the planted lfs smudge', () => {
+    const { repo, fired } = lfsArmedRepo();
+
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', join(repo, 'plain'), 'HEAD');
+
+    expect(readFileSync(fired, 'utf8')).toBe('lfs\n');
+  });
+
+  // `process` is the key a global `git lfs install` writes. The marker speaks
+  // no pkt-line, so git kills it and fails the checkout, after it fired.
+  it('runs in a repo where a plain worktree add starts the planted lfs process filter', () => {
+    const { repo, fired } = lfsArmedRepo('process');
+
+    expect(() =>
+      sh(repo, 'git', 'worktree', 'add', '-q', '--detach', join(repo, 'plain'), 'HEAD'),
+    ).toThrow();
+    expect(readFileSync(fired, 'utf8')).toBe('lfs\n');
+  });
+
+  it.each(['smudge', 'process'] as const)(
+    'checks out the lfs pointer unchanged and never runs the lfs %s filter',
+    (filter) => {
+      const { repo, fired, pointer } = lfsArmedRepo(filter);
+      const checkout = join(repo, 'through-rungit');
+
+      runGit(repo, ['worktree', 'add', '-q', '--detach', checkout, 'HEAD']);
+
+      expect(readFileSync(join(checkout, 'asset.bin'), 'utf8')).toBe(pointer);
+      expect(existsSync(fired)).toBe(false);
+    },
+  );
 
   it('verifies no signature on log or ff-only merge, so the planted gpg.program never runs', () => {
     const { repo, fired } = signatureArmedRepo();

@@ -43,6 +43,12 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * `submodule.recurse` would have the rebase and that checkout recurse into a
  * `.git/modules/<name>` repo whose own config and attributes no driver check
  * reads, so it is pinned off (decision 80).
+ * The `lfs` filter is emptied and made optional, so no pup git call runs
+ * git-lfs: with the operator's global `git lfs install`, a tracked
+ * `.gitattributes` naming `filter=lfs` makes it the smudge driver of every
+ * checkout, and its download runs programs named by general shared-config
+ * keys (`core.sshCommand` for an ssh endpoint) that no key refusal can list.
+ * Pup checks out LFS pointers, never their content (decision 82).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
@@ -69,6 +75,14 @@ const GIT_SAFE_CONFIG = [
   'pull.twohead=ort',
   '-c',
   'submodule.recurse=false',
+  '-c',
+  'filter.lfs.required=false',
+  '-c',
+  'filter.lfs.process=',
+  '-c',
+  'filter.lfs.smudge=',
+  '-c',
+  'filter.lfs.clean=',
 ] as const;
 
 /**
@@ -287,8 +301,23 @@ export function gitDiffBinaryRecount(
  * Deliberately not the whole of either namespace: `merge.conflictstyle`,
  * `merge.ff` and `filter.<name>.required` execute nothing, and refusing on
  * them would refuse a repo whose operator set an ordinary preference.
+ *
+ * And the `lfs` keys git-lfs reads from the same shared config to pick a
+ * program it runs: an operator's global `git lfs install` arms the lfs smudge
+ * filter for every checkout, rebase and read-tree, and that filter runs
+ * whatever `lfs.customtransfer.<name>.path` names, with `.args`, once
+ * `lfs.standalonetransferagent` or the remote selects it, and the
+ * `lfs.extension.<name>.clean` and `.smudge` commands on every lfs object;
+ * an extension's `.priority` names no program (decision 82). Matched looser
+ * than git lists them, because git-lfs is: git keeps a subsection's case and
+ * git-lfs ignores it, the agent can be named per endpoint url, and the
+ * `customtransfer` pattern differs by version (unescaped dots in 3.x,
+ * unanchored on main), so the last alternative is the union of both, its
+ * dots deliberately unescaped. `s` because git allows `\r` and the Unicode
+ * line separators inside a subsection, which `.` skips without it.
  */
-const ARMED_DRIVER_KEY = /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver)$/;
+const ARMED_DRIVER_KEY =
+  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.(?:.+\.)?standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$|lfs.customtransfer.[^.]+.(?:path|args)/is;
 
 /**
  * The config scopes a session can reach. Both files sit inside the shared
@@ -354,9 +383,20 @@ export function armedGitDrivers(gitPath: string): string[] {
   // Entries are `<scope>\0<key>\n<value>\0`, so they come out in pairs.
   const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z']).trim().split('\0');
   for (let i = 0; i + 1 < listed.length; i += 2) {
-    const [key] = (listed[i + 1] as string).split('\n');
     if (!SESSION_WRITABLE_SCOPES.includes(listed[i] as string)) continue;
-    if (key && ARMED_DRIVER_KEY.test(key)) armed.push(sanitizeReason(key));
+    const entry = listed[i + 1] as string;
+    const [key] = entry.split('\n');
+    // Judged as git-lfs reads them too: it parses plain `git config -l`,
+    // splitting on newlines and each line on its first `=`, so a line hidden
+    // in a value, or an `=` in a subsection, is a key to it (decision 82).
+    const asLfsReads = entry
+      .replace('\n', '=')
+      .split('\n')
+      .filter((line) => line.includes('='))
+      .map((line) => line.split('=')[0]);
+    for (const read of new Set([key, ...asLfsReads])) {
+      if (read && ARMED_DRIVER_KEY.test(read)) armed.push(sanitizeReason(read));
+    }
   }
   return armed;
 }

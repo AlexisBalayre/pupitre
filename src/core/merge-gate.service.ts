@@ -34,6 +34,7 @@ import {
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
+  assertPullRequestHead,
   createPullRequest,
   findOpenPullRequest,
   originRepoSlug,
@@ -469,6 +470,28 @@ function resolveCommit(repoPath: string, ref: string): string {
   return runGit(repoPath, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], piped).trim();
 }
 
+/**
+ * Refuse unless `target` still names `targetSha`, the only commit the
+ * fast-forward's compare-and-swap will move it from. A deleted target reads as
+ * moved to nowhere, not as a stack; a symref keeps its own refusal, which names
+ * the compromise.
+ */
+function assertTargetAt(repoPath: string, target: string, targetSha: string): void {
+  let now: string;
+  try {
+    now = resolveCommit(repoPath, `refs/heads/${target}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
+    now = 'nowhere';
+  }
+  if (now !== targetSha) {
+    throw new Error(
+      `${sanitizeReason(target)} moved from ${targetSha} to ${now} while the gate ran; nothing ` +
+        'was checked out and the session is not merged.',
+    );
+  }
+}
+
 /** One shell word, for a command the operator is asked to paste. */
 function shellWord(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
@@ -489,21 +512,8 @@ function shellWord(word: string): string {
 function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
   const shown = sanitizeReason(target);
   // Before the checkout is touched, not only at the compare-and-swap after it
-  // (decision 80). A deleted target reads as moved to nowhere, not as a stack;
-  // a symref keeps its own refusal, which names the compromise.
-  let now: string;
-  try {
-    now = resolveCommit(repoPath, `refs/heads/${target}`);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
-    now = 'nowhere';
-  }
-  if (now !== targetSha) {
-    throw new Error(
-      `${shown} moved from ${targetSha} to ${now} while the gate ran; nothing was checked out ` +
-        'and nothing was recorded as merged.',
-    );
-  }
+  // (decision 80).
+  assertTargetAt(repoPath, target, targetSha);
   // `--work-tree` because `core.worktree` sits in the shared config and would
   // aim the checkout's writes wherever a session chose; `submodule.recurse` is
   // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again; and
@@ -527,7 +537,7 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
   } catch (error) {
     throw new Error(
       `Fast-forward of ${shown} to ${sha} refused by the checkout; the ref was not moved and ` +
-        `nothing was recorded as merged.\n${commandFailureDetail(error)}`,
+        `the session is not merged.\n${commandFailureDetail(error)}`,
     );
   }
   try {
@@ -591,7 +601,7 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
         'filter.* config and info/attributes first and treat a session that wrote them as ' +
         `compromised (decision 50), then run:\n  ${git} ${inverse.join(' ')}\n`;
     throw new Error(
-      `Fast-forward of ${shown} to ${sha} failed, and nothing was recorded as merged: the ` +
+      `Fast-forward of ${shown} to ${sha} failed, and the session is not merged: the ` +
         `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
         `the ref was left where it is.\n${checkoutState}${commandFailureDetail(error)}`,
     );
@@ -959,12 +969,31 @@ function gateAndMerge(
   }
   flaggedDebt.push(...judged.flags);
 
-  if (flaggedDebt.length > 0) {
-    if (!req.acceptDebt) {
-      const report: GateReport = { sessionId: session.id, passed: false, sandbox, stages };
-      appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
-      return { status: 'refused', report, rejectCount: session.reject_count };
-    }
+  if (flaggedDebt.length > 0 && !req.acceptDebt) {
+    const report: GateReport = { sessionId: session.id, passed: false, sandbox, stages };
+    appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
+    return { status: 'refused', report, rejectCount: session.reject_count };
+  }
+  // Before the ledger write, not only before the checkout: a target moved while
+  // the stages ran is the one under-lock refusal that can be settled this early,
+  // and debt filed for a merge that then aborts reads as merged from this
+  // session (decision 82). `fastForward` reads it again right before the
+  // checkout, with the compare-and-swap as the backstop.
+  if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
+  // Before the ledger write too: a session-written `log.date` can fail this,
+  // and a failure after the write would leave entries filed with no kept note.
+  const commitSubjects = runGit(req.repoPath, [
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  // What `--accept-debt` filed, for the refusals that must stay after it.
+  let ledgerKept = 0;
+  if (req.acceptDebt) {
     for (const flag of flaggedDebt) {
       const entry = {
         projectId: specRow.project_id,
@@ -981,50 +1010,54 @@ function gateAndMerge(
       // Safe because every description above embeds the session id, so this can
       // only ever match this session's own earlier attempt.
       if (!hasOpenLedgerEntry(db, entry)) insertLedgerEntry(db, entry);
+      ledgerKept += 1;
     }
   }
 
   const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
-  const commitSubjects = runGit(req.repoPath, [
-    'log',
-    '--reverse',
-    '--format=%s',
-    `${targetSha}..${sha}`,
-  ])
-    .trim()
-    .split('\n')
-    .filter(Boolean);
   let prUrl: string | undefined;
   let prWasAdopted = false;
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
       title: prTitle(spec.goal) || `pup session ${session.id}`,
-      body: prBody(spec, report, commitSubjects),
+      body: prBody(spec, report, commitSubjects, sha),
     };
-    pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
-    if (pullRequest.adoptedUrl) {
-      rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
-      prWasAdopted = true;
-      prUrl = pullRequest.adoptedUrl;
-    } else {
-      prUrl = createPullRequest(req.repoPath, newPr);
+    try {
+      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
+      if (pullRequest.adoptedUrl) {
+        rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
+        prWasAdopted = true;
+        prUrl = pullRequest.adoptedUrl;
+      } else {
+        prUrl = createPullRequest(req.repoPath, newPr);
+      }
+      // The body vouches for `sha`; a session holding the operator's gh login
+      // can push the branch between our push and the PR call (decision 82).
+      assertPullRequestHead(req.repoPath, prUrl, pullRequest.repo, sha);
+    } catch (error) {
+      throw withLedgerKept(error, ledgerKept);
     }
   } else {
-    // Re-read under the lock: `target` was read before it, and the checkout
-    // below moves whatever index HEAD names (decision 79). The drivers too: a
-    // session alive during the stages can re-arm `info/attributes`, and the
-    // checkout runs a smudge filter on every file it writes (decision 80).
-    const checkedOut = currentBranch(req.repoPath);
-    if (checkedOut !== target) {
-      throw new Error(
-        `Main worktree moved from ${sanitizeReason(target)} to ` +
-          `${checkedOut ? sanitizeReason(checkedOut) : 'no branch'} while the gate ran; ` +
-          'nothing was merged.',
-      );
+    try {
+      // Re-read under the lock: `target` was read before it, and the checkout
+      // below moves whatever index HEAD names (decision 79). The drivers too: a
+      // session alive during the stages can re-arm `info/attributes`, and the
+      // checkout runs a smudge filter on every file it writes (decision 80).
+      // Both stay last, after the ledger write, because they guard the checkout.
+      const checkedOut = currentBranch(req.repoPath);
+      if (checkedOut !== target) {
+        throw new Error(
+          `Main worktree moved from ${sanitizeReason(target)} to ` +
+            `${checkedOut ? sanitizeReason(checkedOut) : 'no branch'} while the gate ran; ` +
+            'nothing was merged.',
+        );
+      }
+      assertNoArmedGitDrivers(req.repoPath);
+      fastForward(req.repoPath, target, targetSha, sha);
+    } catch (error) {
+      throw withLedgerKept(error, ledgerKept);
     }
-    assertNoArmedGitDrivers(req.repoPath);
-    fastForward(req.repoPath, target, targetSha, sha);
   }
   transitionSession(db, session.id, 'merged', { report });
   // The pinned sha rides along untyped: the payload type and its decoder are
@@ -1158,7 +1191,7 @@ function prTitle(goal: string): string {
   return line.length <= PR_TITLE_MAX_CHARS ? line : `${line.slice(0, PR_TITLE_MAX_CHARS - 1)}…`;
 }
 
-function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[]): string {
+function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {
   // Commit subjects and gate details quote session-authored text. Fenced so
   // GitHub renders it inert — no `Closes #n` auto-closing, no @mention pings,
   // no invisible HTML comments aimed at review bots.
@@ -1179,10 +1212,31 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[]): s
     '',
     '## Gate report',
     '',
+    // What the report answers for: GitHub can move the head after the gate
+    // read it back (decision 82).
+    `Gated commit: ${sha}`,
+    '',
     '````',
     formatGateReport(report),
     '````',
   ].join('\n');
+}
+
+/**
+ * A refusal after `--accept-debt` filed its ledger entries, saying they stay.
+ * They are not rolled back: a retry re-runs the gate with the same flags and
+ * files none twice, and the entries name this session (decision 82). The
+ * message is extended in place so the refusal keeps its type.
+ */
+function withLedgerKept(error: unknown, kept: number): unknown {
+  if (kept > 0 && error instanceof Error) {
+    const [subject, pronoun] =
+      kept === 1
+        ? ['The accepted-debt ledger entry was', 'it']
+        : [`All ${kept} accepted-debt ledger entries were`, 'them'];
+    error.message += `\n${subject} kept for the retry, which will not file ${pronoun} twice; this session is not merged.`;
+  }
+  return error;
 }
 
 function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
