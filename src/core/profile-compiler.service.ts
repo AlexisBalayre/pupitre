@@ -518,8 +518,9 @@ export function compileProfile(input: CompileInput): CompiledProfile {
 /**
  * The conductor's opening prompt: what it may run, how it reaches a session,
  * and where its authority stops. The protocol is the operator's loop written
- * down — status, launch, wait for idle, steer with evidence, hand a finished
- * branch back — with the merge kept out of it (decision 47).
+ * down — status, launch, wait for idle, steer with evidence, gate a finished
+ * branch into a pull request (decision 75) — with the merge itself kept out
+ * of it (decision 47).
  */
 function buildConductorContext(input: ConductorCompileInput, brief: string | undefined): string {
   const workerModel = input.workerModel ? ` --model ${input.workerModel}` : '';
@@ -567,9 +568,15 @@ function buildConductorContext(input: ConductorCompileInput, brief: string | und
       '- `pup interrupt <session-id> ["<message>"]` — Escape a hung tool call.\n' +
       '- `pup kill <session-id>` — stop a session; its task returns to the backlog.\n' +
       '- `pup review [<session-id>]`, `pup debt`, `pup log` — read-only.\n' +
-      'Refused to you: `pup merge`, `pup respawn`, `--project`. When a session is ' +
-      '`awaiting-review`, summarise its branch for the operator in one paragraph and stop; ' +
-      'the operator merges.\n' +
+      'Refused to you: `pup merge` without `--pr`, `pup respawn`, `--project`. When a session ' +
+      'is `awaiting-review` and meets its acceptance criteria (step 3 otherwise), run ' +
+      '`pup merge <session-id> --pr`: it runs the gate, pushes the branch and opens a pull ' +
+      'request. Then summarise the branch and the PR link for the operator in one paragraph; ' +
+      'a human merges the pull request, never you.\n' +
+      '- Never run `pup merge` without `--pr`: that moves main, which is not yours to move.\n' +
+      '- Never pass `--accept-debt` without `--approved-by <who>`, naming who approved it. ' +
+      'You relay an approval, you never give one: `--approved-by` never names you.\n' +
+      "- Never pass `--approved-by human`: that is the operator's own entry.\n" +
       'If `pup` is not on PATH, run `node "$PUP_BIN" <command>` instead.',
     '## Protocol\n' +
       '1. `pup status`, then `pup plan`. Launch at most one session per backlog task and ' +
@@ -580,9 +587,9 @@ function buildConductorContext(input: ConductorCompileInput, brief: string | und
       '3. A session that stopped short of its acceptance criteria: steer it with the exact ' +
       'evidence — which file is unchanged, which criterion is unmet. A session stalled, or ' +
       'blocked on something only a human can decide: report it to the operator.\n' +
-      '4. Never edit, commit or push from this checkout. Never run `pup merge`.\n' +
-      '5. When every session you launched is `awaiting-review`, killed or blocked, report ' +
-      'and stop.',
+      '4. Never edit, commit or push from this checkout. Never run `pup merge` without `--pr`.\n' +
+      '5. When every session you launched is gated into a pull request, killed or blocked, ' +
+      'report and stop.',
     input.codegraphBinary ? codeGraphSection(CONDUCTOR_GRAPH) : undefined,
     input.base.conventions ? `## Conventions\n${input.base.conventions}` : undefined,
   ];
