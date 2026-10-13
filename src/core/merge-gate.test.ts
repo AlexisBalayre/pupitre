@@ -5,6 +5,8 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -122,6 +124,11 @@ function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> = {}): 
   transitionSession(db, SESSION_ID, 'awaiting-review');
   return worktree;
 }
+
+/** Where the gate cuts its detached checkout of the pinned sha (decision 81). */
+const GATE_CHECKOUT = new RegExp(
+  `^${realpathSync(tmpdir()).replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')}/pup-gate-checkout-[^/]+/checkout$`,
+);
 
 /** The reason the last transition into `blocked` recorded, as the gate wrote it. */
 function blockedReason(db: Database): string | undefined {
@@ -517,6 +524,294 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+  });
+
+  // Every stage and debt capability reads a private detached checkout of the
+  // pinned sha, never the worktree the live session can edit while they run
+  // (decision 81).
+  describe('the gate checkout', () => {
+    /** The checkout this gate registered, read from git while the gate runs. */
+    const registeredCheckout = (): string | undefined =>
+      sh(repo, 'git', 'worktree', 'list', '--porcelain')
+        .split('\n')
+        .map((line) => line.replace(/^worktree /, ''))
+        .find((path) => GATE_CHECKOUT.test(path));
+    const expectDropped = (checkout: string | undefined) => {
+      expect(checkout).toMatch(GATE_CHECKOUT);
+      expect(existsSync(dirname(checkout as string))).toBe(false);
+      expect(registeredCheckout()).toBeUndefined();
+    };
+    /**
+     * A shell build stage, and a hook run in-process once the checkout is cut;
+     * answers the checkout the hook saw.
+     */
+    const adapterAfterCut = (
+      build: string,
+      hook: (repoPath: string) => void = () => {},
+    ): { adapter: Adapter; checkout: () => string | undefined } => {
+      let checkout: string | undefined;
+      return {
+        checkout: () => checkout,
+        adapter: {
+          ...passingAdapter,
+          gateCommands: (repoPath) => {
+            checkout = registeredCheckout();
+            hook(repoPath);
+            return [
+              { stage: 'build', command: 'sh', args: ['-c', build] },
+              ...passingAdapter.gateCommands(repoPath).filter((c) => c.stage !== 'build'),
+            ];
+          },
+        },
+      };
+    };
+
+    it('measures the pinned files when the worktree is edited after the pin', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+      const { adapter, checkout } = adapterAfterCut('grep -q "feature = 1" src/feature.ts', () =>
+        writeFileSync(join(worktree, 'src/feature.ts'), 'export const feature = 2;\n'),
+      );
+      let measured: string | undefined;
+
+      const outcome = merge(
+        debtAdapter({
+          ...adapter,
+          deadCode: ({ measurePath }) => {
+            measured = readFileSync(join(measurePath, 'src/feature.ts'), 'utf8');
+            return [];
+          },
+        }),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages).toContainEqual({ stage: 'build', status: 'pass' });
+      expect(measured).toBe('export const feature = 1;\n');
+      expectDropped(checkout());
+    });
+
+    it('drops the checkout after a pass', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { adapter, checkout } = adapterAfterCut('test -f src/feature.ts');
+
+      expect(merge(adapter).status).toBe('merged');
+
+      expectDropped(checkout());
+    });
+
+    it('drops the checkout after a failed stage', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { adapter, checkout } = adapterAfterCut('exit 1');
+
+      expect(merge(adapter).status).toBe('rejected');
+
+      expectDropped(checkout());
+    });
+
+    it('drops the checkout after a thrown gate', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const moved = sh(repo, 'git', 'commit-tree', '-p', 'main', '-m', 'moved', 'main^{tree}');
+      const { adapter, checkout } = adapterAfterCut('true', (repoPath) =>
+        sh(repoPath, 'git', 'update-ref', 'refs/heads/main', moved.trim()),
+      );
+
+      expect(() => merge(adapter)).toThrow(/moved from/);
+
+      expectDropped(checkout());
+    });
+
+    /** A `node_modules` with one package and a vite cache, ignored by git. */
+    const installDeps = (dir: string, marker: string): void => {
+      mkdirSync(join(dir, 'node_modules', '.vite'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules', 'marker'), marker);
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'node_modules\n');
+    };
+
+    // Writable where the stage writes: vite's temp files go beside the
+    // packages, and the caches start empty.
+    it("links the main checkout's packages into a node_modules of its own", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      installDeps(repo, 'main\n');
+      const { adapter, checkout } = adapterAfterCut(
+        'test ! -L node_modules && grep -q main node_modules/marker && ' +
+          'test ! -e node_modules/.vite && mkdir node_modules/.vite-temp',
+      );
+
+      expect(merge(adapter).status).toBe('merged');
+
+      // The links went with the checkout, not through it.
+      expect(readFileSync(join(repo, 'node_modules', 'marker'), 'utf8')).toBe('main\n');
+      expect(existsSync(join(repo, 'node_modules', '.vite-temp'))).toBe(false);
+      expectDropped(checkout());
+    });
+
+    // The session can rewrite its own `.bin` while the stages run.
+    it("links the main checkout's packages even when the worktree has its own", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      installDeps(repo, 'main\n');
+      installDeps(worktree, 'session\n');
+      const { adapter } = adapterAfterCut('grep -q main node_modules/marker');
+
+      expect(merge(adapter).status).toBe('merged');
+    });
+
+    it('checks out every committed file past a planted core.sparseCheckout', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      sh(repo, 'git', 'config', 'core.sparseCheckout', 'true');
+      writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), '/src/app.ts\n');
+
+      expect(merge(adapterAfterCut('test -f src/feature.ts').adapter).status).toBe('merged');
+    });
+
+    it('refuses filter drivers armed after the check before the lock, running no smudge', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      // The target moves, so the gate rebases: the session arms the drivers
+      // as the rebase ends, after the check before the lock and before the cut.
+      commitIn(repo, 'src/other.ts', 'export const other = 1;\n');
+      const fired = join(repo, '.git', 'fired');
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        const output = real?.(file, args, opts as never);
+        if (file === 'git' && args.includes('rebase')) {
+          writeFileSync(join(repo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+          sh(repo, 'git', 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${fired}; cat'`);
+        }
+        return output;
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+      const gateCommands = vi.fn(passingAdapter.gateCommands);
+
+      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(ArmedGitDriverError);
+
+      expect(existsSync(fired)).toBe(false);
+      expect(gateCommands).not.toHaveBeenCalled();
+      expect(registeredCheckout()).toBeUndefined();
+    });
+
+    // A stage can leave a directory nobody can remove; the gate's own outcome
+    // still stands.
+    it('keeps the outcome when the checkout cannot be dropped', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { adapter, checkout } = adapterAfterCut('mkdir -p locked/inner && chmod 000 locked');
+      onTestFinished(() => {
+        const locked = join(checkout() as string, 'locked');
+        if (existsSync(locked)) sh(repo, 'chmod', '700', locked);
+        rmSync(dirname(checkout() as string), { recursive: true, force: true });
+      });
+
+      expect(merge(adapter).status).toBe('merged');
+
+      expect(existsSync(join(checkout() as string, 'locked'))).toBe(true);
+    });
+
+    // A vendored node_modules is a committed file like any other (decision 81).
+    it('keeps a node_modules the branch commits, when nothing in it links outside', () => {
+      const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'node_modules/**'] });
+      const marker = sh(
+        worktree,
+        'sh',
+        '-c',
+        'printf vendored | git hash-object -w --stdin',
+      ).trim();
+      sh(
+        worktree,
+        'git',
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `100644,${marker},node_modules/vendored`,
+      );
+      sh(worktree, 'git', 'commit', '-q', '-m', 'vendor');
+      // The index holds it; the worktree must too, or worktree-clean sees a deletion.
+      mkdirSync(join(worktree, 'node_modules'), { recursive: true });
+      writeFileSync(join(worktree, 'node_modules', 'vendored'), 'vendored');
+      const adapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [
+          { stage: 'build', command: 'test', args: ['-e', 'node_modules/vendored'] },
+        ],
+      };
+
+      expect(merge(adapter).status).toBe('merged');
+    });
+
+    /** Commits a symlink at `path` pointing at `target` and mirrors it in the worktree. */
+    function commitLink(worktree: string, path: string, target: string): void {
+      const blob = sh(
+        worktree,
+        'sh',
+        '-c',
+        `printf %s ${JSON.stringify(target)} | git hash-object -w --stdin`,
+      ).trim();
+      sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `120000,${blob},${path}`);
+      sh(worktree, 'git', 'commit', '-q', '-m', `link ${path}`);
+      mkdirSync(dirname(join(worktree, path)), { recursive: true });
+      symlinkSync(target, join(worktree, path));
+    }
+
+    // A committed link out of the checkout would reach the session's worktree,
+    // wherever in the tree it sits, and whatever its path holds.
+    it.each([
+      ['under node_modules', 'node_modules/out'],
+      ['anywhere in the tree', 'src/out'],
+      ['with a tab in its path, beside a decoy', 'lib\tx'],
+    ])('refuses a committed link that reaches outside the checkout, %s', (_where, path) => {
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      if (path.includes('\t')) commitIn(worktree, 'lib', 'decoy\n');
+      commitLink(worktree, path, worktree);
+
+      expect(() => merge()).toThrow(/is a committed link that reaches outside the gate checkout/);
+
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    // A `..` after a named segment climbs from wherever that segment resolves at
+    // stage time: an environment entry linked after the vet, or a committed
+    // `b -> .`; no lexical reading knows, so such a target is refused.
+    it.each([
+      [
+        'through an environment entry linked after the vet',
+        '../node_modules/.bin/../../.worktrees/s1/src/real.ts',
+      ],
+      ['through a committed link to the checkout itself', 'b/b/../../../../../../../tmp/real.ts'],
+    ])(
+      'refuses a dangling committed link whose .. climbs past a named segment, %s',
+      (_how, target) => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        if (target.startsWith('b/')) commitLink(worktree, 'b', '.');
+        commitLink(worktree, 'src/x.ts', target);
+
+        expect(() => merge()).toThrow(/src\/x\.ts is a committed link that reaches outside/);
+      },
+    );
+
+    it('refuses a dangling committed link that points outside the checkout', () => {
+      const worktree = seedSession(db, repo);
+      commitLink(worktree, 'src/dangling', '/nowhere/at/all');
+
+      expect(() => merge()).toThrow(/src\/dangling is a committed link that reaches outside/);
+    });
+
+    // A dangling link whose target stays inside adds no reach: build output,
+    // a gitignored file, as the target branch may already carry.
+    it('keeps a dangling committed link whose target stays inside the checkout', () => {
+      const worktree = seedSession(db, repo);
+      commitLink(worktree, 'src/types.d.ts', '../dist/types.d.ts');
+
+      expect(merge().status).toBe('merged');
     });
   });
 
@@ -1241,7 +1536,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('measures the worktree but reads tool config from the main checkout', () => {
+  it('measures the gate checkout but reads tool config from the main checkout', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -1257,7 +1552,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // Split on purpose: a session that edits its own manifest must not be able
     // to un-declare the tool that measures it (decision 29).
-    expect(seen).toEqual({ measurePath: worktree, configPath: repo });
+    expect(seen).toEqual({ measurePath: expect.stringMatching(GATE_CHECKOUT), configPath: repo });
   });
 
   // The trap this closes end to end: a compare the gate skipped must not write
@@ -1296,6 +1591,26 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     /** Commits a nested package on main, so both checkouts carry its marker. */
     const commitNestedPackage = (scripts: Record<string, string>): void =>
       commitIn(repo, 'tools/review/package.json', JSON.stringify({ scripts }));
+
+    // A standalone package resolves from its own directory, so it gets its own
+    // environment from the main checkout, not the root's (decision 81).
+    it("gives the package the main checkout's own node_modules, before any stage runs", () => {
+      commitNestedPackage({ test: 'test -e node_modules/marker', typecheck: 'true' });
+      mkdirSync(join(repo, 'tools', 'review', 'node_modules'), { recursive: true });
+      writeFileSync(join(repo, 'tools', 'review', 'node_modules', 'marker'), '');
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+      // The root build stage runs first and already sees the nested environment.
+      const adapter = nestedAdapter({
+        gateCommands: () => [
+          { stage: 'build', command: 'test', args: ['-e', 'tools/review/node_modules/marker'] },
+          { stage: 'test', command: 'true', args: [] },
+          { stage: 'lint', command: 'true', args: [] },
+        ],
+      });
+
+      expect(merge(adapter).status).toBe('merged');
+    });
 
     it("refuses the merge when the package's own test script fails", () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
@@ -1337,7 +1652,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.status).toBe('rejected');
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'typecheck (tools/review)',
-        detail: expect.stringContaining(realpathSync(join(worktree, 'tools/review'))),
+        detail: expect.stringMatching(/\/pup-gate-checkout-[^/]+\/checkout\/tools\/review/),
       });
     });
 

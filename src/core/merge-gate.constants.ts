@@ -18,6 +18,9 @@ export const COMPLEXITY_FILE_FLAG_DELTA = 15;
 /** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
 export const DEBT_DETAIL_SAMPLES = 3;
 
+/** The untracked directory a Node stage resolves its packages from, per package directory (decision 81). */
+export const GATE_ENVIRONMENT_DIR = 'node_modules';
+
 /**
  * Identifies the rule `duplicatedLines` was counted under, so a baseline from
  * an older rule is skipped rather than compared (decision 39). Bump this
