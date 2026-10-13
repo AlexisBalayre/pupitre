@@ -1,0 +1,150 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T14:17:20.781Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38411438307",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38411438307",
+  "actor": "AlexisBalayre",
+  "commit_sha": "619c28d5a60b7ad1d20fb3d60e76f9a29ec2d32e",
+  "source": "pr",
+  "pr_number": 139,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability",
+    "context"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "incremental",
+  "incremental_from_sha": "92149eb7dbf1692b2b93619ade67677bbe67d4c3",
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "313-314",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "78-85",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "188-193",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1233-1237",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Every under-lock refusal now already says 'the session is not merged' (fastForward's checkout and CAS refusals, assertTargetAt when fastForward calls it again, assertPullRequestHead). withLedgerKept then adds '; this session is not merged.', so after --accept-debt the operator reads the same sentence twice in one error. Dropping the clause from withLedgerKept would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "317-318",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The unanchored `|customtransfer` branch (flag `i`) matches any local or worktree key containing the word, not only lfs ones. An operator branch with tracking such as `feature/customtransfer-agent` writes `branch.feature/customtransfer-agent.remote` to local config. pup would then refuse at launch, conductor start and merge, and the message calls it an armed driver from a compromised session. git-lfs needs a `.path`/`.args` suffix to run anything, so requiring that tail, e.g. `customtransfer.*(?:path|args)$`, would still cover the 3.x and main patterns without refusing branch or remote names.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "318",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `customtransfer` catch-all sits after the `$` of the anchored group as a second top-level alternative (`...(?:clean|smudge))$|customtransfer/i`), so a reader has to spot that the last branch is an unanchored substring match; splitting it into its own named constant joined in the predicate would make the two kinds of rule readable.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1233",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `withLedgerKept` rewrite spells the shared clause `kept for the retry, which will not file ...` twice, once in each ternary branch, where only the subject and pronoun differ; a wording change now has to be made in two places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "283-287",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new test comment above the four looser-form rows restates the same three facts as the `ARMED_DRIVER_KEY` JSDoc (git-diff.client.ts L311-315), a duplicate WHY under AGENTS.md; drop it or point at `ARMED_DRIVER_KEY`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4190-4193",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82's \"…and runs the program they name; and so are the `lfs.extension.<name>.clean` and `.smudge` commands, which git-lfs runs on every lfs object\" still has no referent for \"so are\"; e.g. \"and it also runs the `lfs.extension.<name>.clean` and `.smudge` commands on every lfs object\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4194",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82 says the agent \"can be named per remote as `lfs.<url>.standalonetransferagent`\", but the key is scoped by endpoint URL, not remote name; \"per endpoint URL\" avoids a reader expecting `lfs.origin.…`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4186-4247",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82 was rewrapped wholesale, including paragraphs with no content change (the PR-head and ledger-truth sections, the heading), which buries the real prose edits in the diff.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "The security reviewer reported a safety classifier cut its work short before it finished checking whether session-written conditional includes (`includeIf` gitdir:/onbranch:) can make the config git uses at checkout/rebase differ from what `armedGitDrivers` reads; that pre-existing mechanism is unverified in this round."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7208764,
+  "duration_ms": 221124,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 9863,
+    "cache_read": 278170,
+    "cache_creation": 48438,
+    "total": 336485
+  }
+}
