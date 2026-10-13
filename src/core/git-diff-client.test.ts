@@ -280,10 +280,7 @@ describe('armedGitDrivers', () => {
     ['lfs.standalonetransferagent', 'pwn'],
     ['lfs.extension.pwn.clean', '/usr/bin/true %f'],
     ['lfs.extension.pwn.smudge', '/usr/bin/true %f'],
-    // git-lfs matches these looser than git lists them: the subsection's case
-    // is kept by git and ignored by git-lfs, the agent can be named per remote
-    // url, and the `customtransfer` pattern is unanchored on main and has
-    // unescaped dots in 3.x.
+    // The looser forms git-lfs accepts; `ARMED_DRIVER_KEY` says which and why.
     ['lfs.CustomTransfer.pwn.path', '/usr/bin/true'],
     ['x.lfs.customtransfer.pwn.path', '/usr/bin/true'],
     ['lfs.customtransfer pwn.path', '/usr/bin/true'],
@@ -300,7 +297,8 @@ describe('armedGitDrivers', () => {
 
   it('ignores lfs keys that name no program', () => {
     const repo = repoWithCommit();
-    sh(repo, 'git', 'config', 'lfs.concurrenttransfers', '3');
+    sh(repo, 'git', 'config', 'lfs.customtransfer.pwn.concurrent', 'false');
+    sh(repo, 'git', 'config', 'branch.feature/customtransfer-agent.remote', 'origin');
     sh(repo, 'git', 'config', 'lfs.fetchexclude', '*');
     sh(repo, 'git', 'config', 'lfs.extension.pwn.priority', '0');
 

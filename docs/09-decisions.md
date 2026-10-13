@@ -4189,33 +4189,33 @@ changes back into those docs is pending.
     armed for every checkout git runs, the gate's rebase, its checkout's `read-tree` and the
     fast-forward included, and decision 50 leaves global drivers to the operator. But git-lfs reads
     `lfs.customtransfer.<name>.path` and `.args`, and `lfs.standalonetransferagent`, from the same
-    shared config a session can write, and runs the program they name; and so are the
-    `lfs.extension.<name>.clean` and `.smudge` commands, which git-lfs runs on every lfs object. So
-    `armedGitDrivers` refuses those five keys in local or worktree scope, beside `filter.*` and
-    `merge.*` and under the same message, matched looser than git lists them because git-lfs is
-    (found on CI review): git keeps a subsection's case and git-lfs ignores it, the agent can be
-    named per remote as `lfs.<url>.standalonetransferagent`, and the `customtransfer` pattern
-    differs by version, unescaped dots in 3.x and unanchored on main, so any key containing that
-    word is refused, an agent's `concurrent` and `direction` included, which matter only beside a
-    refused `.path`; other `lfs.*` keys (`concurrenttransfers`, `fetchexclude`, an extension's
-    `priority`) name no program and stay allowed. An operator whose setup puts the agent keys in
-    local config, as lfs-folderstore and lfs-s3 instruct, is refused at launch, conductor start and
-    merge until they move to global scope, which decision 50 leaves to them; that cost is accepted.
-    The key refusals are the second layer. The first is that no pup git call runs git-lfs at all:
-    `GIT_SAFE_CONFIG` gains `-c filter.lfs.required=false -c filter.lfs.process= -c
-    filter.lfs.smudge= -c filter.lfs.clean=`, because with a global `git lfs install`, a tracked
-    `.gitattributes` naming `filter=lfs` makes the global filter the smudge driver of every
-    checkout, and its download runs programs named by general shared-config keys, `core.sshCommand`
-    for an ssh lfs endpoint among them (found on security review, reproduced), which no key list can
-    cover. So no pup git call materialises LFS content: the gate's checkout, the rebase and the
-    fast-forward hold the pointer files, and so do a session's worktree and the conductor's
-    checkout, which the same client creates. That is a ceiling: a repo whose build or tests need the
-    binaries fails its stages under the gate until a later decision fetches them outside the
-    session's reach; a session that needs them runs `git lfs pull` in its own worktree, whose git
-    carries none of pup's pins; and a fast-forward leaves pointers in the main checkout for the
-    operator's own `git lfs pull`. Not covered: the transfer-agent keys git-lfs accepts from a
-    tracked `.lfsconfig`, which it limits to an allowlist that, as far as we know, leaves them out;
-    that is git-lfs's to keep.
+    shared config a session can write, and runs the program they name, and it also runs the
+    `lfs.extension.<name>.clean` and `.smudge` commands on every lfs object. So `armedGitDrivers`
+    refuses those five keys in local or worktree scope, beside `filter.*` and `merge.*` and under
+    the same message, matched looser than git lists them because git-lfs is (found on CI review):
+    git keeps a subsection's case and git-lfs ignores it, the agent can be named per endpoint url as
+    `lfs.<url>.standalonetransferagent`, and the `customtransfer` pattern differs by version,
+    unescaped dots in 3.x and unanchored on main, so the refusal is the union of both,
+    `lfs.customtransfer.<name>.path` and `.args` with every dot a wildcard, anywhere in the key;
+    other `lfs.*` keys (`concurrent`, `fetchexclude`, an extension's `priority`) name no program and
+    stay allowed, and so does a branch or remote whose name contains the word. An operator whose
+    setup puts the agent keys in local config, as lfs-folderstore and lfs-s3 instruct, is refused at
+    launch, conductor start and merge until they move to global scope, which decision 50 leaves to
+    them; that cost is accepted. The key refusals are the second layer. The first is that no pup git
+    call runs git-lfs at all: `GIT_SAFE_CONFIG` gains `-c filter.lfs.required=false -c
+    filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.clean=`, because with a global `git lfs
+    install`, a tracked `.gitattributes` naming `filter=lfs` makes the global filter the smudge
+    driver of every checkout, and its download runs programs named by general shared-config keys,
+    `core.sshCommand` for an ssh lfs endpoint among them (found on security review, reproduced),
+    which no key list can cover. So no pup git call materialises LFS content: the gate's checkout,
+    the rebase and the fast-forward hold the pointer files, and so do a session's worktree and the
+    conductor's checkout, which the same client creates. That is a ceiling: a repo whose build or
+    tests need the binaries fails its stages under the gate until a later decision fetches them
+    outside the session's reach; a session that needs them runs `git lfs pull` in its own worktree,
+    whose git carries none of pup's pins; and a fast-forward leaves pointers in the main checkout
+    for the operator's own `git lfs pull`. Not covered: the transfer-agent keys git-lfs accepts from
+    a tracked `.lfsconfig`, which it limits to an allowlist that, as far as we know, leaves them
+    out; that is git-lfs's to keep.
     *The PR head.* After `gh pr create` or the adopt-and-rewrite, the gate reads `headRefOid` back
     with `gh pr view --json` and refuses unless it is the pinned sha it pushed, naming both: the
     body vouches for the commit the gate measured and nothing else, and a session holding the

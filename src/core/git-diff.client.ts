@@ -310,12 +310,13 @@ export function gitDiffBinaryRecount(
  * `lfs.extension.<name>.clean` and `.smudge` commands on every lfs object;
  * an extension's `.priority` names no program (decision 82). Matched looser
  * than git lists them, because git-lfs is: git keeps a subsection's case and
- * git-lfs ignores it, the agent can be named per remote url, and the
- * `customtransfer` pattern differs by version (3.x's has unescaped dots,
- * main's is unanchored), so any key containing the word is refused.
+ * git-lfs ignores it, the agent can be named per endpoint url, and the
+ * `customtransfer` pattern differs by version (unescaped dots in 3.x,
+ * unanchored on main), so the last alternative is the union of both, its
+ * dots deliberately unescaped.
  */
 const ARMED_DRIVER_KEY =
-  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.(?:.+\.)?standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$|customtransfer/i;
+  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.(?:.+\.)?standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$|lfs.customtransfer.[^.]+.(?:path|args)/i;
 
 /**
  * The config scopes a session can reach. Both files sit inside the shared

@@ -1230,11 +1230,11 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
  */
 function withLedgerKept(error: unknown, kept: number): unknown {
   if (kept > 0 && error instanceof Error) {
-    error.message += `\n${
+    const [subject, pronoun] =
       kept === 1
-        ? 'The accepted-debt ledger entry was kept for the retry, which will not file it twice'
-        : `All ${kept} accepted-debt ledger entries were kept for the retry, which will not file them twice`
-    }; this session is not merged.`;
+        ? ['The accepted-debt ledger entry was', 'it']
+        : [`All ${kept} accepted-debt ledger entries were`, 'them'];
+    error.message += `\n${subject} kept for the retry, which will not file ${pronoun} twice; this session is not merged.`;
   }
   return error;
 }
