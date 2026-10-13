@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T12:12:37.689Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38395201561",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38395201561",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5d4c79aaa18b50ed8d3459265dd83cad96452652",
+  "source": "pr",
+  "pr_number": 138,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "2f6d7e95b90b58dc670a2b5271d48859de8863da",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "348-353",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "788-795",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `b -> .` case in the new `it.each` never goes through `b`. The link sits at `src/x.ts`, so `b/b/...` resolves from `checkout/src`, where there is no `b`. The old lexical check also lands outside, so this case passes without the fix and only the node_modules case tells the two apart. A target like `'../b/b/../escape'` does go through the root `b`: the old code kept it, the new code refuses it. The `startsWith('b/')` guard would need changing to match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "790-798",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `it.each` hides a per-case setup difference behind `if (target.startsWith('b/')) commitLink(worktree, 'b', '.')`, so the test body branches on the data string. A third case column, such as a `links` array, would state the setup directly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "780-782",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above the new `it.each` repeats the implementation comment in `refuseEscapingLinks`, naming the same two cases, which the case labels and title already carry. Delete it or reduce it to a pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4157",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 81 says a dangling link is \"judged by where it points\". It doesn't mention that a dangling target with a `..` after a named segment is now refused outright. The sentence is still true, just incomplete.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "context",
+      "description": "Not spawned: the delta touches no spec, protocol or infra surface (only merge-gate.service.ts and its test)."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer says it did not open general.md, naming.md or docs/09-decisions.md, so the delta was checked only against testing.md and the AGENTS.md comment rules, not against decision 81."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2385891999999998,
+  "duration_ms": 167195,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6378,
+    "cache_read": 197798,
+    "cache_creation": 30608,
+    "total": 234796
+  }
+}
