@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T14:38:30.765Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38413817331",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38413817331",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5d9fddd99537720c437a21673f5cfc873a476862",
+  "source": "pr",
+  "pr_number": 139,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability",
+    "context"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "incremental",
+  "incremental_from_sha": "619c28d5a60b7ad1d20fb3d60e76f9a29ec2d32e",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "383-388",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "git-lfs reads plain `git config -l`, splitting lines on `\\n` and keys on the first `=`. pup reads with `-z` and tests only the real key. So a session-writable value containing a newline (or a subsection containing `=`) gives git-lfs an `lfs.customtransfer.*.path`, `lfs.standalonetransferagent` or `lfs.extension.*.clean` key that pup never refuses.",
+      "body": "**A session can hide lfs keys from `armedGitDrivers` that git-lfs still reads.**\n\ngit-lfs and pup parse the same shared config differently:\n- **git-lfs** (v3.0.0, v3.8.0 and main) runs `git config --includes -l` in `git/config.go` `Source()`. `ParseConfigLines` then does `strings.Split(lines, \"\\n\")`, and `config/git_fetcher.go` uses `strings.SplitN(line, \"=\", 2)` to get each key. This source is not `.lfsconfig`, so `OnlySafeKeys` is false and no keys are filtered.\n- **pup** lists with `--list --show-scope -z` and tests only `entry.split('\\n')[0]`, the real key.\n- **git** `config -l` prints a value's embedded newline raw.\n\nThe gap can be reached in two ways:\n1. **A newline in a value.** For example: `git config pup.note \"$(printf 'x\\nlfs.customtransfer.pwn.path=/tmp/evil\\nlfs.standalonetransferagent=pwn')\"`. pup sees only `pup.note` and allows it. git-lfs sees two more lines and reads them as real keys.\n2. **An `=` in a subsection.** `[lfs \"extension.pwn.clean=/tmp/evil\"] x` is listed as `lfs.extension.pwn.clean=/tmp/evil.x`. git-lfs reads that as key `lfs.extension.pwn.clean`. The anchored `lfs\\.extension\\..+\\.(?:clean|smudge)$` alternative misses it.\n\n`GIT_SAFE_CONFIG` still stops pup's own git calls from running git-lfs. But decision 82 refuses these local/worktree keys so that other git-lfs runs reading this config don't run a program the session chose. That includes the operator's own `git lfs pull` after a fast-forward, which the decision recommends. This parse makes the refusal bypassable. The parse is older than this PR, but it matters only for the lfs patterns this PR adds at L318-319.\n\nA validator checked this against git `config.c`/`builtin/config.c` and the git-lfs sources above; it was not run. Worth adding a test for both forms, and a line in decision 82.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5d9fddd99537720c437a21673f5cfc873a476862/src/core/git-diff.client.ts#L383-L388",
+      "suggestion": "  const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z']).trim().split('\\0');\n  for (let i = 0; i + 1 < listed.length; i += 2) {\n    const entry = listed[i + 1] as string;\n    if (!SESSION_WRITABLE_SCOPES.includes(listed[i] as string)) continue;\n    const key = entry.split('\\n')[0] as string;\n    // git-lfs reads plain `git config -l`, splitting lines on `\\n` and keys on\n    // the first `=`: a value line, or an `=` in a subsection, is a key to it.\n    const lfsKeys = entry.replace('\\n', '=').split('\\n').map((line) => line.split('=')[0]);\n    if ([key, ...lfsKeys].some((k) => k && ARMED_DRIVER_KEY.test(k))) armed.push(sanitizeReason(key));\n  }"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4196-4200",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82 says the refusal is `lfs.customtransfer.<name>.path` and `.args` \"with every dot a wildcard\". But the regex's name segment is `[^.]+`, which cannot contain a dot, so the wording overstates it. The JSDoc's \"its dots deliberately unescaped\" is accurate; e.g. \"with the separating dots unescaped, so each matches any character\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4201",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82 lists `concurrent` among \"other `lfs.*` keys\", but it is an agent sub-key (`lfs.customtransfer.<name>.concurrent`), not a bare `lfs.concurrent`. The edit also dropped the real `lfs.concurrenttransfers` example. Suggested: \"`lfs.concurrenttransfers`, an agent's `lfs.customtransfer.<name>.concurrent`, `fetchexclude`, an extension's `priority`\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4201-4202",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 82 says a branch or remote whose name contains `customtransfer` stays allowed. Because the regex's dots are wildcards, a name shaped like `branch.lfs/customtransfer/x/path.remote` is still refused. git-lfs 3.x's own unanchored pattern would also act on that key, so the refusal is safe, but the sentence holds only for names without that exact shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "319",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The narrowed `lfs.customtransfer.[^.]+.(?:path|args)` regex misses an agent name containing a dot (e.g. `lfs.customtransfer.my.agent.path`). That is safe only because git-lfs also captures a single dot-free name segment in both 3.x and main, which rests on git-lfs internals. GIT_SAFE_CONFIG also keeps git-lfs from running in pup's own git calls, so no change is needed now.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "283",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new pointer comment \"`ARMED_DRIVER_KEY` says which and why\" is vague: the JSDoc gives three reasons but doesn't map them to the four test rows. Naming the decision, e.g. \"(see `ARMED_DRIVER_KEY`, decision 82)\", would make the pointer easier to follow.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer worked from the delta diff and did not open the changed files with Read. So `.claude/rules` never injected docs/conventions/general.md, naming.md or testing.md into its context, and the rules were not checked line by line against the delta."
+    },
+    {
+      "component": "maintainability",
+      "description": "The maintainability reviewer did not review src/core/git-diff-client.test.ts."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7653782999999996,
+  "duration_ms": 488659,
+  "num_turns": 17,
+  "tokens": {
+    "input": 18,
+    "output": 14528,
+    "cache_read": 366771,
+    "cache_creation": 48784,
+    "total": 430101
+  }
+}
