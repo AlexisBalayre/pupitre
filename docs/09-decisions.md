@@ -3908,9 +3908,12 @@ changes back into those docs is pending.
     open-entry dedupe no longer keys on `accepted_by`, so a `--pr` retry after a partial
     failure with a different approver does not file the same debt twice — the first approver
     stands.
-    *Not changed here:* the conductor's compiled kickoff (`profile-compiler.service.ts`) still
-    lists `pup merge` among its refusals and says never to run it. That file was out of this
-    task's scope, so the kickoff needs a follow-up before a conductor learns of `--pr` from it.
+    *Closed on 2026-10-13 (PR #140):* the conductor's compiled kickoff
+    (`profile-compiler.service.ts`) was out of this task's scope and still refused `pup merge`
+    outright; it now orders the gate on every finished branch, `pup merge <session-id> --pr`
+    once a session is `awaiting-review` and meets its acceptance criteria, with the PR link
+    reported and a human merging, and says the conductor relays an approval and never gives
+    one. `pup merge` takes a session id, which is not the task id after a relaunch.
 
 76. **A blocked worker asks with `pup session ask "<question>"`, and a steer answers it
     (2026-10-06, amends decision 74).** From the Copiste grilling. Decision 74 took away the

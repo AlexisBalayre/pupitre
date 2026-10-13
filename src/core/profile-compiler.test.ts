@@ -854,8 +854,8 @@ describe('compileConductorProfile', () => {
   }
 
   // The context is the operator's loop written down: what the conductor may
-  // run, how it reaches a session by peer name, and that the merge is not its
-  // to make (decision 47).
+  // run, how it reaches a session by peer name, and that the merge itself is
+  // not its to make (decision 47).
   it('tells the conductor its name, the worker model, the peer protocol and what it is refused', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
@@ -864,24 +864,34 @@ describe('compileConductorProfile', () => {
     expect(compiled.contextMarkdown).toContain('SendMessage');
     expect(compiled.contextMarkdown).toContain('notify_when_idle');
     expect(compiled.contextMarkdown).toContain('pup steer <session-id> --sent');
-    expect(compiled.contextMarkdown).toContain('Refused to you: `pup merge`, `pup respawn`');
+    expect(compiled.contextMarkdown).toContain(
+      'Refused to you: `pup merge` without `--pr`, `pup respawn`',
+    );
     expect(compiled.contextMarkdown).toContain('correct > simple > readable > fast');
     expect(compiled.contextMarkdown).not.toContain('pup session done "<one-line summary>"');
   });
 
-  // Decision 75: `--pr` never moves main, so the conductor may gate a branch
-  // with it; the local merge and an unnamed or borrowed approver stay refused.
+  // Decision 75: `--pr` never moves main, so the conductor gates every finished
+  // branch with it. `pup merge` takes a session id, which is not the task id
+  // after a relaunch.
   it('lets the conductor gate with pup merge --pr and nothing else of the merge', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
     expect(compiled.contextMarkdown).toContain(
-      'The one exception: you may run `pup merge <task> --pr`.',
+      'When a session is `awaiting-review` and meets its acceptance criteria (step 3 ' +
+        'otherwise), run `pup merge <session-id> --pr`',
     );
-    expect(compiled.contextMarkdown).toContain('- Never run `pup merge` without `--pr`.');
+    expect(compiled.contextMarkdown).toContain('a human merges the pull request, never you.');
+    expect(compiled.contextMarkdown).not.toContain('pup merge <task>');
+    expect(compiled.contextMarkdown).toContain('- Never run `pup merge` without `--pr`:');
     expect(compiled.contextMarkdown).toContain(
       '- Never pass `--accept-debt` without `--approved-by <who>`',
     );
+    expect(compiled.contextMarkdown).toContain('`--approved-by` never names you.');
     expect(compiled.contextMarkdown).toContain('- Never pass `--approved-by human`');
+    expect(compiled.contextMarkdown).toContain(
+      '5. When every session you launched is gated into a pull request, killed or blocked',
+    );
     expect(compiled.contextMarkdown).toContain(
       '4. Never edit, commit or push from this checkout. Never run `pup merge` without `--pr`.',
     );
