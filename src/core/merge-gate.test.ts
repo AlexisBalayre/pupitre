@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -706,11 +707,37 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       onTestFinished(() => {
         const locked = join(checkout() as string, 'locked');
         if (existsSync(locked)) sh(repo, 'chmod', '700', locked);
+        rmSync(dirname(checkout() as string), { recursive: true, force: true });
       });
 
       expect(merge(adapter).status).toBe('merged');
 
       expect(existsSync(join(checkout() as string, 'locked'))).toBe(true);
+    });
+
+    // An in-project Python environment is linked like node_modules (decision 81).
+    it("links the main checkout's .venv into the gate checkout", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      mkdirSync(join(repo, '.venv'), { recursive: true });
+      writeFileSync(join(repo, '.venv', 'marker'), '');
+      const adapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'test', args: ['-e', '.venv/marker'] }],
+      };
+
+      expect(merge(adapter).status).toBe('merged');
+    });
+
+    // A committed environment directory could be a link back into the session's
+    // worktree; the gate links the main checkout's own and refuses it instead.
+    it('refuses a branch that commits an environment directory', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, '.venv/pyvenv.cfg', 'home = /nowhere\n');
+
+      expect(() => merge()).toThrow(/\.venv.*is committed on the branch/);
+
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
   });
 
@@ -1490,6 +1517,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     /** Commits a nested package on main, so both checkouts carry its marker. */
     const commitNestedPackage = (scripts: Record<string, string>): void =>
       commitIn(repo, 'tools/review/package.json', JSON.stringify({ scripts }));
+
+    // A standalone package resolves from its own directory, so it gets its own
+    // environment from the main checkout, not the root's (decision 81).
+    it("gives the package the main checkout's own node_modules", () => {
+      commitNestedPackage({ test: 'test -e node_modules/marker', typecheck: 'true' });
+      mkdirSync(join(repo, 'tools', 'review', 'node_modules'), { recursive: true });
+      writeFileSync(join(repo, 'tools', 'review', 'node_modules', 'marker'), '');
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      expect(merge(nestedAdapter()).status).toBe('merged');
+    });
 
     it("refuses the merge when the package's own test script fails", () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });

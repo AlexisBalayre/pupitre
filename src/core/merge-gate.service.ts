@@ -309,25 +309,40 @@ function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
     '-u',
     sha,
   ]);
-  // The main checkout's packages, never the worktree's own: the live session
-  // can rewrite its `node_modules/.bin/vitest` while the stages run and fake a
-  // pass. So a branch that changes its dependencies fails its stages until
-  // the operator installs them in the main checkout. This checkout sits
-  // outside the repo, so Node's walk up never reaches them; it gets a real
-  // directory of links, not one link: vite writes `.vite-temp` beside the
-  // packages, and through a single link that write lands where the sandbox
-  // denies it. The caches are left out so they are written here. Never
-  // staged: nothing commits here, and it goes with the checkout.
-  const deps = join(repoPath, 'node_modules');
-  const local = join(dir, 'node_modules');
-  if (existsSync(deps) && !lstatSync(local, { throwIfNoEntry: false })) {
-    mkdirSync(local);
-    for (const name of readdirSync(deps)) {
+  linkEnvironment(repoPath, dir, '.');
+  return dir;
+}
+
+/** Untracked environments a stage needs beside the code, per package directory. */
+const ENVIRONMENT_DIRS = ['node_modules', '.venv'];
+
+/**
+ * Give `<checkout>/<rel>` the main checkout's environment directories, as
+ * links to each entry of `<repoPath>/<rel>`'s — never the session worktree's
+ * own, which the live session can rewrite (`.bin/vitest`) while the stages
+ * run (decision 81). A directory of links rather than one link: vite writes
+ * `.vite-temp` beside the packages, and through a single link that write
+ * lands where the sandbox denies it; the caches are left out for the same
+ * reason. An entry the pinned tree itself carries is refused, not kept: a
+ * committed `node_modules` could be a link back into the session's worktree.
+ */
+function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
+  for (const env of ENVIRONMENT_DIRS) {
+    const source = join(repoPath, rel, env);
+    const local = join(checkout, rel, env);
+    if (lstatSync(local, { throwIfNoEntry: false })) {
+      throw new Error(
+        `${quotePath(join(rel, env))} is committed on the branch; the gate links the main ` +
+          "checkout's own and refuses to run on a committed one. Nothing was merged.",
+      );
+    }
+    if (!existsSync(source)) continue;
+    mkdirSync(local, { recursive: true });
+    for (const name of readdirSync(source)) {
       if (name === '.cache' || name.startsWith('.vite')) continue;
-      symlinkSync(join(deps, name), join(local, name));
+      symlinkSync(join(source, name), join(local, name));
     }
   }
-  return dir;
 }
 
 /**
@@ -739,6 +754,9 @@ function gateAndMerge(
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
+    // Its own environment, not the root's: a standalone package resolves from
+    // its own directory and the checkout sits outside the repo (decision 81).
+    linkEnvironment(req.repoPath, checkout, pkg.dir);
     for (const command of pkg.commands) {
       if (!commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir))) {
         return failed();

@@ -4123,7 +4123,10 @@ changes back into those docs is pending.
     (decision 51), as first planned: the sandbox denies every gate child reads and writes under
     `~/.pupitre`, which holds the store (decision 36), so a stage there cannot even resolve its
     own working directory (found in the first test run). It is `checkout` inside a fresh
-    `mkdtemp` directory under the resolved temp dir, private and unguessable, cut per gate under
+    `mkdtemp` directory under the resolved temp dir — private to the gate, at the OS-user ceiling
+    decisions 47 and 63 name: a session running as the same user can list it and write to it,
+    so what this closes is the worktree the session owns and edits as a matter of course, not a
+    same-user attack — cut per gate under
     the merge lock and removed in a `finally` that runs before the lock is released, on a pass, a
     failed stage and a thrown gate alike: the directory goes with `rmSync` and the registration
     with `git worktree prune`. A failure to remove it is swallowed, so it never replaces the
@@ -4144,6 +4147,13 @@ changes back into those docs is pending.
     rewrite `.bin/vitest` or `.bin/tsc` while the stages run and fake a pass, which would defeat
     this decision (operator must-fix on review). The consequence, accepted: a branch that changes
     its dependencies fails its stages until the operator installs them in the main checkout.
+    The same per-entry linking covers every touched nested package (decision 59), from
+    `<repo>/<pkg>/node_modules`, since a standalone package resolves from its own directory,
+    and a `.venv` wherever one sits beside the code, so an in-project Poetry environment is
+    found; a Poetry environment in its cache, keyed on the project path, is not, and such a
+    repo needs `virtualenvs.in-project` (found on review, the Python ceiling). An environment
+    directory the pinned tree itself commits is refused rather than linked over: it could be a
+    link back into the session's worktree (found on review).
     Not one link to the whole directory, which was the first shape and failed this repo's own
     test stage in the sandbox: vite writes `.vite-temp` beside the packages, the sandbox matches
     resolved paths, and through the link the write landed on a checkout it keeps read-only.
