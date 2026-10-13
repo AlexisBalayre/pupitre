@@ -188,7 +188,7 @@ export function assertPullRequestHead(
     throw new Error(
       `PR ${url} has its head at ${typeof head === 'string' ? head : 'an unreadable commit'}, ` +
         `not at ${sha}, the commit the gate measured and pushed; its description vouches for ` +
-        `${sha} only. Nothing was recorded as merged. Find out who pushed the branch, close or ` +
+        `${sha} only. The session is not merged. Find out who pushed the branch, close or ` +
         'fix the PR, then re-run.',
     );
   }

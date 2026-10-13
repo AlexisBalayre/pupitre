@@ -487,7 +487,7 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
   if (now !== targetSha) {
     throw new Error(
       `${sanitizeReason(target)} moved from ${targetSha} to ${now} while the gate ran; nothing ` +
-        'was checked out and nothing was recorded as merged.',
+        'was checked out and the session is not merged.',
     );
   }
 }
@@ -537,7 +537,7 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
   } catch (error) {
     throw new Error(
       `Fast-forward of ${shown} to ${sha} refused by the checkout; the ref was not moved and ` +
-        `nothing was recorded as merged.\n${commandFailureDetail(error)}`,
+        `the session is not merged.\n${commandFailureDetail(error)}`,
     );
   }
   try {
@@ -601,7 +601,7 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
         'filter.* config and info/attributes first and treat a session that wrote them as ' +
         `compromised (decision 50), then run:\n  ${git} ${inverse.join(' ')}\n`;
     throw new Error(
-      `Fast-forward of ${shown} to ${sha} failed, and nothing was recorded as merged: the ` +
+      `Fast-forward of ${shown} to ${sha} failed, and the session is not merged: the ` +
         `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
         `the ref was left where it is.\n${checkoutState}${commandFailureDetail(error)}`,
     );
@@ -980,6 +980,17 @@ function gateAndMerge(
   // session (decision 82). `fastForward` reads it again right before the
   // checkout, with the compare-and-swap as the backstop.
   if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
+  // Before the ledger write too: a session-written `log.date` can fail this,
+  // and a failure after the write would leave entries filed with no kept note.
+  const commitSubjects = runGit(req.repoPath, [
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
+    .trim()
+    .split('\n')
+    .filter(Boolean);
   // What `--accept-debt` filed, for the refusals that must stay after it.
   let ledgerKept = 0;
   if (req.acceptDebt) {
@@ -1004,15 +1015,6 @@ function gateAndMerge(
   }
 
   const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
-  const commitSubjects = runGit(req.repoPath, [
-    'log',
-    '--reverse',
-    '--format=%s',
-    `${targetSha}..${sha}`,
-  ])
-    .trim()
-    .split('\n')
-    .filter(Boolean);
   let prUrl: string | undefined;
   let prWasAdopted = false;
   if (pullRequest) {
@@ -1228,9 +1230,11 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
  */
 function withLedgerKept(error: unknown, kept: number): unknown {
   if (kept > 0 && error instanceof Error) {
-    error.message +=
-      `\n${kept === 1 ? 'The accepted-debt ledger entry was' : `All ${kept} accepted-debt ledger entries were`} ` +
-      'kept for the retry, which will not file them twice; this session is not merged.';
+    error.message += `\n${
+      kept === 1
+        ? 'The accepted-debt ledger entry was kept for the retry, which will not file it twice'
+        : `All ${kept} accepted-debt ledger entries were kept for the retry, which will not file them twice`
+    }; this session is not merged.`;
   }
   return error;
 }

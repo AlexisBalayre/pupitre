@@ -280,6 +280,14 @@ describe('armedGitDrivers', () => {
     ['lfs.standalonetransferagent', 'pwn'],
     ['lfs.extension.pwn.clean', '/usr/bin/true %f'],
     ['lfs.extension.pwn.smudge', '/usr/bin/true %f'],
+    // git-lfs matches these looser than git lists them: the subsection's case
+    // is kept by git and ignored by git-lfs, the agent can be named per remote
+    // url, and the `customtransfer` pattern is unanchored on main and has
+    // unescaped dots in 3.x.
+    ['lfs.CustomTransfer.pwn.path', '/usr/bin/true'],
+    ['x.lfs.customtransfer.pwn.path', '/usr/bin/true'],
+    ['lfs.customtransfer pwn.path', '/usr/bin/true'],
+    ['lfs.https://example.com.standalonetransferagent', 'pwn'],
   ])('names %s, which git-lfs runs from the shared config', (key, value) => {
     const repo = repoWithCommit();
     sh(repo, 'git', 'config', key, value);
@@ -292,7 +300,7 @@ describe('armedGitDrivers', () => {
 
   it('ignores lfs keys that name no program', () => {
     const repo = repoWithCommit();
-    sh(repo, 'git', 'config', 'lfs.customtransfer.pwn.concurrent', 'false');
+    sh(repo, 'git', 'config', 'lfs.concurrenttransfers', '3');
     sh(repo, 'git', 'config', 'lfs.fetchexclude', '*');
     sh(repo, 'git', 'config', 'lfs.extension.pwn.priority', '0');
 
@@ -504,7 +512,11 @@ describe('runGit', () => {
   // filter was armed, and the lfs filter then pointed at a marker, standing in
   // for the operator's global `git lfs install` whose download runs programs
   // the shared config names (decision 82).
-  function lfsArmedRepo(): { repo: string; fired: string; pointer: string } {
+  function lfsArmedRepo(filter: 'smudge' | 'process' = 'smudge'): {
+    repo: string;
+    fired: string;
+    pointer: string;
+  } {
     const repo = makeRepo();
     const pointer = `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 12\n`;
     writeFileSync(join(repo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n');
@@ -513,7 +525,7 @@ describe('runGit', () => {
     const fired = join(repo, '.git', 'fired');
     const lfs = join(repo, '.git', 'planted-lfs');
     writeFileSync(lfs, `#!/bin/sh\necho lfs >> ${fired}\ncat\n`, { mode: 0o755 });
-    sh(repo, 'git', 'config', 'filter.lfs.smudge', `${lfs} %f`);
+    sh(repo, 'git', 'config', `filter.lfs.${filter}`, filter === 'smudge' ? `${lfs} %f` : lfs);
     sh(repo, 'git', 'config', 'filter.lfs.required', 'true');
     return { repo, fired, pointer };
   }
@@ -527,15 +539,29 @@ describe('runGit', () => {
     expect(readFileSync(fired, 'utf8')).toBe('lfs\n');
   });
 
-  it('checks out the lfs pointer unchanged and never runs the lfs filter', () => {
-    const { repo, fired, pointer } = lfsArmedRepo();
-    const checkout = join(repo, 'through-rungit');
+  // `process` is the key a global `git lfs install` writes. The marker speaks
+  // no pkt-line, so git kills it and fails the checkout, after it fired.
+  it('runs in a repo where a plain worktree add starts the planted lfs process filter', () => {
+    const { repo, fired } = lfsArmedRepo('process');
 
-    runGit(repo, ['worktree', 'add', '-q', '--detach', checkout, 'HEAD']);
-
-    expect(readFileSync(join(checkout, 'asset.bin'), 'utf8')).toBe(pointer);
-    expect(existsSync(fired)).toBe(false);
+    expect(() =>
+      sh(repo, 'git', 'worktree', 'add', '-q', '--detach', join(repo, 'plain'), 'HEAD'),
+    ).toThrow();
+    expect(readFileSync(fired, 'utf8')).toBe('lfs\n');
   });
+
+  it.each(['smudge', 'process'] as const)(
+    'checks out the lfs pointer unchanged and never runs the lfs %s filter',
+    (filter) => {
+      const { repo, fired, pointer } = lfsArmedRepo(filter);
+      const checkout = join(repo, 'through-rungit');
+
+      runGit(repo, ['worktree', 'add', '-q', '--detach', checkout, 'HEAD']);
+
+      expect(readFileSync(join(checkout, 'asset.bin'), 'utf8')).toBe(pointer);
+      expect(existsSync(fired)).toBe(false);
+    },
+  );
 
   it('verifies no signature on log or ff-only merge, so the planted gpg.program never runs', () => {
     const { repo, fired } = signatureArmedRepo();
