@@ -1,0 +1,119 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T15:52:13.509Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38425243909",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38425243909",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a4531a4b934626c86301c92ae0273b2904c72e6d",
+  "source": "pr",
+  "pr_number": 140,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "c9f51d7351c5d49f4092a2344f457fa30b869436",
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "570-590",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "573",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "591-592",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Step 5's stop set (gated into a PR, killed, blocked) has no place for a session whose `pup merge --pr` was refused or threw. That session stays `awaiting-review`, the kickoff never says what to do with it, and the conductor never reaches 'report and stop'. Before this delta, `awaiting-review` was itself a stop state. (Validation: human-only refusals such as flagged debt or origin errors are arguably covered by step 3's informal 'blocked'. Still, `pup status` shows a debt-refused session as `awaiting-review`, and a transient lock, push or gh failure has no named step. Consider '…gated into a pull request, killed, blocked, or refused at the gate and reported'.)",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "531",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The unchanged Role text still says the conductor hands each finished branch to the operator and that pushes from this checkout are not its to make, and step 4 says 'Never ... push'. The kickoff now orders a command that pushes the branch and opens the PR itself, so a literal reader sees a contradiction.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "572",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"(step 3 otherwise)\" is a cryptic parenthetical in text the conductor model reads. It sits in the tools section, refers forward to a numbered protocol step and has no verb. Something like \"if a criterion is unmet, steer it (step 3) instead\" reads clearer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "571-590",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The prompt states the \"no `pup merge` without `--pr`\" rule three times: the \"Refused to you\" line, the \"Never run\" bullet, and protocol step 4. Only the bullet carries the WHY (\"that moves main\"). Three copies give the rule three places to drift apart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3911-3916",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The closure note says the kickoff \"orders the gate on every finished branch\", but the kickoff conditions it on `awaiting-review` plus met acceptance criteria. The same sentence goes on to give the condition, but the lead claim is broader than the text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "3911",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"*Closed on 2026-10-13 (PR #140):*\" is a new label form. Other follow-ups in this file use \"*Amended by decision N:*\" or \"*Not changed here:*\", so \"*Closed by PR #140:*\" would match the existing italic-label pattern.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3222660000000002,
+  "duration_ms": 151027,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6725,
+    "cache_read": 205726,
+    "cache_creation": 36864,
+    "total": 249327
+  }
+}
