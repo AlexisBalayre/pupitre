@@ -571,6 +571,48 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
+    // `assertTargetAt` runs before the HEAD re-read, so a target deleted or
+    // turned into a symref is refused there, ahead of the "main worktree
+    // moved" check, with nothing to arrange.
+    it('refuses a target deleted during the stages as moved to nowhere, filing nothing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+      const deletingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          sh(repoPath, 'git', 'update-ref', '-d', 'refs/heads/main');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const refusal = refusalOf(() => merge(deletingAdapter, accept));
+
+      expect(refusal).toContain(`main moved from ${before} to nowhere while the gate ran`);
+      expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('refuses a target turned into a symref during the stages with the symref refusal', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+      sh(repo, 'git', 'branch', 'other');
+      const symrefAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          sh(repoPath, 'git', 'symbolic-ref', 'refs/heads/main', 'refs/heads/other');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const refusal = refusalOf(() => merge(symrefAdapter, accept));
+
+      expect(refusal).toContain('refs/heads/main is a symbolic ref to refs/heads/other');
+      expect(refusal).not.toContain('moved from');
+      expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
     it('says the ledger entries were kept when a refusal that must stay last fires', () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
