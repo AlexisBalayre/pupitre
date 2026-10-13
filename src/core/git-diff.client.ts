@@ -43,6 +43,12 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * `submodule.recurse` would have the rebase and that checkout recurse into a
  * `.git/modules/<name>` repo whose own config and attributes no driver check
  * reads, so it is pinned off (decision 80).
+ * The `lfs` filter is emptied and made optional, so no pup git call runs
+ * git-lfs: with the operator's global `git lfs install`, a tracked
+ * `.gitattributes` naming `filter=lfs` makes it the smudge driver of every
+ * checkout, and its download runs programs named by general shared-config
+ * keys (`core.sshCommand` for an ssh endpoint) that no key refusal can list.
+ * Pup checks out LFS pointers, never their content (decision 82).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
@@ -69,6 +75,14 @@ const GIT_SAFE_CONFIG = [
   'pull.twohead=ort',
   '-c',
   'submodule.recurse=false',
+  '-c',
+  'filter.lfs.required=false',
+  '-c',
+  'filter.lfs.process=',
+  '-c',
+  'filter.lfs.smudge=',
+  '-c',
+  'filter.lfs.clean=',
 ] as const;
 
 /**

@@ -500,6 +500,43 @@ describe('runGit', () => {
     expect(existsSync(fired)).toBe(false);
   });
 
+  // A repo tracking `*.bin filter=lfs`, with a pointer committed before the
+  // filter was armed, and the lfs filter then pointed at a marker, standing in
+  // for the operator's global `git lfs install` whose download runs programs
+  // the shared config names (decision 82).
+  function lfsArmedRepo(): { repo: string; fired: string; pointer: string } {
+    const repo = makeRepo();
+    const pointer = `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 12\n`;
+    writeFileSync(join(repo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n');
+    writeFileSync(join(repo, 'asset.bin'), pointer);
+    commitAll(repo, 'base');
+    const fired = join(repo, '.git', 'fired');
+    const lfs = join(repo, '.git', 'planted-lfs');
+    writeFileSync(lfs, `#!/bin/sh\necho lfs >> ${fired}\ncat\n`, { mode: 0o755 });
+    sh(repo, 'git', 'config', 'filter.lfs.smudge', `${lfs} %f`);
+    sh(repo, 'git', 'config', 'filter.lfs.required', 'true');
+    return { repo, fired, pointer };
+  }
+
+  // The control: a plain checkout runs the lfs smudge on the pointer.
+  it('runs in a repo where a plain worktree add fires the planted lfs smudge', () => {
+    const { repo, fired } = lfsArmedRepo();
+
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', join(repo, 'plain'), 'HEAD');
+
+    expect(readFileSync(fired, 'utf8')).toBe('lfs\n');
+  });
+
+  it('checks out the lfs pointer unchanged and never runs the lfs filter', () => {
+    const { repo, fired, pointer } = lfsArmedRepo();
+    const checkout = join(repo, 'through-rungit');
+
+    runGit(repo, ['worktree', 'add', '-q', '--detach', checkout, 'HEAD']);
+
+    expect(readFileSync(join(checkout, 'asset.bin'), 'utf8')).toBe(pointer);
+    expect(existsSync(fired)).toBe(false);
+  });
+
   it('verifies no signature on log or ff-only merge, so the planted gpg.program never runs', () => {
     const { repo, fired } = signatureArmedRepo();
 

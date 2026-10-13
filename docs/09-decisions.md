@@ -4193,7 +4193,18 @@ changes back into those docs is pending.
     `lfs.extension.<name>.clean` and `.smudge` commands git-lfs runs on every lfs object. So
     `armedGitDrivers` refuses those five keys in local or worktree scope, beside `filter.*` and
     `merge.*` and under the same message; other `lfs.*` keys (`concurrent`, `fetchexclude`, an
-    extension's `priority`) name no program and stay allowed. Not covered: the transfer-agent keys git-lfs accepts from a
+    extension's `priority`) name no program and stay allowed. The key refusals are the second
+    layer. The first is that no pup git call runs git-lfs at all: `GIT_SAFE_CONFIG` gains `-c
+    filter.lfs.required=false -c filter.lfs.process= -c filter.lfs.smudge= -c
+    filter.lfs.clean=`, because with a global `git lfs install`, a tracked `.gitattributes`
+    naming `filter=lfs` makes the global filter the smudge driver of every checkout, and its
+    download runs programs named by general shared-config keys, `core.sshCommand` for an ssh
+    lfs endpoint among them (found on security review, reproduced), which no key list can cover.
+    So pup materialises no LFS content in a gate, the gate's checkout, the rebase and the
+    fast-forward included: they hold the pointer files. That is a ceiling: a repo whose build or
+    tests need the binaries fails its stages under the gate until a later decision fetches them
+    outside the session's reach, and a fast-forward leaves pointers in the main checkout for the
+    operator's own `git lfs pull`. Not covered: the transfer-agent keys git-lfs accepts from a
     tracked `.lfsconfig`, which it limits to an allowlist that, as far as we know, leaves them
     out; that is git-lfs's to keep.
     *The PR head.* After `gh pr create` or the adopt-and-rewrite, the gate reads `headRefOid` back
@@ -4218,7 +4229,9 @@ changes back into those docs is pending.
     The entries are not rolled back: the retry needs them unchanged, and the first approver
     stands (decision 75).
     Tests: each of the five lfs keys is refused with the armed-driver wording and three lfs keys
-    that run nothing are not; a PR head read back as another sha is refused naming both and saying
+    that run nothing are not; a `worktree add` through `runGit` of a tracked `*.bin filter=lfs`
+    pointer, with the lfs smudge planted as a marker, writes the pointer unchanged and never runs
+    it, where a plain `git worktree add` does; a PR head read back as another sha is refused naming both and saying
     the entry was kept, and a matching head passes, the fake gh serving origin's branch by
     default; an `--accept-debt` merge whose target moved during the stages files no entry; one
     refused by drivers armed during the stages keeps its entry, keeps `ArmedGitDriverError`, and
