@@ -313,10 +313,11 @@ export function gitDiffBinaryRecount(
  * git-lfs ignores it, the agent can be named per endpoint url, and the
  * `customtransfer` pattern differs by version (unescaped dots in 3.x,
  * unanchored on main), so the last alternative is the union of both, its
- * dots deliberately unescaped.
+ * dots deliberately unescaped. `s` because git allows `\r` and the Unicode
+ * line separators inside a subsection, which `.` skips without it.
  */
 const ARMED_DRIVER_KEY =
-  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.(?:.+\.)?standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$|lfs.customtransfer.[^.]+.(?:path|args)/i;
+  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.(?:.+\.)?standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$|lfs.customtransfer.[^.]+.(?:path|args)/is;
 
 /**
  * The config scopes a session can reach. Both files sit inside the shared
@@ -382,9 +383,20 @@ export function armedGitDrivers(gitPath: string): string[] {
   // Entries are `<scope>\0<key>\n<value>\0`, so they come out in pairs.
   const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z']).trim().split('\0');
   for (let i = 0; i + 1 < listed.length; i += 2) {
-    const [key] = (listed[i + 1] as string).split('\n');
     if (!SESSION_WRITABLE_SCOPES.includes(listed[i] as string)) continue;
-    if (key && ARMED_DRIVER_KEY.test(key)) armed.push(sanitizeReason(key));
+    const entry = listed[i + 1] as string;
+    const [key] = entry.split('\n');
+    // Judged as git-lfs reads them too: it parses plain `git config -l`,
+    // splitting on newlines and each line on its first `=`, so a line hidden
+    // in a value, or an `=` in a subsection, is a key to it (decision 82).
+    const asLfsReads = entry
+      .replace('\n', '=')
+      .split('\n')
+      .filter((line) => line.includes('='))
+      .map((line) => line.split('=')[0]);
+    for (const read of new Set([key, ...asLfsReads])) {
+      if (read && ARMED_DRIVER_KEY.test(read)) armed.push(sanitizeReason(read));
+    }
   }
   return armed;
 }

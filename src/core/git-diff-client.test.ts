@@ -280,7 +280,7 @@ describe('armedGitDrivers', () => {
     ['lfs.standalonetransferagent', 'pwn'],
     ['lfs.extension.pwn.clean', '/usr/bin/true %f'],
     ['lfs.extension.pwn.smudge', '/usr/bin/true %f'],
-    // The looser forms git-lfs accepts; `ARMED_DRIVER_KEY` says which and why.
+    // The looser forms git-lfs accepts (see `ARMED_DRIVER_KEY`, decision 82).
     ['lfs.CustomTransfer.pwn.path', '/usr/bin/true'],
     ['x.lfs.customtransfer.pwn.path', '/usr/bin/true'],
     ['lfs.customtransfer pwn.path', '/usr/bin/true'],
@@ -293,6 +293,41 @@ describe('armedGitDrivers', () => {
     expect(() => assertNoArmedGitDrivers(repo)).toThrow(
       new RegExp(`a filter or merge driver is armed.*${key.replaceAll('.', '\\.')}`),
     );
+  });
+
+  // git allows `\r` and the Unicode line separators in a subsection, and its
+  // attribute parser keeps them in a filter name; a `.` without `s` skips them.
+  it.each(['filter.a\u2028b.smudge', 'lfs.https://example.com/?\u2029.standalonetransferagent'])(
+    'names %s, whose subsection holds a line terminator',
+    (key) => {
+      const repo = repoWithCommit();
+      sh(repo, 'git', 'config', key, '/usr/bin/true');
+
+      expect(armedGitDrivers(repo)).toHaveLength(1);
+    },
+  );
+
+  // git-lfs reads plain `git config -l`, so a line inside a value, or an `=`
+  // inside a subsection, is a key to it; a line without `=` is not (decision 82).
+  it("names an lfs key hidden on a second line of another key's value", () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'pup.note', 'x\nlfs.customtransfer.pwn.path=/usr/bin/true');
+
+    expect(armedGitDrivers(repo)).toEqual(['lfs.customtransfer.pwn.path']);
+  });
+
+  it('ignores a line without = in a value, as git-lfs does', () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'alias.note', '!echo\nlfs.customtransfer.pwn.path');
+
+    expect(armedGitDrivers(repo)).toEqual([]);
+  });
+
+  it('names an lfs key an = in its subsection hides from the listed key', () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'lfs.extension.pwn.clean=/usr/bin/true.x', '1');
+
+    expect(armedGitDrivers(repo)).toEqual(['lfs.extension.pwn.clean']);
   });
 
   it('ignores lfs keys that name no program', () => {

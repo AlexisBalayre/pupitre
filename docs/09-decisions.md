@@ -4196,26 +4196,35 @@ changes back into those docs is pending.
     git keeps a subsection's case and git-lfs ignores it, the agent can be named per endpoint url as
     `lfs.<url>.standalonetransferagent`, and the `customtransfer` pattern differs by version,
     unescaped dots in 3.x and unanchored on main, so the refusal is the union of both,
-    `lfs.customtransfer.<name>.path` and `.args` with every dot a wildcard, anywhere in the key;
-    other `lfs.*` keys (`concurrent`, `fetchexclude`, an extension's `priority`) name no program and
-    stay allowed, and so does a branch or remote whose name contains the word. An operator whose
-    setup puts the agent keys in local config, as lfs-folderstore and lfs-s3 instruct, is refused at
-    launch, conductor start and merge until they move to global scope, which decision 50 leaves to
-    them; that cost is accepted. The key refusals are the second layer. The first is that no pup git
-    call runs git-lfs at all: `GIT_SAFE_CONFIG` gains `-c filter.lfs.required=false -c
-    filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.clean=`, because with a global `git lfs
-    install`, a tracked `.gitattributes` naming `filter=lfs` makes the global filter the smudge
-    driver of every checkout, and its download runs programs named by general shared-config keys,
-    `core.sshCommand` for an ssh lfs endpoint among them (found on security review, reproduced),
-    which no key list can cover. So no pup git call materialises LFS content: the gate's checkout,
-    the rebase and the fast-forward hold the pointer files, and so do a session's worktree and the
-    conductor's checkout, which the same client creates. That is a ceiling: a repo whose build or
-    tests need the binaries fails its stages under the gate until a later decision fetches them
-    outside the session's reach; a session that needs them runs `git lfs pull` in its own worktree,
-    whose git carries none of pup's pins; and a fast-forward leaves pointers in the main checkout
-    for the operator's own `git lfs pull`. Not covered: the transfer-agent keys git-lfs accepts from
-    a tracked `.lfsconfig`, which it limits to an allowlist that, as far as we know, leaves them
-    out; that is git-lfs's to keep.
+    `lfs.customtransfer.<name>.path` and `.args` anywhere in the key, with the separating dots
+    unescaped so each matches any character and the name dot-free as git-lfs captures it; other
+    `lfs.*` keys (`lfs.concurrenttransfers`, an agent's `concurrent`, `fetchexclude`, an extension's
+    `priority`) name no program and stay allowed, and so does an ordinary branch or remote name
+    carrying the word. The keys are judged the way git-lfs reads them as well as the way git lists
+    them: git-lfs parses plain `git config -l`, splitting on newlines and each line on its first
+    `=`, so a line hidden inside another key's value, or an `=` inside a subsection, is a key to it
+    and is tested as one, and a line without `=` is not (found on CI review, reproduced with `git
+    lfs env`). The pattern carries the `s` flag: git allows `\r` and the Unicode line separators
+    inside a subsection, and its attribute parser keeps them in a filter name, where a `.` without
+    `s` stops matching (found on security review). An operator whose setup puts the agent keys in
+    local config, as lfs-folderstore and lfs-s3 instruct, is refused at launch, conductor start and
+    merge until they move to global scope, which decision 50 leaves to them; that cost is accepted.
+    The key refusals are the second layer. The first is that no pup git call runs git-lfs at all:
+    `GIT_SAFE_CONFIG` gains `-c filter.lfs.required=false -c filter.lfs.process= -c
+    filter.lfs.smudge= -c filter.lfs.clean=`, because with a global `git lfs install`, a tracked
+    `.gitattributes` naming `filter=lfs` makes the global filter the smudge driver of every
+    checkout, and its download runs programs named by general shared-config keys, `core.sshCommand`
+    for an ssh lfs endpoint among them (found on security review, reproduced), which no key list can
+    cover. So no pup git call materialises LFS content: the gate's checkout, the rebase and the
+    fast-forward hold the pointer files, and so do a session's worktree and the conductor's
+    checkout, which the same client creates. That is a ceiling: a repo whose build or tests need the
+    binaries fails its stages under the gate until a later decision fetches them outside the
+    session's reach; a session that needs them runs `git lfs pull` in its own worktree, whose git
+    carries none of pup's pins; and a fast-forward leaves pointers in the main checkout for the
+    operator's own `git lfs pull`. Not covered: a tracked `.lfsconfig`, whose allowlist admits any
+    `remote.<x>.*` key of more than three parts, so a `remote.<x>.lfs.customtransfer.<name>.path`
+    there registers an agent (found on security review, reproduced with `git lfs env`); that is
+    git-lfs's to fix, and the first layer is what keeps it out of pup's own calls.
     *The PR head.* After `gh pr create` or the adopt-and-rewrite, the gate reads `headRefOid` back
     with `gh pr view --json` and refuses unless it is the pinned sha it pushed, naming both: the
     body vouches for the commit the gate measured and nothing else, and a session holding the
@@ -4238,7 +4247,9 @@ changes back into those docs is pending.
     entries are not rolled back: the retry needs them unchanged, and the first approver stands
     (decision 75).
     Tests: each of the five lfs keys is refused with the armed-driver wording, so are four looser
-    forms git-lfs accepts, and three lfs keys that run nothing are not; a `worktree add` through
+    forms git-lfs accepts, an lfs key on a second line of another key's value, one an `=` in
+    its subsection hides, and two whose subsection holds a Unicode line separator, and three
+    lfs keys that run nothing and a value line without `=` are not; a `worktree add` through
     `runGit` of a tracked `*.bin filter=lfs` pointer, with the lfs smudge and then the lfs process
     filter planted as a marker, writes the pointer unchanged and never runs it, where a plain `git
     worktree add` does; a PR head read back as another sha is refused naming both and saying the
