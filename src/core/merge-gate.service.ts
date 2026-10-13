@@ -310,7 +310,37 @@ function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
     '-u',
     sha,
   ]);
+  refuseEscapingLinks(dir, sha);
   return dir;
+}
+
+/**
+ * Refuse a pinned tree whose committed symlinks resolve outside the checkout:
+ * a stage would read through them into the session's worktree, which the live
+ * session edits while the stage runs. Every `120000` entry of the tree, not a
+ * walk of one directory: a link can sit anywhere, and a chain through a
+ * committed directory link would hide from a walk. A dangling link resolves
+ * nowhere and is refused the same way (decision 81).
+ */
+function refuseEscapingLinks(checkout: string, sha: string): void {
+  const inside = realpathSync(checkout);
+  const entries = runGit(checkout, ['ls-tree', '-r', '-z', sha]).split('\0').filter(Boolean);
+  for (const entry of entries) {
+    const [meta, path] = entry.split('\t', 2) as [string, string];
+    if (!meta.startsWith('120000')) continue;
+    let real: string | undefined;
+    try {
+      real = realpathSync(join(checkout, path));
+    } catch {
+      real = undefined;
+    }
+    if (real === undefined || (real !== inside && !real.startsWith(`${inside}/`))) {
+      throw new Error(
+        `${quotePath(path)} is a committed link that resolves ${real === undefined ? 'nowhere' : 'outside the gate checkout'}; ` +
+          'nothing was merged. Treat the session that wrote it as compromised.',
+      );
+    }
+  }
 }
 
 /**
@@ -320,11 +350,11 @@ function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
  * package resolves from its own directory, so each touched one gets its own
  * (decision 81). A directory of links rather than one link: vite writes
  * `.vite-temp` beside the packages, and through a single link that write lands
- * where the sandbox denies it, so `.vite*` is skipped, and `.cache` with it so
- * a stage writes its cache here. A `node_modules` the pinned tree commits is
- * kept as any committed file is, unless something in it links outside the
- * checkout, which would reach the session's worktree. Python gets nothing:
- * see decision 81's ceiling.
+ * where the sandbox denies it; `.vite*` and `.cache` are skipped so a stage
+ * writes them in the checkout. A `node_modules` the pinned tree commits is
+ * kept as any committed file is (its links were vetted with the tree's), so a
+ * vendored `.bin` is the branch's own and the operator's to review. Python
+ * gets nothing: see decision 81's ceiling.
  */
 function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
   const source = join(repoPath, rel, GATE_ENVIRONMENT_DIR);
@@ -334,20 +364,10 @@ function linkEnvironment(repoPath: string, checkout: string, rel: string): void 
     const real = realpathSync(path);
     return real !== inside && !real.startsWith(`${inside}/`);
   };
-  if (lstatSync(local, { throwIfNoEntry: false })) {
-    const linksOut =
-      escapes(local) || readdirSync(local).some((name) => escapes(join(local, name)));
-    if (linksOut) {
-      throw new Error(
-        `${quotePath(join(rel, GATE_ENVIRONMENT_DIR))} is committed on the branch and links ` +
-          'outside the checkout; nothing was merged. Treat the session that wrote it as compromised.',
-      );
-    }
-    return;
-  }
+  if (lstatSync(local, { throwIfNoEntry: false })) return;
   if (!existsSync(source)) return;
-  // The parent is a committed directory a stage has not run in yet; still, a
-  // link is only ever written under the checkout itself.
+  // A committed parent could itself be a link out: checked before anything is
+  // written under it.
   if (escapes(dirname(local))) {
     throw new Error(`${quotePath(rel)} resolves outside the gate checkout; nothing was merged.`);
   }
@@ -693,12 +713,6 @@ function gateAndMerge(
     return failed();
   }
 
-  // Every stage and debt capability measures the pinned sha's files, never the
-  // worktree's, which the live session can change while they run (decision 81);
-  // which tools are declared is still read from the main checkout the merge
-  // lock holds at the target branch, or a session silences a debt stage by
-  // editing its own manifest (decision 29).
-
   /** Runs one hard stage; false once it has recorded the failure. */
   const commandStage = (
     stage: string,
@@ -732,6 +746,11 @@ function gateAndMerge(
   // same adapter answers for nested packages, which are the root manifest's.
   // Never `undefined`: `runMergeGate` refuses an empty list before the lock.
   const [primary] = req.adapters;
+  // Every stage and debt capability measures the pinned sha's files, never the
+  // worktree's, which the live session can change while they run (decision 81);
+  // which tools are declared is still read from the main checkout the merge
+  // lock holds at the target branch, or a session silences a debt stage by
+  // editing its own manifest (decision 29).
   const capabilityContext: CapabilityContext = {
     measurePath: checkoutDir,
     configPath: req.repoPath,

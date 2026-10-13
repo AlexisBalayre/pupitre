@@ -768,7 +768,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       mkdirSync(join(worktree, 'node_modules'), { recursive: true });
       symlinkSync(worktree, join(worktree, 'node_modules', 'out'));
 
-      expect(() => merge()).toThrow(/node_modules.*links outside the checkout/);
+      expect(() => merge()).toThrow(/node_modules\/out.*resolves outside the gate checkout/);
+
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    // Anywhere in the tree, not only under node_modules, and a dangling one too.
+    it('refuses a committed link anywhere in the tree that resolves nowhere', () => {
+      const worktree = seedSession(db, repo);
+      const target = sh(
+        worktree,
+        'sh',
+        '-c',
+        'printf /nowhere/at/all | git hash-object -w --stdin',
+      ).trim();
+      sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `120000,${target},src/dangling`);
+      sh(worktree, 'git', 'commit', '-q', '-m', 'dangling');
+      symlinkSync('/nowhere/at/all', join(worktree, 'src', 'dangling'));
+
+      expect(() => merge()).toThrow(/src\/dangling is a committed link that resolves nowhere/);
 
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
@@ -1553,14 +1571,22 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // A standalone package resolves from its own directory, so it gets its own
     // environment from the main checkout, not the root's (decision 81).
-    it("gives the package the main checkout's own node_modules", () => {
+    it("gives the package the main checkout's own node_modules, before any stage runs", () => {
       commitNestedPackage({ test: 'test -e node_modules/marker', typecheck: 'true' });
       mkdirSync(join(repo, 'tools', 'review', 'node_modules'), { recursive: true });
       writeFileSync(join(repo, 'tools', 'review', 'node_modules', 'marker'), '');
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+      // The root build stage runs first and already sees the nested environment.
+      const adapter = nestedAdapter({
+        gateCommands: () => [
+          { stage: 'build', command: 'test', args: ['-e', 'tools/review/node_modules/marker'] },
+          { stage: 'test', command: 'true', args: [] },
+          { stage: 'lint', command: 'true', args: [] },
+        ],
+      });
 
-      expect(merge(nestedAdapter()).status).toBe('merged');
+      expect(merge(adapter).status).toBe('merged');
     });
 
     it("refuses the merge when the package's own test script fails", () => {

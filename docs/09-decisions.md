@@ -4152,7 +4152,11 @@ changes back into those docs is pending.
     every environment is linked before any stage runs, because a stage runs session code with
     the checkout writable and a link made after it could follow a swapped-in parent out of the
     checkout (found on review). A `node_modules` the pinned tree commits is kept like any
-    committed file, a vendored one included, unless something in it links outside the checkout.
+    committed file, a vendored one included; every committed symlink in the pinned tree, inside
+    `node_modules` or anywhere else, is resolved once after the cut and the tree refused if one
+    resolves outside the checkout or nowhere, since a stage would read through it into the
+    session's worktree (found on review). A vendored regular file such as `.bin/vitest` is the
+    branch's own content and the operator's to review, not the gate's: that is the ceiling.
     *The Python ceiling.* No `.venv` is linked, and Python stages fail closed in the checkout
     until a later decision gives them an environment. Linking the main checkout's was tried on
     review and withdrawn for two reasons: an editable install (`poetry install`, `uv sync`)
