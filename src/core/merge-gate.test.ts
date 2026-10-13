@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -715,27 +716,59 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(existsSync(join(checkout() as string, 'locked'))).toBe(true);
     });
 
-    // An in-project Python environment is linked like node_modules (decision 81).
-    it("links the main checkout's .venv into the gate checkout", () => {
-      const worktree = seedSession(db, repo);
-      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      mkdirSync(join(repo, '.venv'), { recursive: true });
-      writeFileSync(join(repo, '.venv', 'marker'), '');
+    // A vendored node_modules is a committed file like any other (decision 81).
+    it('keeps a node_modules the branch commits, when nothing in it links outside', () => {
+      const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'node_modules/**'] });
+      const marker = sh(
+        worktree,
+        'sh',
+        '-c',
+        'printf vendored | git hash-object -w --stdin',
+      ).trim();
+      sh(
+        worktree,
+        'git',
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `100644,${marker},node_modules/vendored`,
+      );
+      sh(worktree, 'git', 'commit', '-q', '-m', 'vendor');
+      // The index holds it; the worktree must too, or worktree-clean sees a deletion.
+      mkdirSync(join(worktree, 'node_modules'), { recursive: true });
+      writeFileSync(join(worktree, 'node_modules', 'vendored'), 'vendored');
       const adapter: Adapter = {
         ...passingAdapter,
-        gateCommands: () => [{ stage: 'build', command: 'test', args: ['-e', '.venv/marker'] }],
+        gateCommands: () => [
+          { stage: 'build', command: 'test', args: ['-e', 'node_modules/vendored'] },
+        ],
       };
 
       expect(merge(adapter).status).toBe('merged');
     });
 
-    // A committed environment directory could be a link back into the session's
-    // worktree; the gate links the main checkout's own and refuses it instead.
-    it('refuses a branch that commits an environment directory', () => {
-      const worktree = seedSession(db, repo);
-      commitIn(worktree, '.venv/pyvenv.cfg', 'home = /nowhere\n');
+    // A committed link out of the checkout would reach the session's worktree.
+    it('refuses a committed node_modules that links outside the checkout', () => {
+      const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'node_modules/**'] });
+      const target = sh(
+        worktree,
+        'sh',
+        '-c',
+        `printf %s ${JSON.stringify(worktree)} | git hash-object -w --stdin`,
+      ).trim();
+      sh(
+        worktree,
+        'git',
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `120000,${target},node_modules/out`,
+      );
+      sh(worktree, 'git', 'commit', '-q', '-m', 'link out');
+      mkdirSync(join(worktree, 'node_modules'), { recursive: true });
+      symlinkSync(worktree, join(worktree, 'node_modules', 'out'));
 
-      expect(() => merge()).toThrow(/\.venv.*is committed on the branch/);
+      expect(() => merge()).toThrow(/node_modules.*links outside the checkout/);
 
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });

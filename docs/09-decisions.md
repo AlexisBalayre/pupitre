@@ -4123,10 +4123,7 @@ changes back into those docs is pending.
     (decision 51), as first planned: the sandbox denies every gate child reads and writes under
     `~/.pupitre`, which holds the store (decision 36), so a stage there cannot even resolve its
     own working directory (found in the first test run). It is `checkout` inside a fresh
-    `mkdtemp` directory under the resolved temp dir — private to the gate, at the OS-user ceiling
-    decisions 47 and 63 name: a session running as the same user can list it and write to it,
-    so what this closes is the worktree the session owns and edits as a matter of course, not a
-    same-user attack — cut per gate under
+    `mkdtemp` directory under the resolved temp dir, cut per gate under
     the merge lock and removed in a `finally` that runs before the lock is released, on a pass, a
     failed stage and a thrown gate alike: the directory goes with `rmSync` and the registration
     with `git worktree prune`. A failure to remove it is swallowed, so it never replaces the
@@ -4139,6 +4136,9 @@ changes back into those docs is pending.
     runs a smudge filter on every file it writes, so `assertNoArmedGitDrivers` runs on the main
     checkout right before it, a third time, since the auto-rebase is a window the live session
     controls. A submodule is not checked out, as the fast-forward never recursed into one.
+    *The ceiling.* The checkout is at the OS-user ceiling decisions 47 and 63 name: a session
+    running as the same user can list it and write to it. What this closes is the worktree the
+    session owns and edits as a matter of course, not a same-user attack.
     *Dependencies.* The gate's checkout sits outside the repo, so Node's walk up from it reaches
     no `node_modules`. It gets a real `node_modules` holding a link to every entry of the main
     checkout's, and never the session worktree's own, though a stage in the worktree used to
@@ -4148,12 +4148,18 @@ changes back into those docs is pending.
     this decision (operator must-fix on review). The consequence, accepted: a branch that changes
     its dependencies fails its stages until the operator installs them in the main checkout.
     The same per-entry linking covers every touched nested package (decision 59), from
-    `<repo>/<pkg>/node_modules`, since a standalone package resolves from its own directory,
-    and a `.venv` wherever one sits beside the code, so an in-project Poetry environment is
-    found; a Poetry environment in its cache, keyed on the project path, is not, and such a
-    repo needs `virtualenvs.in-project` (found on review, the Python ceiling). An environment
-    directory the pinned tree itself commits is refused rather than linked over: it could be a
-    link back into the session's worktree (found on review).
+    `<repo>/<pkg>/node_modules`, since a standalone package resolves from its own directory;
+    every environment is linked before any stage runs, because a stage runs session code with
+    the checkout writable and a link made after it could follow a swapped-in parent out of the
+    checkout (found on review). A `node_modules` the pinned tree commits is kept like any
+    committed file, a vendored one included, unless something in it links outside the checkout.
+    *The Python ceiling.* No `.venv` is linked, and Python stages fail closed in the checkout
+    until a later decision gives them an environment. Linking the main checkout's was tried on
+    review and withdrawn for two reasons: an editable install (`poetry install`, `uv sync`)
+    leaves a `.pth` naming the main checkout's source root, so the tests would import the
+    trusted code and pass on a broken branch, the one outcome this decision exists to prevent;
+    and `uv run` syncs into the environment it finds, which through the links is the main
+    checkout's.
     Not one link to the whole directory, which was the first shape and failed this repo's own
     test stage in the sandbox: vite writes `.vite-temp` beside the packages, the sandbox matches
     resolved paths, and through the link the write landed on a checkout it keeps read-only.

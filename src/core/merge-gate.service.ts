@@ -10,7 +10,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
@@ -44,6 +44,7 @@ import {
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_FLAG_LINES,
   GATE_COMMAND_TIMEOUT_MS,
+  GATE_ENVIRONMENT_DIR,
   GATE_OUTPUT_TAIL_CHARS,
   LOCKFILE_NAMES,
   MAX_REJECTS_BEFORE_BLOCKED,
@@ -309,39 +310,51 @@ function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
     '-u',
     sha,
   ]);
-  linkEnvironment(repoPath, dir, '.');
   return dir;
 }
 
-/** Untracked environments a stage needs beside the code, per package directory. */
-const ENVIRONMENT_DIRS = ['node_modules', '.venv'];
-
 /**
- * Give `<checkout>/<rel>` the main checkout's environment directories, as
- * links to each entry of `<repoPath>/<rel>`'s — never the session worktree's
- * own, which the live session can rewrite (`.bin/vitest`) while the stages
- * run (decision 81). A directory of links rather than one link: vite writes
- * `.vite-temp` beside the packages, and through a single link that write
- * lands where the sandbox denies it; the caches are left out for the same
- * reason. An entry the pinned tree itself carries is refused, not kept: a
- * committed `node_modules` could be a link back into the session's worktree.
+ * Give `<checkout>/<rel>` the main checkout's `node_modules`, as links to each
+ * entry of `<repoPath>/<rel>`'s — never the session worktree's own, which the
+ * live session can rewrite (`.bin/vitest`) while the stages run; a standalone
+ * package resolves from its own directory, so each touched one gets its own
+ * (decision 81). A directory of links rather than one link: vite writes
+ * `.vite-temp` beside the packages, and through a single link that write lands
+ * where the sandbox denies it, so `.vite*` is skipped, and `.cache` with it so
+ * a stage writes its cache here. A `node_modules` the pinned tree commits is
+ * kept as any committed file is, unless something in it links outside the
+ * checkout, which would reach the session's worktree. Python gets nothing:
+ * see decision 81's ceiling.
  */
 function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
-  for (const env of ENVIRONMENT_DIRS) {
-    const source = join(repoPath, rel, env);
-    const local = join(checkout, rel, env);
-    if (lstatSync(local, { throwIfNoEntry: false })) {
+  const source = join(repoPath, rel, GATE_ENVIRONMENT_DIR);
+  const local = join(checkout, rel, GATE_ENVIRONMENT_DIR);
+  const inside = realpathSync(checkout);
+  const escapes = (path: string): boolean => {
+    const real = realpathSync(path);
+    return real !== inside && !real.startsWith(`${inside}/`);
+  };
+  if (lstatSync(local, { throwIfNoEntry: false })) {
+    const linksOut =
+      escapes(local) || readdirSync(local).some((name) => escapes(join(local, name)));
+    if (linksOut) {
       throw new Error(
-        `${quotePath(join(rel, env))} is committed on the branch; the gate links the main ` +
-          "checkout's own and refuses to run on a committed one. Nothing was merged.",
+        `${quotePath(join(rel, GATE_ENVIRONMENT_DIR))} is committed on the branch and links ` +
+          'outside the checkout; nothing was merged. Treat the session that wrote it as compromised.',
       );
     }
-    if (!existsSync(source)) continue;
-    mkdirSync(local, { recursive: true });
-    for (const name of readdirSync(source)) {
-      if (name === '.cache' || name.startsWith('.vite')) continue;
-      symlinkSync(join(source, name), join(local, name));
-    }
+    return;
+  }
+  if (!existsSync(source)) return;
+  // The parent is a committed directory a stage has not run in yet; still, a
+  // link is only ever written under the checkout itself.
+  if (escapes(dirname(local))) {
+    throw new Error(`${quotePath(rel)} resolves outside the gate checkout; nothing was merged.`);
+  }
+  mkdirSync(local, { recursive: true });
+  for (const name of readdirSync(source)) {
+    if (name === '.cache' || name.startsWith('.vite')) continue;
+    symlinkSync(join(source, name), join(local, name));
   }
 }
 
@@ -685,12 +698,6 @@ function gateAndMerge(
   // which tools are declared is still read from the main checkout the merge
   // lock holds at the target branch, or a session silences a debt stage by
   // editing its own manifest (decision 29).
-  const checkout = cutGateCheckout(req.repoPath, checkoutDir, sha);
-  const capabilityContext: CapabilityContext = {
-    measurePath: checkout,
-    configPath: req.repoPath,
-    ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
-  };
 
   /** Runs one hard stage; false once it has recorded the failure. */
   const commandStage = (
@@ -725,6 +732,20 @@ function gateAndMerge(
   // same adapter answers for nested packages, which are the root manifest's.
   // Never `undefined`: `runMergeGate` refuses an empty list before the lock.
   const [primary] = req.adapters;
+  const capabilityContext: CapabilityContext = {
+    measurePath: checkoutDir,
+    configPath: req.repoPath,
+    ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
+  };
+  const checkout = cutGateCheckout(req.repoPath, checkoutDir, sha);
+  const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
+  const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
+  // Every environment before any stage: a stage runs session code with the
+  // checkout writable, so a link made after it could follow a swapped-in
+  // parent out of the checkout (decision 81).
+  for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)]) {
+    linkEnvironment(req.repoPath, checkout, rel);
+  }
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
   const commands = primary?.gateCommands(req.repoPath) ?? [];
@@ -737,7 +758,6 @@ function gateAndMerge(
     if (!commandStage(stage, command, checkout)) return failed();
   }
 
-  const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
   const flaggedDebt: { description: string; files: string[] }[] = [];
   const acceptHint =
     'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
@@ -751,12 +771,8 @@ function gateAndMerge(
   // does, as hard stages in the package's own directory. A script the trusted
   // manifest lacks is a flag: changed code no stage measures is never a free
   // pass (decisions 30, 59).
-  const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
-    // Its own environment, not the root's: a standalone package resolves from
-    // its own directory and the checkout sits outside the repo (decision 81).
-    linkEnvironment(req.repoPath, checkout, pkg.dir);
     for (const command of pkg.commands) {
       if (!commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir))) {
         return failed();
