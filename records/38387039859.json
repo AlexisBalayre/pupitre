@@ -1,0 +1,190 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T11:05:26.480Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38387039859",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38387039859",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1f4adeb7d23d8c283a7f5bcb27caa47a08ab341c",
+  "source": "pr",
+  "pr_number": 138,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e2beda8846dc16729f74a95727833b7ee7eeb951",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "322-330",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "312-329",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "754-759",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Nested environments are linked after the root stages (and after earlier nested packages' stages) have already run sandboxed session code with write access to the gate checkout. That code can replace `<checkout>/<pkg.dir>`, or any directory above it, with a symlink. The unsandboxed `linkEnvironment` then runs `mkdirSync({recursive})` and `symlinkSync` through it, writing outside the sandbox's write allow-list, including into the main checkout that decision 36 keeps read-only during a merge.",
+      "body": "**Nested environments are linked after session code has had write access to the checkout.**\n\n`linkEnvironment` runs in the unsandboxed pup process and only `lstat`s the last path component.\n\n- **Root (`rel = '.'`):** it runs inside `cutGateCheckout`, before any stage, so this case is safe.\n- **Nested packages:** it runs at L759, after the root build/test/lint stages and after any earlier nested package's stages.\n\nThose stages run with `cwd = checkout`, and `writeProfile` grants the whole cwd as writable. So committed test code can do this:\n\n```js\nrmSync('<checkout>/tools/review', { recursive: true });\nsymlinkSync('<repoPath>/src', '<checkout>/tools/review');\n```\n\nThe gate then writes through the swapped-in link:\n\n- `mkdirSync({ recursive: true })` and `symlinkSync` follow symlinked parents.\n- Nothing calls `realpath` and nothing checks that the path is still under the checkout.\n- The result is that pup creates `<repoPath>/src/node_modules/` and fills it with links. That writes into the main checkout, which decision 36 says stays read-only during a merge. It also changes how Node resolves modules for the trusted code from then on.\n- The same works for any directory the OS user can write.\n\nThe impact is bounded but real:\n\n- The directory names are fixed (`node_modules` / `.venv`), and every link points at a trusted entry.\n- It is still a confused-deputy write that escapes the sandbox.\n- It matters under `sandbox-exec` (darwin). In `declared-vm` mode the stages are unconfined anyway.\n\n**Fix direction:** link every touched nested package's environment before any stage runs, next to the root call. `touchedNestedPackages` needs only the diff and the trees, so it can be computed up front. This also fixes a second problem: today a refused nested `node_modules` is only reported after the root stages have spent their time.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1f4adeb7d23d8c283a7f5bcb27caa47a08ab341c/src/core/merge-gate.service.ts#L727-L759",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "316-346",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The linked `.venv`'s editable install of the project (a `.pth` in site-packages) points at the absolute path of the main checkout. So `pytest` in the gate checkout imports the target branch's package, and the branch's changes go untested.",
+      "body": "**Linking the main `.venv` lets Python tests import the main checkout's code, not the pinned sha's.**\n\n`poetry install` (and `uv sync`) install the root project in editable mode. The installer writes a `.pth` into `.venv/lib/pythonX/site-packages`, and that file holds the absolute source root (`<repo>/src` or `<repo>`). Through the linked `lib` entry, that `.pth` is now active in the gate checkout.\n\nWhy the tests pick up the wrong code:\n\n- The test stage is `poetry run pytest` (`src/adapters/python.adapter.ts:280`), a console script, so `sys.path[0]` is `.venv/bin` and not the checkout.\n- The gate cannot set `PYTHONPATH`: it is absent from `ALLOWED_VARS`, and `SETTABLE_VARS` is just `['COVERAGE_FILE']` in `gate-env.utils.ts`.\n- pytest's default `prepend` mode adds the test directory, not `<checkout>/src`.\n\nSo in a src-layout project (or a flat layout without a root `conftest.py`), `import mypkg` resolves through the `.pth` to the main checkout's code. The branch's changes are never executed, and a broken branch can pass the test stage. That is the outcome decision 81 exists to prevent.\n\n**What changed:** before this delta, Python stages had no environment and failed closed. Now they run and can pass falsely. Decision 81's new text says the in-project Poetry environment \"is found\" without noting this. The new `.venv` test only checks that a marker file exists.\n\nThe Poetry and pytest `sys.path` behaviour is pinned-version knowledge and was not run here, hence medium confidence.\n\n**Fix direction:** one of:\n\n- put the checkout's source roots ahead of site-packages for Python stages;\n- skip `.pth` entries that point under `repoPath` (which means linking `site-packages` one level deeper);\n- stop linking `.venv` and record the Python ceiling in decision 81.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1f4adeb7d23d8c283a7f5bcb27caa47a08ab341c/src/core/merge-gate.service.ts#L316-L346",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "329-346",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "For uv repos every stage runs as `uv run …`, which syncs the linked `.venv`. Its `lib/` and `bin/` resolve into the main checkout, so the sync either fails under the sandbox or, under `PUP_SANDBOX=vm`, rewrites the trusted main `.venv` from the branch's `uv.lock`.",
+      "body": "**`uv run` syncs into the main checkout's `.venv` through the links.**\n\n`runnerPrefix` returns `['uv', 'run']` whenever `uv.lock` exists (`src/adapters/python.adapter.ts:90-94`). `gateCommands` (L253-273) uses that prefix for build, test and lint without `--no-sync`. Only `capabilityRunnerPrefix` (L208-211) adds `--no-sync`, and its JSDoc says why: \"`uv run` syncs (installs session-declared packages) by default\". The gate env can't turn this off either: no `UV_NO_SYNC` or `UV_FROZEN` passes `gate-env.utils.ts`.\n\n`linkEnvironment` makes `<checkout>/.venv` a directory of links into `<repo>/.venv`. In the checkout, `uv run` sees the project's editable install pointing at `<repo>`, or a lock that changed on the branch, and re-syncs into `.venv/lib/.../site-packages`. That path resolves to the main checkout.\n\nWhat happens next depends on the sandbox mode:\n\n- **darwin (`sandbox-exec`):** `writeProfile` grants only cwd, scratch and caches (`sandbox.utils.ts:228-240`), and it matches resolved paths. The sync is denied, so the build stage fails on every uv merge whose environment isn't already an exact match.\n- **`PUP_SANDBOX=vm`:** children run unconfined (`sandbox.utils.ts:245`). The branch's dependency changes get installed into the main `.venv`, and the editable install is repointed at a temp dir the gate then deletes. That breaks the operator's environment and plants session-chosen packages into the environment that decision 81 trusts for every later gate.\n\nBefore this delta, no `.venv` was linked, so uv synced a fresh environment inside the writable checkout. uv's sync behaviour is pinned-version knowledge, hence medium confidence.\n\n**Fix direction:** make the gate stages use `uv run --no-sync` too (the `capabilityRunnerPrefix` path), or give the linked environment no write path back into `<repo>`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1f4adeb7d23d8c283a7f5bcb27caa47a08ab341c/src/core/merge-gate.service.ts#L329-L346",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "333-338",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`linkEnvironment` throws whenever the pinned tree contains `node_modules` or `.venv` at the root or in a touched nested package, even when the target branch already commits it. Repos that legitimately vendor `node_modules`, such as GitHub JavaScript actions, now fail every `pup merge` with a message that blames \"the branch\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "757-759",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the session's branch adds a nested `<pkg>/node_modules` or `.venv`, the gate throws a refusal instead of recording a failed stage. The session is not re-steered with a report and the rejection cap does not count it. For a nested package the throw also comes only after every root build/test/lint stage has already run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "317",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ENVIRONMENT_DIRS = ['node_modules', '.venv']` is declared inline in the service file. `general.md` §No hardcoded values puts path fragments in the area's `merge-gate.constants.ts` as a named export with a JSDoc line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "757-758",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `linkEnvironment(req.repoPath, checkout, pkg.dir)` in the nested loop partly restates `linkEnvironment`'s JSDoc and decision 81. Fold \"a standalone package resolves from its own directory\" into the JSDoc and drop the call-site copy (general.md: a WHY comment belongs at the seam).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "316-317",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The language-specific `ENVIRONMENT_DIRS` list lives in the core gate service, while nested packages and their commands already come from the adapter. Supporting another ecosystem's environment directory now means editing core instead of the adapter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "319-328",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc says \"the caches are left out for the same reason\", but the vite-temp reason only explains the `.vite*` skip, not `.cache`. It also says \"an entry the pinned tree itself carries is refused\", but the code refuses the whole environment directory, not an entry inside it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "334-337",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refusal message (\"the gate links the main checkout's own and refuses to run on a committed one\") leaves \"own\" without a noun and gives an operator who vendors dependencies on purpose no next step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4126-4129",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new em-dash aside in decision 81 splits \"…cut per gate under the merge lock\" mid-sentence. Its \"private to the gate\" also sits awkwardly next to \"a session running as the same user can list it and write to it\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "341-344",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "pnpm/yarn/npm workspace links inside `node_modules` are relative (for example `@scope/pkg -> ../packages/pkg`), so through the per-entry links they resolve against the main checkout. The gate's stages then import the main checkout's sibling workspace sources, not the pinned sha's. This now applies to nested packages too.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4150-4156",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Decision 81 says a `.venv` is linked \"wherever one sits beside the code\", but `linkEnvironment` only runs for the repo root and each touched nested package, so a `.venv` in any other directory is not linked.",
+      "refutation": "The sentence sits inside \"The same per-entry linking covers every touched nested package…\", after the root case. Read in that frame, \"beside the code\" means beside the root or touched package whose code a stage runs, which is exactly where `linkEnvironment` is called (L312 and L759). No stage runs from any other directory, so the loose word \"wherever\" misleads nobody into a wrong decision. At most it is a wording nit."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.0950028,
+  "duration_ms": 351076,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 14032,
+    "cache_read": 228166,
+    "cache_creation": 68628,
+    "total": 310838
+  }
+}
