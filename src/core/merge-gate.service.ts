@@ -1,4 +1,14 @@
-import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmdirSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -180,10 +190,10 @@ function formatGateReport(report: GateReport): string {
  * hard stages — build, tests, lint, a touched nested package's own test and
  * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
- * decision 21). Pass: a plumbing fast-forward of the commit the diffs and the
- * scope audit named (decision 80; build, test, lint, the nested-package stages
- * and the debt capabilities read the live worktree), full cleanup (decision
- * 16), and the debt baseline ratchets to what those capabilities measured. Hard fail: re-steer with the report, cap
+ * decision 21), every one of them run on a private detached checkout of the
+ * pinned sha (decision 81). Pass: a plumbing fast-forward of that sha (decision
+ * 80), full cleanup (decision 16), and the debt baseline ratchets to what the
+ * capabilities measured. Hard fail: re-steer with the report, cap
  * at two rejections then park as blocked (decisions 7, 15). Any soft flag without
  * --accept-debt refuses the merge but leaves the session reviewable (decision 17);
  * with it, each flag writes a ledger entry. The whole run holds the per-repo
@@ -242,9 +252,92 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     // would then abort (decision 27).
     pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return withMergeLock(req.repoPath, () =>
-    gateAndMerge(db, req, session, target, sandbox, pullRequest),
+  return withMergeLock(req.repoPath, () => {
+    // Not under the project's state dir beside the conductor's checkout: the
+    // sandbox denies every gate child reads and writes under `~/.pupitre`,
+    // which holds the store (decision 36). `mkdtemp` is private and unguessable;
+    // resolved, because the sandbox matches resolved paths.
+    const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
+    try {
+      return gateAndMerge(
+        db,
+        req,
+        session,
+        target,
+        sandbox,
+        join(checkoutRoot, 'checkout'),
+        pullRequest,
+      );
+    } finally {
+      // Still under the lock, on a pass, a failed stage and a throw alike.
+      // Swallowed: a cleanup failure must not replace the gate's outcome or
+      // its error, and the registration goes with the next gate's prune once
+      // the directory is gone.
+      try {
+        dropGateCheckout(req.repoPath, checkoutRoot);
+      } catch {
+        // see above
+      }
+    }
+  });
+}
+
+/**
+ * Cut the gate's private detached checkout of the pinned sha, which every
+ * stage and debt capability then reads instead of the session's worktree, whose
+ * files the live session can edit while they run (decision 81). Detached like
+ * the conductor's checkout (decision 51), but cut fresh under the lock and
+ * dropped before it is released, since it must hold the one sha this gate lands.
+ *
+ * `--no-checkout` then a `read-tree` of our own, for the reasons `fastForward`
+ * gives: `--work-tree`, because `core.worktree` in the shared config would aim
+ * the writes elsewhere, and `--no-sparse-checkout`, because a planted
+ * `core.sparseCheckout` would leave out committed files no stage would then
+ * see. The checkout runs a smudge filter on every file it writes, so the drivers
+ * are checked again right before it, as they are before the fast-forward.
+ */
+function cutGateCheckout(repoPath: string, worktree: string, dir: string, sha: string): string {
+  assertNoArmedGitDrivers(repoPath);
+  runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
+  runGit(dir, [
+    '--work-tree',
+    dir,
+    'read-tree',
+    '--no-recurse-submodules',
+    '--no-sparse-checkout',
+    '--reset',
+    '-u',
+    sha,
+  ]);
+  // The dependencies a stage in the worktree resolved by Node's walk up from
+  // it: the worktree's own `node_modules`, else the main checkout's. This
+  // checkout sits outside the repo, so it walks to neither. A real directory
+  // of links, not one link: vite writes `.vite-temp` beside the packages, and
+  // through a single link that write lands where the sandbox denies it. The
+  // caches are left out so they are written here. Never staged: nothing
+  // commits here, and it goes with the checkout.
+  const deps = [join(worktree, 'node_modules'), join(repoPath, 'node_modules')].find((path) =>
+    existsSync(path),
   );
+  const local = join(dir, 'node_modules');
+  if (deps && !lstatSync(local, { throwIfNoEntry: false })) {
+    mkdirSync(local);
+    for (const name of readdirSync(deps)) {
+      if (name === '.cache' || name.startsWith('.vite')) continue;
+      symlinkSync(join(deps, name), join(local, name));
+    }
+  }
+  return dir;
+}
+
+/**
+ * Remove the gate's checkout and its registration. `rmSync` rather than
+ * `worktree remove`, which refuses a checkout that was never cut; the prune
+ * then drops the registration, and only registrations whose directory is gone.
+ */
+function dropGateCheckout(repoPath: string, root: string): void {
+  rmSync(root, { recursive: true, force: true });
+  runGit(repoPath, ['worktree', 'prune']);
 }
 
 /**
@@ -504,17 +597,10 @@ function gateAndMerge(
   session: SessionRow,
   target: string,
   sandbox: string,
+  checkoutDir: string,
   pullRequest?: PullRequestPlan,
 ): MergeOutcome {
   const worktree = session.worktree_path;
-  // Measure the session's work, but read which tools are declared from the main
-  // checkout the merge lock holds at the target branch: otherwise a session
-  // silences a debt stage by editing its own manifest (decision 29).
-  const capabilityContext: CapabilityContext = {
-    measurePath: worktree,
-    configPath: req.repoPath,
-    ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
-  };
   const stages: GateStageResult[] = [];
   const failed = (): MergeOutcome =>
     rejectOrBlock(db, { sessionId: session.id, passed: false, sandbox, stages });
@@ -534,8 +620,8 @@ function gateAndMerge(
   // (decision 80): the target here, so the rebase, the diffs and the
   // compare-and-swap all mean one commit; the branch once the rebase settled
   // it, so what the diffs and the scope audit named is what lands, whatever the
-  // live session commits or tags meanwhile. The command and debt stages still
-  // read the worktree's files, which that session can change while they run.
+  // live session commits or tags meanwhile. The stages read that sha's files
+  // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
@@ -579,6 +665,18 @@ function gateAndMerge(
     return failed();
   }
 
+  // Every stage and debt capability measures the pinned sha's files, never the
+  // worktree's, which the live session can change while they run (decision 81);
+  // which tools are declared is still read from the main checkout the merge
+  // lock holds at the target branch, or a session silences a debt stage by
+  // editing its own manifest (decision 29).
+  const checkout = cutGateCheckout(req.repoPath, worktree, checkoutDir, sha);
+  const capabilityContext: CapabilityContext = {
+    measurePath: checkout,
+    configPath: req.repoPath,
+    ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
+  };
+
   /** Runs one hard stage; false once it has recorded the failure. */
   const commandStage = (
     stage: string,
@@ -588,8 +686,8 @@ function gateAndMerge(
     try {
       // The session wrote what this runs (its own scripts, its own config), so
       // it runs confined: an env allowlist (decision 28) inside a sandbox whose
-      // writes are default-deny (decision 36). The stage writes in its own
-      // worktree; `repoPath` is passed to scope the toolchain cache, and stays
+      // writes are default-deny (decision 36). The stage writes in the gate's
+      // checkout; `repoPath` is passed to scope the toolchain cache, and stays
       // read-only, which is what keeps decision 29's trusted checkout trusted
       // while the session's own code is running.
       runGateChild(command.command, command.args, {
@@ -621,7 +719,7 @@ function gateAndMerge(
       stages.push({ stage, status: 'skipped', detail: 'not measured — no command available' });
       continue;
     }
-    if (!commandStage(stage, command, worktree)) return failed();
+    if (!commandStage(stage, command, checkout)) return failed();
   }
 
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
@@ -642,7 +740,7 @@ function gateAndMerge(
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
     for (const command of pkg.commands) {
-      if (!commandStage(`${command.stage} (${dir})`, command, join(worktree, pkg.dir))) {
+      if (!commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir))) {
         return failed();
       }
     }

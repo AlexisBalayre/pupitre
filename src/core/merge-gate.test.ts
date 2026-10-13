@@ -123,6 +123,11 @@ function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> = {}): 
   return worktree;
 }
 
+/** Where the gate cuts its detached checkout of the pinned sha (decision 81). */
+const GATE_CHECKOUT = new RegExp(
+  `^${realpathSync(tmpdir()).replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')}/pup-gate-checkout-[^/]+/checkout$`,
+);
+
 /** The reason the last transition into `blocked` recorded, as the gate wrote it. */
 function blockedReason(db: Database): string | undefined {
   const rows = listEvents(db, SESSION_ID).map(
@@ -517,6 +522,194 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+  });
+
+  // Every stage and debt capability reads a private detached checkout of the
+  // pinned sha, never the worktree the live session can edit while they run
+  // (decision 81).
+  describe('the gate checkout', () => {
+    /** The checkout this gate registered, read from git while the gate runs. */
+    const registeredCheckout = (): string | undefined =>
+      sh(repo, 'git', 'worktree', 'list', '--porcelain')
+        .split('\n')
+        .map((line) => line.replace(/^worktree /, ''))
+        .find((path) => GATE_CHECKOUT.test(path));
+    const expectDropped = (checkout: string | undefined) => {
+      expect(checkout).toMatch(GATE_CHECKOUT);
+      expect(existsSync(dirname(checkout as string))).toBe(false);
+      expect(registeredCheckout()).toBeUndefined();
+    };
+    /**
+     * A shell build stage, and a hook run in-process once the checkout is cut;
+     * answers the checkout the hook saw.
+     */
+    const adapterAfterCut = (
+      build: string,
+      hook: (repoPath: string) => void = () => {},
+    ): { adapter: Adapter; checkout: () => string | undefined } => {
+      let checkout: string | undefined;
+      return {
+        checkout: () => checkout,
+        adapter: {
+          ...passingAdapter,
+          gateCommands: (repoPath) => {
+            checkout = registeredCheckout();
+            hook(repoPath);
+            return [
+              { stage: 'build', command: 'sh', args: ['-c', build] },
+              ...passingAdapter.gateCommands(repoPath).filter((c) => c.stage !== 'build'),
+            ];
+          },
+        },
+      };
+    };
+
+    it('measures the pinned files when the worktree is edited after the pin', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+      const { adapter, checkout } = adapterAfterCut('grep -q "feature = 1" src/feature.ts', () =>
+        writeFileSync(join(worktree, 'src/feature.ts'), 'export const feature = 2;\n'),
+      );
+      let measured: string | undefined;
+
+      const outcome = merge(
+        debtAdapter({
+          ...adapter,
+          deadCode: ({ measurePath }) => {
+            measured = readFileSync(join(measurePath, 'src/feature.ts'), 'utf8');
+            return [];
+          },
+        }),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages).toContainEqual({ stage: 'build', status: 'pass' });
+      expect(measured).toBe('export const feature = 1;\n');
+      expectDropped(checkout());
+    });
+
+    it('drops the checkout after a pass', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { adapter, checkout } = adapterAfterCut('test -f src/feature.ts');
+
+      expect(merge(adapter).status).toBe('merged');
+
+      expectDropped(checkout());
+    });
+
+    it('drops the checkout after a failed stage', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { adapter, checkout } = adapterAfterCut('exit 1');
+
+      expect(merge(adapter).status).toBe('rejected');
+
+      expectDropped(checkout());
+    });
+
+    it('drops the checkout after a thrown gate', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const moved = sh(repo, 'git', 'commit-tree', '-p', 'main', '-m', 'moved', 'main^{tree}');
+      const { adapter, checkout } = adapterAfterCut('true', (repoPath) =>
+        sh(repoPath, 'git', 'update-ref', 'refs/heads/main', moved.trim()),
+      );
+
+      expect(() => merge(adapter)).toThrow(/moved from/);
+
+      expectDropped(checkout());
+    });
+
+    /** A `node_modules` with one package and a vite cache, ignored by git. */
+    const installDeps = (dir: string, marker: string): void => {
+      mkdirSync(join(dir, 'node_modules', '.vite'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules', 'marker'), marker);
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), 'node_modules\n');
+    };
+
+    // Writable where the stage writes: vite's temp files go beside the
+    // packages, and the caches start empty.
+    it("links the main checkout's packages into a node_modules of its own", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      installDeps(repo, 'main\n');
+      const { adapter, checkout } = adapterAfterCut(
+        'test ! -L node_modules && grep -q main node_modules/marker && ' +
+          'test ! -e node_modules/.vite && mkdir node_modules/.vite-temp',
+      );
+
+      expect(merge(adapter).status).toBe('merged');
+
+      // The links went with the checkout, not through it.
+      expect(readFileSync(join(repo, 'node_modules', 'marker'), 'utf8')).toBe('main\n');
+      expect(existsSync(join(repo, 'node_modules', '.vite-temp'))).toBe(false);
+      expectDropped(checkout());
+    });
+
+    it("prefers the worktree's own node_modules, as Node's walk up from it would", () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      installDeps(repo, 'main\n');
+      installDeps(worktree, 'session\n');
+      const { adapter } = adapterAfterCut('grep -q session node_modules/marker');
+
+      expect(merge(adapter).status).toBe('merged');
+    });
+
+    it('checks out every committed file past a planted core.sparseCheckout', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      sh(repo, 'git', 'config', 'core.sparseCheckout', 'true');
+      writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), '/src/app.ts\n');
+
+      expect(merge(adapterAfterCut('test -f src/feature.ts').adapter).status).toBe('merged');
+    });
+
+    it('refuses filter drivers armed after the check before the lock, running no smudge', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      // The target moves, so the gate rebases: the session arms the drivers
+      // as the rebase ends, after the check before the lock and before the cut.
+      commitIn(repo, 'src/other.ts', 'export const other = 1;\n');
+      const fired = join(repo, '.git', 'fired');
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        const output = real?.(file, args, opts as never);
+        if (file === 'git' && args.includes('rebase')) {
+          writeFileSync(join(repo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+          sh(repo, 'git', 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${fired}; cat'`);
+        }
+        return output;
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+      const gateCommands = vi.fn(passingAdapter.gateCommands);
+
+      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(ArmedGitDriverError);
+
+      expect(existsSync(fired)).toBe(false);
+      expect(gateCommands).not.toHaveBeenCalled();
+      expect(registeredCheckout()).toBeUndefined();
+    });
+
+    // A stage can leave a directory nobody can remove; the gate's own outcome
+    // still stands.
+    it('keeps the outcome when the checkout cannot be dropped', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { adapter, checkout } = adapterAfterCut('mkdir -p locked/inner && chmod 000 locked');
+      onTestFinished(() => {
+        const locked = join(checkout() as string, 'locked');
+        if (existsSync(locked)) sh(repo, 'chmod', '700', locked);
+      });
+
+      expect(merge(adapter).status).toBe('merged');
+
+      expect(existsSync(join(checkout() as string, 'locked'))).toBe(true);
     });
   });
 
@@ -1241,7 +1434,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('measures the worktree but reads tool config from the main checkout', () => {
+  it('measures the gate checkout but reads tool config from the main checkout', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -1257,7 +1450,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // Split on purpose: a session that edits its own manifest must not be able
     // to un-declare the tool that measures it (decision 29).
-    expect(seen).toEqual({ measurePath: worktree, configPath: repo });
+    expect(seen).toEqual({ measurePath: expect.stringMatching(GATE_CHECKOUT), configPath: repo });
   });
 
   // The trap this closes end to end: a compare the gate skipped must not write
@@ -1337,7 +1530,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.status).toBe('rejected');
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'typecheck (tools/review)',
-        detail: expect.stringContaining(realpathSync(join(worktree, 'tools/review'))),
+        detail: expect.stringMatching(/\/pup-gate-checkout-[^/]+\/checkout\/tools\/review/),
       });
     });
 
