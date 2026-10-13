@@ -39,6 +39,7 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
@@ -459,6 +460,27 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({ sha: pinned });
       // Never measured, so kept for the operator rather than deleted.
       expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).not.toBe(pinned);
+    });
+
+    // The ratchet and the decision draft can throw, and the draft waits on
+    // `claude -p`: the merge event must already exist by then, since main
+    // holds the sha and `pup status` already reads merged.
+    it('records the merge event before the decision draft, so a draft that throws loses nothing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      vi.mocked(runUtility).mockImplementationOnce(() => {
+        throw new Error('claude -p crashed');
+      });
+
+      expect(() => merge()).toThrow('claude -p crashed');
+
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({ sha: pinned });
+      expect(() =>
+        sh(repo, 'git', 'rev-parse', '--verify', '--quiet', `refs/heads/${BRANCH}`),
+      ).toThrow();
     });
 
     it('names the commits a branch gained after the pin and records them as leftBehind', () => {
