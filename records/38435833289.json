@@ -1,0 +1,78 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T17:07:34.389Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38435833289",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38435833289",
+  "actor": "AlexisBalayre",
+  "commit_sha": "21c5d44de54f99a3738e8383ae07b6a02f2f78ef",
+  "source": "pr",
+  "pr_number": 141,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "afff54890059eb9582ba6f15cebf53ce31fd46cb",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "465-467",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new test comment restates the source comment at `merge-gate.service.ts` L1079-1081 almost point for point (ratchet and draft can throw, `claude -p` wait, target holds the sha, `pup status` reads merged); the `it(...)` title already carries the behavior, so the comment adds little, and the rationale will have to be maintained in two places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1079-1081",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment says \"the target already holds the sha\", which is false in PR mode (`req.openPr`). There the sha is only pushed and the target has not moved, as the ratchet comment says at L1122-1123. The ordering rationale still holds in PR mode, because the status is already `merged` and the PR is open. \"the sha is already landed\" or \"already pushed or merged\" would be accurate in both modes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1102-1104",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The finally-block comment \"recorded even if the teardown threw, since the target already holds the pinned sha\" has the same PR-mode imprecision as finding 2. It is otherwise still accurate after the reorder, because the teardown and the event record remain together in the `try`/`finally`. Not introduced by this diff.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.7732705999999999,
+  "duration_ms": 79358,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 4112,
+    "cache_read": 163469,
+    "cache_creation": 28872,
+    "total": 196463
+  }
+}
