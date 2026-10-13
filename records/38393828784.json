@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-13T12:03:17.350Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38393828784",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38393828784",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2f6d7e95b90b58dc670a2b5271d48859de8863da",
+  "source": "pr",
+  "pr_number": 138,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "522a2042e56c5508a5591de11bc26783b1918b2b",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "329",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "348-353",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The dangling-link check uses path.resolve, which cancels `name/..` as text, but the kernel climbs `..` from wherever `name` really resolves. So a committed link that goes through a node_modules entry linked after the vet passes the vet and, when the stages run, resolves into <repo>/.worktrees/<sid>, the session's live worktree.",
+      "body": "**A dangling link is judged as text, so a `..` after a named segment can reach the session's worktree**\n\n```ts\n} catch {\n  // Dangling: judged lexically, from where the link would land.\n  const target = readlinkSync(at);\n  const lands = resolve(realpathSync(dirname(at)), target);\n  out = lands !== inside && !lands.startsWith(`${inside}/`);\n}\n```\n\nBefore this commit, every dangling link was refused (`real === undefined` threw \"resolves nowhere\"). Now a dangling link is kept when `path.resolve` puts its target inside the checkout. But `path.resolve` works on the text alone: it cancels `name/..` without looking at what `name` is. The kernel resolves `name` first, following any link, and climbs `..` from that real directory.\n\n**The vet runs too early to judge these links.** `refuseEscapingLinks` runs inside `cutGateCheckout` (L314). `linkEnvironment` runs after it (L781-783). For each entry it creates `<checkout>/node_modules/<entry> -> <repo>/node_modules/<entry>` (L393). Session worktrees live at `<repo>/.worktrees/<sid>` (`session-lifecycle.service.ts:191`).\n\n**Exploit, deterministic, no race:** the session commits `src/x.ts -> ../node_modules/.bin/../../.worktrees/<sid>/src/real.ts`.\n- **At vet time:** `<checkout>/node_modules` doesn't exist yet, so `realpathSync` throws ENOENT. The text check gives `<checkout>/.worktrees/<sid>/src/real.ts`, which is inside, so the link is kept.\n- **`linkEnvironment` runs:** it links `node_modules/.bin -> <repo>/node_modules/.bin`.\n- **At stage time:** the kernel resolves `.bin` to `<repo>/node_modules/.bin` and climbs `..` twice to `<repo>`. It lands in `<repo>/.worktrees/<sid>/src/real.ts`, a file the live session can rewrite while tsc or vitest reads it.\n\nThat is the reach decision 81 says this vet closes (\"a stage would read through it into the session's worktree\"). A second variant needs no environment link: a committed `b -> .` passes the vet because its real path equals the checkout. A target like `b/b/b/../../../<climb>/<abs worktree path>/new` then stays inside as text, while the kernel climbs out of the checkout.\n\n**Fix.** Judge a dangling target as text only when all its `..` come before the first named segment. `dirname(at)` is already a real path, so leading `..` give the same answer either way. Refuse a target that has a `..` after a named segment, or go back to refusing every dangling link. Add a test for the `.bin/../..` and `b -> .` chains; the new \"keeps a dangling committed link\" test only uses a leading `../`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2f6d7e95b90b58dc670a2b5271d48859de8863da/src/core/merge-gate.service.ts#L345-L353",
+      "suggestion": "    } catch {\n      // Dangling: judged from where it would land. A `..` after a named segment\n      // climbs from wherever that segment resolves when a stage runs (an\n      // environment entry linked after this vet, a committed `b -> .`), which no\n      // lexical reading knows, so only leading `..` are judged.\n      const target = readlinkSync(at);\n      const segments = target.split('/').filter((s) => s !== '' && s !== '.');\n      const firstName = segments.findIndex((s) => s !== '..');\n      const climbsPastName = firstName !== -1 && segments.slice(firstName).includes('..');\n      const lands = resolve(realpathSync(dirname(at)), target);\n      out = climbsPastName || (lands !== inside && !lands.startsWith(`${inside}/`));\n    }"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "353",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The dangling-link branch in `refuseEscapingLinks` re-inlines the \"inside the checkout\" test (`x !== inside && !x.startsWith(`${inside}/`)`). The same commit extracted that test into `escapesCheckout`, so the prefix rule now lives in two places and can drift.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "context",
+      "description": "Not spawned: the delta touches no spec, protocol or infra surface (only merge-gate.service.ts, its test, and decision 81)."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7932426000000004,
+  "duration_ms": 304966,
+  "num_turns": 16,
+  "tokens": {
+    "input": 16,
+    "output": 10128,
+    "cache_read": 308849,
+    "cache_creation": 41716,
+    "total": 360709
+  }
+}
