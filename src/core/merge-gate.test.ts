@@ -527,6 +527,96 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
+  // `--accept-debt` files its ledger entries after the stages; a merge refused
+  // after that must not leave them reading as merged from this session without
+  // saying so (decision 82).
+  describe('accepted debt and the refusals under the lock', () => {
+    const refusalOf = (fn: () => unknown): string => {
+      try {
+        fn();
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('expected a refusal');
+    };
+    const accept = { reason: 'deadline', reviewBy: 'before v2' };
+
+    it('refuses a target moved during the stages before filing any ledger entry', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+      const moved = sh(
+        repo,
+        'git',
+        'commit-tree',
+        '-p',
+        before,
+        '-m',
+        'moved under the lock',
+        `${before}^{tree}`,
+      ).trim();
+      const movingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          sh(repoPath, 'git', 'update-ref', 'refs/heads/main', moved);
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const refusal = refusalOf(() => merge(movingAdapter, accept));
+
+      expect(refusal).toContain(`main moved from ${before} to ${moved} while the gate ran`);
+      expect(refusal).not.toContain('ledger');
+      expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('says the ledger entries were kept when a refusal that must stay last fires', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+      const armingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          writeFileSync(join(repoPath, '.git', 'info', 'attributes'), '* filter=pwn\n');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      let thrown: unknown;
+      try {
+        merge(armingAdapter, accept);
+      } catch (error) {
+        thrown = error;
+      }
+
+      // Extended in place, so the refusal keeps its type.
+      expect(thrown).toBeInstanceOf(ArmedGitDriverError);
+      expect((thrown as Error).message).toContain(
+        'The accepted-debt ledger entry was kept for the retry',
+      );
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('says nothing about the ledger on a late refusal when no debt was accepted', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      sh(repo, 'git', 'branch', 'elsewhere');
+      const movingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          sh(repoPath, 'git', 'checkout', '-q', 'elsewhere');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const refusal = refusalOf(() => merge(movingAdapter, accept));
+
+      expect(refusal).toMatch(/moved from main to elsewhere/);
+      expect(refusal).not.toContain('ledger');
+    });
+  });
+
   // Every stage and debt capability reads a private detached checkout of the
   // pinned sha, never the worktree the live session can edit while they run
   // (decision 81).
@@ -1975,14 +2065,22 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   /**
    * Fake gh: answers the `pr list` probe with `openPrs`, records every argv in
    * `ghLog`, and echoes `pr create`'s argv as the PR URL so the created-PR
-   * tests can assert on the wiring.
+   * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
+   * or else as whatever the branch holds in the repo its `--repo` names, read
+   * from outside the repo so only the operator's global rewrite applies.
    */
-  const fakeGh = (openPrs: unknown[]): string =>
+  const fakeGh = (openPrs: unknown[], head?: string): string =>
     [
       '#!/bin/sh',
       `printf '%s\\n' "$*" >> ${ghLog}`,
       '[ "$1" = "--version" ] && exit 0',
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
+      'if [ "$2" = "view" ]; then',
+      head === undefined
+        ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        : `  head=${head}`,
+      `  printf '{"headRefOid":"%s"}\\n' "$head"; exit 0`,
+      'fi',
       'cat >/dev/null',
       'echo "$@"',
     ].join('\n');
@@ -2210,6 +2308,59 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // The approver can differ between the conductor's attempt and the operator's
   // retry (decision 75); the debt is the same debt, and the first approver stands.
+  // The body vouches for the commit the gate pushed; a head anything else put
+  // there is refused loudly, naming both (decision 82).
+  it('with openPr refuses a PR whose head is not the pushed sha, naming both', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
+    addOrigin();
+    const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+    const elsewhere = 'f'.repeat(40);
+
+    const refusal = (() => {
+      try {
+        withFakeGh(fakeGh([], elsewhere), () =>
+          runMergeGate(db, {
+            repoPath: repo,
+            sessionId: SESSION_ID,
+            adapters: [passingAdapter],
+            acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' },
+            openPr: true,
+          }),
+        );
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })();
+
+    expect(refusal).toContain(`has its head at ${elsewhere}, not at ${pinned}`);
+    expect(refusal).toContain('The accepted-debt ledger entry was kept for the retry');
+    expect(ghCalls()).toContainEqual(expect.stringContaining('pr view'));
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+  });
+
+  it('with openPr passes a PR whose head reads back as the pushed sha', () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+    const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+
+    const outcome = withFakeGh(fakeGh([openPrOnMain], pinned), () =>
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        openPr: true,
+      }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(ghCalls()).toContainEqual(
+      `pr view ${openPrOnMain.url} --repo github.com/owner/repo --json headRefOid`,
+    );
+  });
+
   it('with openPr retries under another approver without filing the debt twice', () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));

@@ -272,6 +272,30 @@ describe('armedGitDrivers', () => {
     expect(armedGitDrivers(repo)).toEqual(['merge.pwn.driver']);
   });
 
+  // An operator's global `git lfs install` arms the lfs smudge filter for every
+  // checkout, and git-lfs runs the transfer agent these keys name (decision 82).
+  it.each([
+    ['lfs.customtransfer.pwn.path', '/usr/bin/true'],
+    ['lfs.customtransfer.pwn.args', '--pwn'],
+    ['lfs.standalonetransferagent', 'pwn'],
+  ])('names %s, which git-lfs runs from the shared config', (key, value) => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', key, value);
+
+    expect(armedGitDrivers(repo)).toEqual([key]);
+    expect(() => assertNoArmedGitDrivers(repo)).toThrow(
+      new RegExp(`a filter or merge driver is armed.*${key.replaceAll('.', '\\.')}`),
+    );
+  });
+
+  it('ignores lfs keys that name no program', () => {
+    const repo = repoWithCommit();
+    sh(repo, 'git', 'config', 'lfs.customtransfer.pwn.concurrent', 'false');
+    sh(repo, 'git', 'config', 'lfs.fetchexclude', '*');
+
+    expect(armedGitDrivers(repo)).toEqual([]);
+  });
+
   // The file is inert until a driver is named, but nothing else writes it, and
   // a `-diff` pattern there already forges the diff the coverage stage reads.
   it('names info/attributes on its own, quoting the pattern that armed it', () => {

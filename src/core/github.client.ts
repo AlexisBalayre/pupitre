@@ -164,3 +164,32 @@ export function createPullRequest(repoPath: string, pr: NewPullRequest): string 
     },
   ).trim();
 }
+
+/**
+ * Refuse unless the PR at `url` has `sha` as its head, read back from GitHub
+ * after the PR was created or adopted. The body pupitre wrote vouches for the
+ * commit the gate measured and pushed and for nothing else, and a session with
+ * the operator's ambient gh login can push its branch between pup's push and
+ * the PR call. This only answers for the moment it reads: GitHub can still
+ * move the head later, and the body says which sha it describes (decision 82).
+ */
+export function assertPullRequestHead(
+  repoPath: string,
+  url: string,
+  repo: string,
+  sha: string,
+): void {
+  const parsed = ghJson(repoPath, ['pr', 'view', url, '--repo', repo, '--json', 'headRefOid']);
+  const head =
+    parsed !== null && typeof parsed === 'object'
+      ? (parsed as { headRefOid?: unknown }).headRefOid
+      : undefined;
+  if (head !== sha) {
+    throw new Error(
+      `PR ${url} has its head at ${typeof head === 'string' ? head : 'an unreadable commit'}, ` +
+        `not at ${sha}, the commit the gate measured and pushed; its description vouches for ` +
+        `${sha} only. Nothing was recorded as merged. Find out who pushed the branch, close or ` +
+        'fix the PR, then re-run.',
+    );
+  }
+}

@@ -287,8 +287,15 @@ export function gitDiffBinaryRecount(
  * Deliberately not the whole of either namespace: `merge.conflictstyle`,
  * `merge.ff` and `filter.<name>.required` execute nothing, and refusing on
  * them would refuse a repo whose operator set an ordinary preference.
+ *
+ * And the `lfs` keys git-lfs reads from the same shared config to pick a
+ * program it runs: an operator's global `git lfs install` arms the lfs smudge
+ * filter for every checkout, rebase and read-tree, and that filter runs
+ * whatever `lfs.customtransfer.<name>.path` names, with `.args`, once
+ * `lfs.standalonetransferagent` or the remote selects it (decision 82).
  */
-const ARMED_DRIVER_KEY = /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver)$/;
+const ARMED_DRIVER_KEY =
+  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.customtransfer\..+\.(?:path|args)|lfs\.standalonetransferagent)$/;
 
 /**
  * The config scopes a session can reach. Both files sit inside the shared
