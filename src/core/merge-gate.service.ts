@@ -346,10 +346,16 @@ function refuseEscapingLinks(checkout: string, sha: string): void {
     try {
       out = escapesCheckout(inside, at);
     } catch {
-      // Dangling: judged lexically, from where the link would land.
+      // Dangling: judged from where it would land. A `..` after a named segment
+      // climbs from wherever that segment resolves when a stage runs (an
+      // environment entry linked after this vet, a committed `b -> .`), which no
+      // lexical reading knows, so only leading `..` are judged.
       const target = readlinkSync(at);
+      const segments = target.split('/').filter((s) => s !== '' && s !== '.');
+      const firstName = segments.findIndex((s) => s !== '..');
+      const climbsPastName = firstName !== -1 && segments.slice(firstName).includes('..');
       const lands = resolve(realpathSync(dirname(at)), target);
-      out = lands !== inside && !lands.startsWith(`${inside}/`);
+      out = climbsPastName || (lands !== inside && !lands.startsWith(`${inside}/`));
     }
     if (out) {
       throw new Error(

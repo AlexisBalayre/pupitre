@@ -777,6 +777,27 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
+    // A `..` after a named segment climbs from wherever that segment resolves at
+    // stage time: an environment entry linked after the vet, or a committed
+    // `b -> .`; no lexical reading knows, so such a target is refused.
+    it.each([
+      [
+        'through an environment entry linked after the vet',
+        '../node_modules/.bin/../../.worktrees/s1/src/real.ts',
+      ],
+      ['through a committed link to the checkout itself', 'b/b/../../../../../../../tmp/real.ts'],
+    ])(
+      'refuses a dangling committed link whose .. climbs past a named segment, %s',
+      (_how, target) => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        if (target.startsWith('b/')) commitLink(worktree, 'b', '.');
+        commitLink(worktree, 'src/x.ts', target);
+
+        expect(() => merge()).toThrow(/src\/x\.ts is a committed link that reaches outside/);
+      },
+    );
+
     it('refuses a dangling committed link that points outside the checkout', () => {
       const worktree = seedSession(db, repo);
       commitLink(worktree, 'src/dangling', '/nowhere/at/all');
