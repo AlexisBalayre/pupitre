@@ -474,9 +474,13 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
     case 'merge':
       return {
         type: 'merge',
+        sha: text('sha'),
         target: text('target'),
         files: asStringArray(fields.files),
         prUrl: text('prUrl'),
+        leftBehind: Number.isSafeInteger(fields.leftBehind)
+          ? (fields.leftBehind as number)
+          : undefined,
       };
     case 'steer':
       return { type: 'steer', kind: text('kind'), by: text('by') };

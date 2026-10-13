@@ -492,6 +492,22 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
   }
 }
 
+/**
+ * How many commits `branchRef` gained after the gate pinned `sha`: none when it
+ * still names the pin, and none when it is gone or turned into a symref, which
+ * hold no commit of the session's own.
+ */
+function commitsPastPin(repoPath: string, branchRef: string, sha: string): number {
+  let now: string;
+  try {
+    now = resolveCommit(repoPath, branchRef);
+  } catch {
+    return 0;
+  }
+  if (now === sha) return 0;
+  return Number(runGit(repoPath, ['rev-list', '--count', `${sha}..${now}`]).trim());
+}
+
 /** One shell word, for a command the operator is asked to paste. */
 function shellWord(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
@@ -1060,16 +1076,24 @@ function gateAndMerge(
     }
   }
   transitionSession(db, session.id, 'merged', { report });
-  // The pinned sha rides along untyped: the payload type and its decoder are
-  // read elsewhere and do not name it yet.
-  const mergedEvent = {
+  // The pinned sha is what landed; a commit the session added after it was
+  // never measured, so it stays on the branch (see the delete below) and the
+  // operator is told how many, rather than finding them later.
+  const leftBehind = commitsPastPin(req.repoPath, branchRef, sha);
+  if (leftBehind > 0) {
+    console.error(
+      `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
+        `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
+    );
+  }
+  appendEvent(db, session.id, 'merge', {
     branch: session.branch,
     sha,
     target,
     files: changedPaths,
     ...(prUrl !== undefined ? { prUrl } : {}),
-  };
-  appendEvent(db, session.id, 'merge', mergedEvent);
+    ...(leftBehind > 0 ? { leftBehind } : {}),
+  });
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
     // the next `pup audit` after the PR lands ratchets it (decision 26).

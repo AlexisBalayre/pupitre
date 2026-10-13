@@ -145,6 +145,21 @@ describe('renderSessionDossierHtml', () => {
     });
   });
 
+  it("prints the merge's pinned sha on its merge line", () => {
+    const session = seedSession(db, 's1', { goal: 'goal' });
+    appendEvent(db, 's1', 'merge', {
+      branch: 'pup/s1',
+      sha: 'abc123',
+      target: 'main',
+      files: ['src/a.ts'],
+    });
+
+    const data = embeddedData(renderSessionDossierHtml(db, REPO, session));
+
+    expect(data.merge.sha).toBe('abc123');
+    expect(data.timeline[0].title).toBe('merged into main at abc123');
+  });
+
   it('drops a PR URL whose scheme is not http(s) before it can reach an anchor', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
     appendEvent(db, 's1', 'merge', {

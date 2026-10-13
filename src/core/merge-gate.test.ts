@@ -461,6 +461,51 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).not.toBe(pinned);
     });
 
+    it('names the commits a branch gained after the pin and records them as leftBehind', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      const lateAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+          commitIn(worktree, 'src/later.ts', 'export const later = 1;\n');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      onTestFinished(() => warn.mockRestore());
+
+      expect(merge(lateAdapter).status).toBe('merged');
+
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
+      const lines = warn.mock.calls.map((call) => String(call[0]));
+      expect(lines.filter((line) => line.includes('left behind'))).toEqual([
+        `${BRANCH} moved after the gate pinned ${pinned}: 2 later commits were left behind on it, not merged.`,
+      ]);
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({
+        sha: pinned,
+        leftBehind: 2,
+      });
+    });
+
+    it('prints nothing extra and records no leftBehind when the branch did not move', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      onTestFinished(() => warn.mockRestore());
+
+      expect(merge().status).toBe('merged');
+
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('left behind'))).toBe(false);
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const payload = JSON.parse(mergeEvent?.payload ?? '{}');
+      expect(payload.sha).toBe(pinned);
+      expect(payload).not.toHaveProperty('leftBehind');
+    });
+
     // Refused before the checkout is touched: the target is re-read right
     // before read-tree, so a moved target never leaves the main checkout on the
     // new tree with a restore line for a live session to arm against.
