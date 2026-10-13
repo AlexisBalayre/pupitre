@@ -296,7 +296,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
  * see. The checkout runs a smudge filter on every file it writes, so the drivers
  * are checked again right before it, as they are before the fast-forward.
  */
-function cutGateCheckout(repoPath: string, worktree: string, dir: string, sha: string): string {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
   runGit(dir, [
@@ -309,18 +309,18 @@ function cutGateCheckout(repoPath: string, worktree: string, dir: string, sha: s
     '-u',
     sha,
   ]);
-  // The dependencies a stage in the worktree resolved by Node's walk up from
-  // it: the worktree's own `node_modules`, else the main checkout's. This
-  // checkout sits outside the repo, so it walks to neither. A real directory
-  // of links, not one link: vite writes `.vite-temp` beside the packages, and
-  // through a single link that write lands where the sandbox denies it. The
-  // caches are left out so they are written here. Never staged: nothing
-  // commits here, and it goes with the checkout.
-  const deps = [join(worktree, 'node_modules'), join(repoPath, 'node_modules')].find((path) =>
-    existsSync(path),
-  );
+  // The main checkout's packages, never the worktree's own: the live session
+  // can rewrite its `node_modules/.bin/vitest` while the stages run and fake a
+  // pass. So a branch that changes its dependencies fails its stages until
+  // the operator installs them in the main checkout. This checkout sits
+  // outside the repo, so Node's walk up never reaches them; it gets a real
+  // directory of links, not one link: vite writes `.vite-temp` beside the
+  // packages, and through a single link that write lands where the sandbox
+  // denies it. The caches are left out so they are written here. Never
+  // staged: nothing commits here, and it goes with the checkout.
+  const deps = join(repoPath, 'node_modules');
   const local = join(dir, 'node_modules');
-  if (deps && !lstatSync(local, { throwIfNoEntry: false })) {
+  if (existsSync(deps) && !lstatSync(local, { throwIfNoEntry: false })) {
     mkdirSync(local);
     for (const name of readdirSync(deps)) {
       if (name === '.cache' || name.startsWith('.vite')) continue;
@@ -670,7 +670,7 @@ function gateAndMerge(
   // which tools are declared is still read from the main checkout the merge
   // lock holds at the target branch, or a session silences a debt stage by
   // editing its own manifest (decision 29).
-  const checkout = cutGateCheckout(req.repoPath, worktree, checkoutDir, sha);
+  const checkout = cutGateCheckout(req.repoPath, checkoutDir, sha);
   const capabilityContext: CapabilityContext = {
     measurePath: checkout,
     configPath: req.repoPath,

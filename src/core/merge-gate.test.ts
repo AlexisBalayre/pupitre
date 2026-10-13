@@ -649,12 +649,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expectDropped(checkout());
     });
 
-    it("prefers the worktree's own node_modules, as Node's walk up from it would", () => {
+    // The session can rewrite its own `.bin` while the stages run.
+    it("links the main checkout's packages even when the worktree has its own", () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       installDeps(repo, 'main\n');
       installDeps(worktree, 'session\n');
-      const { adapter } = adapterAfterCut('grep -q session node_modules/marker');
+      const { adapter } = adapterAfterCut('grep -q main node_modules/marker');
 
       expect(merge(adapter).status).toBe('merged');
     });

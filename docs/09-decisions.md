@@ -4136,22 +4136,26 @@ changes back into those docs is pending.
     runs a smudge filter on every file it writes, so `assertNoArmedGitDrivers` runs on the main
     checkout right before it, a third time, since the auto-rebase is a window the live session
     controls. A submodule is not checked out, as the fast-forward never recursed into one.
-    *Dependencies.* A stage in the worktree resolved `node_modules` by Node's walk up from it:
-    the worktree's own (the pre-commit hook installs one), else the main checkout's. The gate's
-    checkout sits outside the repo and walks to neither, so it gets a real `node_modules`
-    holding a link to every entry of the first of those two that exists. Not one link to the
-    whole directory, which was the first shape and failed this repo's own test stage in the
-    sandbox: vite writes `.vite-temp` beside the packages, the sandbox matches resolved paths,
-    and through the link the write landed on a checkout it keeps read-only. `.cache` and the
-    `.vite*` entries are left out, so the caches start empty and are written in the checkout.
-    Nothing commits there, so nothing is staged, and it goes with the checkout. Verified by
-    running this repo's build, test and lint through `runGateChild` on such a checkout of
-    `main`: all three pass, and no worktree entry is left.
+    *Dependencies.* The gate's checkout sits outside the repo, so Node's walk up from it reaches
+    no `node_modules`. It gets a real `node_modules` holding a link to every entry of the main
+    checkout's, and never the session worktree's own, though a stage in the worktree used to
+    resolve that one first: the session can write its worktree's `node_modules` (the pre-commit
+    hook installs a real one there, `.bin` and `.pnpm` included), so a live session could
+    rewrite `.bin/vitest` or `.bin/tsc` while the stages run and fake a pass, which would defeat
+    this decision (operator must-fix on review). The consequence, accepted: a branch that changes
+    its dependencies fails its stages until the operator installs them in the main checkout.
+    Not one link to the whole directory, which was the first shape and failed this repo's own
+    test stage in the sandbox: vite writes `.vite-temp` beside the packages, the sandbox matches
+    resolved paths, and through the link the write landed on a checkout it keeps read-only.
+    `.cache` and the `.vite*` entries are left out, so the caches start empty and are written in
+    the checkout. Nothing commits there, so nothing is staged, and it goes with the checkout.
+    Verified by running this repo's build, test and lint through `runGateChild` on such a
+    checkout of `main`: all three pass, and no worktree entry is left.
     Tests drive `runMergeGate`: the worktree edited from an adapter's in-process `gateCommands`
     after the cut leaves the build stage and the dead-code capability reading the pinned file;
     the checkout and its registration are gone after a pass, a failed stage and a thrown gate;
-    the packages are linked into a `node_modules` of the checkout's own, with no cache, and the
-    worktree's own `node_modules` wins over the main checkout's;
+    the main checkout's packages are linked into a `node_modules` of the checkout's own, with no
+    cache, even when the worktree has a `node_modules` of its own;
     a planted `core.sparseCheckout` still checks out every committed file; drivers armed as the
     auto-rebase ends are refused before any stage, with no smudge run; a checkout a stage made
     unremovable leaves the outcome standing. Two existing tests change because they encoded the
