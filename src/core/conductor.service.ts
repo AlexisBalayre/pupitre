@@ -78,7 +78,8 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): string
     throw new Error(`Main worktree at ${repoPath} is not on a branch; no merge target to index.`);
   }
   if (existsSync(join(checkoutDir, '.git'))) {
-    runGit(checkoutDir, ['checkout', '--detach', target]);
+    // `refs/heads/`: a bare name resolves a same-named tag first (decision 80).
+    runGit(checkoutDir, ['checkout', '--detach', `refs/heads/${target}`]);
   } else {
     // An operator who clears `~/.pupitre` leaves the registration behind, and
     // `worktree add` then refuses the path forever ("missing but already
@@ -87,7 +88,7 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): string
     // heals that and touches nothing that still exists.
     runGit(repoPath, ['worktree', 'prune']);
     mkdirSync(dirname(checkoutDir), { recursive: true });
-    runGit(repoPath, ['worktree', 'add', '--detach', checkoutDir, target]);
+    runGit(repoPath, ['worktree', 'add', '--detach', checkoutDir, `refs/heads/${target}`]);
   }
   return checkoutDir;
 }

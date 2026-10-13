@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
 import type { CapabilityContext } from '../adapters/types/adapter.types.js';
 import {
   killSession as killTmux,
@@ -12,6 +12,7 @@ import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
+  armedGitDrivers,
   assertNoArmedGitDrivers,
   currentBranch,
   gitDiffAddedLines,
@@ -179,8 +180,10 @@ function formatGateReport(report: GateReport): string {
  * hard stages — build, tests, lint, a touched nested package's own test and
  * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
- * decision 21). Pass: ff-only merge, full cleanup (decision 16), and the debt
- * baseline ratchets to the merged state. Hard fail: re-steer with the report, cap
+ * decision 21). Pass: a plumbing fast-forward of the commit the diffs and the
+ * scope audit named (decision 80; build, test, lint, the nested-package stages
+ * and the debt capabilities read the live worktree), full cleanup (decision
+ * 16), and the debt baseline ratchets to what those capabilities measured. Hard fail: re-steer with the report, cap
  * at two rejections then park as blocked (decisions 7, 15). Any soft flag without
  * --accept-debt refuses the merge but leaves the session reviewable (decision 17);
  * with it, each flag writes a ledger entry. The whole run holds the per-repo
@@ -211,23 +214,17 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   // Before the auto-rebase, which runs a smudge filter on every file it checks
   // out and a merge driver on every conflict, with the operator's environment
   // and ahead of the sandbox that confines the stages. Both paths, because the
-  // rebase runs in the worktree and the ff-only merge in the main checkout,
-  // and a worktree-scoped config is only visible from its own worktree
-  // (decision 50).
+  // rebase runs in the worktree and the fast-forward's checkout in the main
+  // one, and a worktree-scoped config is only visible from its own worktree
+  // (decision 50). The main checkout is asked again under the lock, since the
+  // stages run while the session is alive (decision 80).
   assertNoArmedGitDrivers(req.repoPath);
   assertNoArmedGitDrivers(session.worktree_path);
   const target = currentBranch(req.repoPath);
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
   }
-  // git splits a `-c` at the first `=`, so the mergeOptions blank below would
-  // land on another key; and a session can rename the checked-out branch.
-  if (target.includes('=')) {
-    throw new Error(
-      `Target branch ${target} has an '=' in its name, which no git -c can address; rename it ` +
-        'from the trusted checkout before merging.',
-    );
-  }
+  assertTargetName(req.repoPath, target);
   let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
     assertGhAvailable();
@@ -248,6 +245,194 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   return withMergeLock(req.repoPath, () =>
     gateAndMerge(db, req, session, target, sandbox, pullRequest),
   );
+}
+
+/**
+ * Refuse a target name git would not create as a branch. A session can point
+ * the main checkout's HEAD at any `refs/heads/` name by writing the file, and a
+ * leading `-` reads as an option wherever the name is argv, and a control or
+ * bidi character would reach the operator's terminal. `check-ref-format
+ * --branch` also expands `@{-N}`, so its answer must be the name it was asked
+ * about. The `=` refusal is decision 79's, from when the merge keyed a `-c` on
+ * the name; it stays because a refusal set only grows (decision 80).
+ */
+function assertTargetName(repoPath: string, target: string): void {
+  const refuse = (why: string): never => {
+    throw new Error(
+      `Target branch ${sanitizeReason(target)} ${why}; rename it from the trusted checkout ` +
+        'before merging.',
+    );
+  };
+  if (target.startsWith('-')) refuse("starts with '-', which git would read as an option");
+  if (target.includes('=')) refuse("has an '=' in its name, which no git -c can address");
+  // check-ref-format lets C1 controls and bidi overrides through, and the name
+  // is printed in every refusal and report line below.
+  if (/[\p{Cc}\p{Cf}]/u.test(target)) refuse('has a control or format character in its name');
+  const checked = (() => {
+    try {
+      return runGit(repoPath, ['check-ref-format', '--branch', target], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      return undefined;
+    }
+  })();
+  if (checked !== target) {
+    refuse('is not a name git accepts for a branch (check-ref-format --branch)');
+  }
+}
+
+/**
+ * The commit `ref` names, as a full sha. Callers pass a qualified ref, never a
+ * bare name: a lightweight tag named like a branch wins a bare lookup. A
+ * symbolic ref is refused: its sha is another branch's, so a gate that pinned
+ * it would measure an empty diff and then move or delete that branch through it.
+ */
+function resolveCommit(repoPath: string, ref: string): string {
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  const symbolic = (() => {
+    try {
+      return runGit(repoPath, ['symbolic-ref', '-q', ref], piped).trim();
+    } catch {
+      return undefined;
+    }
+  })();
+  if (symbolic !== undefined) {
+    throw new Error(
+      `${sanitizeReason(ref)} is a symbolic ref to ${sanitizeReason(symbolic)}, not a branch of ` +
+        'its own; nothing was merged. Treat a session that wrote it as compromised.',
+    );
+  }
+  return runGit(repoPath, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], piped).trim();
+}
+
+/** One shell word, for a command the operator is asked to paste. */
+function shellWord(word: string): string {
+  return `'${word.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * Fast-forward `target` from `targetSha` to `sha` with plumbing (decision 80);
+ * the caller has checked `sha` descends from `targetSha` right after the pin.
+ * The porcelain merge reads `branch.<HEAD>.mergeOptions` for whatever HEAD
+ * names when it runs, which a live session can flip between any check and the
+ * spawn; nothing here reads per-branch config. `read-tree -m -u` moves the main
+ * checkout's index and files from one tree to the other, refusing to overwrite
+ * a local change, and `update-ref` with the old value is a compare-and-swap:
+ * it fails if anything moved the target since `targetSha` was read, which is
+ * also the race the HEAD re-read before this leaves open. `--no-deref`, so a
+ * target turned into a symref after the pin is rewritten, not followed.
+ */
+function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
+  const shown = sanitizeReason(target);
+  // Before the checkout is touched, not only at the compare-and-swap after it
+  // (decision 80). A deleted target reads as moved to nowhere, not as a stack;
+  // a symref keeps its own refusal, which names the compromise.
+  let now: string;
+  try {
+    now = resolveCommit(repoPath, `refs/heads/${target}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
+    now = 'nowhere';
+  }
+  if (now !== targetSha) {
+    throw new Error(
+      `${shown} moved from ${targetSha} to ${now} while the gate ran; nothing was checked out ` +
+        'and nothing was recorded as merged.',
+    );
+  }
+  // `--work-tree` because `core.worktree` sits in the shared config and would
+  // aim the checkout's writes wherever a session chose; `submodule.recurse` is
+  // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again; and
+  // `--no-sparse-checkout` because a planted `core.sparseCheckout` would have
+  // the checkout delete trusted files the pattern leaves out.
+  const checkout = (args: string[]): string =>
+    runGit(repoPath, ['--work-tree', repoPath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    // A stale stat (an editor's rewrite, a `touch`) would otherwise read as a
+    // local change and refuse the checkout, as the porcelain merge never did.
+    checkout(['update-index', '-q', '--ignore-submodules', '--refresh']);
+    checkout([
+      'read-tree',
+      '--no-recurse-submodules',
+      '--no-sparse-checkout',
+      '-m',
+      '-u',
+      targetSha,
+      sha,
+    ]);
+  } catch (error) {
+    throw new Error(
+      `Fast-forward of ${shown} to ${sha} refused by the checkout; the ref was not moved and ` +
+        `nothing was recorded as merged.\n${commandFailureDetail(error)}`,
+    );
+  }
+  try {
+    checkout([
+      'update-ref',
+      '--no-deref',
+      '-m',
+      `pup merge: fast-forward to ${sha}`,
+      `refs/heads/${target}`,
+      sha,
+      targetSha,
+    ]);
+  } catch (error) {
+    // The checkout holds the new tree and the ref does not. The inverse two-way
+    // read-tree puts it back here, under the lock, rather than printed for
+    // later — but the forward checkout was a window the session controlled,
+    // so the drivers are checked again first: a smudge filter armed meanwhile
+    // would run on every file the restore rewrites (decision 50).
+    const inverse = [
+      'read-tree',
+      '--no-recurse-submodules',
+      '--no-sparse-checkout',
+      '-m',
+      '-u',
+      sha,
+      targetSha,
+    ];
+    // The driver read can itself fail on a config a session mangled; that must
+    // not replace the report of what happened to the checkout.
+    let armed: string[] = [];
+    let unchecked: string | undefined;
+    try {
+      armed = armedGitDrivers(repoPath);
+    } catch (failed) {
+      unchecked = sanitizeReason(failureSummary(failed));
+    }
+    let restored = false;
+    if (armed.length === 0 && unchecked === undefined) {
+      try {
+        checkout(inverse);
+        restored = true;
+      } catch {
+        // reported below, with the line to run by hand
+      }
+    }
+    const git =
+      `git -C ${shellWord(repoPath)} --work-tree ${shellWord(repoPath)} ` +
+      '-c core.hooksPath=/dev/null -c core.fsmonitor= -c submodule.recurse=false';
+    // The pasted line runs later, while sessions are alive, and a smudge filter
+    // has no -c disarm: the order to clear drivers first is the line's only
+    // protection, so it is printed whether or not one was armed just now.
+    const why =
+      armed.length > 0
+        ? ` because ${armed.join(', ')} is armed`
+        : unchecked !== undefined
+          ? ` because the driver check failed: ${unchecked}`
+          : '';
+    const checkoutState = restored
+      ? `The main checkout was put back to ${targetSha}'s files.\n`
+      : `The main checkout still holds ${sha}'s files and was not put back${why}. Clear any ` +
+        'filter.* config and info/attributes first and treat a session that wrote them as ' +
+        `compromised (decision 50), then run:\n  ${git} ${inverse.join(' ')}\n`;
+    throw new Error(
+      `Fast-forward of ${shown} to ${sha} failed, and nothing was recorded as merged: the ` +
+        `compare-and-swap refuses if ${shown} moved from ${targetSha} under the lock, and ` +
+        `the ref was left where it is.\n${checkoutState}${commandFailureDetail(error)}`,
+    );
+  }
 }
 
 const PUSH_TARGET_HELP =
@@ -345,11 +530,19 @@ function gateAndMerge(
   }
   stages.push({ stage: 'worktree-clean', status: 'pass' });
 
-  if (isAncestor(req.repoPath, target, session.branch)) {
+  // Both ends pinned under the lock, and every later git call names a sha
+  // (decision 80): the target here, so the rebase, the diffs and the
+  // compare-and-swap all mean one commit; the branch once the rebase settled
+  // it, so what the diffs and the scope audit named is what lands, whatever the
+  // live session commits or tags meanwhile. The command and debt stages still
+  // read the worktree's files, which that session can change while they run.
+  const branchRef = `refs/heads/${session.branch}`;
+  const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
+  if (isAncestor(req.repoPath, targetSha, branchRef)) {
     stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
   } else {
     try {
-      runGit(worktree, ['rebase', target]);
+      runGit(worktree, ['rebase', targetSha]);
       stages.push({ stage: 'fresh-base', status: 'pass', detail: `auto-rebased onto ${target}` });
     } catch (error) {
       try {
@@ -361,11 +554,29 @@ function gateAndMerge(
         stage: 'fresh-base',
         status: 'fail',
         detail:
-          `Auto-rebase onto ${target} hit conflicts. Run \`git rebase ${target}\`, ` +
+          `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
+          `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
           `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
       });
       return failed();
     }
+  }
+  const sha = resolveCommit(req.repoPath, branchRef);
+  // The rebase moves whatever the worktree has checked out, so a session that
+  // detached it or switched branch leaves the pinned branch behind the target:
+  // no fast-forward, and the diffs would measure against the wrong base.
+  if (!isAncestor(req.repoPath, targetSha, sha)) {
+    // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
+    stages.pop();
+    stages.push({
+      stage: 'fresh-base',
+      status: 'fail',
+      detail:
+        `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
+        `after the auto-rebase. Check out ${session.branch} in this worktree and rebase it onto ` +
+        `refs/heads/${sanitizeReason(target)}.`,
+    });
+    return failed();
   }
 
   /** Runs one hard stage; false once it has recorded the failure. */
@@ -413,7 +624,7 @@ function gateAndMerge(
     if (!commandStage(stage, command, worktree)) return failed();
   }
 
-  const changedPaths = gitDiffPaths(req.repoPath, target, session.branch);
+  const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
   const flaggedDebt: { description: string; files: string[] }[] = [];
   const acceptHint =
     'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
@@ -496,7 +707,7 @@ function gateAndMerge(
     ? (JSON.parse(project.baseline) as ProjectBaseline)
     : undefined;
 
-  const changed = countChangedLines(req.repoPath, target, session.branch);
+  const changed = countChangedLines(req.repoPath, targetSha, sha);
   const sizeFindings: string[] = [];
   if (changed.lines > DIFF_SIZE_FLAG_LINES) {
     flaggedDebt.push({
@@ -555,7 +766,7 @@ function gateAndMerge(
         ? {
             patch: patchCoverage(
               measurement.coverage,
-              gitDiffAddedLines(req.repoPath, target, session.branch),
+              gitDiffAddedLines(req.repoPath, targetSha, sha),
             ),
           }
         : {}),
@@ -605,7 +816,7 @@ function gateAndMerge(
     'log',
     '--reverse',
     '--format=%s',
-    `${target}..${session.branch}`,
+    `${targetSha}..${sha}`,
   ])
     .trim()
     .split('\n')
@@ -618,7 +829,7 @@ function gateAndMerge(
       title: prTitle(spec.goal) || `pup session ${session.id}`,
       body: prBody(spec, report, commitSubjects),
     };
-    pushBranch(req.repoPath, pullRequest.originUrl, session.branch);
+    pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
     if (pullRequest.adoptedUrl) {
       rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
       prWasAdopted = true;
@@ -627,47 +838,32 @@ function gateAndMerge(
       prUrl = createPullRequest(req.repoPath, newPr);
     }
   } else {
-    // Re-read under the lock: `target` was read before it, the session is
-    // still alive, and `mergeOptions` is keyed on whatever HEAD names when the
-    // merge runs (decision 79).
+    // Re-read under the lock: `target` was read before it, and the checkout
+    // below moves whatever index HEAD names (decision 79). The drivers too: a
+    // session alive during the stages can re-arm `info/attributes`, and the
+    // checkout runs a smudge filter on every file it writes (decision 80).
     const checkedOut = currentBranch(req.repoPath);
     if (checkedOut !== target) {
       throw new Error(
-        `Main worktree moved from ${target} to ${checkedOut || 'no branch'} while the gate ran; ` +
+        `Main worktree moved from ${sanitizeReason(target)} to ` +
+          `${checkedOut ? sanitizeReason(checkedOut) : 'no branch'} while the gate ran; ` +
           'nothing was merged.',
       );
     }
-    // branch.<target>.mergeOptions blanked: it takes any merge option (decision 79).
-    runGit(req.repoPath, [
-      '-c',
-      `branch.${target}.mergeOptions=`,
-      'merge',
-      '--ff-only',
-      '--no-verify-signatures',
-      session.branch,
-    ]);
-    // The ref, not HEAD or the exit code: every way a merge can run and not
-    // be the fast-forward it was asked for leaves the target elsewhere.
-    const landed = runGit(req.repoPath, ['rev-parse', '--verify', `refs/heads/${target}`]).trim();
-    const tip = runGit(req.repoPath, [
-      'rev-parse',
-      '--verify',
-      `refs/heads/${session.branch}`,
-    ]).trim();
-    if (landed !== tip) {
-      throw new Error(
-        `Merge did not fast-forward ${target} to ${session.branch} (${target} is at ${landed}, ` +
-          `the branch at ${tip}); not recorded as merged.`,
-      );
-    }
+    assertNoArmedGitDrivers(req.repoPath);
+    fastForward(req.repoPath, target, targetSha, sha);
   }
   transitionSession(db, session.id, 'merged', { report });
-  appendEvent(db, session.id, 'merge', {
+  // The pinned sha rides along untyped: the payload type and its decoder are
+  // read elsewhere and do not name it yet.
+  const mergedEvent = {
     branch: session.branch,
+    sha,
     target,
     files: changedPaths,
     ...(prUrl !== undefined ? { prUrl } : {}),
-  });
+  };
+  appendEvent(db, session.id, 'merge', mergedEvent);
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
     // the next `pup audit` after the PR lands ratchets it (decision 26).
@@ -698,8 +894,18 @@ function gateAndMerge(
   // the name pointing at nothing while the window ran on (decision 46).
   killTmux(session.id, session.tmux_target);
   runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
-  // PR mode needs -D: the branch is not in the local target's history, only on origin.
-  runGit(req.repoPath, ['branch', req.openPr ? '-D' : '-d', session.branch]);
+  // Deleted only while it still names the gated commit, in both modes: a
+  // commit the session added after the pin was never measured, so it is left
+  // on the branch for the operator rather than merged or thrown away.
+  try {
+    // `--no-deref`: a branch turned into a symref after the pin must not
+    // delete the branch it points at.
+    runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    // moved past the pin — kept, see above
+  }
   return {
     status: 'merged',
     report,
@@ -728,7 +934,7 @@ function gateAndMerge(
  * and system config still apply (decision 54). Pushing to a URL updates no
  * remote-tracking ref, so the lease names its value and the ref is moved here.
  */
-function pushBranch(repoPath: string, originUrl: string, branch: string): void {
+function pushBranch(repoPath: string, originUrl: string, branch: string, tip: string): void {
   const tracking = `refs/remotes/origin/${branch}`;
   const leased = (() => {
     try {
@@ -742,7 +948,6 @@ function pushBranch(repoPath: string, originUrl: string, branch: string): void {
       return undefined;
     }
   })();
-  const tip = runGit(repoPath, ['rev-parse', `refs/heads/${branch}`]).trim();
   const objects = runGit(repoPath, [
     'rev-parse',
     '--path-format=absolute',
@@ -770,7 +975,9 @@ function pushBranch(repoPath: string, originUrl: string, branch: string): void {
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  runGit(repoPath, ['update-ref', tracking, tip]);
+  // `--no-deref`, like the gate's other ref writes: a tracking ref a session
+  // turned into a symref must not move the branch it points at.
+  runGit(repoPath, ['update-ref', '--no-deref', tracking, tip]);
 }
 
 function prTitle(goal: string): string {

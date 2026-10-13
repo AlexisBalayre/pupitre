@@ -1397,6 +1397,20 @@ describe('CLI commands', () => {
       ]);
     });
 
+    it('says the radar is paused on a detached main checkout, never clear', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: repo, env: GIT_ENV, encoding: 'utf8' });
+      git('commit', '-q', '--allow-empty', '-m', 'base');
+      git('checkout', '-q', '--detach');
+
+      buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+      expect(logs).toEqual([expect.stringContaining('radar paused — main checkout is detached')]);
+      expect(logs.join('\n')).not.toContain('clear');
+    });
+
     it('emits a STALLED line for a running session with an old events file', () => {
       const repo = initRepo();
       useCwd(repo);

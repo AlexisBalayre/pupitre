@@ -161,6 +161,21 @@ describe('review service', { timeout: 20_000 }, () => {
     expect(detail.state).toBe('awaiting-review');
   });
 
+  // A bare name resolves a same-named tag before the branch; the review names
+  // refs/heads/ like the gate does, so it shows what the gate will merge (decision 80).
+  it('shows the branch, not a tag a session named like it', () => {
+    const worktree = seedSession(db, repo, 's-tagged');
+    const base = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(repo, 'git', 'tag', 'pup/s-tagged', base);
+
+    const detail = buildSessionReview(db, repo, 's-tagged');
+    const queue = buildReviewQueue(db, repo);
+
+    expect(detail.files).toEqual([{ path: 'src/feature.ts', added: 1, deleted: 0 }]);
+    expect(queue.find((row) => row.sessionId === 's-tagged')?.changedLines).toBe(1);
+  });
+
   // The payload is session-writable: a torn newest row is a gate result with
   // no report, so the run before it is the last report on record.
   it('reads past a gate_result whose payload is not JSON instead of throwing', () => {

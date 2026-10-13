@@ -33,16 +33,16 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * the sign flag is the lever, because `gpg.program` has no safe empty value.
  * Verifying runs it too, on any commit carrying a `gpgsig` header, forged or
  * not: `log.showSignature` on the gate's `git log` and the code map's, and
- * `merge.verifySignatures` on `git merge --ff-only`. A `%G?` in
+ * `merge.verifySignatures` on any porcelain `git merge`. A `%G?` in
  * `rebase.instructionFormat` verifies every commit the gate's rebase replays,
  * so it is pinned to `%s`, a literal format git never resolves through a
- * `pretty.*` alias. `branch.<name>.mergeOptions` is read after `-c` and
- * before argv and takes any merge option (`--verify-signatures`, `-S`, `-s
- * ours`, `--squash`), so a `-c` on the verification key alone is not enough;
- * the gate's merge blanks that key itself with a `-c` of its own, since the
- * branch name is only known there, and checks the target ref landed on the
- * branch tip afterwards. `pull.twohead` is the default strategy when argv
- * names none, so it is pinned to `ort` (decision 79).
+ * `pretty.*` alias. `pull.twohead` is the default strategy when argv names
+ * none, so it is pinned to `ort` (decision 79). `branch.<name>.mergeOptions`
+ * takes any merge option and no `-c` here can name the branch, so the gate
+ * fast-forwards with plumbing that never reads it (decision 80).
+ * `submodule.recurse` would have the rebase and that checkout recurse into a
+ * `.git/modules/<name>` repo whose own config and attributes no driver check
+ * reads, so it is pinned off (decision 80).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
@@ -67,6 +67,8 @@ const GIT_SAFE_CONFIG = [
   'rebase.instructionFormat=%s',
   '-c',
   'pull.twohead=ort',
+  '-c',
+  'submodule.recurse=false',
 ] as const;
 
 /**
