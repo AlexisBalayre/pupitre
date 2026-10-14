@@ -7,6 +7,7 @@ import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
 import type {
+  AuditOutcome,
   AuditReport,
   DebtMetric,
   DebtTransition,
@@ -107,22 +108,6 @@ export function formatDebtTransition(t: DebtTransition): string {
   const move = `${formatDebtValue(t.metric, t.before)} -> ${formatDebtValue(t.metric, t.after)}`;
   const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
   return `${label.padEnd(8)} ${move.padEnd(16)}${marker}`;
-}
-
-export interface AuditOutcome extends AuditReport {
-  /**
-   * One line per debt metric the adapter could not measure although the stored
-   * baseline holds a figure for it, each meaning that baseline was kept rather
-   * than refreshed. Empty on a first run, which stores what it measured exactly
-   * like `pup init`: there is nothing to keep.
-   */
-  unmeasured: string[];
-  /**
-   * True when the measurement regressed and the caller asked for the baseline
-   * to be kept in that case: a land the conductor runs has no human between
-   * an observed regression and the bar (decision 84); `pup audit` ratchets.
-   */
-  heldOnRegression: boolean;
 }
 
 /**

@@ -240,7 +240,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   assertTargetName(req.repoPath, target);
   let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
-    assertGhAvailable();
+    assertGhAvailable(MERGE_PR_USE.command);
     // Resolved once, here, and carried to the push, so the PR's repo and the
     // pushed-to URL are one value and nothing the stages run can move it
     // (decisions 54, 56).

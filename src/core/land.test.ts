@@ -422,7 +422,6 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(hasTrackingRef()).toBe(false);
   });
 
-  // The gate's teardown usually removed both already; the land then has nothing to do there.
   it('refuses a merge commit over a head that moved past the pin, changing nothing', () => {
     seedPrMerge();
     const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
@@ -609,6 +608,49 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(outcome.removedWorktree).toBe(false);
     expect(mainSha()).toBe(merge);
     expect(landedEvents()).toHaveLength(1);
+  });
+
+  // The gate's teardown usually removed both already; the land then has nothing to do there.
+  it('keeps a worktree git cannot remove, and its branch, and says so', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(repo, 'git', 'worktree', 'lock', worktree);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = land();
+
+    expect(outcome).toMatchObject({
+      removedWorktree: false,
+      keptWorktree: worktree,
+      keptBranch: BRANCH,
+    });
+    expect(existsSync(worktree)).toBe(true);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).not.toBe('');
+    expect(mainSha()).toBe(merge);
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  it('refuses when the main checkout is elsewhere although main already holds the merge', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'elsewhere');
+    sh(repo, 'git', 'fetch', '-q', origin, 'main:main');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    expect(land).toThrow('The main checkout is on elsewhere, not main');
+
+    expect(landedEvents()).toEqual([]);
+    expect(getProject(db, pid)?.baseline).toBeNull();
   });
 
   it('lands a session whose worktree and branch are already gone', () => {

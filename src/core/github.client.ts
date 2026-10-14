@@ -12,8 +12,8 @@ const GH_COMMAND_TIMEOUT_MS = 60_000;
 /** `git@host:owner/repo.git`, `https://host/owner/repo`, `ssh://git@host/owner/repo.git`. */
 const REMOTE_URL = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/;
 
-/** Fail before the gate runs, not after ten minutes of stages. */
-export function assertGhAvailable(command = '`pup merge --pr`'): void {
+/** Fail before any work starts, not partway through; `command` names the caller in the refusal. */
+export function assertGhAvailable(command: string): void {
   try {
     execFileSync('gh', ['--version'], { stdio: 'ignore', timeout: GH_PROBE_TIMEOUT_MS });
   } catch {

@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
@@ -77,10 +78,10 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
   }
   // The row is store text too: the worktree and branch it names are what get
   // removed, so they must be the ones the launch minted for this session and
-  // no other's, compared as text so no `..` in an id can reach a sibling.
+  // no other's; the id's shape first, so no `..` in it can reach a sibling.
   if (
     !SESSION_ID_PATTERN.test(session.id) ||
-    session.worktree_path !== `${req.repoPath}/.worktrees/${session.id}` ||
+    session.worktree_path !== join(req.repoPath, '.worktrees', session.id) ||
     session.branch !== `pup/${session.id}`
   ) {
     throw new Error(
@@ -108,7 +109,7 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
         'origin was recorded as. Nothing was landed.',
     );
   }
-  assertGhAvailable('`pup land`');
+  assertGhAvailable(LAND_USE.command);
   const pr = readPullRequestLanding(req.repoPath, prUrl, repo);
   if (pr.state !== 'MERGED') {
     throw new Error(
@@ -269,7 +270,7 @@ function tearDown(
   repoPath: string,
   session: { worktree_path: string; branch: string },
   targetSha: string,
-): { removedWorktree: boolean; keptBranch?: string } {
+): { removedWorktree: boolean; keptBranch?: string; keptWorktree?: string } {
   runGit(repoPath, ['worktree', 'prune']);
   // Asked of git, not the filesystem: a directory git no longer registers,
   // left by a teardown that failed part-way, cannot be removed through git and
@@ -279,13 +280,14 @@ function tearDown(
     .includes(`worktree ${session.worktree_path}`);
   let removedWorktree = false;
   if (registered) {
-    // A session can lock its own worktree, which one `--force` refuses: the
-    // land goes on and the operator removes it by hand, as for a kept branch.
+    // A session can lock its own worktree, which one `--force` refuses. The
+    // land goes on, but the branch stays with it: `update-ref -d` would delete
+    // the branch a surviving worktree has checked out.
     try {
       runGit(repoPath, ['worktree', 'remove', '--force', session.worktree_path]);
       removedWorktree = true;
     } catch {
-      removedWorktree = false;
+      return { removedWorktree, keptWorktree: session.worktree_path, keptBranch: session.branch };
     }
   }
   const branchRef = `refs/heads/${session.branch}`;

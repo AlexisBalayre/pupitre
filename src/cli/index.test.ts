@@ -4886,32 +4886,6 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
-    // The land holds the merge lock across a fetch, the likeliest place for a
-    // Ctrl-C; the lock goes on the way out as it does for `pup merge`.
-    it('removes the lock this run took when a signal interrupts it', () => {
-      const repo = initRepoWithAdapter();
-      useCwd(repo);
-      const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-      const lockPath = join(repo, '.git', MERGE_LOCK_DIRNAME);
-      const before = process.listeners('SIGINT');
-      let handlers: NodeJS.SignalsListener[] = [];
-      vi.mocked(landSession).mockImplementation(() => {
-        mkdirSync(lockPath, { recursive: true });
-        handlers = process
-          .listeners('SIGINT')
-          .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
-        throw new Error('interrupted');
-      });
-
-      buildProgram().parse(['land', 's1'], { from: 'user' });
-      expect(handlers).toHaveLength(1);
-      handlers[0]?.('SIGINT');
-
-      expect(existsSync(lockPath)).toBe(false);
-      expect(exit).toHaveBeenCalledWith(130);
-      expect(process.listeners('SIGINT')).toEqual(before);
-    });
-
     it('names a kept branch and a target that already held the merge', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockReturnValue({

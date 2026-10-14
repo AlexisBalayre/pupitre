@@ -27,12 +27,7 @@ import {
   SteerNotDeliveredError,
   windowLabel,
 } from '../claude/session-runtime.service.js';
-import {
-  type AuditOutcome,
-  auditProject,
-  buildSweepTask,
-  formatDebtTransition,
-} from '../core/audit.service.js';
+import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
@@ -115,6 +110,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
+import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
@@ -389,11 +385,10 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
   }
   if (report.heldOnRegression) {
     for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
-    console.log(
+    refuse(
       'Baseline kept: the measurement regressed, and a land does not move the bar over a ' +
         'regression; run `pup audit` to accept it or fix it first.',
     );
-    process.exitCode = 1;
     return;
   }
   printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
@@ -491,6 +486,11 @@ function steerOrRefuse(act: () => void, done: string): void {
  * Every guard below reads `return refuse(…)`, so a refusal is one line and
  * cannot silently forget the exit code that makes it a refusal.
  */
+function refuse(message: string): void {
+  console.error(message);
+  process.exitCode = 1;
+}
+
 /**
  * A refusal whose text came partly from the store or a child (the spec, an
  * adapter's stderr): control characters go, but the message is not cut to a
@@ -501,38 +501,6 @@ function refuseScrubbed(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
   refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
-}
-
-/**
- * Run `fn`, which takes the merge lock, with the lock released on a signal: the
- * lock is a directory removed in a `finally` a process killed by a signal never
- * reaches, and the next merge or land then refuses against a lock nobody holds.
- * Ctrl-C at the terminal and the SIGTERM `pup ui`'s `q` sends to this child are
- * both that case. Only a lock this run took goes: one already there when the
- * command started belongs to another run.
- */
-function withLockReleasedOnSignal<TResult>(repoPath: string, fn: () => TResult): TResult {
-  const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
-  const heldOnEntry = existsSync(lockPath);
-  const releaseLock = (signal: NodeJS.Signals): void => {
-    if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
-    process.exit(signal === 'SIGTERM' ? 143 : 130);
-  };
-  process.once('SIGINT', releaseLock);
-  process.once('SIGTERM', releaseLock);
-  try {
-    return fn();
-  } finally {
-    // The lock is released by now, so a later signal must not reach a handler
-    // that would delete the next run's.
-    process.off('SIGINT', releaseLock);
-    process.off('SIGTERM', releaseLock);
-  }
-}
-
-function refuse(message: string): void {
-  console.error(message);
-  process.exitCode = 1;
 }
 
 /**
@@ -1770,28 +1738,46 @@ export function buildProgram(): Command {
           );
         }
         let outcome: MergeOutcome;
+        // The gate holds a lock directory it removes in a `finally`, which a
+        // process killed by a signal never reaches — and the next merge then
+        // refuses against a lock nobody holds. Ctrl-C at the terminal and the
+        // SIGTERM `pup ui`'s `q` sends to this child are both that case, so the
+        // lock goes on the way out. Only if this run took it: a lock that was
+        // already there when the command started belongs to another merge, and
+        // is not this one's to remove.
+        const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
+        const heldOnEntry = existsSync(lockPath);
+        const releaseLock = (signal: NodeJS.Signals): void => {
+          if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
+          process.exit(signal === 'SIGTERM' ? 143 : 130);
+        };
+        process.once('SIGINT', releaseLock);
+        process.once('SIGTERM', releaseLock);
         try {
-          outcome = withLockReleasedOnSignal(repoPath, () =>
-            runMergeGate(db, {
-              repoPath,
-              sessionId: session,
-              adapters,
-              acceptDebt:
-                opts.acceptDebt && opts.reviewBy
-                  ? {
-                      reason: opts.acceptDebt,
-                      reviewBy: opts.reviewBy,
-                      acceptedBy: approvedBy ?? 'human',
-                    }
-                  : undefined,
-              openPr: opts.pr,
-              gateEnv: parseGateEnv(opts.gateEnv),
-            }),
-          );
+          outcome = runMergeGate(db, {
+            repoPath,
+            sessionId: session,
+            adapters,
+            acceptDebt:
+              opts.acceptDebt && opts.reviewBy
+                ? {
+                    reason: opts.acceptDebt,
+                    reviewBy: opts.reviewBy,
+                    acceptedBy: approvedBy ?? 'human',
+                  }
+                : undefined,
+            openPr: opts.pr,
+            gateEnv: parseGateEnv(opts.gateEnv),
+          });
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
           return refuseScrubbed(error);
+        } finally {
+          // The gate has released its own lock by now, so a later signal must
+          // not reach a handler that would delete the next run's.
+          process.off('SIGINT', releaseLock);
+          process.off('SIGTERM', releaseLock);
         }
         printGateReport(outcome.report);
         switch (outcome.status) {
@@ -1854,15 +1840,17 @@ export function buildProgram(): Command {
       }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
+      // No signal handler around this, unlike `pup merge`: the body never
+      // yields to the event loop, so a listener could not run and would only
+      // swallow the signal. A Ctrl-C kills the child git under the lock, whose
+      // failure releases it through `withMergeLock`'s own `finally`.
       try {
-        outcome = withLockReleasedOnSignal(repoPath, () =>
-          landSession(db, {
-            repoPath,
-            sessionId: session,
-            adapters: detectAdapters(repoPath),
-            gateEnv: parseGateEnv(opts.gateEnv),
-          }),
-        );
+        outcome = landSession(db, {
+          repoPath,
+          sessionId: session,
+          adapters: detectAdapters(repoPath),
+          gateEnv: parseGateEnv(opts.gateEnv),
+        });
       } catch (error) {
         return refuseScrubbed(error);
       }
@@ -1874,7 +1862,12 @@ export function buildProgram(): Command {
             : `${target} already held it at ${outcome.targetSha}.`),
       );
       if (outcome.removedWorktree) console.log('Removed the session worktree.');
-      if (outcome.keptBranch !== undefined) {
+      if (outcome.keptWorktree !== undefined) {
+        console.log(
+          `Kept the worktree at ${sanitizeReason(outcome.keptWorktree)} and its branch: git ` +
+            'could not remove it (a lock, most likely); remove it from the trusted checkout.',
+        );
+      } else if (outcome.keptBranch !== undefined) {
         console.log(
           `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
         );
