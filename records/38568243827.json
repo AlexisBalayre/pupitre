@@ -1,0 +1,119 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T13:04:46.581Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38568243827",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38568243827",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4fe6c94e0ce1a7711876b9a305823da148e724e0",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4bdd00e081a1d004af6ccf7892eaac3f527942e3",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "514-531",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "280-290",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1843-1846",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Removing the land's signal listener means a terminal Ctrl-C now kills node itself mid-`execFileSync`. `withMergeLock`'s `finally` never runs, the `.git` merge lock stays behind, and every later `pup merge`/`pup land` refuses. The new comment says the opposite will happen.",
+      "body": "**Without a listener, a Ctrl-C kills `pup land` before `withMergeLock`'s `finally` can release the lock. The new comment and decision 84 say it is released.**\n\n```ts\n// No signal handler around this, unlike `pup merge`: the body never\n// yields to the event loop, so a listener could not run and would only\n// swallow the signal. A Ctrl-C kills the child git under the lock, whose\n// failure releases it through `withMergeLock`'s own `finally`.\ntry {\n  outcome = landSession(db, {\n```\n\nA terminal Ctrl-C sends SIGINT to the whole foreground process group, so node gets the signal along with the child git. The `pup land` process has no JS SIGINT listener: the only ones in `src` are `pup ui`'s Ink restore and `pup merge`'s inline handler. Node's default disposition then resets the TTY and re-raises the signal, so node dies while it is still blocked in `execFileSync`. The stack never unwinds and `withMergeLock`'s `finally` (merge-gate.service.ts L160-L172) never runs. The likeliest moment for a Ctrl-C is `fetchTarget`'s network fetch under the lock, and that leaves `.git/pup-merge.lock` behind. Every later `pup merge` or `pup land` then refuses with `MergeLockHeldError` until the operator removes it by hand.\n\nThe removed wrapper's listener never ran its body, as the prior review said. But registering it *did* keep node alive: libuv caught the signal, so only the child died, `execFileSync` threw, and the `finally` released the lock. \"A Ctrl-C kills the child git under the lock, whose failure releases it\" is therefore true only while a listener is installed, which is the opposite of what the comment concludes. In decision 84, this sentence also contradicts the next one (\"A lock a killed process strands is a change of its own\").\n\n*(Node's signal disposition is pinned-version knowledge, not in-tree source, hence medium confidence.)*\n\n**Suggested direction:** pick one of these and make the code, the comment and decision 84 agree:\n- Keep a listener registered across `landSession` that only records the signal, so node survives, the dying child unwinds through the `finally`, and the refusal path exits non-zero. Remove the listener in a `finally`, as `pup merge` does.\n- Or accept the stranding explicitly: say that a Ctrl-C kills the process and can strand the lock, which is then cleared by hand.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4fe6c94e0ce1a7711876b9a305823da148e724e0/src/cli/index.ts#L1843-L1857\nhttps://github.com/AlexisBalayre/pupitre/blob/4fe6c94e0ce1a7711876b9a305823da148e724e0/docs/09-decisions.md#L4355-L4359\nhttps://github.com/AlexisBalayre/pupitre/blob/4fe6c94e0ce1a7711876b9a305823da148e724e0/src/core/merge-gate.service.ts#L160-L172",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "613",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The moved comment \"The gate's teardown usually removed both already; the land then has nothing to do there.\" now sits above the locked-worktree test, where nothing was removed. It describes 'lands a session whose worktree and branch are already gone' (line 655) and should sit above that test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4339",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 84 says the row's id, worktree and branch are \"compared as text\", but `src/core/land.service.ts:84` now compares the worktree with `join(req.repoPath, '.worktrees', session.id)`. `join` normalizes the path, so the comparison is no longer pure text. Reword the clause to match the code comment: the id's shape is checked first, then the worktree is compared against the joined path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "283-290",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`tearDown` now returns `{removedWorktree: false, keptWorktree, keptBranch}` early and the normal path returns `{removedWorktree, keptBranch?}`. The CLI's `else if` relies on an invariant the type doesn't carry: `keptWorktree` implies `keptBranch`. Document that coupling on `LandOutcome`, or drop `keptBranch` from the early return and let the kept-worktree message cover the branch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1741-1781",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "AGENTS.md says \"`src/cli/` stays thin; logic lives in `src/core/`\". Inlining `withLockReleasedOnSignal` puts the lock-path computation, the `heldOnEntry` check, the lock `rmSync` and the signal registration directly in the `pup merge` action body. Signal handling is CLI-owned, so this is arguable, but a CLI-local helper would keep the action body thin.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Correctness, security and maintainability each ran as one instance. The delta's 10 files span src and docs, which technically meets the >8-files/2-areas scaling gate. I didn't scale them because the delta is only about 295 changed lines, docs/ is a single file, and 44 of the lines are tests. review-context was not spawned because the delta touches no CORS/HTTP/docker/CI/settings surface."
+    },
+    {
+      "component": "validator",
+      "description": "The validator confirmed the important signal-handling finding but corrected one sub-claim: `pup ui`'s `q` sends SIGTERM only to the merge child (use-controls.hook.ts L341), never to `pup land`. I removed the SIGTERM point from the posted body."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8093919000000007,
+  "duration_ms": 218887,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11282,
+    "cache_read": 289286,
+    "cache_creation": 53506,
+    "total": 354088
+  }
+}
