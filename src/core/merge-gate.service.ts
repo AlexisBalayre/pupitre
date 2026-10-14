@@ -1152,8 +1152,9 @@ function gateAndMerge(
     try {
       isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
     } catch {
-      // Interrupted after the merge landed: the branch stays, holding only
-      // merged commits, rather than skip the ratchet and the draft.
+      // Interrupted after the merge landed: keep the branch, which the
+      // `finally` still checks for commits past the pin, rather than skip the
+      // ratchet and the draft.
     }
   } finally {
     // Counted only once the session is killed and its worktree gone, so no
