@@ -504,27 +504,6 @@ function refuseScrubbed(error: unknown): void {
 }
 
 /**
- * Run `fn`, a synchronous body holding the merge lock, with node kept alive
- * through a terminal Ctrl-C. With no listener, node's default disposition
- * dies in the middle of `execFileSync` and the lock's `finally` never runs.
- * With one, only the child git dies, its failure unwinds the stack, and
- * `withMergeLock` releases the lock. The listener's body never runs, since
- * the signal is dispatched from an event loop a synchronous body never
- * yields to, and the signal is dropped when the listener goes.
- */
-function withNodeAliveThroughSignals<TResult>(fn: () => TResult): TResult {
-  const stayAlive = (): void => undefined;
-  process.on('SIGINT', stayAlive);
-  process.on('SIGTERM', stayAlive);
-  try {
-    return fn();
-  } finally {
-    process.off('SIGINT', stayAlive);
-    process.off('SIGTERM', stayAlive);
-  }
-}
-
-/**
  * `pup init` and `pup audit` ask before measuring anything: off macOS without
  * the operator's `PUP_SANDBOX=vm` nothing confines their children, and the
  * refusal is one line rather than a stack trace under a push-target line
@@ -1862,14 +1841,12 @@ export function buildProgram(): Command {
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
       try {
-        outcome = withNodeAliveThroughSignals(() =>
-          landSession(db, {
-            repoPath,
-            sessionId: session,
-            adapters: detectAdapters(repoPath),
-            gateEnv: parseGateEnv(opts.gateEnv),
-          }),
-        );
+        outcome = landSession(db, {
+          repoPath,
+          sessionId: session,
+          adapters: detectAdapters(repoPath),
+          gateEnv: parseGateEnv(opts.gateEnv),
+        });
       } catch (error) {
         return refuseScrubbed(error);
       }

@@ -4352,13 +4352,19 @@ changes back into those docs is pending.
     same checks the gate makes before its checkout: the main checkout on the target, checked on both
     paths since the audit measures that checkout, and no driver armed. A local target with commits
     origin lacks refuses; one already at or past origin's tip is left alone. The tracking ref is
-    written last under the lock, so every refusal leaves the repo's refs as they were. A signal
-    listener is held across the land for one reason: a terminal Ctrl-C reaches node and the child
-    git alike, and with no listener node's default disposition dies in the middle of the call,
-    leaving the lock behind; with one, node survives, the child's failure unwinds the stack and
-    `withMergeLock`'s `finally` releases the lock. The listener's body never runs, since a
-    synchronous body never yields to the event loop that dispatches it. A lock a killed process
-    strands, by SIGKILL or a crash, is a change of its own. The session's worktree is removed, when
+    written last under the lock, so every refusal leaves the repo's refs as they were.
+    `withMergeLock` holds a SIGINT and SIGTERM listener while the lock is held, and only then: a
+    terminal Ctrl-C reaches node and the child git alike, and with no listener node's default
+    disposition dies in the middle of the call, leaving the lock behind; with one, node survives,
+    the child's failure unwinds the stack and the `finally` releases the lock. The listener's body
+    never runs, since a synchronous body never yields to the event loop that dispatches it, so a
+    signal sent to pup alone, which kills no child, is discarded and the locked section runs to its
+    end. A git child an interrupt killed is not read as git's answer to the ancestry checks, the
+    symref probe, the worktree removal or the branch delete (not an ancestor, a locked worktree):
+    the land stops before the audit and the `landed` event, and a re-run picks up where it stopped.
+    A git that crashed on its own keeps the catch's fallback. The audit runs outside the lock with node's default disposition, so a Ctrl-C there
+    ends the land before it is recorded. A lock a killed process strands, by SIGKILL or a crash, is
+    a change of its own. The session's worktree is removed, when
     git still registers it, the way `pnpm worktree:clean` removes one whose PR merged; one `--force`
     cannot remove, a session having locked its own, is kept together with its branch and named as
     such, since deleting the branch a surviving worktree has checked out would leave it on a branch

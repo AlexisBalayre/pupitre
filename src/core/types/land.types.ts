@@ -10,7 +10,10 @@ export interface LandOutcome {
   targetSha: string;
   fastForwarded: boolean;
   removedWorktree: boolean;
-  /** Set when the local branch held commits main does not, and was kept. */
+  /**
+   * Set when the local branch held commits main does not, and was kept. Never
+   * set with `keptWorktree`, which keeps the branch too: read both.
+   */
   keptBranch?: string;
   /**
    * Set when git could not remove the worktree (a session can lock its own):

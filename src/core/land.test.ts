@@ -631,6 +631,45 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(landedEvents()).toHaveLength(1);
   });
 
+  // A Ctrl-C under the lock kills the child git, not node; a catch that read
+  // the dead child as git's answer would carry on and record a land that a
+  // re-run then refuses.
+  it.each([
+    ['the worktree removal', 'worktree remove'],
+    ['an ancestry check', 'merge-base'],
+    ['the symref probe', 'symbolic-ref -q'],
+    ['the branch read', `rev-parse --verify --quiet refs/heads/${BRANCH}^{commit}`],
+    ['the branch delete', 'update-ref --no-deref -d'],
+  ])('stops on a signal that kills %s, records nothing, and lands on the re-run', (_, call) => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-git-')));
+    writeFileSync(
+      join(dir, 'git'),
+      `#!/bin/sh\ncase " $* " in *" ${call} "*) kill -TERM $$ ;; esac\nexec ${realGit} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const pathWithGh = process.env.PATH;
+    process.env.PATH = `${dir}:${pathWithGh}`;
+
+    expect(land).toThrow(expect.objectContaining({ signal: 'SIGTERM' }));
+    expect(landedEvents()).toEqual([]);
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+
+    process.env.PATH = pathWithGh;
+    expect(land().mergeCommit).toBe(merge);
+    expect(existsSync(worktree)).toBe(false);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(landedEvents()).toHaveLength(1);
+  });
+
   it('refuses when the main checkout is elsewhere although main already holds the merge', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();

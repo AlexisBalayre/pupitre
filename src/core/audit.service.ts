@@ -8,7 +8,6 @@ import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
 import type {
   AuditOutcome,
-  AuditReport,
   DebtMetric,
   DebtTransition,
   StageDelta,

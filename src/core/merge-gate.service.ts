@@ -30,6 +30,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  rethrowIfKilled,
   runGit,
 } from './git-diff.client.js';
 import {
@@ -82,7 +83,8 @@ export function isAncestor(repoPath: string, maybeAncestor: string, ref: string)
   try {
     runGit(repoPath, ['merge-base', '--is-ancestor', maybeAncestor, ref]);
     return true;
-  } catch {
+  } catch (error) {
+    rethrowIfKilled(error);
     return false;
   }
 }
@@ -157,6 +159,16 @@ export function countChangedLines(
   return { lines, forged };
 }
 
+/**
+ * Run `fn`, a synchronous body, holding the merge lock, with node kept alive
+ * through a signal while it does. A terminal Ctrl-C reaches node and the child
+ * git alike: with no listener node's default disposition dies mid-call and the
+ * `finally` never removes the lock; with one, only the child dies, its failure
+ * unwinds the stack and the lock goes. The listener's body never runs, since a
+ * synchronous body never yields to the event loop that dispatches it, so a
+ * signal sent to pup alone, which kills no child, is discarded: the locked
+ * section runs to its end. Outside the lock node's default applies again.
+ */
 export function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
   try {
@@ -164,10 +176,20 @@ export function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TRe
   } catch {
     throw new MergeLockHeldError(lockPath);
   }
+  const stayAlive = (): void => undefined;
+  process.on('SIGINT', stayAlive);
+  process.on('SIGTERM', stayAlive);
   try {
     return fn();
   } finally {
-    rmdirSync(lockPath);
+    // The lock goes first: a signal between the two would otherwise meet
+    // node's default disposition with the lock still on disk.
+    try {
+      rmdirSync(lockPath);
+    } finally {
+      process.off('SIGINT', stayAlive);
+      process.off('SIGTERM', stayAlive);
+    }
   }
 }
 
@@ -457,7 +479,8 @@ export function resolveCommit(repoPath: string, ref: string): string {
   const symbolic = (() => {
     try {
       return runGit(repoPath, ['symbolic-ref', '-q', ref], piped).trim();
-    } catch {
+    } catch (error) {
+      rethrowIfKilled(error);
       return undefined;
     }
   })();
@@ -519,7 +542,8 @@ export function deleteBranchAt(repoPath: string, branchRef: string, sha: string)
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return true;
-  } catch {
+  } catch (error) {
+    rethrowIfKilled(error);
     return false;
   }
 }

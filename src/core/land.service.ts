@@ -3,7 +3,12 @@ import type { Database } from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
-import { assertNoArmedGitDrivers, currentBranch, runGit } from './git-diff.client.js';
+import {
+  assertNoArmedGitDrivers,
+  currentBranch,
+  rethrowIfKilled,
+  runGit,
+} from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
@@ -286,7 +291,8 @@ function tearDown(
     try {
       runGit(repoPath, ['worktree', 'remove', '--force', session.worktree_path]);
       removedWorktree = true;
-    } catch {
+    } catch (error) {
+      rethrowIfKilled(error);
       return { removedWorktree, keptWorktree: session.worktree_path };
     }
   }
@@ -294,7 +300,8 @@ function tearDown(
   let branchSha: string;
   try {
     branchSha = resolveCommit(repoPath, branchRef);
-  } catch {
+  } catch (error) {
+    rethrowIfKilled(error);
     // already gone, or a symref the gate refuses to follow
     return { removedWorktree };
   }
