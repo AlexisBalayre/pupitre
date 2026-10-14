@@ -1,0 +1,260 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T12:25:43.137Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38562666852",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38562666852",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e52ea340e0a10a1083f47338290808a766d390af",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "101-124",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Land checks only that GitHub says `MERGED` and that the pinned sha is an ancestor of origin's tip. It never checks that the PR's head is still the pinned sha. Decision 82 says a session using the operator's gh login can push to the PR branch, and that GitHub can move the head after the gate. Say commits are pushed to `pup/<id>` after `pup merge --pr` and the PR is then merged with a merge commit. Land passes, because the pinned sha is still an ancestor. The conductor then fast-forwards main, the audit re-stamps the baseline over commits no gate measured, and the `landed` event records it as a normal landing.",
+      "body": "**`pup land` accepts a merged PR whose head moved past the pinned sha.**\n\nThe only check tying the merged PR to the gated code is that the pinned commit is reachable:\n\n```ts\n// A squash or rebase merge lands other commits than the ones the gate\n// measured; the PR vouched for the pinned sha only (decision 82).\nif (!isAncestor(req.repoPath, sha, originTip)) {\n```\n\nThis rejects squash and rebase merges. It does not reject a normal merge commit over a head that moved past the pin. Decision 82 names that threat: \"a session holding the operator's ambient gh login can push its branch\", and \"GitHub can still move the head later, by a push or a 'update branch' click\".\n\n1. The gate pins `P`, pushes it, and reads the head back as `P`.\n2. Something pushes `X` on top of `P` to `pup/<id>`.\n3. The PR is merged with a merge commit `M` whose parents are `(main, X)`.\n4. `isAncestor(P, M)` is true, so land fast-forwards the trusted checkout to `M`. `auditProject` re-stamps the baseline over `X` and the `landed` event records it as a normal landing. No gate ever measured `X`.\n\nDecision 84 refuses squash and rebase merges because \"it lands commits the gate never measured\". That reasoning applies equally here, and decision 84 does not accept this case. `readPullRequestLanding` asks gh only for `state,mergeCommit` (github.client.ts L216-L227).\n\n**Suggested fix:** also request `headRefOid` in the same gh call. Next to the `MERGED` check, refuse unless it equals `sha`. `assertPullRequestHead` (github.client.ts L193-L208) already does this comparison, but its message is worded for the gate. The cost is that a PR updated with GitHub's \"Update branch\" button also refuses, which is the conservative direction. Add a sentence to decision 84.\n\n```ts\nif (pr.head !== sha) {\n  throw new Error(\n    `${prUrl} merged with its head at ${pr.head ?? 'an unreadable commit'}, not ${sha}, the commit the gate pinned; ` +\n      'it lands commits the gate never measured. Nothing was landed.',\n  );\n}\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/core/land.service.ts#L101-L124\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/core/github.client.ts#L216-L227",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1240-1263",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The scratch git dir now serves `git fetch` as well as push. Unlike push, `git fetch` ends by running `git maintenance run --auto` (on git older than 2.29, `gc --auto`). Inside the scratch dir that gc sees `GIT_OBJECT_DIRECTORY` pointing at the repo's real object store, but its only refs are the scratch's `refs/heads/local` and `refs/heads/origin`. Neither `GIT_SAFE_CONFIG` nor the runner turns auto-gc off.",
+      "body": "**Auto-gc after the land's fetch can prune the real repo's objects.**\n\n`withScratchGitDir` was written for `pushBranch`, and a client-side `git push` never runs auto maintenance. This PR also routes `pup land`'s `git fetch` through it (`land.service.ts:189`), and `git fetch` does run auto maintenance when it finishes:\n\n```ts\nreturn fn((args, opts = {}) =>\n  runGit(scratch, ['--git-dir', scratch, ...args], {\n    ...opts,\n    env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },\n  }),\n);\n```\n\nAfter the fetch, git runs `maintenance run --auto` (on git older than 2.29, `gc --auto`). The thresholds are about 6700 loose objects (`gc.auto`) or 50 packs (`gc.autoPackLimit`), and they are counted against the real object store. Once one is crossed, gc works out reachability from the scratch dir's two refs only. The repo's other branches, tags, stashes, reflogs and worktree HEADs are invisible to it. `repack -A`/cruft and `prune --expire 2.weeks.ago` then drop objects that only those refs reach and that are older than two weeks, which corrupts the repo. Neither `GIT_SAFE_CONFIG` nor `scrubbedGitEnv` turns this off, and global config still applies. The land's own fetch adds objects, so it can be the thing that tips the store over a threshold. *(The claims about git internals are pinned-version knowledge, hence medium confidence.)*\n\n**Suggested fix:** turn auto gc and maintenance off in the scratch runner so both callers are covered. `-c` reaches child git processes through `GIT_CONFIG_PARAMETERS`.\n\n```ts\nrunGit(\n  scratch,\n  ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '--git-dir', scratch, ...args],\n  { ...opts, env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects } },\n)\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/core/merge-gate.service.ts#L1240-L1263\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/core/land.service.ts#L179-L201",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1816-1860",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup land` takes the merge lock (`withMergeLock`) and, while holding it, runs a network fetch of up to 10 minutes (`GATE_COMMAND_TIMEOUT_MS`). Unlike `pup merge`, it installs no SIGINT/SIGTERM handler to remove the lock. If the operator presses Ctrl-C on a stalled fetch, the next `pup merge` and `pup land` are refused until someone removes the lock by hand.",
+      "body": "**A Ctrl-C during `pup land` leaves the merge lock behind.**\n\n`pup merge` wraps its gate call in a signal handler written for exactly this case (index.ts L1724-L1738). Its comment says a process killed by a signal never reaches the `finally`, \"and the next merge then refuses against a lock nobody holds\":\n\n```ts\nconst releaseLock = (signal: NodeJS.Signals): void => {\n  if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });\n  process.exit(signal === 'SIGTERM' ? 143 : 130);\n};\nprocess.once('SIGINT', releaseLock);\nprocess.once('SIGTERM', releaseLock);\n```\n\n`pup land` calls `landSession` with no such handler. `landSession` holds `withMergeLock` across `fetchTarget` (land.service.ts L113-L149), a synchronous `git fetch` with a 10-minute timeout, which is the most likely place for an operator to press Ctrl-C. `withMergeLock` is a bare `mkdirSync` with no pid or age check for stale locks. After a SIGINT or SIGTERM, every `pup merge` and `pup land` throws `MergeLockHeldError` until someone deletes the directory by hand. The scratch `pup-land-*` dir is also left in tmp.\n\n**Suggested fix:** install the same handler around the `landSession` call and remove it with `process.off` in a `finally`. `land` is now the second caller, which justifies extracting a small helper that `merge` and `land` share.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/cli/index.ts#L1816-L1860\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/cli/index.ts#L1724-L1738",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "90-100",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The check that the PR url belongs to origin's repo is case-sensitive. `prUrl` is what `gh pr create` printed, and GitHub writes that url in the repo's canonical case. `originRepoSlug(originUrl)` keeps whatever case the operator cloned with. If the clone used a different case, `pup merge --pr` works (the API ignores case for `--repo`) but every `pup land` for that project refuses, and re-running cannot fix it.",
+      "body": "**`pup land` refuses every PR when the origin remote's case differs from GitHub's.**\n\n```ts\nconst prefix = `https://${repo}/pull/`;\nif (!prUrl.startsWith(prefix) || !/^\\d+$/.test(prUrl.slice(prefix.length))) {\n```\n\n`repo` comes from `originRepoSlug(recorded origin url)`, which never lowercases (github.client.ts L31-L37). For example, `git@github.com:alexisbalayre/pupitre.git` gives `github.com/alexisbalayre/pupitre`. `prUrl` is the stdout of `gh pr create`, or the `url` from `gh pr list`, and GitHub renders both in the repo's canonical case (`https://github.com/AlexisBalayre/pupitre/pull/12`).\n\nThe merge path only passes the slug to gh as `--repo`, and GitHub resolves that without regard to case, so `pup merge --pr` succeeds. This new `startsWith` is the only place the two are compared as text. Re-running `pup land` gives the same refusal every time. The only way out is to repoint origin to the canonical case and run `pup init --origin-moved`.\n\n**Suggested fix:** compare the prefix case-insensitively. Restrict the comparison to ASCII so a character such as U+212A cannot fold into a match. Two names that differ only by case are the same GitHub repo, so the protection against another repo's PR is kept.\n\n```ts\nconst head = prUrl.slice(0, prefix.length);\nif (\n  !/^[!-~]+$/.test(head) ||\n  head.toLowerCase() !== prefix.toLowerCase() ||\n  !/^\\d+$/.test(prUrl.slice(prefix.length))\n) {\n```\n\n*(GitHub's url casing is pinned-version knowledge, hence medium confidence.)*\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/core/land.service.ts#L90-L100",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4355-4356",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The sentence says the store's event typing now keys on `EventPayloads`. The code does not do that. `src/core/session.repository.ts` keeps `EventType` from `db.client.js` as the source and adds a local `type StoredEventType = EventType | 'landed'`. `EventRow.type` and `appendEvent<TType extends StoredEventType>` use that union. Only the payload lookup is `EventPayloads[TType]`, and that was already the case before this change. The JSDoc above `StoredEventType` says the opposite of the decision: \"`EventType` has yet to join\".",
+      "body": "**Decision 84 describes a typing change that was not made.**\n\nDecision 84 says: \"`landed` joins the store's event types through `EventPayloads`, which `appendEvent` and `EventRow` now key on.\"\n\nIn the code (`session.repository.ts` L78-L91, L435-L439), `EventRow.type` and `appendEvent<TType extends StoredEventType>` are keyed on a local `type StoredEventType = EventType | 'landed'`, and `EventType` stays the store's source. The JSDoc there says the opposite of the decision: \"`EventType` has yet to join\". The commit message \"keep EventType the store's source\" confirms that this was the intent. AGENTS.md makes `docs/09-decisions.md` authoritative, so a reader who trusts the decision will look for a change that was never made.\n\nThe conventions and maintainability reviewers also noticed that `StoredEventType` is a third list of event types. Either fix works:\n- Reword the sentence to match the code, e.g. \"`landed` is added to `EventPayloads` for its payload, and to `EventRow` and `appendEvent` as `StoredEventType = EventType | 'landed'`, until `EventType` itself takes it.\"\n- Add `'landed'` to `EventType` and delete `StoredEventType`. The `events.type` column has no CHECK constraint, so nothing blocks this.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/docs/09-decisions.md#L4355-L4356\nhttps://github.com/AlexisBalayre/pupitre/blob/e52ea340e0a10a1083f47338290808a766d390af/src/core/session.repository.ts#L78-L91",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "125-147",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The tracking ref `refs/remotes/origin/<target>` is written (`runGit(req.repoPath, ['update-ref', '--no-deref', \\`refs/remotes/origin/${target}\\`, originTip])`) before four later refusals: diverged local main, checkout not on the target, armed drivers, and `fastForward`'s checkout refusal. So those refusals do leave one ref moved. The intent says every refusal changes nothing, although decision 84 only promises the write comes after the pinned-sha check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "127-151",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"main checkout on `target`\" check (`if (checkedOut !== target)`) only runs on the fast-forward path. When local main already holds origin's tip (for example after `git fetch origin main:main` while on another branch), `auditProject` measures whatever the main checkout has checked out and saves it as the baseline. The fast-forward path would have refused in the same situation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "215-219",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`tearDown` decides whether to remove the worktree with `existsSync(session.worktree_path)`, not by asking git whether it is a registered worktree. Suppose the gate's `git worktree remove --force` deleted the admin entry but failed partway through the directory. Then `git worktree remove` fails with \"is not a working tree\" after main was already fast-forwarded, and every re-run hits the same throw, so the audit and the `landed` event never happen. This contradicts \"each step skips what is already done\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "575-577, 585, 640-644",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`fastForward` is now exported and called from `land.service.ts:144`, but its text still describes the gate's merge. Its refusals say \"...the ref was not moved and the session is not merged.\" and \"...failed, and the session is not merged\". During a land the session is already in state `merged`, so the operator is told something false about it. The reflog entry also reads `pup merge: fast-forward to <sha>` for a fast-forward that `pup land` made. Passing the caller's wording in (like `OriginUse` does for `pushTarget`), or dropping the session clause, would fix both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "108-111, 152",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pr.mergeCommit` is only regex-checked before being written as `appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl })`, and main moves to `originTip`. Nothing confirms that `mergeCommit` is reachable from `originTip`. The `landed` event therefore asserts \"the merge commit GitHub made\" is on main without checking it. A check like `isAncestor(req.repoPath, mergeCommit, originTip)` next to the pinned-sha check would make the recorded sha true by construction. It would also refuse a PR GitHub merged into a base other than `target`. That case is mostly caught already by the pinned-sha check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "189",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`git(['fetch', '--quiet', '--no-tags', originUrl, \\`+refs/heads/${target}:refs/heads/origin\\`], …)` puts `originUrl` as a bare positional with no `--end-of-options`. `REMOTE_URL` in `github.client.ts` (`([^/:]+)` for the host) accepts something like `--upload-pack=<cmd>:o/r`. `git fetch` would parse that as `--upload-pack`, and the refspec would then become a local-path \"repository\" whose upload-pack runs through the shell. This is only reachable if the recorded `projects.origin_url` holds such a value. That needs a store write, or an operator running `pup init` on poisoned config, both ceilings decision 56 accepts. The same pattern already exists in `pushBranch` (merge-gate.service.ts ~1220, `--receive-pack`). Adding `'--end-of-options'` before `originUrl` in both places, or refusing a leading `-` in `originRepoSlug`, closes it cheaply.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "46-53, 216-227",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readPullRequestLanding` goes through `ghJson` → `execFileSync('gh', ...)`, and `pup land` never calls `assertGhAvailable()` first. If gh is missing, the operator sees Node's raw `spawnSync gh ENOENT` instead of a message saying gh is needed. That is because `assertGhAvailable`'s text is hardcoded to `` `pup merge --pr` `` and the land path skips it. Nothing moves, since the call comes before the lock, so the impact is only an unclear message.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "511-525, 1233-1263",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR adds two new general git helpers to `merge-gate.service.ts`: `export function deleteBranchAt(repoPath: string, branchRef: string, sha: string): boolean` and `export function withScratchGitDir<TResult>(repoPath, prefix, fn: (git: (args: string[], opts?: Parameters<typeof runGit>[2]) => string) => TResult)`. It also newly exports the plumbing helpers `isAncestor`, `resolveCommit`, `withMergeLock` and `fastForward`. As a result `land.service.ts` imports eight items from `'./merge-gate.service.js'`, and the gate service is turning into a git library. The repo already has a git layer for this: `git-diff.client.ts` exports `runGit`, `currentBranch` and `assertNoArmedGitDrivers`, and naming.md defines `client` as the wrapper around `git`. Only one existing service imports from merge-gate today (`review.service.ts` imports `countChangedLines`). Suggested fix: move `deleteBranchAt`, `withScratchGitDir`, `isAncestor` and `resolveCommit` into `git-diff.client.ts`. That way `land.service` depends only on the gate-specific pieces: `pushTarget`, `fastForward`, `withMergeLock` and `assertTargetName`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "156-170",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`newestMerge` re-implements the rule that `openPullRequest` in `dashboard.service.ts` (lines ~566-580) already owns. Both walk events newest first, both stop when they reach a `landed` row, both decode the row, and both take the first `merge` event as \"the merge that stands\": `for (const row of listEvents(db, sessionId).reverse()) { if (row.type === 'landed') return 'landed'; const event = decodeEvent(row); if (event.type === 'merge') return event; }`. This rule decides whether a PR is still open. With it in two places, a future change to one (for example, how a merge without a PR is treated) could leave the inbox showing a PR as open while `pup land` refuses to land it, or the other way round. Suggested fix: put one walk in `session.repository.ts`, returning `{ landed: true } | MergeEvent | undefined`, and have both callers use it. The dashboard would keep its URL check; land would keep its `prUrl` check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "24",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`const LAND_USE = { command: '`pup land`', untouched: 'Nothing was landed.' };` has no type annotation. `OriginUse` (merge-gate.service.ts:654) is not exported, so the object only fits `pushTarget`'s parameter by matching its shape, and a typo in a field name would surface only as a type error at the call site. The file also spells out `'Nothing was landed.'` ten more times in its own error messages, so the string that `LAND_USE.untouched` is meant to own now lives in eleven places. Suggested fix: export `OriginUse` and annotate `LAND_USE: OriginUse`. Then either build the refusals from `LAND_USE.untouched`, or drop the field idea for land and keep the literal. Doing both is the duplication.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1840-1844",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `land` catch block copies the `pup merge` catch's control-character scrub (lines 1762-1764) character for character, including the biome-ignore comment; the same character class is already `CONTROL_CHARS` in `src/core/merge-gate.service.ts:95`. A shared `refuseScrubbed(error: unknown)` helper next to `refuse` would keep the decision-68 scrub in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "33-45",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`export interface LandOutcome { … }` is declared inline in a `*.service.ts` file, against `docs/conventions/general.md` §Type separation (\"Never inline an exported `type`/`interface` in a `*.service.ts`\"); it could move to `src/core/types/land.types.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "112",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR changes `interface AuditOutcome` to `export interface AuditOutcome`, newly exporting an interface inlined in a service file, against `docs/conventions/general.md` §Type separation; moving it to `src/core/types/` would satisfy the rule.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "59-86, 133-140",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`GIT_SAFE_CONFIG` and `spawnOptions` set neither `--no-replace-objects` nor `GIT_NO_REPLACE_OBJECTS=1`. `refs/replace/` lives in the common dir that any live session can write. Land adds a sink where this matters: nothing measures `originTip`, so a session that plants `refs/replace/<originTip>` makes `isAncestor` and `fastForward`'s checkout use the replacement. The main checkout would then hold a tree that differs from what origin has, and `git status` would still read clean. The impact is limited because sessions are not contained and could write the main checkout directly anyway. It is still the same kind of config/ref-level vector decisions 50 and 82 close, so it is worth a follow-up rather than this PR.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "210-234",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`tearDown` runs `git worktree remove --force session.worktree_path` and deletes `refs/heads/${session.branch}` straight from the sessions row. The project treats that row as writable by a session (decisions 29 and 78). Land validates every field of the merge event (sha regex, `assertTargetName`, the origin-repo prefix on `prUrl`) but none of the row. A session that writes its own row could set `state='merged'`, point `worktree_path` at another live session's worktree, and add a merge event naming any merged PR of the repo and any sha already on origin. If the conductor is then talked into running `pup land`, the other session's uncommitted work is force-removed. The gate's teardown (`merge-gate.service.ts:1122`) trusts the same row fields, so this is not new. Land just reaches it without a gate pass. Noted for the consolidator, not for this PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "context",
+      "description": "review-context was not spawned: the diff touches no CORS/HTTP/docker/CI/settings surface; gh/git protocol use was covered by the security reviewers."
+    }
+  ],
+  "comments_posted_actual": 5,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.828734099999999,
+  "duration_ms": 464182,
+  "num_turns": 19,
+  "tokens": {
+    "input": 12,
+    "output": 22062,
+    "cache_read": 196587,
+    "cache_creation": 72985,
+    "total": 291646
+  }
+}
