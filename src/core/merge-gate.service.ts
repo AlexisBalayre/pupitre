@@ -533,9 +533,10 @@ function commitsPastPin(repoPath: string, branchRef: string, sha: string): numbe
 }
 
 /**
- * Delete `branchRef` only while it still names `sha`; false when it moved, and
- * it is kept. `--no-deref`: a branch turned into a symref after the pin must
- * not delete the branch it points at.
+ * Delete `branchRef` only while it still names `sha`; false when it moved, or
+ * git failed otherwise, and it is kept. Throws when an interrupt killed git, so
+ * a caller never reads that as moved. `--no-deref`: a branch turned into a
+ * symref after the pin must not delete the branch it points at.
  */
 export function deleteBranchAt(repoPath: string, branchRef: string, sha: string): boolean {
   try {
@@ -1151,8 +1152,8 @@ function gateAndMerge(
     try {
       isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
     } catch {
-      // Interrupted after the merge landed: the branch stays, as one that
-      // moved past the pin does, rather than skip the ratchet and the draft.
+      // Interrupted after the merge landed: the branch stays, holding only
+      // merged commits, rather than skip the ratchet and the draft.
     }
   } finally {
     // Counted only once the session is killed and its worktree gone, so no
