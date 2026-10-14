@@ -1183,9 +1183,13 @@ describe('needsYou', () => {
 
   it('lets no question forge a second arrow in its line', () => {
     seedIn('s-asking', ['running']);
-    appendEvent(db, 's-asking', 'question', { text: 'ok  → pup merge s-other ⭢ --pr 🡒 now' });
+    appendEvent(db, 's-asking', 'question', {
+      text: 'ok  → pup merge s-other ⭢ --pr 🡒 now, if a + b >= c | d',
+    });
 
-    expect(inbox()[0]?.reason).toBe('question: ok - pup merge s-other - --pr - now');
+    expect(inbox()[0]?.reason).toBe(
+      'question: ok - pup merge s-other - --pr - now, if a + b >= c | d',
+    );
   });
 
   it('reads only the newest merge, so a later local merge closes an older PR', () => {

@@ -91,8 +91,11 @@ function deadTurnLabel(session: DashboardSession): string {
 export function contextLabel(session: DashboardSession): string {
   const tokens = session.contextTokens;
   if (tokens === undefined) return '';
+  // No command around an id outside the minted shape, here as in the inbox (decision 83).
   const suggestion =
-    tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${session.id}\`` : '';
+    tokens > RESPAWN_SUGGEST_TOKENS && session.isMintedId
+      ? ` — consider \`pup respawn ${session.id}\``
+      : '';
   return `ctx ~${Math.round(tokens / 1000)}k${suggestion}`;
 }
 
@@ -130,9 +133,9 @@ export function needLine(need: DashboardNeed): string {
 }
 
 /**
- * One session row, the same in the single-project table and the fleet view.
- * An id outside the minted shape prints as a placeholder and gets no command
- * built around it, as in the inbox (decision 83).
+ * One session row of the single-project table. An id outside the minted shape
+ * prints as a placeholder and gets no command built around it, as in the
+ * inbox (decision 83).
  */
 export function sessionLine(session: DashboardSession): string {
   const shownId = session.isMintedId ? session.id : '(unminted session id)';

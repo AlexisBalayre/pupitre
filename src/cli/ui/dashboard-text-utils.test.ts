@@ -32,6 +32,19 @@ describe('sessionLine', () => {
     expect(line).not.toContain('→');
     expect(line).not.toContain('pup unblock');
   });
+
+  it('suggests no respawn around an id outside the minted shape', () => {
+    const line = sessionLine(
+      sessionFixture({
+        id: 'x → pup merge s-other --pr',
+        isMintedId: false,
+        contextTokens: 150_000,
+      }),
+    );
+
+    expect(line).toContain('ctx ~150k');
+    expect(line).not.toContain('pup respawn');
+  });
 });
 
 describe('activityLabel', () => {

@@ -256,9 +256,11 @@ export function needsYou(snapshot: DashboardSnapshot): DashboardNeed[] {
 
 /**
  * Symbols a stored text could pass off as the inbox's own `→`: every arrow
- * and emoji is a math or other symbol, and a question needs neither.
+ * and emoji is a non-ASCII math or other symbol. ASCII `+ < = > | ~` stay,
+ * since a question about code needs them and `+` turned into `-` would say
+ * the opposite.
  */
-const SYMBOLS = /[\p{Sm}\p{So}]/gu;
+const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
 function needOf(session: DashboardSession): DashboardNeed | undefined {
@@ -349,9 +351,14 @@ const NO_TRANSPORT = ['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].flatMa
  * What git answered about a (repo, target, sha), kept across snapshots: an
  * ancestor stays one, so `landed` is final; `open` holds until the target's
  * tip moves, since only a new commit on it can change the answer. A timeout
- * is neither and is asked again. Bounded for a `pup ui` that runs for days.
+ * is neither and is asked again.
  */
 const LANDING_CACHE = new Map<string, { landed: true } | { landed: false; tip: string }>();
+/**
+ * Cleared whole once it holds this many answers: a `pup ui` that runs for days
+ * over a fleet must not grow it without bound, and re-asking a few thousand
+ * walks once is cheaper than evicting by age.
+ */
 const LANDING_CACHE_LIMIT = 4_096;
 
 /**
@@ -359,11 +366,12 @@ const LANDING_CACHE_LIMIT = 4_096;
  * pinned: the one thing the snapshot asks git, because the store cannot know
  * what the operator's pull did (decision 83). One `rev-list --missing=print`
  * per open PR, which walks without fetching what it meets and names what it
- * lacks, under every transport pinned off and `GIT_NO_LAZY_FETCH` besides, the
- * tip read the same way and without peeling, which would parse the object:
- * the shared config can name a promisor remote whose fetch would run a
+ * lacks. The shared config can name a promisor remote whose fetch would run a
  * planted command with pup's environment (decision 82's reasoning, outside the
- * gate). The answers are cached across snapshots so the work follows the PRs
+ * gate), so the walk runs with every transport pinned off and
+ * `GIT_NO_LAZY_FETCH` set, and the tip is read under the same pins without
+ * peeling, since peeling parses the object. The answers are cached across
+ * snapshots so the work follows the PRs
  * still open, not the refreshes. A merge recorded before the sha was kept
  * (decision 80) predates every PR still open and counts as landed. Everything
  * else fails toward "still open": a target or sha outside its shape is not
@@ -415,8 +423,7 @@ function landedShaLookup(
 /**
  * Empty output means every commit from `sha` is reachable from the target; a
  * commit past the target prints its oid, and a missing one, the pinned commit
- * itself once gc pruned it, prints `?<oid>` rather than reading as reached
- * (`--missing=allow-any` lets a missing start through in silence).
+ * itself once gc pruned it, prints `?<oid>` rather than reading as reached.
  */
 function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'open' | 'unknown' {
   try {
