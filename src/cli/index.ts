@@ -1921,7 +1921,14 @@ export function buildProgram(): Command {
         ),
       );
       if (!report) return;
+      const refuseKept = (): void => {
+        for (const line of report.unmeasured) console.error(line);
+        refuse(
+          `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`; if the metric never measured in this repo, \`pup init\` re-captures the baseline with that on record.`,
+        );
+      };
       if (opts.sweep) {
+        if (report.unmeasured.length > 0) return refuseKept();
         if (report.hasRegression) {
           return refuse('Baseline regressed — fix the regression before sweeping.');
         }
@@ -1969,6 +1976,11 @@ export function buildProgram(): Command {
         const detail = fresh.get(t.stage)?.detail;
         if (t.delta === 'regressed' && detail)
           console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
+      }
+      if (report.unmeasured.length > 0) {
+        // The drift, not the tail: the tail describes a baseline that was not stored.
+        for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
+        return refuseKept();
       }
       printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
       console.log('Baseline refreshed.');

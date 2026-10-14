@@ -10,7 +10,7 @@ import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
 import { UndeclaredSandboxError } from './sandbox.utils.js';
-import { getProject } from './session.repository.js';
+import { getProject, saveProjectBaseline } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskId } from './types/profile.types.js';
 
@@ -252,6 +252,138 @@ describe('auditProject', () => {
       ),
     ).toEqual([182, 196]);
     expect(history[1]?.captured_at).toBe(report.baseline.capturedAt);
+  });
+
+  it('keeps the stored baseline and its history whole when coverage was not measured', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+    const stored = getProject(db, projectId(repo))?.baseline;
+    const history = listBaselineHistory(db, projectId(repo));
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'instrumented vitest run failed: boom' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([
+      'fake: coverage not measured — instrumented vitest run failed: boom',
+    ]);
+    expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    expect(listBaselineHistory(db, projectId(repo))).toEqual(history);
+  });
+
+  it('refreshes the baseline when every metric measured', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => coverageReport(95, 100) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.coverageRatio).toBe(0.95);
+    expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+  });
+
+  // A runner that was never declared gaps on every run; refusing for it would
+  // block the audit for good over a figure the baseline never held.
+  it('refreshes the baseline when the unmeasured metric was never measured before', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
+    expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+  });
+
+  // `deadExports` is one flat array across adapters, so the figure alone cannot
+  // say whose share went missing; the recorded gaps can.
+  describe('with two adapters measuring dead code', () => {
+    const ts = makeAdapter({ id: 'ts', deadCode: () => [] });
+    const pyWithout = makeAdapter({
+      id: 'py',
+      deadCode: () => ({ unavailable: 'no vulture declared' }),
+    });
+
+    it('refreshes when the second adapter never measured dead code', () => {
+      initProject(db, repo, [ts, pyWithout]);
+
+      const report = auditProject(db, repo, [ts, pyWithout]);
+
+      expect(report.unmeasured).toEqual([]);
+      expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+    });
+
+    it('refreshes when the second adapter was not run by the stored capture at all', () => {
+      initProject(db, repo, [ts]);
+
+      const report = auditProject(db, repo, [ts, pyWithout]);
+
+      expect(report.unmeasured).toEqual([]);
+      const stored = JSON.parse(
+        getProject(db, projectId(repo))?.baseline ?? '{}',
+      ) as ProjectBaseline;
+      expect(stored.gaps).toEqual([{ adapterId: 'py', capability: 'dead code' }]);
+    });
+
+    it('keeps the baseline when the second adapter measured before and failed now', () => {
+      initProject(db, repo, [ts, makeAdapter({ id: 'py', deadCode: () => [] })]);
+      const stored = getProject(db, projectId(repo))?.baseline;
+
+      const report = auditProject(db, repo, [ts, pyWithout]);
+
+      expect(report.unmeasured).toEqual(['py: dead code not measured — no vulture declared']);
+      expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    });
+  });
+
+  // Stored before gaps were recorded: judged by the figures it holds, so a
+  // coverage figure is still protected and a metric it never had still is not.
+  describe('with a baseline stored before gaps were recorded', () => {
+    function storeLegacy(adapter: Adapter): void {
+      initProject(db, repo, [adapter]);
+      const stored = JSON.parse(
+        getProject(db, projectId(repo))?.baseline ?? '{}',
+      ) as ProjectBaseline;
+      const { gaps: _gaps, ...legacy } = stored;
+      saveProjectBaseline(db, projectId(repo), legacy.adapters, JSON.stringify(legacy));
+    }
+
+    it('keeps the baseline when a coverage figure it holds went unmeasured', () => {
+      storeLegacy(makeAdapter({ coverage: () => coverageReport(90, 100) }));
+      const stored = getProject(db, projectId(repo))?.baseline;
+
+      const report = auditProject(db, repo, [
+        makeAdapter({ coverage: () => ({ unavailable: 'boom' }) }),
+      ]);
+
+      expect(report.unmeasured).toEqual(['fake: coverage not measured — boom']);
+      expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    });
+
+    it('refreshes and records the gap for a metric it never held', () => {
+      storeLegacy(makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }));
+
+      const report = auditProject(db, repo, [
+        makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
+      ]);
+
+      expect(report.unmeasured).toEqual([]);
+      const refreshed = JSON.parse(
+        getProject(db, projectId(repo))?.baseline ?? '{}',
+      ) as ProjectBaseline;
+      expect(refreshed.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
+    });
+  });
+
+  it('stores a first baseline with a gap like `pup init` does: there is nothing to keep', () => {
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
+    expect(getProject(db, projectId(repo))?.baseline).toBeDefined();
+    expect(listBaselineHistory(db, projectId(repo))).toHaveLength(1);
   });
 
   it('emits no transition for a metric measured on only one side', () => {

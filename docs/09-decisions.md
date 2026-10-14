@@ -927,7 +927,19 @@ changes back into those docs is pending.
     captures happen once per init/audit (pupitre's own 11 days produced far fewer audits than
     its 24 gate reports), each row is a few KB of JSON, so even years of daily audits stay in
     the hundreds of rows. Nothing prunes; if a future caller wires captures into a loop, that
-    caller adds pruning.
+    caller adds pruning. *Amended 2026-10-14 (PR #142):* the append lives in `persistBaseline`,
+    which `initProject` and `auditProject` both call, so it stays the one choke point. Every
+    capture also records which (adapter, capability) pairs went unmeasured
+    (`ProjectBaseline.gaps`, empty included), because `deadExports` is one flat array across
+    adapters and the figure alone cannot say whose share is missing. An audit with a gap that is
+    new against that record does not call `persistBaseline`: the baseline and its history stay
+    whole, a plain audit prints the drift first, `--sweep` refuses at once, and both exit 1
+    saying "Baseline kept". A gap the record already holds (no coverage runner declared, no
+    vulture beside the TS adapter) does not block, since the refusal would protect a figure that
+    was never there, and neither does a dead-code gap from an adapter the stored capture did not
+    run, which added no share to the flat figure. A baseline stored before gaps were recorded is
+    judged by the figures it holds, and the refusal names `pup init` as the way to put a metric
+    that never measured here on record. `pup init` is unchanged.
     *Backfill* — the first capture on an upgraded store seeds a row from the outgoing
     pre-table baseline before `saveProjectBaseline` discards it, so the numbers already
     ratcheted over 11 days of dogfooding are the trend's first point rather than lost. The

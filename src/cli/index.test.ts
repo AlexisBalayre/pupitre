@@ -1897,6 +1897,60 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('keeps the baseline and exits 1 when a debt metric was not measured', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const adapterYml = join(repo, '.pupitre', 'adapter.yml');
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(
+        adapterYml,
+        `id: probe\nbuild: exit 0\ncoverage: echo '{"files":{"a.ts":{"covered":[1],"instrumented":[1]}}}'\n`,
+      );
+      buildProgram().parse(['init'], { from: 'user' });
+      const before = baselineRows(repo);
+      writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\ncoverage: echo boom >&2; exit 1\n');
+      logs.length = 0;
+
+      buildProgram().parse(['audit'], { from: 'user' });
+
+      expect(errors[0]).toMatch(/^probe: coverage not measured — coverage command failed: .*boom/);
+      expect(errors).toHaveLength(2);
+      expect(errors[1]).toMatch(/^Baseline kept: a debt metric was not measured/);
+      expect(logs.join('\n')).toContain('build    PASS');
+      expect(logs.join('\n')).not.toContain('debt baseline:');
+      expect(logs.join('\n')).not.toContain('Baseline refreshed');
+      expect(process.exitCode).toBe(1);
+      expect(baselineRows(repo)).toEqual(before);
+    });
+
+    it('refreshes the baseline when every metric measured', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(join(repo, '.pupitre', 'adapter.yml'), 'id: probe\nbuild: exit 0\n');
+      buildProgram().parse(['init'], { from: 'user' });
+
+      buildProgram().parse(['audit'], { from: 'user' });
+
+      expect(logs).toContain('Baseline refreshed.');
+      expect(errors).toEqual([]);
+      expect(baselineRows(repo).history).toBe(2);
+    });
+
+    /** The stored baseline and how many history rows stand behind it. */
+    function baselineRows(repo: string): { baseline: string | null; history: number } {
+      const { db } = resolveProject(repo);
+      const id = projectId(repo);
+      const row = db.prepare('SELECT baseline FROM projects WHERE id = ?').get(id) as {
+        baseline: string | null;
+      };
+      const { n } = db
+        .prepare('SELECT COUNT(*) AS n FROM baseline_history WHERE project_id = ?')
+        .get(id) as { n: number };
+      db.close();
+      return { baseline: row.baseline, history: n };
+    }
+
     // A sweep is scoped to the whole repo, so it collides with every live
     // session there is; refusing it would make `--sweep` unrunnable whenever
     // anything else runs, and there is no flag to say otherwise (decision 41).

@@ -18,6 +18,7 @@ import {
   saveProjectBaseline,
   saveProjectOriginUrl,
 } from './session.repository.js';
+import type { DebtGap } from './types/debt.types.js';
 import type { BaselineStageResult, InitReport, ProjectBaseline } from './types/init.types.js';
 
 export class NoAdapterError extends Error {
@@ -162,6 +163,11 @@ function runBaselineStage(
   }
 }
 
+/** A baseline measured but not yet stored, with the debt capabilities that could not measure. */
+interface MeasuredBaseline extends InitReport {
+  gaps: DebtGap[];
+}
+
 /**
  * `pup init`, v1 slim: detect adapters, run the gate stages once against the
  * main checkout, and store the result as the project baseline (docs/07 phases
@@ -176,6 +182,27 @@ export function initProject(
   gateEnv?: string[],
   recording: OriginRecording = 'record',
 ): InitReport {
+  const {
+    projectId: pid,
+    baseline,
+    findings,
+    sandbox,
+  } = measureBaseline(db, repoPath, adapters, gateEnv, recording);
+  persistBaseline(db, pid, baseline);
+  return { projectId: pid, baseline, findings, sandbox };
+}
+
+/**
+ * Everything `pup init` does short of storing the baseline, so `pup audit` can
+ * look at what was measured before it decides whether to store it.
+ */
+export function measureBaseline(
+  db: Database,
+  repoPath: string,
+  adapters: Adapter[],
+  gateEnv?: string[],
+  recording: OriginRecording = 'record',
+): MeasuredBaseline {
   // Before anything runs, so a platform pup cannot confine and the operator has
   // not declared refuses whole, not after half a baseline (decision 78).
   const sandbox = sandboxLabel();
@@ -236,7 +263,17 @@ export function initProject(
     adapters: detected.map((a) => a.id),
     stages,
     ...(Object.keys(debt).length > 0 ? { debt } : {}),
+    gaps: gaps.map(({ adapterId, capability }) => ({ adapterId, capability })),
   };
+  return { projectId: pid, baseline, findings, sandbox, gaps };
+}
+
+/**
+ * Store a measured baseline as the project's bar, with its history row. The one
+ * place that appends history (decision 38), shared by init and the audit, which
+ * calls it only once every metric the stored baseline holds has measured.
+ */
+export function persistBaseline(db: Database, pid: string, baseline: ProjectBaseline): void {
   // History (decision 38): every capture appends its own row before the
   // overwrite, so the only stored baseline with no row is one written before
   // the table existed — seed it here or the overwrite discards it for good.
@@ -259,5 +296,4 @@ export function initProject(
     debt: baseline.debt,
   });
   saveProjectBaseline(db, pid, baseline.adapters, JSON.stringify(baseline));
-  return { projectId: pid, baseline, findings, sandbox };
 }
