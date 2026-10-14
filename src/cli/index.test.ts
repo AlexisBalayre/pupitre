@@ -1914,9 +1914,10 @@ describe('CLI commands', () => {
       buildProgram().parse(['audit'], { from: 'user' });
 
       expect(errors[0]).toMatch(/^probe: coverage not measured — coverage command failed: .*boom/);
+      expect(errors).toHaveLength(2);
       expect(errors[1]).toMatch(/^Baseline kept: a debt metric was not measured/);
-      // The drift still prints: the measured metrics moved whether or not the bar follows.
       expect(logs.join('\n')).toContain('build    PASS');
+      expect(logs.join('\n')).not.toContain('debt baseline:');
       expect(logs.join('\n')).not.toContain('Baseline refreshed');
       expect(process.exitCode).toBe(1);
       expect(baselineRows(repo)).toEqual(before);

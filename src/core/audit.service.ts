@@ -12,6 +12,7 @@ import type {
   StageDelta,
   StageTransition,
 } from './types/audit.types.js';
+import type { DebtGap } from './types/debt.types.js';
 import type { BaselineStageStatus, DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
@@ -118,15 +119,18 @@ interface AuditOutcome extends AuditReport {
 }
 
 /**
- * Whether the stored baseline carries the figure a gap would drop. A metric
- * that has never measured (no coverage runner declared, no vulture) gaps on
- * every run, and refusing for it would block the audit for good while
- * protecting a figure the baseline never had.
+ * Whether a gap would drop a figure the stored baseline has: one it did not
+ * record at its own capture. A metric that has never measured (no coverage
+ * runner declared, no vulture beside the TS adapter) gaps on every run, and
+ * refusing for it would block the audit for good while protecting a figure
+ * the baseline never had. A baseline from before gaps were recorded answers
+ * for none of them, so the first audit after the upgrade refreshes and records.
  */
-function holdsFigure(debt: DebtBaseline | undefined, capability: string): boolean {
-  if (capability === 'coverage') return debt?.coverageRatio !== undefined;
-  if (capability === 'dead code') return debt?.deadExports !== undefined;
-  return true;
+function isNewGap(previous: ProjectBaseline, gap: DebtGap): boolean {
+  if (previous.gaps === undefined) return false;
+  return !previous.gaps.some(
+    (g) => g.adapterId === gap.adapterId && g.capability === gap.capability,
+  );
 }
 
 /**
@@ -151,7 +155,7 @@ export function auditProject(
   const report = measureBaseline(db, repoPath, adapters, gateEnv);
   const unmeasured = previous
     ? report.gaps
-        .filter((gap) => holdsFigure(previous.debt, gap.capability))
+        .filter((gap) => isNewGap(previous, gap))
         .map(
           (gap) =>
             `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,

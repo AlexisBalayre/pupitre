@@ -1977,10 +1977,12 @@ export function buildProgram(): Command {
         if (t.delta === 'regressed' && detail)
           console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
       }
+      if (report.unmeasured.length > 0) {
+        // The drift, not the tail: the tail describes a baseline that was not stored.
+        for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
+        return refuseKept();
+      }
       printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
-      // After the drift, which the operator still wants to see: the measured
-      // metrics moved whether or not the bar follows them.
-      if (report.unmeasured.length > 0) return refuseKept();
       console.log('Baseline refreshed.');
       if (report.hasRegression) process.exitCode = 1;
     });

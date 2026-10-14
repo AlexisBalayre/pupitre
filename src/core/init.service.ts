@@ -263,6 +263,7 @@ export function measureBaseline(
     adapters: detected.map((a) => a.id),
     stages,
     ...(Object.keys(debt).length > 0 ? { debt } : {}),
+    gaps: gaps.map(({ adapterId, capability }) => ({ adapterId, capability })),
   };
   return { projectId: pid, baseline, findings, sandbox, gaps };
 }

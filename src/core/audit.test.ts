@@ -10,7 +10,7 @@ import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
 import { UndeclaredSandboxError } from './sandbox.utils.js';
-import { getProject } from './session.repository.js';
+import { getProject, saveProjectBaseline } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskId } from './types/profile.types.js';
 
@@ -294,6 +294,52 @@ describe('auditProject', () => {
 
     expect(report.unmeasured).toEqual([]);
     expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+  });
+
+  // `deadExports` is one flat array across adapters, so the figure alone cannot
+  // say whose share went missing; the recorded gaps can.
+  describe('with two adapters measuring dead code', () => {
+    const ts = makeAdapter({ id: 'ts', deadCode: () => [] });
+    const pyWithout = makeAdapter({
+      id: 'py',
+      deadCode: () => ({ unavailable: 'no vulture declared' }),
+    });
+
+    it('refreshes when the second adapter never measured dead code', () => {
+      initProject(db, repo, [ts, pyWithout]);
+
+      const report = auditProject(db, repo, [ts, pyWithout]);
+
+      expect(report.unmeasured).toEqual([]);
+      expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+    });
+
+    it('keeps the baseline when the second adapter measured before and failed now', () => {
+      initProject(db, repo, [ts, makeAdapter({ id: 'py', deadCode: () => [] })]);
+      const stored = getProject(db, projectId(repo))?.baseline;
+
+      const report = auditProject(db, repo, [ts, pyWithout]);
+
+      expect(report.unmeasured).toEqual(['py: dead code not measured — no vulture declared']);
+      expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    });
+  });
+
+  it('refreshes once for a baseline stored before gaps were recorded, then records them', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    const { gaps: _gaps, ...legacy } = stored;
+    saveProjectBaseline(db, projectId(repo), legacy.adapters, JSON.stringify(legacy));
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'boom' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
+    const refreshed = JSON.parse(
+      getProject(db, projectId(repo))?.baseline ?? '{}',
+    ) as ProjectBaseline;
+    expect(refreshed.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
   });
 
   it('stores a first baseline with a gap like `pup init` does: there is nothing to keep', () => {

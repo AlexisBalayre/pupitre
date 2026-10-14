@@ -33,6 +33,14 @@ export interface ProjectBaseline {
   adapters: string[];
   stages: BaselineStageResult[];
   debt?: DebtBaseline;
+  /**
+   * The (adapter, capability) pairs that went unmeasured at this capture, so
+   * an audit can tell a gap that is new from one the bar never covered:
+   * `deadExports` is one flat array across adapters (decision 38). Every
+   * capture records it, empty included; absent only on baselines stored
+   * before it existed.
+   */
+  gaps?: { adapterId: string; capability: string }[];
 }
 
 export interface InitReport {
