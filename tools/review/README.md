@@ -27,7 +27,7 @@ the model buys three guarantees a model-posted review cannot make:
 
 | Script | Workflow step | What it does |
 | :----- | :------------ | :----------- |
-| `review-preflight.script.ts` | before the model | Asserts the tree is the PR's clean current head, resolves the merge base, and decides **full vs. incremental** against the prior record on `ci/review-metrics` (same-SHA retriggers skip; rebases, force-pushes, and merge-bearing deltas resolve to full). |
+| `review-preflight.script.ts` | before the model | Asserts the tree is the PR's clean current head, resolves the merge base, and decides **full vs. incremental** against the prior record on `ci/review-metrics` (same-SHA retriggers skip, and so does a delta of comments and prose Markdown alone, judged by the TypeScript parser and marked "Not reviewed" on the head, which the next code push's incremental review still reads; rebases, force-pushes, and merge-bearing deltas resolve to full). |
 | `print-schema.script.ts` | before the model | Emits the structured-output contract as JSON Schema for `--json-schema`, generated from the zod source so the contract cannot drift. |
 | `post-review.script.ts` | after the model, `always()` | The review's only writer: posts one review with anchored inline comments (falling back to per-comment posting if the batch 422s), and pins the `claude-review` commit status. |
 | `review-metrics.script.ts` | after the poster, `always()` | Builds the normalized run record (findings, refutations, mode, reviewers returned, cost, tokens, `is_error` with its `incomplete_reason`) from the model output + execution log + poster hand-off; the workflow's second job appends it to the `ci/review-metrics` orphan branch for `/review-retro`. |

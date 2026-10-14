@@ -1,6 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { decideMode, newestCleanRecord, type PriorRecord, porcelainPaths } from "./preflight.utils";
+import {
+  decideMode,
+  isCommentOnlyDelta,
+  newestCleanRecord,
+  parseRawDiff,
+  type PriorRecord,
+  porcelainPaths,
+} from "./preflight.utils";
 
 /**
  * Deterministic review preflight. Asserts the working
@@ -42,6 +49,18 @@ function gitOk(...args: string[]): boolean {
 
 function gh(...args: string[]): string {
   return execFileSync("gh", args, { encoding: "utf8" }).trim();
+}
+
+function markNotReviewed(sha: string, description: string): void {
+  const repository = process.env.GITHUB_REPOSITORY ?? "";
+  const runUrl = `https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID ?? ""}`;
+  try {
+    execFileSync("gh", ["api", "--method", "POST", `repos/${repository}/statuses/${sha}`, "--input", "-"], {
+      input: JSON.stringify({ state: "pending", context: "claude-review", description, target_url: runUrl }),
+    });
+  } catch {
+    warn("could not set the claude-review commit status");
+  }
 }
 
 function headRefOid(prNumber: string): string {
@@ -127,17 +146,40 @@ async function main(): Promise<void> {
       hasMerges = true; // unknown prior object; resolves to full below
     }
   }
-  const decision = decideMode({
-    prior,
-    headSha,
-    trigger,
-    forceFull,
-    isAncestor: priorSha !== null && gitOk("merge-base", "--is-ancestor", priorSha, "HEAD"),
-    hasMerges,
-  });
+  const isAncestor = priorSha !== null && gitOk("merge-base", "--is-ancestor", priorSha, "HEAD");
+  let commentOnly = false;
+  if (priorSha !== null && isAncestor && !hasMerges) {
+    try {
+      // `--ignore-submodules=none` overrides an `ignore = all` the PR's own
+      // `.gitmodules` could set to hide a gitlink bump from the listing.
+      const raw = execFileSync(
+        "git",
+        ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--ignore-submodules=none", priorSha, "HEAD"],
+        { encoding: "utf8" },
+      );
+      // Fatal decoding: two invalid byte runs must not both read as U+FFFD.
+      const utf8 = new TextDecoder("utf-8", { fatal: true });
+      commentOnly = isCommentOnlyDelta(parseRawDiff(raw), (sha) =>
+        utf8.decode(execFileSync("git", ["cat-file", "blob", sha])),
+      );
+    } catch {
+      commentOnly = false; // an unreadable delta is reviewed, never skipped
+    }
+  }
+  const decision = decideMode({ prior, headSha, trigger, forceFull, isAncestor, hasMerges, commentOnly });
 
   if (decision.kind === "skip-duplicate") {
     process.stdout.write(`::notice::head ${headSha} already reviewed (${decision.priorPath}); nothing new to review\n`);
+    out("skip", "true");
+    return;
+  }
+  if (decision.kind === "skip-comment-only") {
+    process.stdout.write(
+      `::notice::only comments and prose changed since ${priorSha} (${decision.priorPath}); the next code push reviews them\n`,
+    );
+    // Pending, not green, on the PR at this head, so a merge here is not read as
+    // reviewed; nothing requires the check, so it never blocks the merge.
+    markNotReviewed(headSha, `Not reviewed: only comments and prose changed since ${priorSha?.slice(0, 7)}`);
     out("skip", "true");
     return;
   }
