@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T15:59:23.035Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38593008646",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38593008646",
+  "actor": "AlexisBalayre",
+  "commit_sha": "07fa0d537d2712706a9f4ea654dbadd08559a7f9",
+  "source": "pr",
+  "pr_number": 145,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "fa84a8c589d694c4b7547c68aa5625d08da6631c",
+  "prior_importants": [
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "97-120",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "108",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`ts.getLeadingCommentRanges(text, pos)` skips any comment that sits before the first CR/LF after `pos`, except at `pos === 0`. TypeScript counts those as trailing comments of the previous token. U+2028 doesn't switch collection on either. The walk only asks for leading ranges at each token's full start, so it never sees a pragma that follows code on the same line. Typical cases are `cond ? /* v8 ignore next */ x() : y()`, `a(); /* v8 ignore start */` and `x = /* @__PURE__ */ f()`. The printer drops it too. The raw scanner at fa84a8c saw every comment trivia, so this is a new gap.",
+      "body": "**Same-line pragmas are invisible to `pragmaAnchors`, so a push that adds one is skipped as comment-only**\n\n```ts\nfor (const range of ts.getLeadingCommentRanges(text, node.pos) ?? []) {\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/07fa0d537d2712706a9f4ea654dbadd08559a7f9/tools/review/src/preflight.utils.ts#L102-L115\n\n`getLeadingCommentRanges(text, pos)` reports nothing until it crosses the first CR/LF after `pos`, except at `pos === 0`. TypeScript treats comments before that line break as trailing comments of the previous token. So a pragma that follows code on the same line is never tested against `PRAGMA`:\n\n- `const a = cond ? x() : y();` -> `const a = cond ? /* v8 ignore next */ x() : y();`\n- `const x = f();` -> `const x = /* @__PURE__ */ f();`\n- `log(x);` -> `log(x); // eslint-disable-line no-console`\n- `run();` -> `run(); /* c8 ignore start */`\n\nThe printer runs with `removeComments: true`, and both sides yield `[]` anchors. So `sameCodeIgnoringComments` returns true and `decideMode` returns `skip-comment-only`. The scanner at fa84a8c anchored every comment token, so the regression is new in 07fa0d5. It also breaks the README's promise to \"keep every pragma ... before the same code\".\n\nThere's a sign in the code too: when `pos` isn't 0, `hasLineBreak` (L111) is always `true`. The test at L204 (`risky(); /* v8 ignore next */` moved to its own line) passes only because the before side has no anchor at all.\n\n**Fix:** also collect the same-line ranges with `getTrailingCommentRanges` at the same position, and skip them at `pos === 0`, where leading ranges already start collecting. The two calls split the trivia at its first CR/LF. Together they cover every comment exactly once, and `hasLineBreak` then tells the two kinds apart again. Add tests where only the after side has a same-line pragma, e.g. `same(\"a();\\nb();\\n\", \"a(); // @ts-ignore\\nb();\\n\")` and the ternary case above. Both should be `false`.",
+      "suggestion": "    const trailing = node.pos === 0 ? [] : (ts.getTrailingCommentRanges(text, node.pos) ?? []);\n    for (const range of [...trailing, ...(ts.getLeadingCommentRanges(text, node.pos) ?? [])]) {"
+    },
+    {
+      "file": null,
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR description's Markdown bullet still says the prose allowlist includes \"design chapters 00 to 08\". Commit 07fa0d5 removed them from `isProseMarkdown`, so at head only root README/CONTRIBUTING/CHANGELOG qualify and every `docs/` file is always reviewed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/README.md",
+      "line": "30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The preflight row has a stray space before a period: \"`ci/review-metrics` . Rebases\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "71-76",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `isProseMarkdown` JSDoc says \"Everything else steers an agent\". That overclaims: the same commit's tests list `tools/x/notes.md`, which steers nothing. The real rule is that only root repo meta is known to be inert, so \"Everything else may steer an agent\" would be accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "128-140",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`read` in `sameCodeIgnoringComments` is named like a plain parse, but it parses, returns `null` on diagnostics, and serialises a `[printed, anchors]` pair into a JSON equality fingerprint. A name like `fingerprint` would make that contract visible.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "96-118",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pragmaAnchors` still encodes each anchor as a `${tokenIndex}:${hasLineBreak}:${comment}` string. The shape stays implicit, and the `:` separator is unambiguous only because `comment` comes last. Since the result is only stringified and compared, a tuple array would show the shape without the encoding.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3454732000000003,
+  "duration_ms": 415363,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 13548,
+    "cache_read": 341425,
+    "cache_creation": 51304,
+    "total": 406293
+  }
+}
