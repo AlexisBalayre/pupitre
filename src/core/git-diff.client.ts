@@ -126,6 +126,20 @@ export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): s
   return execFileSync('git', safeArgv(cwd, args), { ...spawnOptions(opts), encoding: 'utf8' });
 }
 
+/**
+ * Rethrow `error` when it is a git child an interrupt killed. A catch that
+ * reads git's failure as an answer ("not an ancestor", "locked") must not read
+ * a Ctrl-C as one: the interrupted command should stop, not carry on from an
+ * answer git never gave. A git that crashed on its own (SIGSEGV, SIGABRT) is
+ * left to the catch, whose fallback is the safe one for state that would crash
+ * it on every re-run.
+ */
+export function rethrowIfKilled(error: unknown): void {
+  const signal =
+    typeof error === 'object' && error !== null && 'signal' in error ? error.signal : undefined;
+  if (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') throw error;
+}
+
 function safeArgv(cwd: string, args: string[]): string[] {
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...args];
 }

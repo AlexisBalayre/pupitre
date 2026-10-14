@@ -50,6 +50,7 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
+import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -109,9 +110,11 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
+import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
+import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
@@ -349,6 +352,57 @@ function withPushTargetLine<TResult>(db: Database, repoPath: string, run: () => 
   }
 }
 
+/**
+ * An audit's drift against the stored baseline, as `pup audit` and `pup land`
+ * print it, ending on a failing exit when the baseline regressed or was kept.
+ */
+function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string): void {
+  if (!report.previous) {
+    console.log('No stored baseline yet — captured one now, like `pup init`.');
+    printInitReport(db, report, repoPath);
+    return;
+  }
+  console.log(`Project ${report.projectId} (${sanitizeReason(repoPath)})`);
+  const fresh = new Map(report.baseline.stages.map((s) => [s.stage, s]));
+  for (const t of report.transitions) {
+    const move =
+      t.delta === 'unchanged'
+        ? t.after.toUpperCase()
+        : `${t.before.toUpperCase()} -> ${t.after.toUpperCase()}`;
+    const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
+    console.log(
+      `  ${sanitizeReason(t.stage).padEnd(8)} ${sanitizeReason(move).padEnd(16)}${marker}`,
+    );
+    const detail = fresh.get(t.stage)?.detail;
+    if (t.delta === 'regressed' && detail)
+      console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
+  }
+  if (report.unmeasured.length > 0) {
+    // The drift, not the tail: the tail describes a baseline that was not stored.
+    for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
+    refuseKeptBaseline(report);
+    return;
+  }
+  if (report.heldOnRegression) {
+    for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
+    refuse(
+      'Baseline kept: the measurement regressed, and a land does not move the bar over a ' +
+        'regression; run `pup audit` to accept it or fix it first.',
+    );
+    return;
+  }
+  printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
+  console.log('Baseline refreshed.');
+  if (report.hasRegression) process.exitCode = 1;
+}
+
+function refuseKeptBaseline(report: AuditOutcome): void {
+  for (const line of report.unmeasured) console.error(line);
+  refuse(
+    `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`; if the metric never measured in this repo, \`pup init\` re-captures the baseline with that on record.`,
+  );
+}
+
 /** The gate flags only increases over these numbers, so the human should see the bar. */
 function describeDebtBaseline(debt: DebtBaseline | undefined): string {
   if (!debt) return 'not measured — the debt-delta gate stages will be skipped';
@@ -435,6 +489,18 @@ function steerOrRefuse(act: () => void, done: string): void {
 function refuse(message: string): void {
   console.error(message);
   process.exitCode = 1;
+}
+
+/**
+ * A refusal whose text came partly from the store or a child (the spec, an
+ * adapter's stderr): control characters go, but the message is not cut to a
+ * line, since pup's own refusals carry remediation steps past the scrubber's
+ * 300 (decision 68).
+ */
+function refuseScrubbed(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
 }
 
 /**
@@ -1706,13 +1772,7 @@ export function buildProgram(): Command {
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          // Store-read and child-read text reaches here too (the spec refusal, an
-          // adapter command's stderr from the session's worktree), so control
-          // characters are stripped — but not cut to a line: pup's own refusals
-          // carry remediation steps past the scrubber's 300 (decision 68).
-          const message = error instanceof Error ? error.message : String(error);
-          // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-          return refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
+          return refuseScrubbed(error);
         } finally {
           // The gate has released its own lock by now, so a later signal must
           // not reach a handler that would delete the next run's.
@@ -1725,8 +1785,8 @@ export function buildProgram(): Command {
             if (outcome.prUrl) {
               console.log(
                 outcome.prWasAdopted
-                  ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup audit\`.`
-                  : `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup audit\`.`,
+                  ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup land ${session}\`.`
+                  : `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup land ${session}\`.`,
               );
             } else {
               console.log(`Merged ${session}; worktree and branch cleaned up.`);
@@ -1764,6 +1824,53 @@ export function buildProgram(): Command {
         if (outcome.status !== 'merged') process.exitCode = 1;
       },
     );
+  program
+    .command('land <session>')
+    .description(
+      'After the PR merged on GitHub: fast-forward main, clean up the session and run the audit',
+    )
+    .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
+    .action((session: string, opts: { gateEnv?: string }) => {
+      const { repoPath, db } = project();
+      // The human merged the PR on GitHub already; what is left moves main to
+      // what origin holds and re-stamps the baseline, so the conductor may run
+      // it, and a session may not, as it may not run the audit (decision 84).
+      if (callingSession(db)) {
+        return refuse('`pup land` is refused to sessions; the operator or the conductor runs it.');
+      }
+      if (refusedUnsandboxed()) return;
+      let outcome: LandOutcome;
+      try {
+        outcome = landSession(db, {
+          repoPath,
+          sessionId: session,
+          adapters: detectAdapters(repoPath),
+          gateEnv: parseGateEnv(opts.gateEnv),
+        });
+      } catch (error) {
+        return refuseScrubbed(error);
+      }
+      const target = sanitizeReason(outcome.target);
+      console.log(
+        `Landed ${sanitizeReason(session)}: ${outcome.prUrl} merged as ${outcome.mergeCommit}; ` +
+          (outcome.fastForwarded
+            ? `${target} fast-forwarded to ${outcome.targetSha}.`
+            : `${target} already held it at ${outcome.targetSha}.`),
+      );
+      if (outcome.removedWorktree) console.log('Removed the session worktree.');
+      if (outcome.keptWorktree !== undefined) {
+        console.log(
+          `Kept the worktree at ${sanitizeReason(outcome.keptWorktree)} and its branch: git ` +
+            'could not remove it (a lock, most likely); remove it from the trusted checkout.',
+        );
+      }
+      if (outcome.keptBranch !== undefined) {
+        console.log(
+          `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
+        );
+      }
+      printAuditOutcome(db, outcome.audit, repoPath);
+    });
   program
     .command('map [module]')
     .description('Code map: text tree, or one module in detail; --open for the mind-map')
@@ -1947,14 +2054,8 @@ export function buildProgram(): Command {
         ),
       );
       if (!report) return;
-      const refuseKept = (): void => {
-        for (const line of report.unmeasured) console.error(line);
-        refuse(
-          `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`; if the metric never measured in this repo, \`pup init\` re-captures the baseline with that on record.`,
-        );
-      };
       if (opts.sweep) {
-        if (report.unmeasured.length > 0) return refuseKept();
+        if (report.unmeasured.length > 0) return refuseKeptBaseline(report);
         if (report.hasRegression) {
           return refuse('Baseline regressed — fix the regression before sweeping.');
         }
@@ -1983,34 +2084,7 @@ export function buildProgram(): Command {
         reportLaunched(sessionId, 'sweep session');
         return;
       }
-      if (!report.previous) {
-        console.log('No stored baseline yet — captured one now, like `pup init`.');
-        printInitReport(db, report, repoPath);
-        return;
-      }
-      console.log(`Project ${report.projectId} (${sanitizeReason(repoPath)})`);
-      const fresh = new Map(report.baseline.stages.map((s) => [s.stage, s]));
-      for (const t of report.transitions) {
-        const move =
-          t.delta === 'unchanged'
-            ? t.after.toUpperCase()
-            : `${t.before.toUpperCase()} -> ${t.after.toUpperCase()}`;
-        const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
-        console.log(
-          `  ${sanitizeReason(t.stage).padEnd(8)} ${sanitizeReason(move).padEnd(16)}${marker}`,
-        );
-        const detail = fresh.get(t.stage)?.detail;
-        if (t.delta === 'regressed' && detail)
-          console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
-      }
-      if (report.unmeasured.length > 0) {
-        // The drift, not the tail: the tail describes a baseline that was not stored.
-        for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
-        return refuseKept();
-      }
-      printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
-      console.log('Baseline refreshed.');
-      if (report.hasRegression) process.exitCode = 1;
+      printAuditOutcome(db, report, repoPath);
     });
 
   const session = program.command('session').description('Session-internal protocol commands');

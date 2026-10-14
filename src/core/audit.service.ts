@@ -7,7 +7,7 @@ import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
 import type {
-  AuditReport,
+  AuditOutcome,
   DebtMetric,
   DebtTransition,
   StageDelta,
@@ -109,16 +109,6 @@ export function formatDebtTransition(t: DebtTransition): string {
   return `${label.padEnd(8)} ${move.padEnd(16)}${marker}`;
 }
 
-interface AuditOutcome extends AuditReport {
-  /**
-   * One line per debt metric the adapter could not measure although the stored
-   * baseline holds a figure for it, each meaning that baseline was kept rather
-   * than refreshed. Empty on a first run, which stores what it measured exactly
-   * like `pup init`: there is nothing to keep.
-   */
-  unmeasured: string[];
-}
-
 /**
  * Whether a gap would drop a figure the stored baseline has: one it did not
  * record at its own capture. A metric that has never measured (no coverage
@@ -162,6 +152,7 @@ export function auditProject(
   repoPath: string,
   adapters: Adapter[],
   gateEnv?: string[],
+  onRegression: 'refresh' | 'keep' = 'refresh',
 ): AuditOutcome {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
@@ -174,21 +165,26 @@ export function auditProject(
             `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,
         )
     : [];
-  if (unmeasured.length === 0) persistBaseline(db, report.projectId, report.baseline);
   const transitions = previous ? compareBaselines(previous, report.baseline) : [];
   const debtTransitions = previous ? compareDebt(previous.debt, report.baseline.debt) : [];
+  const hasRegression =
+    transitions.some((t) => t.delta === 'regressed') ||
+    debtTransitions.some((t) => t.delta === 'regressed');
+  const heldOnRegression = hasRegression && onRegression === 'keep';
+  if (unmeasured.length === 0 && !heldOnRegression) {
+    persistBaseline(db, report.projectId, report.baseline);
+  }
   return {
     projectId: report.projectId,
     previous,
     baseline: report.baseline,
     transitions,
     debtTransitions,
-    hasRegression:
-      transitions.some((t) => t.delta === 'regressed') ||
-      debtTransitions.some((t) => t.delta === 'regressed'),
+    hasRegression,
     findings: report.findings,
     sandbox: report.sandbox,
     unmeasured,
+    heldOnRegression,
   };
 }
 

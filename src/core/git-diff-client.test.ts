@@ -20,6 +20,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  rethrowIfKilled,
   runGit,
 } from './git-diff.client.js';
 
@@ -659,5 +660,28 @@ describe('the single git entry point', () => {
       'planted.ts:4',
       'planted.ts:8',
     ]);
+  });
+});
+
+describe('rethrowIfKilled', () => {
+  const failureOf = (script: string): unknown => {
+    try {
+      execFileSync('sh', ['-c', script], { stdio: 'ignore' });
+    } catch (error) {
+      return error;
+    }
+    throw new Error('the child was expected to fail');
+  };
+
+  it.each(['INT', 'TERM', 'HUP'])('rethrows a child SIG%s killed', (signal) => {
+    const error = failureOf(`kill -${signal} $$`);
+    expect(() => rethrowIfKilled(error)).toThrow(
+      expect.objectContaining({ signal: `SIG${signal}` }),
+    );
+  });
+
+  it("leaves git's own failure and a crash to the caller's catch", () => {
+    expect(() => rethrowIfKilled(failureOf('exit 1'))).not.toThrow();
+    expect(() => rethrowIfKilled(failureOf('kill -SEGV $$'))).not.toThrow();
   });
 });

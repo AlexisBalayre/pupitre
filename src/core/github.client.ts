@@ -12,12 +12,12 @@ const GH_COMMAND_TIMEOUT_MS = 60_000;
 /** `git@host:owner/repo.git`, `https://host/owner/repo`, `ssh://git@host/owner/repo.git`. */
 const REMOTE_URL = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/;
 
-/** Fail before the gate runs, not after ten minutes of stages. */
-export function assertGhAvailable(): void {
+/** Fail before any work starts, not partway through; `command` names the caller in the refusal. */
+export function assertGhAvailable(command: string): void {
   try {
     execFileSync('gh', ['--version'], { stdio: 'ignore', timeout: GH_PROBE_TIMEOUT_MS });
   } catch {
-    throw new Error('`pup merge --pr` needs the `gh` CLI on PATH, logged in to GitHub.');
+    throw new Error(`${command} needs the \`gh\` CLI on PATH, logged in to GitHub.`);
   }
 }
 
@@ -56,6 +56,23 @@ function ghJson(repoPath: string, args: string[]): unknown {
   } catch {
     throw new Error(`Cannot parse \`gh ${args[1]}\` output as JSON:\n${output.trim()}`);
   }
+}
+
+/** `gh pr view` of the PR at `url`, pinned to `repo`, as the fields asked for. */
+function viewPullRequest(
+  repoPath: string,
+  url: string,
+  repo: string,
+  fields: string[],
+): Record<string, unknown> {
+  return objectFields(
+    ghJson(repoPath, ['pr', 'view', url, '--repo', repo, '--json', fields.join(',')]),
+  );
+}
+
+/** gh's JSON as an object; anything else has no fields, so each reads as absent. */
+function objectFields(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 }
 
 /**
@@ -179,11 +196,7 @@ export function assertPullRequestHead(
   repo: string,
   sha: string,
 ): void {
-  const parsed = ghJson(repoPath, ['pr', 'view', url, '--repo', repo, '--json', 'headRefOid']);
-  const head =
-    parsed !== null && typeof parsed === 'object'
-      ? (parsed as { headRefOid?: unknown }).headRefOid
-      : undefined;
+  const head = viewPullRequest(repoPath, url, repo, ['headRefOid']).headRefOid;
   if (head !== sha) {
     throw new Error(
       `PR ${url} has its head at ${typeof head === 'string' ? head : 'an unreadable commit'}, ` +
@@ -192,4 +205,36 @@ export function assertPullRequestHead(
         'fix the PR, then re-run.',
     );
   }
+}
+
+/**
+ * What GitHub says became of the PR at `url`: its state (`OPEN`, `CLOSED`,
+ * `MERGED`), its head, its base branch and, once merged, the commit the merge
+ * made on that base. Pinned to `repo` like every other call here. A field
+ * outside its shape reads as absent, so the caller refuses rather than
+ * trusting it.
+ */
+export function readPullRequestLanding(
+  repoPath: string,
+  url: string,
+  repo: string,
+): {
+  state: string | undefined;
+  head: string | undefined;
+  base: string | undefined;
+  mergeCommit: string | undefined;
+} {
+  const fields = viewPullRequest(repoPath, url, repo, [
+    'state',
+    'headRefOid',
+    'baseRefName',
+    'mergeCommit',
+  ]);
+  const commit = objectFields(fields.mergeCommit).oid;
+  return {
+    state: typeof fields.state === 'string' ? fields.state : undefined,
+    head: typeof fields.headRefOid === 'string' ? fields.headRefOid : undefined,
+    base: typeof fields.baseRefName === 'string' ? fields.baseRefName : undefined,
+    mergeCommit: typeof commit === 'string' ? commit : undefined,
+  };
 }

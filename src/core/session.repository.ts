@@ -75,10 +75,16 @@ export interface TaskRow {
   created_at: string;
 }
 
+/**
+ * Every type the store holds: the schema's, and `landed`, which `pup land`
+ * writes (decision 84) and `EventType` has yet to join.
+ */
+type StoredEventType = EventType | 'landed';
+
 export interface EventRow {
   id: number;
   session_id: string | null;
-  type: EventType;
+  type: StoredEventType;
   /** JSON object; shape depends on `type`. */
   payload: string;
   created_at: string;
@@ -426,7 +432,7 @@ export function transitionSession(
   return tx(id, to);
 }
 
-export function appendEvent<TType extends EventType>(
+export function appendEvent<TType extends StoredEventType>(
   db: Database,
   sessionId: string | null,
   type: TType,

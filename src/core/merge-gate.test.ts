@@ -47,7 +47,7 @@ import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { runMergeGate, withMergeLock } from './merge-gate.service.js';
 import { UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   ensureProject,
@@ -526,6 +526,31 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const payload = JSON.parse(mergeEvent?.payload ?? '{}');
       expect(payload.sha).toBe(pinned);
       expect(payload).not.toHaveProperty('leftBehind');
+    });
+
+    it('keeps the branch and completes a merge whose branch delete an interrupt killed', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const gitDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-git-')));
+      writeFileSync(
+        join(gitDir, 'git'),
+        `#!/bin/sh\ncase " $* " in *" update-ref --no-deref -d refs/heads/${BRANCH} "*) kill -TERM $$ ;; esac\nexec ${realGit} "$@"\n`,
+        { mode: 0o755 },
+      );
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${gitDir}:${originalPath}`;
+      onTestFinished(() => {
+        process.env.PATH = originalPath;
+      });
+
+      expect(merge().status).toBe('merged');
+
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
+      expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).toBe(pinned);
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect(JSON.parse(mergeEvent?.payload ?? '{}')).not.toHaveProperty('leftBehind');
     });
 
     it('prints nothing and records no leftBehind when the branch is gone after the pin', () => {
@@ -2695,5 +2720,29 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ),
     ).toThrow('origin');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+});
+
+describe('withMergeLock', () => {
+  it('keeps node listening for SIGINT and SIGTERM while the lock is held, and only then', () => {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-lock-')));
+    mkdirSync(join(repo, '.git'));
+    const before = { int: process.listeners('SIGINT'), term: process.listeners('SIGTERM') };
+    let during: { int: number; term: number } | undefined;
+
+    expect(() =>
+      withMergeLock(repo, () => {
+        during = {
+          int: process.listeners('SIGINT').length,
+          term: process.listeners('SIGTERM').length,
+        };
+        throw new Error('interrupted');
+      }),
+    ).toThrow('interrupted');
+
+    expect(during).toEqual({ int: before.int.length + 1, term: before.term.length + 1 });
+    expect(process.listeners('SIGINT')).toEqual(before.int);
+    expect(process.listeners('SIGTERM')).toEqual(before.term);
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
   });
 });

@@ -30,6 +30,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  rethrowIfKilled,
   runGit,
 } from './git-diff.client.js';
 import {
@@ -78,11 +79,12 @@ import type {
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
-function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
+export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
     runGit(repoPath, ['merge-base', '--is-ancestor', maybeAncestor, ref]);
     return true;
-  } catch {
+  } catch (error) {
+    rethrowIfKilled(error);
     return false;
   }
 }
@@ -157,17 +159,37 @@ export function countChangedLines(
   return { lines, forged };
 }
 
-function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
+/**
+ * Run `fn`, a synchronous body, holding the merge lock, with node kept alive
+ * through a signal while it does. A terminal Ctrl-C reaches node and the child
+ * git alike: with no listener node's default disposition dies mid-call and the
+ * `finally` never removes the lock; with one, only the child dies, its failure
+ * unwinds the stack and the lock goes. The listener's body never runs, since a
+ * synchronous body never yields to the event loop that dispatches it, so a
+ * signal sent to pup alone, which kills no child, is discarded: the locked
+ * section runs to its end. Outside the lock node's default applies again.
+ */
+export function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
   try {
     mkdirSync(lockPath);
   } catch {
     throw new MergeLockHeldError(lockPath);
   }
+  const stayAlive = (): void => undefined;
+  process.on('SIGINT', stayAlive);
+  process.on('SIGTERM', stayAlive);
   try {
     return fn();
   } finally {
-    rmdirSync(lockPath);
+    // The lock goes first: a signal between the two would otherwise meet
+    // node's default disposition with the lock still on disk.
+    try {
+      rmdirSync(lockPath);
+    } finally {
+      process.off('SIGINT', stayAlive);
+      process.off('SIGTERM', stayAlive);
+    }
   }
 }
 
@@ -240,7 +262,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   assertTargetName(req.repoPath, target);
   let pullRequest: PullRequestPlan | undefined;
   if (req.openPr) {
-    assertGhAvailable();
+    assertGhAvailable(MERGE_PR_USE.command);
     // Resolved once, here, and carried to the push, so the PR's repo and the
     // pushed-to URL are one value and nothing the stages run can move it
     // (decisions 54, 56).
@@ -420,7 +442,7 @@ function dropGateCheckout(repoPath: string, root: string): void {
  * about. The `=` refusal is decision 79's, from when the merge keyed a `-c` on
  * the name; it stays because a refusal set only grows (decision 80).
  */
-function assertTargetName(repoPath: string, target: string): void {
+export function assertTargetName(repoPath: string, target: string): void {
   const refuse = (why: string): never => {
     throw new Error(
       `Target branch ${sanitizeReason(target)} ${why}; rename it from the trusted checkout ` +
@@ -452,12 +474,13 @@ function assertTargetName(repoPath: string, target: string): void {
  * symbolic ref is refused: its sha is another branch's, so a gate that pinned
  * it would measure an empty diff and then move or delete that branch through it.
  */
-function resolveCommit(repoPath: string, ref: string): string {
+export function resolveCommit(repoPath: string, ref: string): string {
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   const symbolic = (() => {
     try {
       return runGit(repoPath, ['symbolic-ref', '-q', ref], piped).trim();
-    } catch {
+    } catch (error) {
+      rethrowIfKilled(error);
       return undefined;
     }
   })();
@@ -481,6 +504,7 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
   try {
     now = resolveCommit(repoPath, `refs/heads/${target}`);
   } catch (error) {
+    rethrowIfKilled(error);
     if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
     now = 'nowhere';
   }
@@ -508,6 +532,24 @@ function commitsPastPin(repoPath: string, branchRef: string, sha: string): numbe
   return Number(runGit(repoPath, ['rev-list', '--count', `${sha}..${now}`]).trim());
 }
 
+/**
+ * Delete `branchRef` only while it still names `sha`; false when it moved, or
+ * git failed otherwise, and it is kept. Throws when an interrupt killed git, so
+ * a caller never reads that as moved. `--no-deref`: a branch turned into a
+ * symref after the pin must not delete the branch it points at.
+ */
+export function deleteBranchAt(repoPath: string, branchRef: string, sha: string): boolean {
+  try {
+    runGit(repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return true;
+  } catch (error) {
+    rethrowIfKilled(error);
+    return false;
+  }
+}
+
 /** One shell word, for a command the operator is asked to paste. */
 function shellWord(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
@@ -525,7 +567,12 @@ function shellWord(word: string): string {
  * also the race the HEAD re-read before this leaves open. `--no-deref`, so a
  * target turned into a symref after the pin is rewritten, not followed.
  */
-function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
+export function fastForward(
+  repoPath: string,
+  target: string,
+  targetSha: string,
+  sha: string,
+): void {
   const shown = sanitizeReason(target);
   // Before the checkout is touched, not only at the compare-and-swap after it
   // (decision 80).
@@ -625,9 +672,17 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
 }
 
 const PUSH_TARGET_HELP =
-  'Nothing was pushed. The config the value lives in is shared with every worktree and a ' +
-  'session can rewrite it, so treat a session that moved it as compromised; if origin really ' +
-  'moved, re-record it with `pup init --origin-moved` from the trusted checkout.';
+  'The config the value lives in is shared with every worktree and a session can rewrite it, ' +
+  'so treat a session that moved it as compromised; if origin really moved, re-record it with ' +
+  '`pup init --origin-moved` from the trusted checkout.';
+
+/** Who asks `pushTarget`, and what its refusal leaves undone, for the message. */
+export interface OriginUse {
+  command: string;
+  untouched: string;
+}
+
+const MERGE_PR_USE: OriginUse = { command: '`pup merge --pr`', untouched: 'Nothing was pushed.' };
 
 /**
  * Where the branch is pushed and which repo the PR is pinned to: the URL
@@ -642,11 +697,17 @@ const PUSH_TARGET_HELP =
  * the live read is here to say when something moved it rather than to be
  * quietly worked around. Both refusals are decision 6's loud backstop: they
  * name both values and happen before the gate runs, so nothing is pushed.
+ * `pup land` fetches from the same value for the same reason (decision 84).
  */
-function pushTarget(db: Database, session: SessionRow, repoPath: string): string {
+export function pushTarget(
+  db: Database,
+  session: SessionRow,
+  repoPath: string,
+  use: OriginUse = MERGE_PR_USE,
+): string {
   const configured = readOriginUrl(repoPath);
   if (!configured) {
-    throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
+    throw new Error(`${use.command} needs an \`origin\` remote. ${use.untouched}`);
   }
   const task = getTask(db, session.task_id);
   if (!task) throw new Error(`Session ${session.id} has no task row; cannot resolve its project.`);
@@ -658,7 +719,7 @@ function pushTarget(db: Database, session: SessionRow, repoPath: string): string
   if (project && project.repo_path !== repoPath) {
     throw new Error(
       `Session ${session.id} belongs to project ${task.project_id}, recorded at ` +
-        `${project.repo_path}, not the ${repoPath} this merge was asked for. Nothing was pushed.`,
+        `${project.repo_path}, not the ${repoPath} this command was asked for. ${use.untouched}`,
     );
   }
   const recorded = project?.origin_url ?? undefined;
@@ -667,14 +728,14 @@ function pushTarget(db: Database, session: SessionRow, repoPath: string): string
       'No push target is recorded for this project, so there is nothing to check origin ' +
         `against: origin says ${sanitizeReason(configured)}, and nothing says that is where ` +
         'the operator pointed it. Run `pup init` from the trusted checkout to record it, ' +
-        'then retry. Nothing was pushed.',
+        `then retry. ${use.untouched}`,
     );
   }
   if (recorded !== configured) {
     throw new Error(
-      "Refusing `pup merge --pr`: origin's URL is not the one recorded when this project " +
+      `Refusing ${use.command}: origin's URL is not the one recorded when this project ` +
         `was set up.\n  recorded:   ${sanitizeReason(recorded)}\n  configured: ` +
-        `${sanitizeReason(configured)}\n${PUSH_TARGET_HELP}`,
+        `${sanitizeReason(configured)}\n${use.untouched} ${PUSH_TARGET_HELP}`,
     );
   }
   return recorded;
@@ -1089,14 +1150,11 @@ function gateAndMerge(
     // commit the session added after the pin was never measured, so it is left
     // on the branch for the operator rather than merged or thrown away.
     try {
-      // `--no-deref`: a branch turned into a symref after the pin must not
-      // delete the branch it points at.
-      runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      isDeleted = true;
+      isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
     } catch {
-      // moved past the pin — kept, see above
+      // Interrupted after the merge landed: keep the branch, which the
+      // `finally` still checks for commits past the pin, rather than skip the
+      // ratchet and the draft.
     }
   } finally {
     // Counted only once the session is killed and its worktree gone, so no
@@ -1120,7 +1178,7 @@ function gateAndMerge(
   }
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
-    // the next `pup audit` after the PR lands ratchets it (decision 26).
+    // `pup land` ratchets it once the PR has (decisions 26, 84).
     !req.openPr &&
     project &&
     baseline &&
@@ -1185,36 +1243,76 @@ function pushBranch(repoPath: string, originUrl: string, branch: string, tip: st
       return undefined;
     }
   })();
+  withScratchGitDir(repoPath, 'pup-push-', (git) => {
+    // Unlike the other git calls here this gets a timeout: a stalled push would
+    // otherwise hang while holding the merge lock. Hooks are off for the same
+    // reason they are everywhere else in the gate (decision 28).
+    git(
+      [
+        'push',
+        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
+        originUrl,
+        `${tip}:refs/heads/${branch}`,
+      ],
+      { timeout: GATE_COMMAND_TIMEOUT_MS },
+    );
+  });
+  // `--no-deref`, like the gate's other ref writes: a tracking ref a session
+  // turned into a symref must not move the branch it points at.
+  runGit(repoPath, ['update-ref', '--no-deref', tracking, tip]);
+}
+
+/**
+ * Run `fn` against an empty bare scratch git dir that borrows `repoPath`'s
+ * object store, removed afterwards: git there never reads the shared config a
+ * session can write, while the operator's global and system config still apply
+ * (decision 54). `fn`'s runner is `--git-dir` the scratch dir, with
+ * `GIT_OBJECT_DIRECTORY` set, so what it writes lands in the repo's objects.
+ * Auto maintenance is off: a fetch run here would otherwise gc the repo's
+ * object store by reachability from the scratch dir's two refs alone.
+ */
+export function withScratchGitDir<TResult>(
+  repoPath: string,
+  prefix: string,
+  fn: (git: (args: string[], opts?: Parameters<typeof runGit>[2]) => string) => TResult,
+): TResult {
   const objects = runGit(repoPath, [
     'rev-parse',
     '--path-format=absolute',
     '--git-path',
     'objects',
   ]).trim();
-  const scratch = mkdtempSync(join(tmpdir(), 'pup-push-'));
+  const scratch = mkdtempSync(join(tmpdir(), prefix));
   try {
     runGit(scratch, ['init', '--quiet', '--bare', '--template=']);
-    // Unlike the other git calls here this gets a timeout: a stalled push would
-    // otherwise hang while holding the merge lock. Hooks are off for the same
-    // reason they are everywhere else in the gate (decision 28).
-    runGit(
-      scratch,
-      [
-        '--git-dir',
+    return fn((args, opts = {}) =>
+      runGit(
         scratch,
-        'push',
-        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
-        originUrl,
-        `${tip}:refs/heads/${branch}`,
-      ],
-      { timeout: GATE_COMMAND_TIMEOUT_MS, env: { GIT_OBJECT_DIRECTORY: objects } },
+        [
+          '-c',
+          'gc.auto=0',
+          '-c',
+          'maintenance.auto=false',
+          // A commit graph written from this dir's reachability is a stale
+          // cache in the repo's objects/info; the ext protocol is decided
+          // here and not by the operator's global config.
+          '-c',
+          'fetch.writeCommitGraph=false',
+          '-c',
+          'protocol.ext.allow=never',
+          '--git-dir',
+          scratch,
+          ...args,
+        ],
+        {
+          ...opts,
+          env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },
+        },
+      ),
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  // `--no-deref`, like the gate's other ref writes: a tracking ref a session
-  // turned into a symref must not move the branch it points at.
-  runGit(repoPath, ['update-ref', '--no-deref', tracking, tip]);
 }
 
 function prTitle(goal: string): string {
