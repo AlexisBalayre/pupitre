@@ -1,6 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
@@ -16,6 +14,7 @@ import {
   pushTarget,
   resolveCommit,
   withMergeLock,
+  withScratchGitDir,
 } from './merge-gate.service.js';
 import { appendEvent, decodeEvent, getSession, listEvents } from './session.repository.js';
 
@@ -183,35 +182,21 @@ function fetchTarget(
   target: string,
   localSha: string,
 ): string {
-  const objects = runGit(repoPath, [
-    'rev-parse',
-    '--path-format=absolute',
-    '--git-path',
-    'objects',
-  ]).trim();
-  const env = { GIT_OBJECT_DIRECTORY: objects };
-  const scratch = mkdtempSync(join(tmpdir(), 'pup-land-'));
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   try {
-    const git = (args: string[], timeout?: number): string =>
-      runGit(scratch, ['--git-dir', scratch, ...args], {
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        ...(timeout ? { timeout } : {}),
+    return withScratchGitDir(repoPath, 'pup-land-', (git) => {
+      git(['update-ref', 'refs/heads/local', localSha], piped);
+      git(['fetch', '--quiet', '--no-tags', originUrl, `+refs/heads/${target}:refs/heads/origin`], {
+        ...piped,
+        timeout: GATE_COMMAND_TIMEOUT_MS,
       });
-    runGit(scratch, ['init', '--quiet', '--bare', '--template=']);
-    git(['update-ref', 'refs/heads/local', localSha]);
-    git(
-      ['fetch', '--quiet', '--no-tags', originUrl, `+refs/heads/${target}:refs/heads/origin`],
-      GATE_COMMAND_TIMEOUT_MS,
-    );
-    return git(['rev-parse', '--verify', 'refs/heads/origin^{commit}']).trim();
+      return git(['rev-parse', '--verify', 'refs/heads/origin^{commit}'], piped).trim();
+    });
   } catch (error) {
     throw new Error(
       `Fetching ${target} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
         failureSummary(error),
     );
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
   }
 }
 

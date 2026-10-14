@@ -1211,36 +1211,55 @@ function pushBranch(repoPath: string, originUrl: string, branch: string, tip: st
       return undefined;
     }
   })();
+  withScratchGitDir(repoPath, 'pup-push-', (git) => {
+    // Unlike the other git calls here this gets a timeout: a stalled push would
+    // otherwise hang while holding the merge lock. Hooks are off for the same
+    // reason they are everywhere else in the gate (decision 28).
+    git(
+      [
+        'push',
+        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
+        originUrl,
+        `${tip}:refs/heads/${branch}`,
+      ],
+      { timeout: GATE_COMMAND_TIMEOUT_MS },
+    );
+  });
+  // `--no-deref`, like the gate's other ref writes: a tracking ref a session
+  // turned into a symref must not move the branch it points at.
+  runGit(repoPath, ['update-ref', '--no-deref', tracking, tip]);
+}
+
+/**
+ * Run `fn` against an empty bare scratch git dir that borrows `repoPath`'s
+ * object store, removed afterwards: git there never reads the shared config a
+ * session can write, while the operator's global and system config still apply
+ * (decision 54). `fn`'s runner is `--git-dir` the scratch dir, with
+ * `GIT_OBJECT_DIRECTORY` set, so what it writes lands in the repo's objects.
+ */
+export function withScratchGitDir<TResult>(
+  repoPath: string,
+  prefix: string,
+  fn: (git: (args: string[], opts?: Parameters<typeof runGit>[2]) => string) => TResult,
+): TResult {
   const objects = runGit(repoPath, [
     'rev-parse',
     '--path-format=absolute',
     '--git-path',
     'objects',
   ]).trim();
-  const scratch = mkdtempSync(join(tmpdir(), 'pup-push-'));
+  const scratch = mkdtempSync(join(tmpdir(), prefix));
   try {
     runGit(scratch, ['init', '--quiet', '--bare', '--template=']);
-    // Unlike the other git calls here this gets a timeout: a stalled push would
-    // otherwise hang while holding the merge lock. Hooks are off for the same
-    // reason they are everywhere else in the gate (decision 28).
-    runGit(
-      scratch,
-      [
-        '--git-dir',
-        scratch,
-        'push',
-        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
-        originUrl,
-        `${tip}:refs/heads/${branch}`,
-      ],
-      { timeout: GATE_COMMAND_TIMEOUT_MS, env: { GIT_OBJECT_DIRECTORY: objects } },
+    return fn((args, opts = {}) =>
+      runGit(scratch, ['--git-dir', scratch, ...args], {
+        ...opts,
+        env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },
+      }),
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  // `--no-deref`, like the gate's other ref writes: a tracking ref a session
-  // turned into a symref must not move the branch it points at.
-  runGit(repoPath, ['update-ref', '--no-deref', tracking, tip]);
 }
 
 function prTitle(goal: string): string {
