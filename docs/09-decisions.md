@@ -4282,20 +4282,35 @@ changes back into those docs is pending.
     blocked (`pup unblock <id>`), stalled (`pup steer <id> "..."`, the reason worded as the row
     words it, a dead turn included, so the two never describe one stall two ways, decision 52),
     awaiting-review (`pup review <id> then pup merge <id> --pr`), and a merged session whose
-    newest `merge` event carries a `prUrl` with no `landed` event after it (the url). The order is
+    newest `merge` event carries a `prUrl`, whose pinned sha the target branch of this checkout
+    does not yet hold, and with no `landed` event after it (the url). The order is
     what leaving each costs: a question idles a worker that has said why, a block or a stall one
     that has stopped, a review and an open PR only hold finished work back. A session is listed
     once, under its first reason. A merge with no `prUrl` is a local fast-forward, already on the
-    target, so it is never an open PR. Nothing writes `landed` yet; `pup land` will, and the
-    snapshot reads the type as stored text until it joins `EventType`. Only the newest merge
-    counts, like the dossier's "what landed".
+    target, so it is never an open PR. Whether the target holds the sha is the one thing the
+    snapshot asks git: the store cannot know what the operator's pull did, and without the check
+    every PR the project ever opened stayed listed (found on CI review). One `merge-base
+    --is-ancestor` per open PR, memoised for the snapshot, under a two-second timeout and
+    `protocol.allow=never`, so a walk that meets a missing object cannot fetch it through a
+    promisor remote the shared config names (found on security review). A target that is not a
+    plain branch name or a sha that is not hex, as the store can write them, is not asked about,
+    and that, an exit of 1, a timeout and a repo with no such branch all read as not landed. A
+    merge recorded before the sha was kept (decision 80) predates every open PR and counts as
+    landed. The answer is what the conductor acts on, so a url is printed only in the
+    pull-request shape, a session id outside the minted shape gets no command built around it,
+    and a question cannot carry a second arrow; the line still shows, saying to inspect the
+    store. Nothing writes `landed` yet; `pup land` will, for the merges git cannot see, a squash
+    among them, and the snapshot reads the type as stored text until it joins `EventType`. Only
+    the newest merge counts, like the dossier's "what landed".
     The live table and the backlog follow as before, but rows in state `merged` or `killed` are
     left out and printed only with `pup status --history`; a project whose sessions have all
-    finished says `Nothing running and nothing planned.` again. The snapshot itself is unchanged
+    finished prints its inbox, if any, then `Nothing running and nothing planned.`. The snapshot
+    itself is unchanged
     in shape, so `pup ui` draws as it did: the session row only gains an optional `openPrUrl`, and
     the inbox is `needsYou(snapshot)`, a reading off the snapshot like `fleetSummary`, which the
-    fleet view now folds from, so the fleet lists the same sessions in the same order (blocked
-    now before stalled, and questions and open PRs added). The conductor reads `pup status`, so it
+    fleet view now prints, reason and answer, so the fleet lists the same lines in the same order
+    (blocked now before stalled, and questions and open PRs added). The conductor reads `pup
+    status`, so it
     sees the same inbox. A piped `pup ui` prints the default table, without history.
     Tests: the snapshot's inbox lists one session of each kind in the order, each with its reason
     and answer, whatever order they were seeded in; a dead turn is worded as the row words it; a

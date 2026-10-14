@@ -584,6 +584,8 @@ describe('CLI commands', () => {
         transitionSession(db, id, 'merged');
         appendEvent(db, id, 'merge', {
           branch: `pup/${id}`,
+          // A sha the repo's unborn main cannot hold: the PR waits on the operator.
+          sha: 'f'.repeat(40),
           target: 'main',
           files: [],
           ...(id === 's-pr' ? { prUrl: 'https://github.com/o/r/pull/7' } : {}),
@@ -722,12 +724,14 @@ describe('CLI commands', () => {
         const idB = projectId(repoB);
         const blockA = [
           `${idA}  ${repoA}  conductor stopped`,
+          '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
           expect.stringMatching(
-            /^ {2}blocked +s-blocked +pup\/s-blocked {2}needs a human \(3 rejections\)/,
+            /^ {2}s-stalled {2}TURN DIED \(API error\).*→ pup steer s-stalled "\.\.\."$/,
           ),
-          expect.stringMatching(/^ {2}running +s-stalled +pup\/s-stalled {2}TURN DIED/),
-          expect.stringMatching(/^ {2}running +s-quiet +pup\/s-quiet {2}STALLED/),
-          expect.stringMatching(/^ {2}awaiting-review +s-review +pup\/s-review$/),
+          expect.stringMatching(
+            /^ {2}s-quiet {2}STALLED \(\d+m\) {2}→ pup steer s-quiet "\.\.\."$/,
+          ),
+          '  s-review  awaiting review  → pup review s-review then pup merge s-review --pr',
           '  3 running, 1 planned, 1 merged',
         ];
         const blockB = [
@@ -912,23 +916,21 @@ describe('CLI commands', () => {
       });
 
       // A store under ~/.pupitre is session-writable and the fleet opens every
-      // one of them, so what a row says is sanitized before the terminal sees
-      // it (decision 29).
-      it('strips control characters out of a session row it prints', () => {
+      // one of them, so what an inbox line says is sanitized before the
+      // terminal sees it (decision 29).
+      it('strips control characters out of an inbox line it prints', () => {
         const repo = initRepo();
-        seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
+        seedSession(repo, 's-asking');
         const { db } = resolveProject(repo);
-        db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run(
-          'pup/\u001b[2Jhijack',
-          's-blocked',
-        );
+        transitionSession(db, 's-asking', 'running');
+        appendEvent(db, 's-asking', 'question', { text: '\u001b[2Jhijack?' });
         db.close();
         useCwd(tempDir('pup-cli-noproj-'));
 
         buildProgram().parse(['status'], { from: 'user' });
 
-        const row = logs.find((line) => line.includes('s-blocked')) ?? '';
-        expect(row).toContain('pup/ [2Jhijack');
+        const row = logs.find((line) => line.includes('s-asking')) ?? '';
+        expect(row).toContain('[2Jhijack?');
         expect(row).not.toContain('\u001b');
       });
 

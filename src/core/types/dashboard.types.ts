@@ -121,11 +121,13 @@ export interface DashboardSession {
    */
   question?: string;
   /**
-   * The PR the gate opened for a merged session, while no `landed` event has
-   * come after it (decision 83). Absent on a local fast-forward, which carries
-   * no PR and has already landed.
+   * The PR the gate opened for a merged session, while the target branch of
+   * this checkout does not yet hold the commit it pinned and no `landed` event
+   * has come after it (decision 83). Absent on a local fast-forward, which
+   * carries no PR and has already landed. The url is there only in the
+   * pull-request shape: it is printed as the thing to act on.
    */
-  openPrUrl?: string;
+  openPr?: { url?: string };
   lastGate?: DashboardGate;
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];

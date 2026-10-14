@@ -1,4 +1,5 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
+import { needsYou } from '../../core/dashboard.service.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
@@ -160,7 +161,12 @@ function fleetBlockLines(block: Exclude<FleetBlock, { reason: string }>): string
       (entry) =>
         `  OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
     ),
-    ...summary.needsYou.map((session) => `  ${sessionLine(session)}`),
+    // The inbox's own lines, reason and answer, not the bare session row: a
+    // merged session listed for its PR says nothing by its state alone.
+    ...needsYou(snapshot).map(
+      (need) =>
+        `  ${sanitizeReason(need.sessionId)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`,
+    ),
     `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
   ];
 }

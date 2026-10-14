@@ -7,6 +7,7 @@ import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
 import { eventDetail } from './dashboard-events.utils.js';
 import type { SessionState } from './db.client.js';
+import { runGit } from './git-diff.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
@@ -63,6 +64,7 @@ export function buildDashboardSnapshot(
   const paths = projectPaths(repoPath);
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
+  const isLanded = landedShaLookup(repoPath);
   const sessions = listSessions(db).map((row) =>
     dashboardSession(
       db,
@@ -70,6 +72,7 @@ export function buildDashboardSnapshot(
       tasks.get(row.task_id),
       eventsFileOf(paths, row.id),
       stalls.get(row.id),
+      isLanded,
     ),
   );
   const beat = getWatcherBeat(db, pid);
@@ -119,9 +122,8 @@ export function buildDashboardSnapshot(
 
 /**
  * A project folded to what the operator has to act on (decision 60): the
- * sessions the needs-you inbox names, in its order (decision 83). Awaiting
- * review is there though nothing is wrong with it, because nothing moves until
- * a person merges it; awaiting-input is not, because a permission ask answers
+ * sessions the needs-you inbox names, in its order (decision 83), beside the
+ * counts. Awaiting-input is not among them, because a permission ask answers
  * itself or turns into a stall within minutes, and the fleet is read across
  * projects rather than watched.
  */
@@ -261,20 +263,42 @@ function needOf(session: DashboardSession): DashboardNeed | undefined {
     reason,
     answer,
   });
+  // The answer is what the conductor acts on, and the session row is
+  // session-writable: an id outside the minted shape gets no command built
+  // around it, and a question cannot forge a second arrow (decision 29).
+  const command = (text: string): string =>
+    SESSION_ID_PATTERN.test(id) ? text : '(session id outside the minted shape; inspect the store)';
   if (session.question !== undefined) {
-    return need('question', `question: ${session.question}`, `pup steer ${id} "..."`);
+    const asked = session.question.replaceAll('→', '->');
+    return need('question', `question: ${asked}`, command(`pup steer ${id} "..."`));
   }
   if (session.state === 'blocked') {
-    return need('blocked', `blocked (${session.rejectCount} rejections)`, `pup unblock ${id}`);
+    return need(
+      'blocked',
+      `blocked (${session.rejectCount} rejections)`,
+      command(`pup unblock ${id}`),
+    );
   }
   if (session.stalledAgeMs !== undefined) {
-    return need('stalled', stallReason(session, session.stalledAgeMs), `pup steer ${id} "..."`);
+    return need(
+      'stalled',
+      stallReason(session, session.stalledAgeMs),
+      command(`pup steer ${id} "..."`),
+    );
   }
   if (session.state === 'awaiting-review') {
-    return need('awaiting-review', 'awaiting review', `pup review ${id} then pup merge ${id} --pr`);
+    return need(
+      'awaiting-review',
+      'awaiting review',
+      command(`pup review ${id} then pup merge ${id} --pr`),
+    );
   }
-  if (session.openPrUrl !== undefined) {
-    return need('pr-open', 'PR opened, not landed', session.openPrUrl);
+  if (session.openPr !== undefined) {
+    return need(
+      'pr-open',
+      'PR opened, not landed',
+      session.openPr.url ?? '(PR url outside the pull-request shape; inspect the store)',
+    );
   }
   return undefined;
 }
@@ -293,12 +317,67 @@ function stallReason(session: DashboardSession, stalledAgeMs: number): string {
     : `TURN DIED (API error) — resumed by watch at ${at}`;
 }
 
+/**
+ * A target git can read as a branch name and nothing else — no leading `-`, no
+ * `..`, `@{`, `^`, `~`, `:`, `[`, `*` or `?` — the shape `assertTargetName`
+ * admits at the gate, checked here without git because the name is about to
+ * be handed to git. And a sha as the gate pins it, which can then never read
+ * as an option.
+ */
+const PLAIN_BRANCH = /^(?!-)(?!.*\.\.)(?!.*@\{)[A-Za-z0-9._/-]+$/;
+const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+/** A pull request and nothing else: the one url the inbox prints as the answer. */
+const PR_URL = /^https:\/\/[A-Za-z0-9.-]+\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+/** The render loop is behind this call: a deep or planted history must not hold it. */
+const LANDED_CHECK_TIMEOUT_MS = 2_000;
+
+/**
+ * Whether the target branch of this checkout already holds the commit a merge
+ * pinned: the one thing the snapshot asks git, because the store cannot know
+ * what the operator's pull did (decision 83). One `merge-base --is-ancestor`
+ * per open PR, memoised for the snapshot, so the work follows the open PRs
+ * and not the history. A merge recorded before the sha was kept (decision
+ * 80) predates every PR still open and counts as landed. Everything else
+ * fails toward "still open": a target or sha outside its shape is not asked
+ * about, and an exit of 1, a missing object, a timeout and a repo with no
+ * such branch all keep the PR listed. `protocol.allow=never` because a walk
+ * that meets a missing object would otherwise fetch it through whatever
+ * promisor remote the shared config names, with `core.sshCommand` and pup's
+ * environment (decision 82's reasoning, outside the gate).
+ */
+function landedShaLookup(
+  repoPath: string,
+): (target: string | undefined, sha: string | undefined) => boolean {
+  const answered = new Map<string, boolean>();
+  return (target, sha) => {
+    if (sha === undefined) return true;
+    if (target === undefined || !PLAIN_BRANCH.test(target) || !COMMIT_SHA.test(sha)) return false;
+    const key = `${target} ${sha}`;
+    const known = answered.get(key);
+    if (known !== undefined) return known;
+    let landed: boolean;
+    try {
+      runGit(
+        repoPath,
+        ['-c', 'protocol.allow=never', 'merge-base', '--is-ancestor', sha, `refs/heads/${target}`],
+        { stdio: ['ignore', 'ignore', 'ignore'], timeout: LANDED_CHECK_TIMEOUT_MS },
+      );
+      landed = true;
+    } catch {
+      landed = false;
+    }
+    answered.set(key, landed);
+    return landed;
+  };
+}
+
 function dashboardSession(
   db: Database,
   row: SessionRow,
   task: TaskRow | undefined,
   eventsFile: string | undefined,
   stall: StalledSession | undefined,
+  isLanded: (target: string | undefined, sha: string | undefined) => boolean,
 ): DashboardSession {
   const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
@@ -319,7 +398,8 @@ function dashboardSession(
   // Like activity: a question is a running session's. Killed or merged, nothing
   // can answer it (steers refuse terminal sessions), so it must not outlive it.
   const question = row.state === 'running' ? openQuestion(events) : undefined;
-  const openPrUrl = row.state === 'merged' ? openPullRequest(events) : undefined;
+  const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
+  const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
@@ -346,7 +426,7 @@ function dashboardSession(
     ...(contextTokens === undefined ? {} : { contextTokens }),
     ...(lastSteer ? { lastSteer } : {}),
     ...(question === undefined ? {} : { question }),
-    ...(openPrUrl === undefined ? {} : { openPrUrl }),
+    ...(openPr === undefined ? {} : { openPr }),
     ...(lastGate ? { lastGate } : {}),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     needsHuman:
@@ -396,22 +476,28 @@ function openQuestion(newestFirst: EventRow[]): string | undefined {
 }
 
 /**
- * The PR the newest merge opened, unless a `landed` event came after it
- * (decision 83). Only the newest merge counts: a session merged twice is
- * described by the merge that stands. A merge with no PR is a local
- * fast-forward, already on the target, so nothing is open.
+ * The PR the newest merge opened, with the commit it pinned, unless a `landed`
+ * event came after it (decision 83). Only the newest merge counts: a session
+ * merged twice is described by the merge that stands. A merge with no PR is a
+ * local fast-forward, already on the target, so nothing is open.
  *
  * Nothing writes `landed` yet — `pup land` will — so the type is read as the
  * store's text rather than as an `EventType` it has yet to join.
  */
-function openPullRequest(newestFirst: EventRow[]): string | undefined {
+function openPullRequest(
+  newestFirst: EventRow[],
+): { url: string | undefined; sha: string | undefined; target: string | undefined } | undefined {
   for (const row of newestFirst) {
     const type: string = row.type;
     if (type === 'landed') return undefined;
     const event = decodeEvent(row);
     if (event.type !== 'merge') continue;
-    // Read back out of a session-writable store, bound for a terminal (decision 29).
-    return event.prUrl === undefined ? undefined : sanitizeReason(event.prUrl) || undefined;
+    if (event.prUrl === undefined) return undefined;
+    // Read back out of a session-writable store and printed as the thing to
+    // act on, so a url that is not a pull request's is withheld, not scrubbed:
+    // a scrub leaves shell syntax in place (decisions 29, 83).
+    const url = sanitizeReason(event.prUrl);
+    return { url: PR_URL.test(url) ? url : undefined, sha: event.sha, target: event.target };
   }
   return undefined;
 }
