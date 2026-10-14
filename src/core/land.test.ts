@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
+import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { projectId } from './paths.utils.js';
 import {
@@ -188,7 +189,12 @@ describe('landSession', { timeout: 20_000 }, () => {
   it('fast-forwards main, removes the worktree and branch, audits and records the land', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
 
     const outcome = land();
 
@@ -213,8 +219,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       { sha: merge, target: 'main', prUrl: PR_URL },
     ]);
     // Asked the way the gate asks gh: the PR by url, pinned to origin's repo.
-    expect(readFileSync(ghLog, 'utf8').trim()).toBe(
-      `pr view ${PR_URL} --repo github.com/owner/repo --json state,mergeCommit`,
+    expect(readFileSync(ghLog, 'utf8').trim().split('\n').at(-1)).toBe(
+      `pr view ${PR_URL} --repo github.com/owner/repo --json state,headRefOid,baseRefName,mergeCommit`,
     );
     // The inbox reads the event, so the PR no longer waits on the operator.
     expect(needsYou(buildDashboardSnapshot(db, repo, Date.now()))).toEqual([]);
@@ -223,7 +229,12 @@ describe('landSession', { timeout: 20_000 }, () => {
   it('refuses a second land of the same session', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
     land();
 
     expect(land).toThrow('has already landed');
@@ -235,7 +246,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
     commitIn(worktree, 'src/later.ts', 'export const later = 1;\n');
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
 
     const outcome = land();
 
@@ -246,7 +262,12 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   it('refuses a session that is not merged, changing nothing', () => {
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
 
     expect(land).toThrow('is awaiting-review, not merged');
     expectNothingChanged(before);
@@ -256,7 +277,12 @@ describe('landSession', { timeout: 20_000 }, () => {
   it('refuses a merge that opened no PR, changing nothing', () => {
     seedPrMerge(null);
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
 
     expect(land).toThrow('opened no pull request');
     expectNothingChanged(before);
@@ -275,7 +301,12 @@ describe('landSession', { timeout: 20_000 }, () => {
       JSON.stringify({ branch: BRANCH, files: [], prUrl: PR_URL, ...fields(pinned) }),
     );
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
 
     expect(land).toThrow('merge event names no pinned sha and target');
     expectNothingChanged(before);
@@ -287,7 +318,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     seedPrMerge();
     mergeOnGitHub();
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
 
     expect(() => landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [] })).toThrow(
       `No adapter for ${repo}; the audit after the land would measure nothing.`,
@@ -317,7 +353,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     seedPrMerge();
     mergeOnGitHub();
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: null });
+    fakeGh({ state: 'MERGED', baseRefName: 'main', headRefOid: pinned, mergeCommit: null });
 
     expect(land).toThrow(`GitHub reports ${PR_URL} merged with no merge commit.`);
     expectNothingChanged(before);
@@ -329,7 +365,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     const merge = mergeOnGitHub();
     rmSync(origin, { recursive: true, force: true });
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
 
     expect(land).toThrow(`Fetching main from ${ORIGIN_URL} failed. Nothing was landed.`);
     expectNothingChanged(before);
@@ -352,31 +393,235 @@ describe('landSession', { timeout: 20_000 }, () => {
       'local',
     );
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
 
     expect(land).toThrow(`Local main at ${before} has commits origin's main at ${merge} lacks`);
     expectNothingChanged(before);
   });
 
   // The checkout the fast-forward writes must be the target's, as at the gate.
-  it('refuses when the main checkout is on another branch, moving nothing', () => {
+  it('refuses when the main checkout is on another branch, moving nothing, the tracking ref included', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
     sh(repo, 'git', 'checkout', '-q', '-b', 'elsewhere');
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
 
     expect(land).toThrow('The main checkout is on elsewhere, not main');
     expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
   });
 
   // The gate's teardown usually removed both already; the land then has nothing to do there.
+  it('refuses a merge commit over a head that moved past the pin, changing nothing', () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/merged with its head at .* not .* the commit the gate pinned/);
+
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it('refuses a PR merged into another base, changing nothing', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'release',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/was merged into release, not main/);
+
+    expectNothingChanged(mainBefore);
+  });
+
+  // A squash merge, with the pinned commit then reaching origin's main by
+  // another route: both containments pass but the merge commit never held it.
+  it('refuses a merge commit that does not contain the pinned sha, changing nothing', () => {
+    seedPrMerge();
+    const gitCommit = (...args: string[]) =>
+      sh(
+        origin,
+        'git',
+        '-c',
+        'user.email=gh@test',
+        '-c',
+        'user.name=github',
+        'commit-tree',
+        ...args,
+      );
+    const squash = gitCommit(
+      `${pinned}^{tree}`,
+      '-p',
+      sh(origin, 'git', 'rev-parse', 'main'),
+      '-m',
+      'squash',
+    );
+    const later = gitCommit(`${pinned}^{tree}`, '-p', squash, '-p', pinned, '-m', 'another route');
+    sh(origin, 'git', 'update-ref', 'refs/heads/main', later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/the pinned commit reached the target some other way/);
+
+    expectNothingChanged(mainBefore);
+  });
+
+  it("refuses a row whose branch is not the session's own, asking gh nothing", () => {
+    seedPrMerge();
+    db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run('main', SESSION_ID);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/names a worktree or branch that is not its own/);
+
+    expect(mainSha()).toBe(mainBefore);
+    expect(sh(repo, 'git', 'branch', '--list', 'main')).not.toBe('');
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  it('keeps a regressed baseline for pup audit rather than re-stamping it', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const measuring = (lines: number) => ({
+      ...passingAdapter,
+      duplication: () => ({ duplicatedLines: lines, blocks: [] }),
+    });
+    initProject(db, repo, [measuring(10)]);
+    const stored = getProject(db, pid)?.baseline;
+
+    const outcome = landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [measuring(40)],
+    });
+
+    expect(outcome.audit.heldOnRegression).toBe(true);
+    expect(getProject(db, pid)?.baseline).toBe(stored);
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  it('refuses a merge commit origin does not hold, changing nothing', () => {
+    seedPrMerge();
+    mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: 'b'.repeat(40) },
+    });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/does not contain b{40}, the commit GitHub says merged/);
+
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // GitHub prints the repo in its canonical case whatever case origin was
+  // recorded with; two names apart by case are one GitHub repo.
+  it('accepts a pull request url whose case differs from the recorded origin', () => {
+    seedPrMerge('https://github.com/Owner/Repo/pull/7');
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    expect(land().mergeCommit).toBe(merge);
+  });
+
+  it("refuses a row whose worktree is not the session's own, asking gh nothing", () => {
+    seedPrMerge();
+    db.prepare('UPDATE sessions SET worktree_path = ? WHERE id = ?').run(
+      join(repo, '.worktrees', 'other'),
+      SESSION_ID,
+    );
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/names a worktree or branch that is not its own/);
+
+    expectNothingChanged(mainBefore);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  it('lands past a worktree directory git no longer registers', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
+    mkdirSync(worktree, { recursive: true });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = land();
+
+    expect(outcome.removedWorktree).toBe(false);
+    expect(mainSha()).toBe(merge);
+    expect(landedEvents()).toHaveLength(1);
+  });
+
   it('lands a session whose worktree and branch are already gone', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
     sh(repo, 'git', 'branch', '-q', '-D', BRANCH);
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
 
     const outcome = land();
 
@@ -390,7 +635,12 @@ describe('landSession', { timeout: 20_000 }, () => {
   it("refuses a PR url outside origin's repo, asking gh nothing", () => {
     seedPrMerge('https://github.com/elsewhere/repo/pull/7');
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
 
     expect(land).toThrow('is not a pull request of github.com/owner/repo');
     expectNothingChanged(before);
@@ -428,7 +678,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     );
     sh(origin, 'git', 'update-ref', 'refs/heads/main', squash);
     const before = mainSha();
-    fakeGh({ state: 'MERGED', mergeCommit: { oid: squash } });
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
 
     expect(land).toThrow(`does not contain ${pinned}`);
     expectNothingChanged(before);

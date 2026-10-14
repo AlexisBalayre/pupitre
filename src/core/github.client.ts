@@ -13,11 +13,11 @@ const GH_COMMAND_TIMEOUT_MS = 60_000;
 const REMOTE_URL = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/;
 
 /** Fail before the gate runs, not after ten minutes of stages. */
-export function assertGhAvailable(): void {
+export function assertGhAvailable(command = '`pup merge --pr`'): void {
   try {
     execFileSync('gh', ['--version'], { stdio: 'ignore', timeout: GH_PROBE_TIMEOUT_MS });
   } catch {
-    throw new Error('`pup merge --pr` needs the `gh` CLI on PATH, logged in to GitHub.');
+    throw new Error(`${command} needs the \`gh\` CLI on PATH, logged in to GitHub.`);
   }
 }
 
@@ -209,19 +209,32 @@ export function assertPullRequestHead(
 
 /**
  * What GitHub says became of the PR at `url`: its state (`OPEN`, `CLOSED`,
- * `MERGED`) and, once merged, the commit the merge made on the base branch.
- * Pinned to `repo` like every other call here. A field outside its shape reads
- * as absent, so the caller refuses rather than trusting it.
+ * `MERGED`), its head, its base branch and, once merged, the commit the merge
+ * made on that base. Pinned to `repo` like every other call here. A field
+ * outside its shape reads as absent, so the caller refuses rather than
+ * trusting it.
  */
 export function readPullRequestLanding(
   repoPath: string,
   url: string,
   repo: string,
-): { state: string | undefined; mergeCommit: string | undefined } {
-  const fields = viewPullRequest(repoPath, url, repo, ['state', 'mergeCommit']);
+): {
+  state: string | undefined;
+  head: string | undefined;
+  base: string | undefined;
+  mergeCommit: string | undefined;
+} {
+  const fields = viewPullRequest(repoPath, url, repo, [
+    'state',
+    'headRefOid',
+    'baseRefName',
+    'mergeCommit',
+  ]);
   const commit = objectFields(fields.mergeCommit).oid;
   return {
     state: typeof fields.state === 'string' ? fields.state : undefined,
+    head: typeof fields.headRefOid === 'string' ? fields.headRefOid : undefined,
+    base: typeof fields.baseRefName === 'string' ? fields.baseRefName : undefined,
     mergeCommit: typeof commit === 'string' ? commit : undefined,
   };
 }

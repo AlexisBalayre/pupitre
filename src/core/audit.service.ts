@@ -117,6 +117,12 @@ export interface AuditOutcome extends AuditReport {
    * like `pup init`: there is nothing to keep.
    */
   unmeasured: string[];
+  /**
+   * True when the measurement regressed and the caller asked for the baseline
+   * to be kept in that case: a land the conductor runs has no human between
+   * an observed regression and the bar (decision 84); `pup audit` ratchets.
+   */
+  heldOnRegression: boolean;
 }
 
 /**
@@ -162,6 +168,7 @@ export function auditProject(
   repoPath: string,
   adapters: Adapter[],
   gateEnv?: string[],
+  onRegression: 'refresh' | 'keep' = 'refresh',
 ): AuditOutcome {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
@@ -174,21 +181,26 @@ export function auditProject(
             `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,
         )
     : [];
-  if (unmeasured.length === 0) persistBaseline(db, report.projectId, report.baseline);
   const transitions = previous ? compareBaselines(previous, report.baseline) : [];
   const debtTransitions = previous ? compareDebt(previous.debt, report.baseline.debt) : [];
+  const hasRegression =
+    transitions.some((t) => t.delta === 'regressed') ||
+    debtTransitions.some((t) => t.delta === 'regressed');
+  const heldOnRegression = hasRegression && onRegression === 'keep';
+  if (unmeasured.length === 0 && !heldOnRegression) {
+    persistBaseline(db, report.projectId, report.baseline);
+  }
   return {
     projectId: report.projectId,
     previous,
     baseline: report.baseline,
     transitions,
     debtTransitions,
-    hasRegression:
-      transitions.some((t) => t.delta === 'regressed') ||
-      debtTransitions.some((t) => t.delta === 'regressed'),
+    hasRegression,
     findings: report.findings,
     sandbox: report.sandbox,
     unmeasured,
+    heldOnRegression,
   };
 }
 

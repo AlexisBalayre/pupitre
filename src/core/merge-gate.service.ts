@@ -651,7 +651,7 @@ const PUSH_TARGET_HELP =
   '`pup init --origin-moved` from the trusted checkout.';
 
 /** Who asks `pushTarget`, and what its refusal leaves undone, for the message. */
-interface OriginUse {
+export interface OriginUse {
   command: string;
   untouched: string;
 }
@@ -1236,6 +1236,8 @@ function pushBranch(repoPath: string, originUrl: string, branch: string, tip: st
  * session can write, while the operator's global and system config still apply
  * (decision 54). `fn`'s runner is `--git-dir` the scratch dir, with
  * `GIT_OBJECT_DIRECTORY` set, so what it writes lands in the repo's objects.
+ * Auto maintenance is off: a fetch run here would otherwise gc the repo's
+ * object store by reachability from the scratch dir's two refs alone.
  */
 export function withScratchGitDir<TResult>(
   repoPath: string,
@@ -1252,10 +1254,29 @@ export function withScratchGitDir<TResult>(
   try {
     runGit(scratch, ['init', '--quiet', '--bare', '--template=']);
     return fn((args, opts = {}) =>
-      runGit(scratch, ['--git-dir', scratch, ...args], {
-        ...opts,
-        env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },
-      }),
+      runGit(
+        scratch,
+        [
+          '-c',
+          'gc.auto=0',
+          '-c',
+          'maintenance.auto=false',
+          // A commit graph written from this dir's reachability is a stale
+          // cache in the repo's objects/info; the ext protocol is decided
+          // here and not by the operator's global config.
+          '-c',
+          'fetch.writeCommitGraph=false',
+          '-c',
+          'protocol.ext.allow=never',
+          '--git-dir',
+          scratch,
+          ...args,
+        ],
+        {
+          ...opts,
+          env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },
+        },
+      ),
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });

@@ -127,7 +127,6 @@ import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
-import type { LandOutcome } from '../core/land.service.js';
 import { landSession } from '../core/land.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
@@ -180,6 +179,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
+import type { LandOutcome } from '../core/types/land.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
@@ -4830,6 +4830,7 @@ describe('CLI commands', () => {
           findings: [],
           sandbox: 'sandbox-exec (macOS)',
           unmeasured: [],
+          heldOnRegression: false,
         },
       };
     }
@@ -4883,6 +4884,32 @@ describe('CLI commands', () => {
       );
       expect(logs).toContain('Removed the session worktree.');
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // The land holds the merge lock across a fetch, the likeliest place for a
+    // Ctrl-C; the lock goes on the way out as it does for `pup merge`.
+    it('removes the lock this run took when a signal interrupts it', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      const lockPath = join(repo, '.git', MERGE_LOCK_DIRNAME);
+      const before = process.listeners('SIGINT');
+      let handlers: NodeJS.SignalsListener[] = [];
+      vi.mocked(landSession).mockImplementation(() => {
+        mkdirSync(lockPath, { recursive: true });
+        handlers = process
+          .listeners('SIGINT')
+          .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
+        throw new Error('interrupted');
+      });
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+      expect(handlers).toHaveLength(1);
+      handlers[0]?.('SIGINT');
+
+      expect(existsSync(lockPath)).toBe(false);
+      expect(exit).toHaveBeenCalledWith(130);
+      expect(process.listeners('SIGINT')).toEqual(before);
     });
 
     it('names a kept branch and a target that already held the merge', () => {

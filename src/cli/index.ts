@@ -55,7 +55,7 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
-import { type LandOutcome, landSession } from '../core/land.service.js';
+import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -118,6 +118,7 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
+import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
@@ -386,6 +387,15 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
     refuseKeptBaseline(report);
     return;
   }
+  if (report.heldOnRegression) {
+    for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);
+    console.log(
+      'Baseline kept: the measurement regressed, and a land does not move the bar over a ' +
+        'regression; run `pup audit` to accept it or fix it first.',
+    );
+    process.exitCode = 1;
+    return;
+  }
   printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
   console.log('Baseline refreshed.');
   if (report.hasRegression) process.exitCode = 1;
@@ -481,6 +491,45 @@ function steerOrRefuse(act: () => void, done: string): void {
  * Every guard below reads `return refuse(…)`, so a refusal is one line and
  * cannot silently forget the exit code that makes it a refusal.
  */
+/**
+ * A refusal whose text came partly from the store or a child (the spec, an
+ * adapter's stderr): control characters go, but the message is not cut to a
+ * line, since pup's own refusals carry remediation steps past the scrubber's
+ * 300 (decision 68).
+ */
+function refuseScrubbed(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
+}
+
+/**
+ * Run `fn`, which takes the merge lock, with the lock released on a signal: the
+ * lock is a directory removed in a `finally` a process killed by a signal never
+ * reaches, and the next merge or land then refuses against a lock nobody holds.
+ * Ctrl-C at the terminal and the SIGTERM `pup ui`'s `q` sends to this child are
+ * both that case. Only a lock this run took goes: one already there when the
+ * command started belongs to another run.
+ */
+function withLockReleasedOnSignal<TResult>(repoPath: string, fn: () => TResult): TResult {
+  const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
+  const heldOnEntry = existsSync(lockPath);
+  const releaseLock = (signal: NodeJS.Signals): void => {
+    if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
+    process.exit(signal === 'SIGTERM' ? 143 : 130);
+  };
+  process.once('SIGINT', releaseLock);
+  process.once('SIGTERM', releaseLock);
+  try {
+    return fn();
+  } finally {
+    // The lock is released by now, so a later signal must not reach a handler
+    // that would delete the next run's.
+    process.off('SIGINT', releaseLock);
+    process.off('SIGTERM', releaseLock);
+  }
+}
+
 function refuse(message: string): void {
   console.error(message);
   process.exitCode = 1;
@@ -1721,52 +1770,28 @@ export function buildProgram(): Command {
           );
         }
         let outcome: MergeOutcome;
-        // The gate holds a lock directory it removes in a `finally`, which a
-        // process killed by a signal never reaches — and the next merge then
-        // refuses against a lock nobody holds. Ctrl-C at the terminal and the
-        // SIGTERM `pup ui`'s `q` sends to this child are both that case, so the
-        // lock goes on the way out. Only if this run took it: a lock that was
-        // already there when the command started belongs to another merge, and
-        // is not this one's to remove.
-        const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
-        const heldOnEntry = existsSync(lockPath);
-        const releaseLock = (signal: NodeJS.Signals): void => {
-          if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
-          process.exit(signal === 'SIGTERM' ? 143 : 130);
-        };
-        process.once('SIGINT', releaseLock);
-        process.once('SIGTERM', releaseLock);
         try {
-          outcome = runMergeGate(db, {
-            repoPath,
-            sessionId: session,
-            adapters,
-            acceptDebt:
-              opts.acceptDebt && opts.reviewBy
-                ? {
-                    reason: opts.acceptDebt,
-                    reviewBy: opts.reviewBy,
-                    acceptedBy: approvedBy ?? 'human',
-                  }
-                : undefined,
-            openPr: opts.pr,
-            gateEnv: parseGateEnv(opts.gateEnv),
-          });
+          outcome = withLockReleasedOnSignal(repoPath, () =>
+            runMergeGate(db, {
+              repoPath,
+              sessionId: session,
+              adapters,
+              acceptDebt:
+                opts.acceptDebt && opts.reviewBy
+                  ? {
+                      reason: opts.acceptDebt,
+                      reviewBy: opts.reviewBy,
+                      acceptedBy: approvedBy ?? 'human',
+                    }
+                  : undefined,
+              openPr: opts.pr,
+              gateEnv: parseGateEnv(opts.gateEnv),
+            }),
+          );
         } catch (error) {
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          // Store-read and child-read text reaches here too (the spec refusal, an
-          // adapter command's stderr from the session's worktree), so control
-          // characters are stripped — but not cut to a line: pup's own refusals
-          // carry remediation steps past the scrubber's 300 (decision 68).
-          const message = error instanceof Error ? error.message : String(error);
-          // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-          return refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
-        } finally {
-          // The gate has released its own lock by now, so a later signal must
-          // not reach a handler that would delete the next run's.
-          process.off('SIGINT', releaseLock);
-          process.off('SIGTERM', releaseLock);
+          return refuseScrubbed(error);
         }
         printGateReport(outcome.report);
         switch (outcome.status) {
@@ -1830,18 +1855,16 @@ export function buildProgram(): Command {
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
       try {
-        outcome = landSession(db, {
-          repoPath,
-          sessionId: session,
-          adapters: detectAdapters(repoPath),
-          gateEnv: parseGateEnv(opts.gateEnv),
-        });
+        outcome = withLockReleasedOnSignal(repoPath, () =>
+          landSession(db, {
+            repoPath,
+            sessionId: session,
+            adapters: detectAdapters(repoPath),
+            gateEnv: parseGateEnv(opts.gateEnv),
+          }),
+        );
       } catch (error) {
-        // Refusals carry the next step; store text reaches them, so control
-        // characters go, as on `pup merge`'s (decision 68).
-        const message = error instanceof Error ? error.message : String(error);
-        // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-        return refuse(message.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' '));
+        return refuseScrubbed(error);
       }
       const target = sanitizeReason(outcome.target);
       console.log(

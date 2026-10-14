@@ -4333,27 +4333,40 @@ changes back into those docs is pending.
     the logic in `land.service.ts` and the CLI thin. Every refusal comes before anything moves, and
     each says nothing was landed: the session must be in state `merged` with a `prUrl` and a pinned
     sha on its newest `merge` event, and no `landed` event after it; the url must be a pull request
-    of the repo the recorded origin names, since it is store text and another repo's merged PR would
-    otherwise vouch for it; `gh pr view <url> --repo <pin> --json state,mergeCommit`, called the way
-    `github.client.ts` calls gh, must say `MERGED`; and the target fetched from origin must contain
-    the sha the gate pinned. A squash or rebase merge therefore refuses: it lands commits the gate
-    never measured, and the PR vouched for the pinned sha only (decision 82). The fetch reads origin
-    from the URL `pup init` recorded, refused on a live value that moved exactly as the push is
-    (decision 56), and runs from the scratch git dir the push uses, borrowing the repo's object
-    store and lending the local tip as a ref, so the shared config a session can write is never read
-    (decision 54); the tracking ref is written only once the tip passes. Then, under the merge lock,
-    the local target is fast-forwarded with the gate's plumbing (`fastForward`, decision 80), after
-    the same checks the gate makes before its checkout: the main checkout on the target and no
-    driver armed. A local target with commits origin lacks refuses; one already at or past origin's
-    tip is left alone. The session's worktree is removed the way `pnpm worktree:clean` removes one
-    whose PR merged, and its branch is deleted only while main holds every commit of it, with the
-    old value and `--no-deref` like the gate's delete; a branch with later commits is kept and
-    named. Then `auditProject` runs, as `pup audit` would and printed the same way, and a `landed`
-    event records the merge commit GitHub made, the target and the url, which the needs-you inbox
-    reads to drop the PR (decision 83) whatever this checkout has pulled. A failure part-way is
-    safe to re-run: each step skips what is already done, and the event is written last. `landed`
-    joins the store's event types through `EventPayloads`, which `appendEvent` and `EventRow` now
-    key on. The `--pr` merge's closing line names `pup land <session>` instead of `pup audit`.
+    of the repo the recorded origin names, compared without case within ASCII since GitHub prints
+    the repo in its canonical case, since it is store text and another repo's merged PR would
+    otherwise vouch for it; the row's id, worktree and branch must be the ones the launch minted,
+    compared as text, since they are what gets removed; `gh pr view <url> --repo <pin> --json
+    state,headRefOid,baseRefName,mergeCommit`, called the way `github.client.ts` calls gh, must say
+    `MERGED` into the target with the head still at the pinned sha; and the target fetched from
+    origin must contain the merge commit, which must contain the pinned sha. A squash or rebase
+    merge therefore refuses, and so does a merge commit over a head that moved past the pin,
+    GitHub's own "Update branch" included: each lands commits the gate never measured, and the PR
+    vouched for the pinned sha only (decision 82). The fetch reads origin from the URL `pup init`
+    recorded, refused on a live value that moved exactly as the push is (decision 56), and runs from
+    the scratch git dir the push uses, borrowing the repo's object store and lending the local tip
+    as a ref, so the shared config a session can write is never read (decision 54), with auto
+    maintenance and the commit graph off so a fetch there never runs a gc, or writes a cache, from
+    the scratch dir's refs alone, and the ext protocol pinned off. Then, under the merge lock, the
+    local target is fast-forwarded with the gate's plumbing (`fastForward`, decision 80), after the
+    same checks the gate makes before its checkout: the main checkout on the target, checked on both
+    paths since the audit measures that checkout, and no driver armed. A local target with commits
+    origin lacks refuses; one already at or past origin's tip is left alone. The tracking ref is
+    written last under the lock, so every refusal leaves the repo's refs as they were, and the lock
+    is released on a signal as `pup merge` releases it. The session's worktree is removed, when git
+    still registers it and one `--force` suffices, the way `pnpm worktree:clean` removes one whose
+    PR merged, and its branch is deleted only while main holds every commit of it, with the old
+    value and `--no-deref` like the gate's delete; a branch with later commits is kept and named.
+    Then `auditProject` runs, as `pup audit` would and printed the same way, except that a regressed
+    measurement is reported and the baseline kept, since the conductor may run this and no human
+    then stands between an observed regression and the bar; `pup audit`, which the operator runs,
+    still ratchets (decision 48). Then a `landed` event records the merge commit GitHub made, the
+    target and the url, which the needs-you inbox reads to drop the PR (decision 83) whatever this
+    checkout has pulled. A failure part-way is safe to re-run: each step skips what is already done,
+    and the event is written last. `landed` is added to `EventPayloads` for its payload, and to
+    `EventRow` and `appendEvent` as `StoredEventType = EventType | 'landed'`, until `EventType`
+    itself takes it. The `--pr` merge's closing line names `pup land <session>` instead of `pup
+    audit`.
     The conductor may run it: the human decision, merging the PR, already happened on GitHub, and
     what is left moves main only to what origin holds, so it is the bookkeeping decision 75 lets the
     conductor relay, not the local fast-forward decision 47 keeps from it. A session is refused, as
