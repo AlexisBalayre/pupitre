@@ -87,6 +87,13 @@ export interface DashboardDeadTurn {
 
 export interface DashboardSession {
   id: string;
+  /**
+   * Whether the stored id has the minted shape (`SESSION_ID_PATTERN`), judged
+   * on the raw row before the scrub: a row a session wrote in another shape
+   * gets no command built around it and prints as a placeholder, since the
+   * inbox's answer is acted on (decision 83).
+   */
+  isMintedId: boolean;
   state: SessionState;
   branch: string;
   taskId: string;
@@ -148,6 +155,8 @@ export interface DashboardNeed {
   /** The inbox's own order: question, blocked, stalled, awaiting-review, pr-open. */
   kind: 'question' | 'blocked' | 'stalled' | 'awaiting-review' | 'pr-open';
   sessionId: string;
+  /** What prints for the session: its id, or a placeholder for one outside the minted shape. */
+  label: string;
   reason: string;
   answer: string;
 }
@@ -201,8 +210,8 @@ export interface DashboardSnapshot {
  * off the store, so the fleet and the single-project table cannot disagree.
  */
 export interface FleetSummary {
-  /** The sessions the snapshot's needs-you inbox names, in its order (decision 83). */
-  needsYou: DashboardSession[];
+  /** The snapshot's needs-you inbox, in its order (decision 83). */
+  needsYou: DashboardNeed[];
   running: number;
   planned: number;
   merged: number;

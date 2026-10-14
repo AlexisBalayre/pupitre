@@ -130,9 +130,8 @@ export function buildDashboardSnapshot(
 export function fleetSummary(snapshot: DashboardSnapshot): FleetSummary {
   const count = (state: DashboardSession['state']): number =>
     snapshot.sessions.filter((session) => session.state === state).length;
-  const byId = new Map(snapshot.sessions.map((session) => [session.id, session]));
   return {
-    needsYou: needsYou(snapshot).flatMap((need) => byId.get(need.sessionId) ?? []),
+    needsYou: needsYou(snapshot),
     running: count('running'),
     planned: snapshot.backlog.length,
     merged: count('merged'),
@@ -255,21 +254,26 @@ export function needsYou(snapshot: DashboardSnapshot): DashboardNeed[] {
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
 
+/** Arrows a stored text could pass off as the inbox's own `→`. */
+const ARROWS = /[→⟶➔➜⇒➡]/gu;
+const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
+
 function needOf(session: DashboardSession): DashboardNeed | undefined {
   const { id } = session;
   const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
     kind,
     sessionId: id,
+    label: session.isMintedId ? id : UNMINTED_ID,
     reason,
     answer,
   });
   // The answer is what the conductor acts on, and the session row is
-  // session-writable: an id outside the minted shape gets no command built
-  // around it, and a question cannot forge a second arrow (decision 29).
-  const command = (text: string): string =>
-    SESSION_ID_PATTERN.test(id) ? text : '(session id outside the minted shape; inspect the store)';
+  // session-writable: an id outside the minted shape neither prints nor gets
+  // a command built around it, and a question's arrows are not the line's
+  // (decision 29).
+  const command = (text: string): string => (session.isMintedId ? text : UNMINTED_ID);
   if (session.question !== undefined) {
-    const asked = session.question.replaceAll('→', '->');
+    const asked = session.question.replace(ARROWS, '->');
     return need('question', `question: ${asked}`, command(`pup steer ${id} "..."`));
   }
   if (session.state === 'blocked') {
@@ -319,56 +323,108 @@ function stallReason(session: DashboardSession, stalledAgeMs: number): string {
 
 /**
  * A target git can read as a branch name and nothing else — no leading `-`, no
- * `..`, `@{`, `^`, `~`, `:`, `[`, `*` or `?` — the shape `assertTargetName`
- * admits at the gate, checked here without git because the name is about to
- * be handed to git. And a sha as the gate pins it, which can then never read
- * as an option.
+ * `..` or `@{`, none of `^ ~ : ? * [ \\ =`, no blank, control or format
+ * character — what `assertTargetName` refuses at the gate, checked here
+ * without git because the name is about to be handed to git. And a sha as
+ * the gate pins it, which can then never read as an option.
  */
-const PLAIN_BRANCH = /^(?!-)(?!.*\.\.)(?!.*@\{)[A-Za-z0-9._/-]+$/;
+const PLAIN_BRANCH = /^(?!-)(?!.*\.\.)(?!.*@\{)[^\s~^:?*[\\=\p{Cc}\p{Cf}]+$/u;
 const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 /** A pull request and nothing else: the one url the inbox prints as the answer. */
-const PR_URL = /^https:\/\/[A-Za-z0-9.-]+\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+const PR_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
 /** The render loop is behind this call: a deep or planted history must not hold it. */
 const LANDED_CHECK_TIMEOUT_MS = 2_000;
+/**
+ * Every transport git ships, pinned off for the walk: `protocol.allow` alone is
+ * only the fallback, and a local `protocol.<name>.allow` overrides it.
+ */
+const NO_TRANSPORT = ['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].flatMap((name) => [
+  '-c',
+  `protocol.${name}.allow=never`,
+]);
+/**
+ * What git answered about a (repo, target, sha), kept across snapshots: an
+ * ancestor stays one, so `landed` is final; `open` holds until the target's
+ * tip moves, since only a new commit on it can change the answer. A timeout
+ * is neither and is asked again.
+ */
+const LANDING_CACHE = new Map<string, { landed: true } | { landed: false; tip: string }>();
 
 /**
  * Whether the target branch of this checkout already holds the commit a merge
  * pinned: the one thing the snapshot asks git, because the store cannot know
- * what the operator's pull did (decision 83). One `merge-base --is-ancestor`
- * per open PR, memoised for the snapshot, so the work follows the open PRs
- * and not the history. A merge recorded before the sha was kept (decision
- * 80) predates every PR still open and counts as landed. Everything else
- * fails toward "still open": a target or sha outside its shape is not asked
- * about, and an exit of 1, a missing object, a timeout and a repo with no
- * such branch all keep the PR listed. `protocol.allow=never` because a walk
- * that meets a missing object would otherwise fetch it through whatever
- * promisor remote the shared config names, with `core.sshCommand` and pup's
- * environment (decision 82's reasoning, outside the gate).
+ * what the operator's pull did (decision 83). One `rev-list --missing=allow-any`
+ * per open PR, which walks without fetching what it meets, under every
+ * transport pinned off and `GIT_NO_LAZY_FETCH` besides: the shared config can
+ * name a promisor remote whose fetch would run a planted command with pup's
+ * environment (decision 82's reasoning, outside the gate). The answers are
+ * cached across snapshots so the work follows the PRs still open, not the
+ * refreshes. A merge recorded before the sha was kept (decision 80) predates
+ * every PR still open and counts as landed. Everything else fails toward
+ * "still open": a target or sha outside its shape is not asked about, and a
+ * missing object, a timeout and a repo with no such branch all keep the PR
+ * listed.
  */
 function landedShaLookup(
   repoPath: string,
 ): (target: string | undefined, sha: string | undefined) => boolean {
-  const answered = new Map<string, boolean>();
+  const tips = new Map<string, string | undefined>();
+  const tipOf = (target: string): string | undefined => {
+    if (!tips.has(target)) {
+      try {
+        tips.set(
+          target,
+          runGit(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}^{commit}`], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: LANDED_CHECK_TIMEOUT_MS,
+          }).trim(),
+        );
+      } catch {
+        tips.set(target, undefined);
+      }
+    }
+    return tips.get(target);
+  };
   return (target, sha) => {
     if (sha === undefined) return true;
     if (target === undefined || !PLAIN_BRANCH.test(target) || !COMMIT_SHA.test(sha)) return false;
-    const key = `${target} ${sha}`;
-    const known = answered.get(key);
-    if (known !== undefined) return known;
-    let landed: boolean;
-    try {
-      runGit(
-        repoPath,
-        ['-c', 'protocol.allow=never', 'merge-base', '--is-ancestor', sha, `refs/heads/${target}`],
-        { stdio: ['ignore', 'ignore', 'ignore'], timeout: LANDED_CHECK_TIMEOUT_MS },
-      );
-      landed = true;
-    } catch {
-      landed = false;
-    }
-    answered.set(key, landed);
-    return landed;
+    const tip = tipOf(target);
+    if (tip === undefined) return false;
+    const key = `${repoPath}\0${target}\0${sha}`;
+    const known = LANDING_CACHE.get(key);
+    if (known?.landed) return true;
+    if (known && known.tip === tip) return false;
+    const answer = ancestry(repoPath, sha, target);
+    if (answer === 'landed') LANDING_CACHE.set(key, { landed: true });
+    if (answer === 'open') LANDING_CACHE.set(key, { landed: false, tip });
+    return answer === 'landed';
   };
+}
+
+/** Empty output means every commit from `sha` is reachable from the target. */
+function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'open' | 'unknown' {
+  try {
+    const past = runGit(
+      repoPath,
+      [
+        ...NO_TRANSPORT,
+        'rev-list',
+        '--missing=allow-any',
+        '--max-count=1',
+        sha,
+        `^refs/heads/${target}`,
+      ],
+      {
+        env: { GIT_NO_LAZY_FETCH: '1' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: LANDED_CHECK_TIMEOUT_MS,
+      },
+    );
+    return past.trim() === '' ? 'landed' : 'open';
+  } catch (error) {
+    const timedOut = error instanceof Error && 'signal' in error && error.signal === 'SIGTERM';
+    return timedOut ? 'unknown' : 'open';
+  }
 }
 
 function dashboardSession(
@@ -409,6 +465,7 @@ function dashboardSession(
     // not always the caller's own: all three print as stored, and no CHECK
     // constraint holds `state` to its type, so it is scrubbed like the others.
     id: sanitizeReason(row.id),
+    isMintedId: SESSION_ID_PATTERN.test(row.id),
     state: sanitizeReason(row.state) as SessionState,
     branch: sanitizeReason(row.branch),
     taskId: row.task_id,

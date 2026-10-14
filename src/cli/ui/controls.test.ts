@@ -56,6 +56,7 @@ const DEPS = { db: {}, repoPath: '/repo', pupBin: '/abs/pup.js' } as unknown as 
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
   return {
     id: 's-run-1',
+    isMintedId: true,
     state: 'running',
     branch: 'pup/t-run',
     taskId: 't-run',

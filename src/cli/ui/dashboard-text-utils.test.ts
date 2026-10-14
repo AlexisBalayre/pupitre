@@ -7,6 +7,7 @@ import { activityLabel } from './dashboard-text.utils.js';
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
   return {
     id: 's-mue99umh-1',
+    isMintedId: true,
     state: 'running',
     branch: 'pup/t-mue99umh',
     taskId: 't-mue99umh',

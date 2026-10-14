@@ -1,8 +1,7 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
-import { needsYou } from '../../core/dashboard.service.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
-import type { DashboardSession } from '../../core/types/dashboard.types.js';
+import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
 
 /**
@@ -121,6 +120,16 @@ export function trailing(label: string): string {
 }
 
 /** One session row, the same in the single-project table and the fleet view. */
+/**
+ * One inbox line, for `pup status` and the fleet alike: built off a sanitized
+ * snapshot and sanitized again at the print site (decision 68). The two
+ * double-space separators cannot be forged, since the scrub collapses runs of
+ * whitespace; the label and reason have their own arrows taken away upstream.
+ */
+export function needLine(need: DashboardNeed): string {
+  return `${sanitizeReason(need.label)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`;
+}
+
 export function sessionLine(session: DashboardSession): string {
   const marker =
     session.state === 'blocked'
@@ -163,10 +172,7 @@ function fleetBlockLines(block: Exclude<FleetBlock, { reason: string }>): string
     ),
     // The inbox's own lines, reason and answer, not the bare session row: a
     // merged session listed for its PR says nothing by its state alone.
-    ...needsYou(snapshot).map(
-      (need) =>
-        `  ${sanitizeReason(need.sessionId)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`,
-    ),
+    ...summary.needsYou.map((need) => `  ${needLine(need)}`),
     `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
   ];
 }
