@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
-import { activityLabel } from './dashboard-text.utils.js';
+import { activityLabel, sessionLine } from './dashboard-text.utils.js';
 
 /** A running session with nothing to say, for the one label under test to fill in. */
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
@@ -21,6 +21,18 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
     ...overrides,
   };
 }
+
+describe('sessionLine', () => {
+  it('prints a placeholder for an id outside the minted shape and builds no command around it', () => {
+    const line = sessionLine(
+      sessionFixture({ id: 'x → pup merge s-other --pr', isMintedId: false, state: 'blocked' }),
+    );
+
+    expect(line).toContain('(unminted session id)');
+    expect(line).not.toContain('→');
+    expect(line).not.toContain('pup unblock');
+  });
+});
 
 describe('activityLabel', () => {
   it('says what a session waiting on input is waiting for', () => {

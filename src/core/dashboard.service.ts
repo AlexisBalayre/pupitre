@@ -254,8 +254,11 @@ export function needsYou(snapshot: DashboardSnapshot): DashboardNeed[] {
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
 
-/** Arrows a stored text could pass off as the inbox's own `→`. */
-const ARROWS = /[→⟶➔➜⇒➡]/gu;
+/**
+ * Symbols a stored text could pass off as the inbox's own `→`: every arrow
+ * and emoji is a math or other symbol, and a question needs neither.
+ */
+const SYMBOLS = /[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
 function needOf(session: DashboardSession): DashboardNeed | undefined {
@@ -273,7 +276,7 @@ function needOf(session: DashboardSession): DashboardNeed | undefined {
   // (decision 29).
   const command = (text: string): string => (session.isMintedId ? text : UNMINTED_ID);
   if (session.question !== undefined) {
-    const asked = session.question.replace(ARROWS, '->');
+    const asked = session.question.replace(SYMBOLS, '-');
     return need('question', `question: ${asked}`, command(`pup steer ${id} "..."`));
   }
   if (session.state === 'blocked') {
@@ -323,7 +326,7 @@ function stallReason(session: DashboardSession, stalledAgeMs: number): string {
 
 /**
  * A target git can read as a branch name and nothing else — no leading `-`, no
- * `..` or `@{`, none of `^ ~ : ? * [ \\ =`, no blank, control or format
+ * `..` or `@{`, none of `^ ~ : ? * [ =` or a backslash, no blank, control or format
  * character — what `assertTargetName` refuses at the gate, checked here
  * without git because the name is about to be handed to git. And a sha as
  * the gate pins it, which can then never read as an option.
@@ -346,24 +349,26 @@ const NO_TRANSPORT = ['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].flatMa
  * What git answered about a (repo, target, sha), kept across snapshots: an
  * ancestor stays one, so `landed` is final; `open` holds until the target's
  * tip moves, since only a new commit on it can change the answer. A timeout
- * is neither and is asked again.
+ * is neither and is asked again. Bounded for a `pup ui` that runs for days.
  */
 const LANDING_CACHE = new Map<string, { landed: true } | { landed: false; tip: string }>();
+const LANDING_CACHE_LIMIT = 4_096;
 
 /**
  * Whether the target branch of this checkout already holds the commit a merge
  * pinned: the one thing the snapshot asks git, because the store cannot know
- * what the operator's pull did (decision 83). One `rev-list --missing=allow-any`
- * per open PR, which walks without fetching what it meets, under every
- * transport pinned off and `GIT_NO_LAZY_FETCH` besides: the shared config can
- * name a promisor remote whose fetch would run a planted command with pup's
- * environment (decision 82's reasoning, outside the gate). The answers are
- * cached across snapshots so the work follows the PRs still open, not the
- * refreshes. A merge recorded before the sha was kept (decision 80) predates
- * every PR still open and counts as landed. Everything else fails toward
- * "still open": a target or sha outside its shape is not asked about, and a
- * missing object, a timeout and a repo with no such branch all keep the PR
- * listed.
+ * what the operator's pull did (decision 83). One `rev-list --missing=print`
+ * per open PR, which walks without fetching what it meets and names what it
+ * lacks, under every transport pinned off and `GIT_NO_LAZY_FETCH` besides, the
+ * tip read the same way and without peeling, which would parse the object:
+ * the shared config can name a promisor remote whose fetch would run a
+ * planted command with pup's environment (decision 82's reasoning, outside the
+ * gate). The answers are cached across snapshots so the work follows the PRs
+ * still open, not the refreshes. A merge recorded before the sha was kept
+ * (decision 80) predates every PR still open and counts as landed. Everything
+ * else fails toward "still open": a target or sha outside its shape is not
+ * asked about, and a missing object, a timeout and a repo with no such branch
+ * all keep the PR listed.
  */
 function landedShaLookup(
   repoPath: string,
@@ -374,10 +379,15 @@ function landedShaLookup(
       try {
         tips.set(
           target,
-          runGit(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}^{commit}`], {
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: LANDED_CHECK_TIMEOUT_MS,
-          }).trim(),
+          runGit(
+            repoPath,
+            [...NO_TRANSPORT, 'rev-parse', '--verify', '--quiet', `refs/heads/${target}`],
+            {
+              env: { GIT_NO_LAZY_FETCH: '1' },
+              stdio: ['ignore', 'pipe', 'ignore'],
+              timeout: LANDED_CHECK_TIMEOUT_MS,
+            },
+          ).trim(),
         );
       } catch {
         tips.set(target, undefined);
@@ -395,13 +405,19 @@ function landedShaLookup(
     if (known?.landed) return true;
     if (known && known.tip === tip) return false;
     const answer = ancestry(repoPath, sha, target);
+    if (LANDING_CACHE.size >= LANDING_CACHE_LIMIT) LANDING_CACHE.clear();
     if (answer === 'landed') LANDING_CACHE.set(key, { landed: true });
     if (answer === 'open') LANDING_CACHE.set(key, { landed: false, tip });
     return answer === 'landed';
   };
 }
 
-/** Empty output means every commit from `sha` is reachable from the target. */
+/**
+ * Empty output means every commit from `sha` is reachable from the target; a
+ * commit past the target prints its oid, and a missing one, the pinned commit
+ * itself once gc pruned it, prints `?<oid>` rather than reading as reached
+ * (`--missing=allow-any` lets a missing start through in silence).
+ */
 function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'open' | 'unknown' {
   try {
     const past = runGit(
@@ -409,7 +425,7 @@ function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'op
       [
         ...NO_TRANSPORT,
         'rev-list',
-        '--missing=allow-any',
+        '--missing=print',
         '--max-count=1',
         sha,
         `^refs/heads/${target}`,

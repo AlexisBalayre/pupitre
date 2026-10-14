@@ -4289,22 +4289,24 @@ changes back into those docs is pending.
     `prUrl` is a local fast-forward, already on the target, so it is never an open PR. Whether the
     target holds the sha is the one thing the snapshot asks git: the store cannot know what the
     operator's pull did, and without the check every PR the project ever opened stayed listed (found
-    on CI review). One `rev-list --missing=allow-any` per open PR, which walks without fetching what
-    it meets, with every transport git ships pinned off and `GIT_NO_LAZY_FETCH` set besides, since
-    `protocol.allow` alone is only the fallback a local `protocol.<name>.allow` overrides (found on
-    security and CI review): the shared config can name a promisor remote whose fetch would run a
-    planted command with pup's environment. Under a two-second timeout; a landed answer is kept for
-    good and a not-landed one until the target's tip moves, across snapshots, so the work follows
-    the PRs still open and not the refreshes. A target that is not a plain branch name or a sha that
-    is not hex, as the store can write them, is not asked about, and that, a missing object, a
-    timeout and a repo with no such branch all read as not landed. A merge recorded before the sha
-    was kept (decision 80) predates every open PR and counts as landed. The answer is what the
-    conductor acts on, so a url is printed only in the pull-request shape, a session id outside the
-    minted shape, judged on the raw row, neither prints nor gets a command built around it, and a
-    question's arrows are rewritten; the line still shows, saying to inspect the store. Nothing
-    writes `landed` yet; `pup land` will, for the merges git cannot see, a squash among them, and
-    the snapshot reads the type as stored text until it joins `EventType`. Only the newest merge
-    counts, like the dossier's "what landed".
+    on CI review). One `rev-list --missing=print` per open PR, which walks without fetching what it
+    meets and names what it lacks, so a pruned pinned commit reads as open rather than reached, with
+    every transport git ships pinned off and `GIT_NO_LAZY_FETCH` set besides, the target's tip read
+    under the same pins and without peeling, since `protocol.allow` alone is only the fallback a
+    local `protocol.<name>.allow` overrides (found on security and CI review): the shared config can
+    name a promisor remote whose fetch would run a planted command with pup's environment. Under a
+    two-second timeout; a landed answer is kept for good and a not-landed one until the target's tip
+    moves, across snapshots, so the work follows the PRs still open and not the refreshes. A target
+    that is not a plain branch name or a sha that is not hex, as the store can write them, is not
+    asked about, and that, a missing object, a timeout and a repo with no such branch all read as
+    not landed. A merge recorded before the sha was kept (decision 80) predates every open PR and
+    counts as landed. The answer is what the conductor acts on, so a url is printed only in the
+    pull-request shape, a session id outside the minted shape, judged on the raw row, neither prints
+    nor gets a command built around it, and a question's symbols, every arrow and emoji among them,
+    are rewritten; the line still shows, saying to inspect the store. Nothing writes `landed` yet;
+    `pup land` will, for the merges git cannot see, a squash among them, and the snapshot reads the
+    type as stored text until it joins `EventType`. Only the newest merge counts, like the dossier's
+    "what landed".
     The live table and the backlog follow as before, but rows in state `merged` or `killed` are left
     out and printed only with `pup status --history`; a project whose sessions have all finished
     prints its inbox, if any, then `Nothing running and nothing planned.`. The snapshot itself is

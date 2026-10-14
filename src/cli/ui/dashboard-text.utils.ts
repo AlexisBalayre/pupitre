@@ -119,24 +119,29 @@ export function trailing(label: string): string {
   return label ? `  ${label}` : '';
 }
 
-/** One session row, the same in the single-project table and the fleet view. */
 /**
  * One inbox line, for `pup status` and the fleet alike: built off a sanitized
  * snapshot and sanitized again at the print site (decision 68). The two
  * double-space separators cannot be forged, since the scrub collapses runs of
- * whitespace; the label and reason have their own arrows taken away upstream.
+ * whitespace; the label and reason have their own symbols taken away upstream.
  */
 export function needLine(need: DashboardNeed): string {
   return `${sanitizeReason(need.label)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`;
 }
 
+/**
+ * One session row, the same in the single-project table and the fleet view.
+ * An id outside the minted shape prints as a placeholder and gets no command
+ * built around it, as in the inbox (decision 83).
+ */
 export function sessionLine(session: DashboardSession): string {
+  const shownId = session.isMintedId ? session.id : '(unminted session id)';
   const marker =
-    session.state === 'blocked'
+    session.state === 'blocked' && session.isMintedId
       ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
       : '';
   return (
-    `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
+    `${session.state.padEnd(16)} ${shownId.padEnd(28)} ${session.branch}${marker}` +
     `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`
   );
 }
