@@ -70,7 +70,7 @@ export function parseRawDiff(raw: string): RawDiffEntry[] {
 
 /**
  * Markdown nobody loads as instructions, as an allowlist of the root's repo
- * meta. Everything else steers an agent: `CLAUDE.md`, skills, manifests and
+ * meta. Everything else may steer an agent: `CLAUDE.md`, skills, manifests and
  * rules directly, and the design docs as the spec and stack decisions
  * `AGENTS.md` and the reviewers send sessions to.
  */
@@ -90,14 +90,16 @@ const PRAGMA =
 
 /**
  * Each pragma with where it sits: the index of the code token it precedes,
- * and whether a line break separates it from the token before. Comments come
+ * and whether a line break separates it from the token before. A comment on
+ * the same line as the token before is that token's trailing comment, so both
+ * ranges are read: together they split the trivia at its first line break. Comments come
  * from the parsed tree, whose tokens know template parts, regexes and JSX
  * text, so no backtick or slash hides a comment; a pragma moved onto other
  * code changes its index, so a moved `v8 ignore next` reads as a change.
  */
-function pragmaAnchors(file: ts.SourceFile): string[] {
+function pragmaAnchors(file: ts.SourceFile): [number, boolean, string][] {
   const { text } = file;
-  const anchors: string[] = [];
+  const anchors: [number, boolean, string][] = [];
   let tokenIndex = 0;
   const visit = (node: ts.Node): void => {
     if (ts.isJSDoc(node)) return;
@@ -105,11 +107,12 @@ function pragmaAnchors(file: ts.SourceFile): string[] {
       for (const child of node.getChildren(file)) visit(child);
       return;
     }
-    for (const range of ts.getLeadingCommentRanges(text, node.pos) ?? []) {
+    const trailing = ts.getTrailingCommentRanges(text, node.pos) ?? [];
+    for (const range of [...trailing, ...(ts.getLeadingCommentRanges(text, node.pos) ?? [])]) {
       const comment = text.slice(range.pos, range.end);
       if (!PRAGMA.test(comment)) continue;
       const hasLineBreak = /[\n\r\u2028\u2029]/.test(text.slice(node.pos, range.pos));
-      anchors.push(`${tokenIndex}:${hasLineBreak}:${comment}`);
+      anchors.push([tokenIndex, hasLineBreak, comment]);
     }
     tokenIndex += 1;
   };
@@ -127,7 +130,7 @@ function pragmaAnchors(file: ts.SourceFile): string[] {
  */
 export function sameCodeIgnoringComments(path: string, before: string, after: string): boolean {
   const printer = ts.createPrinter({ removeComments: true });
-  const read = (text: string): string | null => {
+  const fingerprint = (text: string): string | null => {
     // With parent nodes the printer keeps each literal's source text, so an
     // escaped `'use\x20strict'` does not print as the directive it is not.
     const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
@@ -135,8 +138,8 @@ export function sameCodeIgnoringComments(path: string, before: string, after: st
     if ((diagnostics ?? []).length > 0) return null;
     return JSON.stringify([printer.printFile(file), pragmaAnchors(file)]);
   };
-  const readBefore = read(before);
-  return readBefore !== null && readBefore === read(after);
+  const beforePrint = fingerprint(before);
+  return beforePrint !== null && beforePrint === fingerprint(after);
 }
 
 /**

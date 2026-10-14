@@ -205,6 +205,13 @@ describe("sameCodeIgnoringComments", () => {
     expect(same("const a = 1; // c\n", "const a = 1; // c\r// @ts-ignore\n")).toBe(false);
   });
 
+  it("refuses a pragma added after code on the same line", () => {
+    expect(same("a();\nb();\n", "a(); // @ts-ignore\nb();\n")).toBe(false);
+    expect(same("const a = c ? x() : y();\n", "const a = c ? /* v8 ignore next */ x() : y();\n")).toBe(false);
+    expect(same("const x = f();\n", "const x = /* @__PURE__ */ f();\n")).toBe(false);
+    expect(same("log(x);\n", "log(x); // eslint-disable-line no-console\n")).toBe(false);
+  });
+
   it("refuses the coverage spellings the tools accept beyond the plain one", () => {
     expect(same("run();\n", "/* v8\tignore next */\nrun();\n")).toBe(false);
     expect(same("run();\n", "/* node:coverage ignore next */\nrun();\n")).toBe(false);
