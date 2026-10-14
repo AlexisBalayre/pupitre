@@ -1,0 +1,130 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T17:27:05.955Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38605982465",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38605982465",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5af5cbc2d857d5edc9cdecda95fa093d8894b55f",
+  "source": "pr",
+  "pr_number": 146,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "d99e067f680ce3c3a6478fbd9617761802c1669c",
+  "prior_importants": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "750-753",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "269-276",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/pane.utils.ts",
+      "line": "152-155",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "inputBoxState returns 'absent' only when no column-0 '❯' row exists anywhere in the captured screen. inputBoxText takes the LAST column-0 '❯' row, and its own docstring and the TAIL_ONLY_PANE fixture say a submitted prompt is echoed in the transcript with that same column-0 glyph. So once a dialog replaces the box, the last column-0 '❯' is the echo of the most recent user prompt, and right after a tell that is the tell itself. The function then reads that echo's text, plus whatever transcript rows follow it up to a '─' row, as the box: the state is 'holds', not 'absent'. In tellConductor (`if (box === 'holds') { submitPane(pane); ... }`) that means the second Enter IS pressed on the dialog. That is exactly what the delta says never happens.",
+      "body": "**When an earlier prompt's echo is on screen above a dialog, the dialog reads as `'holds'`, not `'absent'`, so the tell's second Enter can still land on it**\n\n`inputBoxState` returns `'absent'` only when `inputBoxText` finds no column-0 `❯` row at all:\n\n```ts\nexport function inputBoxState(pane: string): 'empty' | 'holds' | 'absent' {\n  if (inputBoxText(pane) === undefined) return 'absent';\n  return hasUnsubmittedInput(pane) ? 'holds' : 'empty';\n}\n```\n\nHow `inputBoxText` finds the box:\n\n- It keeps the **last** column-0 `❯` row on the screen.\n- It then reads every row below it until a `─` row. It never checks for a border above.\n- `captureInputBox` is `capture-pane -p -e`, which captures the whole visible screen.\n\nIts docstring and the live `TAIL_ONLY_PANE` fixture show that Claude Code echoes every submitted prompt at column 0 with that same glyph. Right after the tell's first Enter, the tell's own echo is on screen.\n\nSo if a dialog or selector replaces the box during the 1 s `SUBMIT_VERIFY_MS` beat:\n\n- The echo, plus the transcript rows under it, is read as the box.\n- Those rows are non-dim, so they can't blank to empty.\n- The state is therefore `'holds'`, and `tellConductor` presses Enter on the dialog:\n\n```ts\nlet box = readInputBox(pane);\nif (box === 'holds') {\n  submitPane(pane);\n```\n\nThat contradicts decision 85 (\"never when a dialog has replaced the box, where Enter would pick an option\") and the `tellConductor` JSDoc.\n\nThe tests miss this:\n\n- The `'absent'` unit test uses `'Accessing workspace:\\n ❯ 1. Yes, I trust this folder'`, a pane with no echo above the dialog.\n- The conductor test mocks `readInputBox` to `'absent'`, so it never checks that a real dialog is detected.\n\nHow likely it is: the conductor skips permissions, and `UNANSWERABLE_TOOLS` denies AskUserQuestion and plan mode (decisions 19 and 74). The dialogs that can still appear are Claude Code's own menus, such as the usage-limit or model-fallback choice and MCP elicitation. If one shows up within the beat, the second Enter answers it with its highlighted option. The check before the paste is unaffected, because there a misread `'holds'` still refuses.\n\nPossible fix: identify the box by its frame. In the live fixtures, the box's `❯` row sits directly under a column-0 `─` border, and an echo does not. Count the last `❯` as the box only when the row above it is a border, and return `'absent'` otherwise. `hasUnsubmittedInput` and `pasteLanded` share `inputBoxText`, so add a fixture with an echo above a dialog for all three.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5af5cbc2d857d5edc9cdecda95fa093d8894b55f/src/claude/pane.utils.ts#L116-L155\nhttps://github.com/AlexisBalayre/pupitre/blob/5af5cbc2d857d5edc9cdecda95fa093d8894b55f/src/core/conductor.service.ts#L286-L291",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "285",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When pasteIntoPane returns false (`if (!pasteIntoPane(pane, message)) return false;`), the pasted text, or whatever part of it arrived, stays in the conductor's box unsubmitted. steerPane clears the box in the same situation (`clearInputBox(pane)` before throwing). The CLI's generic message ('never showed it whole, still holds text after a second Enter, or left the screen. Look with `pup attach`.') doesn't say the text is still sitting there. An attached operator's Enter would submit a possibly head-truncated message, which is the decision-45 failure mode. Every later tell is also refused as 'holds unsent text' until someone clears the box by hand. Within 800 chars the trigger is narrow: a token at the end of the message hard-wrapped mid-word in a pane narrowed by `pup attach`, or a leading '!' that switches the box to bash mode. Clearing is safe here, since the box was verified empty just before the paste. At minimum the not-landed message should say the text may still be in the box, unsent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "755",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The union 'empty' | 'holds' | 'absent' is written out twice, in `inputBoxState` (pane.utils.ts:152) and in `readInputBox` (session-runtime.service.ts:755). `readInputBox` is a pure pass-through of `inputBoxState`, so the contract has two sources of truth. If a fourth state is added, `readInputBox`'s annotation fails to compile until it is edited by hand. Export `type InputBoxState` from pane.utils.ts, or drop the annotation on `readInputBox` and let it infer. A named type is cheap here, and the conductor service now branches on all three values.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "510",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The single `!landed` message now covers three states with different follow-ups: the paste never showed whole (nothing pressed, partial text possibly left in the box), Enter was pressed twice and text is still in the box, and the box left the screen after Enter (a dialog may have taken the key). `tellConductor` knows which one happened, but `boolean` throws that away, so the operator is told to 'look with `pup attach`' in every case. This is not a regression for diagnosability, since the old message was equally generic. The cost is that the message lists causes instead of naming one. If that matters, return a small result union such as 'landed' | 'paste-missing' | 'stuck' | 'box-gone' from `tellConductor`. Otherwise leave it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "242",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`NO_CONDUCTOR_RUNNING` is an exported constant declared in a `*.service.ts`. Rule, `docs/conventions/general.md:93-97`: \"Thresholds, timeouts, tool names, path fragments — none are inlined at the use site. They go in the area's `*.constants.ts`\". The sibling `TELL_MAX_CHARS` is already in the same service file, so this follows local precedent. The rule is about hardcoded values, and this is a shared message string. Raise it only if you want strictness.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "755",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc on `readInputBox` repeats the sentence on `inputBoxState` in src/claude/pane.utils.ts (\"What the input box shows: nothing unsubmitted, some text, or no box at all\"). The function is a one-line wrapper over `inputBoxState`. A shorter doc that points to `inputBoxState` would avoid keeping the same contract in two places. The three-state union is also spelled out on both signatures and in decision 85.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "716",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "steerPane's retry loop (`if (!hasUnsubmittedInput(captureInputBox(pane))) return; pressEnter(pane);`) uses the same last-column-0-`❯` reading. A screen without an input box, with an echoed prompt above it, therefore reads as unsubmitted text and gets another Enter. Its docstring's reasoning (\"an extra Enter on an empty input box is a no-op\") does not cover that case. Sessions run with permissions skipped and the same tools denied, so only Claude Code's own menus are exposed. The fix for finding 1 would cover this too.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6712124000000013,
+  "duration_ms": 291024,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 11042,
+    "cache_read": 256293,
+    "cache_creation": 69250,
+    "total": 336597
+  }
+}
