@@ -1,0 +1,94 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T14:33:43.391Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38581212812",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38581212812",
+  "actor": "AlexisBalayre",
+  "commit_sha": "895d6933e79c8736cd42bbb444b61cae7904d383",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "f162ad1286bc17ef083bf3acdd66605cd37063da",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "540-549",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1151-1156",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new catch comment says an interrupted delete leaves the branch 'as one that moved past the pin does', but the two are reported differently. A moved branch gets a console.error and `leftBehind`; an interrupted delete keeps the branch silently, since `commitsPastPin` returns 0, and non-PR mode still prints 'worktree and branch cleaned up'. The kept branch is harmless because all its commits are merged. Fix either the comment or the message, or warn on stderr in the catch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "535-539",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`deleteBranchAt`'s JSDoc gives only a boolean contract ('false when it moved'). It doesn't say the function now throws when an interrupt killed git, which both callers depend on, or that any other git failure also returns false. Suggested addition: 'Throws when an interrupt killed git, so a caller never reads that as moved.'",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "531-554",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new gate test copies the kill-on-matching-git PATH shim from land.test.ts: the same `command -v git` lookup, `case \" $* \" ... kill -TERM $$` script, and PATH prepend and restore. This is the second use, so it is fine under 'no abstraction until third use'. The next fake-git-kill test should extract a shared helper such as `fakeGitKilling(call)`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1146-1157",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The new catch's reason, 'rather than skip the ratchet and the draft', covers only the branch delete. An interrupt that kills the `worktree remove --force` call just above is still uncaught. After the merge landed, it runs through the `finally` and throws out of `gateAndMerge`, so the ratchet and the draft are skipped and the CLI reports a refusal. This was already the case at the merge base.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8621255,
+  "duration_ms": 117394,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 5990,
+    "cache_read": 202104,
+    "cache_creation": 31772,
+    "total": 239878
+  }
+}
