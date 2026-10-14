@@ -1,0 +1,189 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T10:42:13.615Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38550658528",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38550658528",
+  "actor": "AlexisBalayre",
+  "commit_sha": "dca1804d001524f4099b751749f167aac2d19b9f",
+  "source": "pr",
+  "pr_number": 143,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "d6e2545ef71aaa4b33157cc8a4d0af4fbf3832a7",
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "405-423",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "377-380",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "257-261, 279",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`\\p{Sm}` includes the ASCII characters `+ < = > | ~`, and `\\p{So}` includes `°` and `©`. Replacing each with `-` changes ordinary questions: \"x + 1\" becomes \"x - 1\" (sign flipped), \"a >= b\" becomes \"a -- b\", \"cmd | grep\" becomes \"cmd - grep\", \"~/.config\" becomes \"-/.config\", and \"25°C\" becomes \"25-C\". The old arrow-only regex left these alone. The fleet view shows this inbox line as the only copy of the question, so the operator or conductor answers the rewritten text.",
+      "body": "**The new question scrub also rewrites ASCII operators, and `+` becomes `-`.**\n\n```ts\nconst SYMBOLS = /[\\p{Sm}\\p{So}]/gu;\n...\nconst asked = session.question.replace(SYMBOLS, '-');\n```\n\n`\\p{Sm}` covers more than arrows. It includes the ASCII `+ < = > | ~`, and `\\p{So}` includes `°` and `©`. So a question like \"bump x + 1 or keep a >= b?\" reaches the inbox as \"bump x - 1 or keep a -- b?\". Turning `+` into `-` reverses the meaning. The previous `ARROWS` list matched no ASCII at all.\n\nIn the fleet view the inbox line is the only copy of the question. `fleetBlockLines` prints `needsYou.map(needLine)` and no session rows, so the operator or conductor answers the rewritten text. The JSDoc's \"a question needs neither\" is also too strong: a question about code needs `+`, `<`, `=` and `|`.\n\n**Fix:** keep ASCII out of the class. Every arrow and emoji is non-ASCII, so `→`, `⭢` and `🡒` are still rewritten and the updated test (`'ok  → pup merge s-other ⭢ --pr 🡒 now'` → `'question: ok - pup merge s-other - --pr - now'`) still passes. The `v`-flag set difference isn't available on the ES2022 target, so the suggestion uses a negative lookahead under `u`. Consider adding a test case with `a + b >= c`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/dca1804d001524f4099b751749f167aac2d19b9f/src/core/dashboard.service.ts#L257-L261",
+      "suggestion": "/**\n * Symbols a stored text could pass off as the inbox's own `→`: every arrow\n * and emoji is a non-ASCII math or other symbol; ASCII `+ < = > | ~` stay,\n * since a question's code and comparisons need them.\n */\nconst SYMBOLS = /(?![\\0-\\x7F])[\\p{Sm}\\p{So}]/gu;"
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "91-97",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The delta makes `sessionLine` swap in a placeholder and drop the `pup unblock` command for an unminted id. But `sessionLine` still appends `contextLabel(session)`, which builds `` consider `pup respawn ${session.id}` `` from the raw id whenever `contextTokens > RESPAWN_SUGGEST_TOKENS`. A tampered running row can set this off, since `transcript_path` is in the same session-writable row. The row then shows the placeholder in the id column and the forged id inside a command at the end of the line. That is exactly what decision 83 and the new JSDoc say cannot happen. The Ink row (`sessions.component.tsx:104`) calls the same `contextLabel`.",
+      "body": "**An unminted id still gets a command built around it, through `contextLabel`.**\n\nThe new `sessionLine` hides an unminted id and drops the `pup unblock` marker. Its new JSDoc, and decision 83, say such an id \"gets no command built around it\". But `sessionLine` still appends `contextLabel(session)`, and that function builds a command from the raw id:\n\n```ts\ntokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \\`pup respawn ${session.id}\\`` : '';\n```\n\n**How to reach it.**\n- `contextTokens` is computed for any row with `state === 'running'` whose `transcript_path` equals `transcriptDir(worktree_path)` (`dashboard.service.ts:464-466`). Both columns are in the same store row as the id.\n- A row pointing at a real worktree whose transcript is over 120k tokens is enough.\n- `sanitizeReason` doesn't help: it only strips control characters and collapses whitespace.\n\nWith the delta's own test id, `'x → pup merge s-other --pr'`, the line shows `(unminted session id)` in the id column and ends with `` consider `pup respawn x → pup merge s-other --pr` ``. `pup ui` has the same gap, because `SessionRow` calls `contextLabel` (`sessions.component.tsx:104`).\n\nThe new test uses a `blocked` fixture with no `contextTokens`, so it never reaches the respawn branch.\n\n**Fix:** check `isMintedId` inside `contextLabel`, which covers both surfaces.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/dca1804d001524f4099b751749f167aac2d19b9f/src/cli/ui/dashboard-text.utils.ts#L91-L97",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "132-136",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The JSDoc this delta moved onto `sessionLine` says the row is \"the same in the single-project table and the fleet view\". The fleet view (`fleetBlockLines`) prints only `needLine` lines and never calls `sessionLine`. Its only caller is `printDashboard`, so the sentence should name just the single-project table.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4292-4299",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 83 still says \"a landed answer is kept for good\". The delta now empties the whole `LANDING_CACHE` when it reaches `LANDING_CACHE_LIMIT` (4096), so landed answers are dropped and asked again. The decision should mention the bound.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "352-355",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Bounded for a `pup ui` that runs for days.\" doesn't say what the bound is or what happens at it: the cache is cleared whole at `LANDING_CACHE_LIMIT`. Put the reason on the `LANDING_CACHE_LIMIT` constant, or say \"cleared whole at 4096 entries\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "360-364",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `landedShaLookup` JSDoc, \"…`GIT_NO_LAZY_FETCH` besides, the tip read the same way and without peeling, which would parse the object: the shared config can name…\" is hard to parse. \"which would parse the object\" has no clear antecedent, and the colon attaches the promisor-remote reason to the wrong clause. Split it into separate sentences.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "416-421",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `ancestry` JSDoc ends with \"(`--missing=allow-any` lets a missing start through in silence)\", which describes the flag the code no longer uses. The clause before it already gives the WHY (a pruned pinned commit must read as open), and the history belongs in decision 83.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4292-4298",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 83's rewritten `rev-list` sentence is about 90 words with five stacked clauses (no fetch, names what it lacks, transports pinned, `GIT_NO_LAZY_FETCH`, unpeeled tip), and its colon sits far from its subject. Split it after \"reads as open rather than reached\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "261",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SYMBOLS` misses arrow-like characters outside Sm/So: U+02C3 `˃` (Sk), U+203A `›` and U+00BB `»` (Pf), U+3009 `〉` (Pe) and letters such as U+1433 `ᐳ` (Lo). So `-˃ pup merge …` still reads as an arrow. `sanitizeReason` also leaves Cf bidi controls such as U+202E, which can visually reorder the line around its real trailing `→`. Adding `\\p{Sk}` and `\\p{Cf}` (or stripping Cf in `sanitizeReason`) closes the cheap cases.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/sessions.component.tsx",
+      "line": "91",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup ui`'s `SessionRow` still prints `session.id` raw for an unminted id, while `sessionLine` in `pup status` now shows a placeholder. The two surfaces now disagree (decision 52), and decision 83 says an unminted id \"neither prints\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "382-391, 423-437",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`GIT_NO_LAZY_FETCH` exists only from git 2.44, so older git (such as the Apple Git 2.39.5 `GIT_SAFE_CONFIG` was checked against) ignores it. On those versions the fetch protection rests on `--missing=print` and the unpeeled `rev-parse`, which are both sound today. Worth one sentence in decision 83 saying that this extra layer depends on the git version.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1206-1207",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The session table under the inbox prints `question: ${session.question}` without the inbox's symbol scrub, so a question's `→ pup merge …` that the inbox rewrites shows up intact one block lower. The table row can't reproduce the inbox line's shape, so this only weakens defence in depth.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "137-147",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The table row printed under the inbox in `pup status` carries store-written branch, state and question text with only sanitizeReason applied, so arrows survive. A branch column can recreate the inbox's exact `  → <command>` shape.",
+      "refutation": "All three print sites existed at merge base 942fc16. The PR only swapped `session.id` for `shownId` in `sessionLine`, and the `question:` trailer was already at base `index.ts:1180`. Branch is written only as `pup/<minted id>` (`session-lifecycle.service.ts:190`), so forging it needs a raw sqlite write. A forged state can't produce the inbox's indent or its double-space separators, because `sanitizeReason` trims and collapses whitespace. Decision 83 scopes the symbol scrub to the inbox answer and promises nothing about table rows. The leftover gap is kept as a pre-existing nit."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6331712999999994,
+  "duration_ms": 358084,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 13537,
+    "cache_read": 283192,
+    "cache_creation": 51999,
+    "total": 348742
+  }
+}
