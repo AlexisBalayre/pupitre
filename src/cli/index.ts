@@ -25,6 +25,7 @@ import {
   conductorName,
   killWatcher,
   launchWatcher,
+  SessionPaneMissingError,
   SteerNotDeliveredError,
   windowLabel,
 } from '../claude/session-runtime.service.js';
@@ -35,6 +36,7 @@ import { codegraphLabel } from '../core/codegraph.client.js';
 import {
   ConductorTellRefusedError,
   isConductorRunning,
+  NO_CONDUCTOR_RUNNING,
   startConductor,
   stopConductor,
   tellConductor,
@@ -498,14 +500,16 @@ function tellOrRefuse(repoPath: string, message: string): void {
   try {
     landed = tellConductor(repoPath, message);
   } catch (error) {
-    if (!(error instanceof ConductorTellRefusedError || isRefusedSteer(error))) throw error;
+    if (!(error instanceof ConductorTellRefusedError || error instanceof SessionPaneMissingError)) {
+      throw error;
+    }
     refuse(error.message);
     return;
   }
   if (!landed) {
     refuse(
-      "The message is still in the conductor's input box after a second Enter; it did not land. " +
-        'Look with `pup attach`.',
+      "The message did not land: the conductor's input box never showed it whole, still holds " +
+        'text after a second Enter, or left the screen. Look with `pup attach`.',
     );
     return;
   }
@@ -994,7 +998,7 @@ export function buildProgram(): Command {
         return refuse(`\`pup conductor ${verb}\` is operator-only.`);
       }
       if (verb === 'tell') return tellOrRefuse(repoPath, message ?? '');
-      if (message !== undefined) {
+      if (message !== undefined && (verb === 'start' || verb === 'stop')) {
         return refuse(`\`pup conductor ${verb}\` takes no message; \`pup conductor tell\` does.`);
       }
       if (verb === 'stop') {
@@ -1052,14 +1056,8 @@ export function buildProgram(): Command {
       // socket its window lives on, as `pup status` does not print it to them
       // (decision 47).
       if (!showAttachCommand(db)) return refuse('`pup attach` is operator-only.');
-      if (!isConductorRunning(repoPath)) {
-        return refuse(
-          'No conductor is running for this project; start one with `pup conductor start`.',
-        );
-      }
-      // Said before the terminal is handed over, because the two keys an
-      // operator reaches for to leave a Claude Code window end it: the
-      // conductor is the pane, and tmux's detach is the way out that keeps it.
+      if (!isConductorRunning(repoPath)) return refuse(NO_CONDUCTOR_RUNNING);
+      // Said before the terminal is handed over, since attach blocks until detach.
       console.log(
         'Ctrl-b d detaches and leaves the conductor running; Ctrl-c or /exit would kill it',
       );

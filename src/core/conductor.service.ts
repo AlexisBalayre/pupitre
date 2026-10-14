@@ -6,12 +6,12 @@ import {
   conductorName,
   conductorPane,
   hasConductorWindow,
-  inputBoxHolds,
   kickoff,
   killConductor,
   launchConductor,
   launchWatcher,
   pasteIntoPane,
+  readInputBox,
   submitPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
@@ -238,6 +238,10 @@ export function isConductorRunning(repoPath: string): boolean {
  */
 export const TELL_MAX_CHARS = 800;
 
+/** The refusal `pup attach` and `pup conductor tell` share when no conductor runs. */
+export const NO_CONDUCTOR_RUNNING =
+  'No conductor is running for this project; start one with `pup conductor start`.';
+
 /** A tell refused before anything was typed: nothing reached the conductor. */
 export class ConductorTellRefusedError extends Error {
   constructor(message: string) {
@@ -248,12 +252,12 @@ export class ConductorTellRefusedError extends Error {
 
 /**
  * Type `message` into the conductor's input box and submit it, answering
- * whether it landed. Pasted through a tmux buffer, never typed by `send-keys`,
- * so the text is on no command line. Enter is pressed once, the box is read,
- * and Enter is pressed a second time only when the message is still sitting in
- * it: a second Enter on a box that already submitted would press it on whatever
- * the conductor shows next. Landed means the box no longer holds the message
- * after the last Enter (decision 85).
+ * whether it landed. The box must be on screen and empty first, and Enter is
+ * pressed only once the paste shows whole. Enter is pressed a second time only
+ * when text is still sitting in the box: a second Enter on a box that already
+ * submitted, or on a dialog that replaced it, would press whatever the
+ * conductor shows next. Landed means the box is on screen and empty after the
+ * last Enter (decision 85).
  */
 export function tellConductor(repoPath: string, message: string): boolean {
   if (message.trim() === '') {
@@ -268,13 +272,22 @@ export function tellConductor(repoPath: string, message: string): boolean {
   }
   const pane = conductorPane(projectId(repoPath));
   if (!pane) {
+    throw new ConductorTellRefusedError(NO_CONDUCTOR_RUNNING);
+  }
+  // A paste appends to what the box holds, and the draft may be the
+  // operator's own from `pup attach`: refuse rather than send both or erase it.
+  if (readInputBox(pane) !== 'empty') {
     throw new ConductorTellRefusedError(
-      'No conductor is running for this project; start one with `pup conductor start`.',
+      "The conductor's input box holds unsent text, or is not on screen; nothing was sent. " +
+        'Look with `pup attach`, send or clear what is there, then tell again.',
     );
   }
-  pasteIntoPane(pane, message);
+  if (!pasteIntoPane(pane, message)) return false;
   submitPane(pane);
-  if (!inputBoxHolds(pane, message)) return true;
-  submitPane(pane);
-  return !inputBoxHolds(pane, message);
+  let box = readInputBox(pane);
+  if (box === 'holds') {
+    submitPane(pane);
+    box = readInputBox(pane);
+  }
+  return box === 'empty';
 }

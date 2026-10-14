@@ -145,6 +145,16 @@ export function hasUnsubmittedInput(pane: string): boolean {
 }
 
 /**
+ * What the input box shows: nothing unsubmitted, some text, or no box at all.
+ * A pane with no box (a dialog, a selector) is kept apart from an empty one:
+ * text sent there does not reach the prompt, and Enter there picks an option.
+ */
+export function inputBoxState(pane: string): 'empty' | 'holds' | 'absent' {
+  if (inputBoxText(pane) === undefined) return 'absent';
+  return hasUnsubmittedInput(pane) ? 'holds' : 'empty';
+}
+
+/**
  * True when the input box holds `message` whole, as far as the pane can show
  * it. A folded paste shows only its placeholder, so the line count is the one
  * thing that can be checked; an inline paste must begin with the message's

@@ -19,7 +19,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   conductorPane: vi.fn(),
   hasConductorWindow: vi.fn(() => true),
-  inputBoxHolds: vi.fn(),
+  readInputBox: vi.fn(),
   kickoff: vi.fn(() => true),
   killConductor: vi.fn(),
   launchConductor: vi.fn(({ projectId }: { projectId: string }) => ({
@@ -35,12 +35,12 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 import {
   conductorPane,
   hasConductorWindow,
-  inputBoxHolds,
   kickoff,
   killConductor,
   launchConductor,
   launchWatcher,
   pasteIntoPane,
+  readInputBox,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   submitPane,
@@ -457,50 +457,89 @@ describe('tellConductor', () => {
     vi.mocked(conductorPane).mockReturnValue(PANE);
     vi.mocked(pasteIntoPane).mockImplementation((_pane, message) => {
       typed.push(`paste ${message}`);
+      return true;
     });
     vi.mocked(submitPane).mockImplementation(() => {
       typed.push('Enter');
     });
   });
 
-  /** The box answers each look in turn: still holding the message, or not. */
-  function boxHolds(...answers: boolean[]): void {
+  /** The box answers each look in turn. */
+  function box(...answers: Array<'empty' | 'holds' | 'absent'>): void {
     for (const answer of answers) {
-      vi.mocked(inputBoxHolds).mockImplementationOnce(() => {
-        typed.push('look');
+      vi.mocked(readInputBox).mockImplementationOnce(() => {
+        typed.push(`look ${answer}`);
         return answer;
       });
     }
   }
 
-  it('pastes, presses Enter once, and stops when the box no longer holds the message', () => {
-    boxHolds(false);
+  it('checks the box is empty, pastes, presses Enter once, and stops once the box is empty again', () => {
+    box('empty', 'empty');
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
 
     expect(conductorPane).toHaveBeenCalledWith(projectId(REPO));
-    expect(typed).toEqual(['paste merge t-1 next', 'Enter', 'look']);
+    expect(typed).toEqual(['look empty', 'paste merge t-1 next', 'Enter', 'look empty']);
     expect(vi.mocked(pasteIntoPane).mock.calls[0]?.[0]).toBe(PANE);
   });
 
-  it('presses Enter a second time only while the message is still in the box', () => {
-    boxHolds(true, false);
+  it('presses Enter a second time only while text is still in the box', () => {
+    box('empty', 'holds', 'empty');
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
 
-    expect(typed).toEqual(['paste merge t-1 next', 'Enter', 'look', 'Enter', 'look']);
+    expect(typed).toEqual([
+      'look empty',
+      'paste merge t-1 next',
+      'Enter',
+      'look holds',
+      'Enter',
+      'look empty',
+    ]);
   });
 
-  it('says it did not land when the second Enter leaves the message in the box, and stops there', () => {
-    boxHolds(true, true);
+  it('says it did not land when the second Enter leaves text in the box, and stops there', () => {
+    box('empty', 'holds', 'holds');
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
 
     expect(typed.filter((step) => step === 'Enter')).toHaveLength(2);
   });
 
+  it('presses no second Enter on a dialog that replaced the box, and says it did not land', () => {
+    box('empty', 'absent');
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
+
+    expect(typed.filter((step) => step === 'Enter')).toHaveLength(1);
+  });
+
+  it('presses nothing when the paste never shows whole, and says it did not land', () => {
+    box('empty');
+    vi.mocked(pasteIntoPane).mockReturnValueOnce(false);
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
+
+    expect(submitPane).not.toHaveBeenCalled();
+  });
+
+  it.each(['holds', 'absent'] as const)(
+    'refuses, sending nothing, when the box %s before the paste',
+    (state) => {
+      box(state);
+
+      expect(() => tellConductor(REPO, 'merge t-1 next')).toThrow(
+        /holds unsent text.*`pup attach`/,
+      );
+
+      expect(pasteIntoPane).not.toHaveBeenCalled();
+      expect(submitPane).not.toHaveBeenCalled();
+    },
+  );
+
   it('takes a message of exactly the limit', () => {
-    boxHolds(false);
+    box('empty', 'empty');
 
     expect(tellConductor(REPO, 'x'.repeat(TELL_MAX_CHARS))).toBe(true);
   });

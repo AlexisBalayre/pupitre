@@ -60,7 +60,6 @@ import {
   conductorPane,
   deadTurnError,
   hasConductorWindow,
-  inputBoxHolds,
   interruptPane,
   kickoff,
   killConductor,
@@ -71,6 +70,7 @@ import {
   launchWatcher,
   pasteIntoPane,
   preseedTrust,
+  readInputBox,
   type SessionPane,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -477,7 +477,22 @@ describe('attachConductor', () => {
 
     expect(spawnSync).toHaveBeenCalledWith('tmux', attachArgs({ conductorOf: 'proj-1' }), {
       stdio: 'inherit',
+      env: expect.anything(),
     });
+  });
+
+  // An attach that finds the server gone starts one on that socket, and its
+  // global environment is whatever the attach was spawned with.
+  it('spawns tmux with the scrubbed environment every tmux call gets', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-operator');
+    vi.stubEnv('TMUX', '/private/tmp/tmux-501/default,1,0');
+
+    attachConductor('proj-1');
+
+    const env = vi.mocked(spawnSync).mock.calls.at(-1)?.[2]?.env ?? {};
+    expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(env).not.toHaveProperty('TMUX');
+    expect(env.PATH).toBe(process.env.PATH);
   });
 
   it("answers tmux's own exit status", () => {
@@ -1039,7 +1054,7 @@ describe('steerPane with a fake tmux on PATH', () => {
    * conductor's own server: the text rides stdin into a buffer and is on no
    * tmux command line, where any process on the machine could read it.
    */
-  describe('pasteIntoPane, submitPane and inputBoxHolds', () => {
+  describe('pasteIntoPane, submitPane and readInputBox', () => {
     const socket = 'pup-conductor-proj-1';
     const CONDUCTOR: SessionPane = { sessionId: 'conductor-proj-1', paneId: '%5', socket };
     const TELL = 'SECRETWORD merge t-1 then land it ENDWORD';
@@ -1049,25 +1064,34 @@ describe('steerPane with a fake tmux on PATH', () => {
     });
 
     it('pastes through load-buffer and paste-buffer, never with the text on an argv', () => {
-      pasteIntoPane(CONDUCTOR, TELL);
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
 
-      expect(argvLog()).toEqual([
+      expect(argvLog().slice(0, 2)).toEqual([
         `-L ${socket} load-buffer -`,
         `-L ${socket} paste-buffer -d -p -t %5`,
       ]);
       expect(typedInto(5, socket)).toBe(`${TELL}\n`);
+      expect(argvLog().filter((line) => line.includes('SECRETWORD'))).toEqual([]);
     });
 
-    it('reads the message in the box until Enter submits it', () => {
+    it('waits for the paste to show whole, and answers false with nothing pressed when it never does', () => {
+      landsAfter = Number.MAX_SAFE_INTEGER;
+
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
+
+      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([]);
+    });
+
+    it('reads the box as empty, then holding text until Enter submits it', () => {
       landsAfter = 1;
-      pasteIntoPane(CONDUCTOR, TELL);
-      expect(inputBoxHolds(CONDUCTOR, TELL)).toBe(true);
+      expect(readInputBox(CONDUCTOR)).toBe('empty');
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
+      expect(readInputBox(CONDUCTOR)).toBe('holds');
 
       submitPane(CONDUCTOR);
 
-      expect(inputBoxHolds(CONDUCTOR, TELL)).toBe(false);
+      expect(readInputBox(CONDUCTOR)).toBe('empty');
       expect(argvLog()).toContain(`-L ${socket} send-keys -t %5 Enter`);
-      expect(argvLog().filter((line) => line.includes('SECRETWORD'))).toEqual([]);
     });
   });
 

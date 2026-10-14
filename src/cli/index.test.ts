@@ -70,6 +70,8 @@ vi.mock('ink', async (importOriginal) => ({
 }));
 vi.mock('../core/conductor.service.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
+  NO_CONDUCTOR_RUNNING:
+    'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
@@ -2569,6 +2571,15 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('names an unknown action as unknown even when a message follows it', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['conductor', 'restart', 'now'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('Unknown conductor action');
+      expect(errors.join('\n')).not.toContain('takes no message');
+    });
+
     // `startConductor` kills the window itself and answers with both halves
     // (src/core/conductor.test.ts); this command adds the retry, which on a
     // terminal is the command to type again.
@@ -2646,14 +2657,14 @@ describe('CLI commands', () => {
         expect(process.exitCode).toBeUndefined();
       });
 
-      it('says so, and fails, when the message is still in the box after the second Enter', () => {
+      it('says so, and fails, when the message did not land', () => {
         useCwd(initRepo());
         vi.mocked(tellConductor).mockReturnValueOnce(false);
 
         buildProgram().parse(['conductor', 'tell', 'merge t-1 next'], { from: 'user' });
 
         expect(logs).toEqual([]);
-        expect(errors.join('\n')).toContain('it did not land');
+        expect(errors.join('\n')).toContain('The message did not land');
         expect(process.exitCode).toBe(1);
       });
 

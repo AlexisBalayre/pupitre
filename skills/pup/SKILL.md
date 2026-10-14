@@ -56,8 +56,8 @@ checkable sentences. A criterion or goal starting with `--` is parsed as an opti
   `--project`. Only the operator gates, closes debt and registers projects. Do not work around a
   refusal for a session or conductor; report it.
 - The conductor runs in tmux on its own socket. `pup status` prints the attach line when it is
-  up. Hand it an order by attaching, or paste into its pane with `tmux -L <socket> send-keys`
-  followed by two Enters.
+  up. Hand it an order with `pup conductor tell "<message>"`, which keeps the text off tmux's
+  argv and says whether it landed, or look at it with `pup attach` (Ctrl-b d detaches).
 - `pup merge` runs from the project's main checkout, never from inside a `.worktrees/<task>`
   directory, which is refused as "sessions cannot merge sessions".
 

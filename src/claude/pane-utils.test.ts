@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { hasUnsubmittedInput, pasteLanded } from './pane.utils.js';
+import { hasUnsubmittedInput, inputBoxState, pasteLanded } from './pane.utils.js';
 
 // Fixtures are trimmed captures from live Claude Code 2.1.218, 2.1.263 and
 // 2.1.269 panes. The unstyled ones are `capture-pane -p`; the STYLED_ ones are
@@ -115,6 +115,21 @@ const STYLED_INLINE_PANE = `${BORDER}
 ${BORDER}`;
 
 const LONG_MESSAGE = `FIRSTWORD ${'tok '.repeat(700)}LASTWORD`;
+
+describe('inputBoxState', () => {
+  it('reads an empty box, and one showing only a suggestion, as empty', () => {
+    expect(inputBoxState(SUBMITTED_PANE)).toBe('empty');
+    expect(inputBoxState(IDLE_PLACEHOLDER_PANE)).toBe('empty');
+  });
+
+  it('reads a box holding a draft as holding text', () => {
+    expect(inputBoxState(PENDING_PANE)).toBe('holds');
+  });
+
+  it('reads a pane with no input box, such as a dialog, as absent', () => {
+    expect(inputBoxState('Accessing workspace:\n ❯ 1. Yes, I trust this folder')).toBe('absent');
+  });
+});
 
 describe('hasUnsubmittedInput', () => {
   it('detects pasted text still sitting in the input box', () => {

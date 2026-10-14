@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { runGit } from '../core/git-diff.client.js';
-import { hasUnsubmittedInput, pasteLanded } from './pane.utils.js';
+import { hasUnsubmittedInput, inputBoxState, pasteLanded } from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
 // (decision 1); state comes from hooks + transcripts, never pane scraping.
@@ -545,13 +545,16 @@ export function attachCommand(target: WindowTarget): string {
 
 /**
  * Hand this terminal to the conductor's window and take it back when the
- * operator detaches: the argv `attachCommand` prints, run as the operator
- * would run that line, terminal and environment inherited. The exit status
- * is tmux's, `null` when a signal ended it.
+ * operator detaches: the argv `attachCommand` prints, run on the terminal it
+ * was called from. The environment is scrubbed like every tmux call's: an
+ * attach that finds the server gone starts one on that socket, whose global
+ * environment would otherwise hold the operator's (decision 47). The exit
+ * status is tmux's, `null` when a signal ended it.
  */
 export function attachConductor(repoProjectId: string): number | null {
   const result = spawnSync('tmux', attachArgs({ conductorOf: repoProjectId }), {
     stdio: 'inherit',
+    env: tmuxEnv(),
   });
   if (result.error) throw result.error;
   return result.status;
@@ -717,9 +720,10 @@ export function steerPane(pane: SessionPane, message: string): void {
 
 /**
  * Put `message` in the pane's input box. The text rides tmux's stdin into a
- * buffer and `paste-buffer` names only the pane, so it is never on a tmux
- * command line: an argv is readable by every process on the machine, and
- * `send-keys` would type it a key at a time (decision 85).
+ * buffer and `paste-buffer` names only the pane, so it is on no tmux argv,
+ * which every process on the machine can read, and `send-keys` would type it
+ * a key at a time. The caller's own argv may still carry it, as `pup steer`'s
+ * and `pup conductor tell`'s do (decision 85).
  */
 function pasteText(pane: SessionPane, message: string): void {
   tmuxAt(pane, ['load-buffer', '-'], message);
@@ -731,14 +735,14 @@ function pressEnter(pane: SessionPane): void {
 }
 
 /**
- * Paste `message` into the pane and give the UI one beat to fold it into the
- * box. The half of a steer `pup conductor tell` takes as it stands: the tell
- * checks the box after Enter rather than before it, and owns its one retry
- * (decision 85).
+ * Paste `message` into the pane and wait, as a steer does, until the box
+ * shows it whole; false when it never does, with nothing pressed. The half of
+ * a steer `pup conductor tell` takes as it stands: the tell owns the empty-box
+ * check before and its one Enter retry after (decision 85).
  */
-export function pasteIntoPane(pane: SessionPane, message: string): void {
+export function pasteIntoPane(pane: SessionPane, message: string): boolean {
   pasteText(pane, message);
-  syncSleep(PASTE_SETTLE_MS);
+  return awaitPasteLanded(pane, message);
 }
 
 /** Press Enter in the pane, then wait the beat a submit takes to clear the box. */
@@ -747,9 +751,9 @@ export function submitPane(pane: SessionPane): void {
   syncSleep(SUBMIT_VERIFY_MS);
 }
 
-/** Whether the pane's input box still shows `message`, as far as a capture can show it. */
-export function inputBoxHolds(pane: SessionPane, message: string): boolean {
-  return pasteLanded(captureInputBox(pane), message);
+/** What the pane's input box shows: nothing unsubmitted, some text, or no box at all. */
+export function readInputBox(pane: SessionPane): 'empty' | 'holds' | 'absent' {
+  return inputBoxState(captureInputBox(pane));
 }
 
 /** Settle, then look for the message in the input box; bounded by its length. */
