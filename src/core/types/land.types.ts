@@ -14,8 +14,9 @@ export interface LandOutcome {
   keptBranch?: string;
   /**
    * Set when git could not remove the worktree (a session can lock its own):
-   * it and its branch are kept, since deleting the branch a surviving worktree
-   * has checked out would leave that worktree on a branch that does not exist.
+   * it is kept with its branch, which `keptBranch` then does not name, since
+   * deleting the branch a surviving worktree has checked out would leave that
+   * worktree on a branch that does not exist.
    */
   keptWorktree?: string;
   audit: AuditOutcome;

@@ -4886,6 +4886,26 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    // Ctrl-C reaches node and the child git alike; with no listener node dies
+    // mid-call and the lock's `finally` never runs, so a listener is held
+    // across the land and removed after it.
+    it('keeps node listening for signals across the land, and stops after', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      const before = process.listeners('SIGINT');
+      let during: number | undefined;
+      vi.mocked(landSession).mockImplementation(() => {
+        during = process.listeners('SIGINT').length;
+        throw new Error('interrupted');
+      });
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+
+      expect(during).toBe(before.length + 1);
+      expect(process.listeners('SIGINT')).toEqual(before);
+      expect(errors).toEqual(['interrupted']);
+    });
+
     it('names a kept branch and a target that already held the merge', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockReturnValue({

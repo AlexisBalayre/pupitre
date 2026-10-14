@@ -504,6 +504,27 @@ function refuseScrubbed(error: unknown): void {
 }
 
 /**
+ * Run `fn`, a synchronous body holding the merge lock, with node kept alive
+ * through a terminal Ctrl-C. With no listener, node's default disposition
+ * dies in the middle of `execFileSync` and the lock's `finally` never runs.
+ * With one, only the child git dies, its failure unwinds the stack, and
+ * `withMergeLock` releases the lock. The listener's body never runs, since
+ * the signal is dispatched from an event loop a synchronous body never
+ * yields to, and the signal is dropped when the listener goes.
+ */
+function withNodeAliveThroughSignals<TResult>(fn: () => TResult): TResult {
+  const stayAlive = (): void => undefined;
+  process.on('SIGINT', stayAlive);
+  process.on('SIGTERM', stayAlive);
+  try {
+    return fn();
+  } finally {
+    process.off('SIGINT', stayAlive);
+    process.off('SIGTERM', stayAlive);
+  }
+}
+
+/**
  * `pup init` and `pup audit` ask before measuring anything: off macOS without
  * the operator's `PUP_SANDBOX=vm` nothing confines their children, and the
  * refusal is one line rather than a stack trace under a push-target line
@@ -1840,17 +1861,15 @@ export function buildProgram(): Command {
       }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
-      // No signal handler around this, unlike `pup merge`: the body never
-      // yields to the event loop, so a listener could not run and would only
-      // swallow the signal. A Ctrl-C kills the child git under the lock, whose
-      // failure releases it through `withMergeLock`'s own `finally`.
       try {
-        outcome = landSession(db, {
-          repoPath,
-          sessionId: session,
-          adapters: detectAdapters(repoPath),
-          gateEnv: parseGateEnv(opts.gateEnv),
-        });
+        outcome = withNodeAliveThroughSignals(() =>
+          landSession(db, {
+            repoPath,
+            sessionId: session,
+            adapters: detectAdapters(repoPath),
+            gateEnv: parseGateEnv(opts.gateEnv),
+          }),
+        );
       } catch (error) {
         return refuseScrubbed(error);
       }
@@ -1867,7 +1886,8 @@ export function buildProgram(): Command {
           `Kept the worktree at ${sanitizeReason(outcome.keptWorktree)} and its branch: git ` +
             'could not remove it (a lock, most likely); remove it from the trusted checkout.',
         );
-      } else if (outcome.keptBranch !== undefined) {
+      }
+      if (outcome.keptBranch !== undefined) {
         console.log(
           `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
         );

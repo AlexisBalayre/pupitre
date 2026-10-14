@@ -4335,14 +4335,14 @@ changes back into those docs is pending.
     sha on its newest `merge` event, and no `landed` event after it; the url must be a pull request
     of the repo the recorded origin names (it is store text, and another repo's merged PR would
     otherwise vouch for it), compared without case within ASCII because GitHub prints the repo in
-    its canonical case; the row's id, worktree and branch must be the ones the launch minted,
-    compared as text, since they are what gets removed; `gh pr view <url> --repo <pin> --json
-    state,headRefOid,baseRefName,mergeCommit`, called the way `github.client.ts` calls gh, must say
-    `MERGED` into the target with the head still at the pinned sha; and the target fetched from
-    origin must contain the merge commit, which must contain the pinned sha. A squash or rebase
-    merge therefore refuses, and so does a merge commit over a head that moved past the pin,
-    GitHub's own "Update branch" included: each lands commits the gate never measured, and the PR
-    vouched for the pinned sha only (decision 82). The fetch reads origin from the URL `pup init`
+    its canonical case; the row's id must have the minted shape and its worktree and branch must be
+    the ones the launch derives from it, since they are what gets removed; `gh pr view <url> --repo
+    <pin> --json state,headRefOid,baseRefName,mergeCommit`, called the way `github.client.ts` calls
+    gh, must say `MERGED` into the target with the head still at the pinned sha; and the target
+    fetched from origin must contain the merge commit, which must contain the pinned sha. A squash
+    or rebase merge therefore refuses, and so does a merge commit over a head that moved past the
+    pin, GitHub's own "Update branch" included: each lands commits the gate never measured, and the
+    PR vouched for the pinned sha only (decision 82). The fetch reads origin from the URL `pup init`
     recorded, refused on a live value that moved exactly as the push is (decision 56), and runs from
     the scratch git dir the push uses, borrowing the repo's object store and lending the local tip
     as a ref, so the shared config a session can write is never read (decision 54), with auto
@@ -4352,19 +4352,21 @@ changes back into those docs is pending.
     same checks the gate makes before its checkout: the main checkout on the target, checked on both
     paths since the audit measures that checkout, and no driver armed. A local target with commits
     origin lacks refuses; one already at or past origin's tip is left alone. The tracking ref is
-    written last under the lock, so every refusal leaves the repo's refs as they were. No signal
-    handler wraps the land, unlike `pup merge`: the body never yields to the event loop, so a
-    listener could not run and would only swallow the signal; a Ctrl-C kills the child git under the
-    lock, whose failure releases it through `withMergeLock`'s own `finally`. A lock a killed process
-    strands is a change of its own. The session's worktree is removed, when git still registers it,
-    the way `pnpm worktree:clean` removes one whose PR merged; one `--force` cannot remove, a
-    session having locked its own, is kept together with its branch and both are named, since
-    deleting the branch a surviving worktree has checked out would leave it on a branch that does
-    not exist. Otherwise its branch is deleted only while main holds every commit of it, with the
-    old value and `--no-deref` like the gate's delete; a branch with later commits is kept and
-    named. Then `auditProject` runs, as `pup audit` would and printed the same way, except that a
-    regressed measurement is reported and the baseline kept, since the conductor may run this and no
-    human then stands between an observed regression and the bar; `pup audit`, which the operator
+    written last under the lock, so every refusal leaves the repo's refs as they were. A signal
+    listener is held across the land for one reason: a terminal Ctrl-C reaches node and the child
+    git alike, and with no listener node's default disposition dies in the middle of the call,
+    leaving the lock behind; with one, node survives, the child's failure unwinds the stack and
+    `withMergeLock`'s `finally` releases the lock. The listener's body never runs, since a
+    synchronous body never yields to the event loop that dispatches it. A lock a killed process
+    strands, by SIGKILL or a crash, is a change of its own. The session's worktree is removed, when
+    git still registers it, the way `pnpm worktree:clean` removes one whose PR merged; one `--force`
+    cannot remove, a session having locked its own, is kept together with its branch and named as
+    such, since deleting the branch a surviving worktree has checked out would leave it on a branch
+    that does not exist. Otherwise its branch is deleted only while main holds every commit of it,
+    with the old value and `--no-deref` like the gate's delete; a branch with later commits is kept
+    and named. Then `auditProject` runs, as `pup audit` would and printed the same way, except that
+    a regressed measurement is reported and the baseline kept, since the conductor may run this and
+    no human then stands between an observed regression and the bar; `pup audit`, which the operator
     runs, still ratchets (decision 48). Then a `landed` event records the merge commit GitHub made,
     the target and the url, which the needs-you inbox reads to drop the PR (decision 83) whatever
     this checkout has pulled. A failure part-way is safe to re-run: each step skips what is already

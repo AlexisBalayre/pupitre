@@ -287,7 +287,7 @@ function tearDown(
       runGit(repoPath, ['worktree', 'remove', '--force', session.worktree_path]);
       removedWorktree = true;
     } catch {
-      return { removedWorktree, keptWorktree: session.worktree_path, keptBranch: session.branch };
+      return { removedWorktree, keptWorktree: session.worktree_path };
     }
   }
   const branchRef = `refs/heads/${session.branch}`;

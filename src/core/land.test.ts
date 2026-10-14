@@ -610,7 +610,6 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(landedEvents()).toHaveLength(1);
   });
 
-  // The gate's teardown usually removed both already; the land then has nothing to do there.
   it('keeps a worktree git cannot remove, and its branch, and says so', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
@@ -624,11 +623,8 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     const outcome = land();
 
-    expect(outcome).toMatchObject({
-      removedWorktree: false,
-      keptWorktree: worktree,
-      keptBranch: BRANCH,
-    });
+    expect(outcome).toMatchObject({ removedWorktree: false, keptWorktree: worktree });
+    expect(outcome.keptBranch).toBeUndefined();
     expect(existsSync(worktree)).toBe(true);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH)).not.toBe('');
     expect(mainSha()).toBe(merge);
@@ -653,6 +649,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(getProject(db, pid)?.baseline).toBeNull();
   });
 
+  // The gate's teardown usually removed both already; the land then has nothing to do there.
   it('lands a session whose worktree and branch are already gone', () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
