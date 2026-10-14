@@ -669,6 +669,7 @@ case "$1" in
     else sed 's/^/%/' "$server/window"; fi ;;
   send-keys)
     echo "$4" >> "$typed"
+    [ "$4" = C-u ] && echo $(( $(cat "$server/clears" 2>/dev/null || echo 0) + 1 )) > "$server/clears"
     [ "$4" = Enter ] && rm -f "$box"
     if [ "$4" = C-u ] && [ -z "$FAKE_TMUX_STUCK" ] && [ -f "$box" ]; then
       rows=$(grep -c '' "$box")
@@ -689,7 +690,12 @@ case "$1" in
       else line='❯ [Pasted text #1]'; fi
     fi
     printf 'capture => %s\\n' "$line" >> "$FAKE_TMUX_LOG"
-    printf '  ? for shortcuts\\n%s\\n────\\n%s\\n────\\n' "$FAKE_TMUX_TRANSCRIPT" "$line" ;;
+    clears=$(cat "$server/clears" 2>/dev/null || echo 0)
+    if [ -n "$FAKE_TMUX_DIALOG" ] || { [ -n "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ] && [ "$clears" -ge "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ]; }; then
+      printf '❯ earlier prompt\\n⏺ ok\\n Usage limit reached.\\n ❯ 1. Wait\\n   2. Switch model\\n'
+    else
+      printf '  ? for shortcuts\\n%s\\n────\\n%s\\n────\\n' "$FAKE_TMUX_TRANSCRIPT" "$line"
+    fi ;;
 esac
 `;
 
@@ -704,6 +710,8 @@ describe('steerPane with a fake tmux on PATH', () => {
   let state: string;
   let landsAfter: number;
   let stuck: boolean;
+  let dialog: boolean;
+  let dialogAfterClears: number;
   let down: boolean;
   let suggestion: string;
   let transcript: string;
@@ -723,6 +731,8 @@ describe('steerPane with a fake tmux on PATH', () => {
     writeFileSync(join(state, 'active'), '3\n');
     landsAfter = 0;
     stuck = false;
+    dialog = false;
+    dialogAfterClears = 0;
     down = false;
     suggestion = '';
     transcript = '';
@@ -747,6 +757,10 @@ describe('steerPane with a fake tmux on PATH', () => {
                 FAKE_TMUX_SUGGESTION: suggestion,
                 FAKE_TMUX_TRANSCRIPT: transcript,
                 ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
+                ...(dialog ? { FAKE_TMUX_DIALOG: '1' } : {}),
+                ...(dialogAfterClears > 0
+                  ? { FAKE_TMUX_DIALOG_AFTER_CLEARS: String(dialogAfterClears) }
+                  : {}),
                 ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
               },
             },
@@ -1082,6 +1096,27 @@ describe('steerPane with a fake tmux on PATH', () => {
       const keys = argvLog().filter((line) => line.includes('send-keys'));
       expect(keys.length).toBeGreaterThan(0);
       expect(keys.every((line) => line.endsWith('C-u'))).toBe(true);
+    });
+
+    it('stops clearing at the first look that finds a dialog in place of the box', () => {
+      landsAfter = Number.MAX_SAFE_INTEGER;
+      stuck = true;
+      dialogAfterClears = 1;
+
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
+
+      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([
+        `-L ${socket} send-keys -t %5 C-u`,
+      ]);
+    });
+
+    it('presses nothing into a dialog that replaced the box when the paste never showed', () => {
+      landsAfter = Number.MAX_SAFE_INTEGER;
+      dialog = true;
+
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
+
+      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([]);
     });
 
     it('reads the box as empty, then holding text until Enter submits it', () => {

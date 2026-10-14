@@ -741,8 +741,8 @@ function pressEnter(pane: SessionPane): void {
 
 /**
  * Paste `message` into the pane and wait, as a steer does, until the box
- * shows it whole; when it never does, clear the box, which held nothing
- * before, and answer false with no Enter pressed, so no part of it is left
+ * shows it whole; when it never does, clear the box if it is still on screen,
+ * having held nothing before, and answer false with no Enter pressed, so no part of it is left
  * for a later Enter to submit (decision 45). The half of a steer
  * `pup conductor tell` takes as it stands: the tell owns the empty-box check
  * before and its one Enter retry after (decision 85).
@@ -750,7 +750,9 @@ function pressEnter(pane: SessionPane): void {
 export function pasteIntoPane(pane: SessionPane, message: string): boolean {
   pasteText(pane, message);
   if (awaitPasteLanded(pane, message)) return true;
-  clearInputBox(pane);
+  // A dialog that took the screen is a likely reason the paste never showed,
+  // and Ctrl-U there would press keys into it.
+  if (readInputBox(pane) !== 'absent') clearInputBox(pane);
   return false;
 }
 
@@ -775,13 +777,18 @@ function awaitPasteLanded(pane: SessionPane, message: string): boolean {
   return false;
 }
 
-/** Press Ctrl-U until the input box is empty; false when the press budget is spent first. */
+/**
+ * Press Ctrl-U until the input box is empty; false when the press budget is
+ * spent first, or when the box leaves the screen, so no more keys go into a
+ * dialog that replaced it (its echoed prompt above would read as text).
+ */
 function clearInputBox(pane: SessionPane): boolean {
   const target = paneTarget(pane);
   for (let press = 0; press < CLEAR_KEY_LIMIT; press++) {
     tmuxAt(pane, ['send-keys', '-t', target, 'C-u']);
     syncSleep(CLEAR_SETTLE_MS);
-    if (!hasUnsubmittedInput(captureInputBox(pane))) return true;
+    const box = readInputBox(pane);
+    if (box !== 'holds') return box === 'empty';
   }
   return false;
 }

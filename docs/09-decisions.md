@@ -4430,12 +4430,14 @@ changes back into those docs is pending.
     `pup conductor start` and `stop` refuse a message rather than drop it.
     Tests: `tellConductor` with the runtime mocked refuses an empty, a blank and an 801-character
     message before looking for a pane, refuses with `pup conductor start` when there is no pane,
-    takes 800, refuses a box holding text or off screen before the paste, clears the box and presses
-    no Enter when the paste never shows whole, reads a dialog under an echoed prompt as no box, presses Enter once when the box clears, twice when it still holds text,
+    takes 800, refuses a box holding text or off screen before the paste, presses no Enter when the
+    paste never shows whole, presses Enter once when the box clears, twice when it still holds text,
     once only when a dialog replaced it, and answers not landed when the second Enter leaves text
-    there or the box is gone. Against the fake tmux the paste is
-    `load-buffer -` then `paste-buffer -d -p -t <pane>` on the conductor's socket with the text on
-    no argv. `pup attach` refuses with no conductor, prints the hint before attaching, carries
+    there or the box is gone. `inputBoxState` reads a dialog under an echoed prompt as no box.
+    Against the fake tmux `pasteIntoPane` clears a box whose paste never showed whole, presses
+    nothing into a dialog already up, and stops clearing at the first look that finds one, and the
+    paste is `load-buffer -` then `paste-buffer -d -p -t <pane>` on the conductor's socket with the
+    text on no argv. `pup attach` refuses with no conductor, prints the hint before attaching, carries
     tmux's failing status, and refuses a session and the conductor; `pup conductor tell` prints
     landed or not, prints core's refusals, and refuses a session and the conductor.
 
