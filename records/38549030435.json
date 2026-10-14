@@ -1,0 +1,165 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T10:28:46.105Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38549030435",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38549030435",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d6e2545ef71aaa4b33157cc8a4d0af4fbf3832a7",
+  "source": "pr",
+  "pr_number": 143,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "1ac88ef0c5f060833c02d02f441c6d056a48b90e",
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "360-364",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "258-273",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "348-372",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "405-423",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`rev-list --missing=allow-any` exits 0 with empty output when `sha` itself is not in the local object store. The check reads that as \"landed\", caches it in `LANDING_CACHE` for good, and drops a PR that is still open from the inbox.",
+      "body": "**A pinned sha that the repo lacks now reads as landed, and that answer is cached for good.**\n\n```ts\n        'rev-list',\n        '--missing=allow-any',\n        '--max-count=1',\n        sha,\n        `^refs/heads/${target}`,\n      ...\n    return past.trim() === '' ? 'landed' : 'open';\n```\n\nOn current git (verified on the runner's git 2.55.0), `--missing=allow-any` also accepts a missing *starting* object:\n\n| command | result |\n| --- | --- |\n| `git rev-list --missing=allow-any --max-count=1 ffff…ffff ^HEAD` | no output, exit 0 |\n| `git rev-list --max-count=1 ffff…ffff ^HEAD` | `fatal: bad object`, exit 128 |\n| `git rev-list --missing=print --max-count=1 ffff…ffff ^HEAD` | `?ffff…ffff` |\n\nHow this drops an open PR:\n- `ancestry` reads the empty output as `'landed'`.\n- `landedShaLookup` stores `{ landed: true }` (L398).\n- L395 then returns `true` forever, because the tip check only applies to `open` entries.\n- The PR drops out of the inbox.\n\nThis is a regression from `merge-base --is-ancestor`, which failed on a missing object. It also contradicts the function's own JSDoc and decision 83, which say a missing object keeps the PR listed.\n\nIt can happen in normal use. In PR mode the gate deletes the local branch after pushing (`merge-gate.service.ts:1094`). That leaves the pinned commit unreachable until the PR lands and is pulled, so gc can prune it.\n\nThe existing test `leaves out a PR once the target holds the commit the gate pinned` seeds `s-open` with `UNLANDED_SHA = 'f'.repeat(40)`, an absent sha (`dashboard.test.ts:975`, `:1105-1107`). On git with this behaviour it should get `[]` instead of `['s-open']`. That is from reading the code; I couldn't run the test in CI.\n\n**Fix:** use `--missing=print`. It still walks without fetching. A missing tip or a missing commit partway through the walk prints `?<oid>`, so the output is non-empty and the answer is `'open'`. The landed and open cases are unchanged (checked). Update the flag name in the JSDoc and in decision 83 to match.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d6e2545ef71aaa4b33157cc8a4d0af4fbf3832a7/src/core/dashboard.service.ts#L405-L423",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "377-380",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new `tipOf` call, `rev-parse --verify refs/heads/<target>^{commit}`, has to read the tip object to peel it. It runs without `GIT_NO_LAZY_FETCH` and without transport pins. So a session that plants a promisor remote in the shared config and points a ref at a missing object can still get a planted fetch command run with pup's environment on every `pup status` or `pup ui` refresh.",
+      "body": "**The new tip lookup reopens the lazy fetch that the walk was just hardened against.**\n\n```ts\nrunGit(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${target}^{commit}`], {\n  stdio: ['ignore', 'pipe', 'ignore'],\n  timeout: LANDED_CHECK_TIMEOUT_MS,\n}).trim(),\n```\n\n`ancestry` gets `...NO_TRANSPORT` and `GIT_NO_LAZY_FETCH`, and its JSDoc says why: \"the shared config can name a promisor remote whose fetch would run a planted command with pup's environment\". This call gets neither, and it runs first.\n\n**When it runs.** On every snapshot, for every open PR whose target and sha pass the shape checks. It runs even when `LANDING_CACHE` already says the PR landed, because `tipOf` is called at L391, before the cache lookup.\n\n**Why it can fetch.** Peeling `^{commit}` calls `parse_object` on the ref's oid. `rev-parse` leaves `fetch_if_missing` on. So when a promisor remote is configured, a ref pointing at a missing object starts `git fetch <promisor>`. The fetch can run a planted `uploadpack`, a planted `core.sshCommand`, or an `ext::` url allowed by a local `protocol.ext.allow=always`.\n\n**What a session would plant.** Both live in the session-writable common dir:\n- `remote.x.promisor=true` in the shared config;\n- a loose `refs/heads/<target>` holding an absent oid.\n\n**Why nothing else stops it.** `GIT_SAFE_CONFIG` pins no `protocol.*`, promisor or partialClone key. `scrubbedGitEnv` doesn't set `GIT_NO_LAZY_FETCH`. The 2s timeout fires only after the command has started.\n\n**Provenance.** `resolveCommit` in `merge-gate.service.ts:470` makes the same call, but only during an operator-run `pup merge`. This one is new in this delta and fires on a passive refresh. It's the trigger that decision 83 and the JSDoc now say is closed.\n\n**Fix.**\n- Drop the `^{commit}` peel. `--verify` then resolves the ref without reading the object. `tip` is only a cache-invalidation key, and `ancestry` walks the ref itself.\n- Also give the call the walk's pins and environment, as defence in depth.\n\nThis rests on git internals (`peel_onion` → `parse_object` → promisor fetch) I couldn't exercise in CI, so confidence is medium.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d6e2545ef71aaa4b33157cc8a4d0af4fbf3832a7/src/core/dashboard.service.ts#L377-L380",
+      "suggestion": "          runGit(\n            repoPath,\n            [...NO_TRANSPORT, 'rev-parse', '--verify', '--quiet', `refs/heads/${target}`],\n            {\n              env: { GIT_NO_LAZY_FETCH: '1' },\n              stdio: ['ignore', 'pipe', 'ignore'],\n              timeout: LANDED_CHECK_TIMEOUT_MS,\n            },\n          ).trim(),"
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "122-133",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`needLine`'s JSDoc and function were inserted between `sessionLine`'s existing JSDoc and `sessionLine` itself. Line 122 still reads `/** One session row, the same in the single-project table and the fleet view. */`, and `needLine`'s own `/** ... */` block follows directly on lines 123-128.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "257-258, 276",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ARROWS` blocks only six code points, so a question can still print a lookalike arrow followed by a fake command (for example U+2B62 `⭢`, U+279D `➝`, U+21FE `⇾`, U+21E8 `⇨`, U+27F9 `⟹`, U+1F852 `🡒`). An LLM conductor reading the line can take it for the answer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "351",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`LANDING_CACHE` is a module-level mutable Map with no bound and no reset hook. Landed entries are never evicted, so it grows for the life of a `pup ui` process, and it carries state across tests. Test isolation holds today only because every temp repo has a distinct path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/dashboard.types.ts",
+      "line": "157",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`DashboardNeed` now carries `sessionId`, which is the scrubbed id, next to `label`. `label` is the same id, or a placeholder when `isMintedId` is false. No production code reads `need.sessionId` any more, so it is nearly dead weight. It also invites a caller to print the raw id instead of `label`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "363-401",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`landedShaLookup` now does three jobs: a per-snapshot `tips` memo with its own `rev-parse` try/catch, a cross-snapshot cache with tip invalidation, and shape gating. That is two levels of state for one yes/no question.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "326",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `PLAIN_BRANCH` JSDoc, `none of ^ ~ : ? * [ \\\\ =` shows a doubled backslash. Use a single `\\` or write \"backslash\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.test.ts",
+      "line": "asks again once the target moved",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new test builds its own inline `git` helper over `execFileSync`. It relies on the module-level `LANDING_CACHE` persisting across snapshots, and nothing resets that cache between tests.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "133-141",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`isMintedId` is documented as meaning an unminted id \"gets no command built around it and prints as a placeholder\". `sessionLine`, which prints in the same `pup status` output as the inbox, ignores the flag. It still prints the stored id and, for a blocked session, builds `pup unblock <id>` around it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.8365799000000007,
+  "duration_ms": 367451,
+  "num_turns": 16,
+  "tokens": {
+    "input": 18,
+    "output": 13949,
+    "cache_read": 396013,
+    "cache_creation": 52968,
+    "total": 462948
+  }
+}
