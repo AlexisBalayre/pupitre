@@ -1921,6 +1921,14 @@ export function buildProgram(): Command {
         ),
       );
       if (!report) return;
+      // A failed measurement is not a figure: refreshing would stamp a bar
+      // without it, so the stored baseline stands and the audit fails.
+      if (report.unmeasured.length > 0) {
+        for (const line of report.unmeasured) console.error(line);
+        return refuse(
+          `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`.`,
+        );
+      }
       if (opts.sweep) {
         if (report.hasRegression) {
           return refuse('Baseline regressed — fix the regression before sweeping.');

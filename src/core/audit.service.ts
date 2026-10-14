@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
-import { initProject } from './init.service.js';
+import { measureBaseline, persistBaseline } from './init.service.js';
 import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
@@ -106,20 +107,41 @@ export function formatDebtTransition(t: DebtTransition): string {
   return `${label.padEnd(8)} ${move.padEnd(16)}${marker}`;
 }
 
+interface AuditOutcome extends AuditReport {
+  /**
+   * One line per debt metric the adapter could not measure, each meaning the
+   * stored baseline was kept rather than refreshed. Empty on a first run, which
+   * stores what it measured exactly like `pup init`: there is nothing to keep.
+   */
+  unmeasured: string[];
+}
+
 /**
  * `pup audit` (no --sweep): re-run the baseline stages exactly like `pup init`,
  * diff against the previously stored baseline, and refresh it. First run (no
  * stored baseline) degenerates to plain init: no transitions to report.
+ *
+ * A debt metric the adapter could not measure keeps the stored baseline whole:
+ * refreshing would stamp a bar with no figure for it, which the next gate
+ * compares against as if the metric had never existed. Measured first and
+ * stored only after, so nothing is written to be undone.
  */
 export function auditProject(
   db: Database,
   repoPath: string,
   adapters: Adapter[],
   gateEnv?: string[],
-): AuditReport {
+): AuditOutcome {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
-  const report = initProject(db, repoPath, adapters, gateEnv);
+  const report = measureBaseline(db, repoPath, adapters, gateEnv);
+  const unmeasured = previous
+    ? report.gaps.map(
+        (gap) =>
+          `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,
+      )
+    : [];
+  if (unmeasured.length === 0) persistBaseline(db, report.projectId, report.baseline);
   const transitions = previous ? compareBaselines(previous, report.baseline) : [];
   const debtTransitions = previous ? compareDebt(previous.debt, report.baseline.debt) : [];
   return {
@@ -133,6 +155,7 @@ export function auditProject(
       debtTransitions.some((t) => t.delta === 'regressed'),
     findings: report.findings,
     sandbox: report.sandbox,
+    unmeasured,
   };
 }
 

@@ -254,6 +254,47 @@ describe('auditProject', () => {
     expect(history[1]?.captured_at).toBe(report.baseline.capturedAt);
   });
 
+  // A half-applied fast-forward failed the instrumented run, and the audit
+  // still stamped a baseline with no coverage figure for the gate to compare to.
+  it('keeps the stored baseline and its history whole when coverage was not measured', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+    const stored = getProject(db, projectId(repo))?.baseline;
+    const history = listBaselineHistory(db, projectId(repo));
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'instrumented vitest run failed: boom' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([
+      'fake: coverage not measured — instrumented vitest run failed: boom',
+    ]);
+    expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    expect(listBaselineHistory(db, projectId(repo))).toEqual(history);
+  });
+
+  it('refreshes the baseline when every metric measured', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => coverageReport(95, 100) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.coverageRatio).toBe(0.95);
+    expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+  });
+
+  it('stores a first baseline with a gap like `pup init` does: there is nothing to keep', () => {
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
+    expect(getProject(db, projectId(repo))?.baseline).toBeDefined();
+    expect(listBaselineHistory(db, projectId(repo))).toHaveLength(1);
+  });
+
   it('emits no transition for a metric measured on only one side', () => {
     initProject(db, repo, [makeAdapter()]);
 
