@@ -1,0 +1,119 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T18:12:13.564Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38612715563",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38612715563",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d34d485b4e9537f663e6fbeecf1913ec8bb48adc",
+  "source": "pr",
+  "pr_number": 146,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9cec9b361dda5f5bb942d1c01a3e3c87f0602667",
+  "prior_importants": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "750-755",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "710-716",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`steerPane` did not get the `readInputBox(pane) !== 'absent'` check that `pasteIntoPane` got. Both of its `clearInputBox` calls still press one Ctrl-U before the first look, so a dialog that replaced the box receives one key. Examples: the gate at line 710 when the dialog sits under an echoed prompt, and the clear after a failed paste at line 715. This is down from 64 keys, but steer and tell are now inconsistent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "721",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The post-Enter verify loop in `steerPane` still uses `!hasUnsubmittedInput(captureInputBox(pane))`. If a dialog under an echoed prompt appears after Enter, the loop can send Enter into it up to `SUBMIT_RETRY_LIMIT` times. Using `readInputBox` with `'holds'` as still pending would match the tell path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "744-747",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The reflowed `pasteIntoPane` JSDoc has a dangling participle. \"clear the box if it is still on screen, having held nothing before\" now attaches \"having\" to the clearing instead of to the box. The line break after \"having held nothing before, and answer false with no Enter pressed, so no part of it is left\" is also much longer than its neighbours.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "753-755",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new inline comment partly overlaps the new `clearInputBox` JSDoc. Both say Ctrl-U would go into a dialog that replaced the box. The call-site comment still adds something the JSDoc doesn't: why the guard runs before the first press. So this is a trim candidate, not a clear duplicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4440",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 85's Tests paragraph was re-wrapped, but the line starting 'text on no argv. `pup attach` refuses...' now runs past the ~100-column wrap the paragraph uses. The earlier lines in the paragraph stay under 100.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "681-684",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The `never-landed` text of `SteerNotDeliveredError` still says \"Cleared the box and submitted nothing; the session is still running with an empty prompt\". That is untrue whenever `clearInputBox` returned `false`: the press budget ran out, or (more often now) it stopped because the box left the screen, which can leave the partial paste in the box. This delta removed the same claim from `pup conductor tell` in `src/cli/index.ts` but not from steer's error.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "maintainability",
+      "description": "The maintainability reviewer read only src/claude/session-runtime.service.ts and did not review the fake-tmux plumbing in src/claude/session-runtime.test.ts. The correctness reviewer did check that plumbing for behavior (the counter resets per test and the tests exercise what they claim)."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9883360999999999,
+  "duration_ms": 141237,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6687,
+    "cache_read": 206797,
+    "cache_creation": 34778,
+    "total": 248274
+  }
+}
