@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T17:54:21.435Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38609948231",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38609948231",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9cec9b361dda5f5bb942d1c01a3e3c87f0602667",
+  "source": "pr",
+  "pr_number": 146,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "5af5cbc2d857d5edc9cdecda95fa093d8894b55f",
+  "prior_importants": [
+    {
+      "file": "src/claude/pane.utils.ts",
+      "line": "152-155",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "750-755",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When a dialog replaces the box during the paste-settle window, the new clear step reads the old echo above the dialog as a draft. It then sends up to 64 Ctrl-U presses into the dialog (about 10 s), and the CLI still says the box \"was cleared\". Before this commit nothing was pressed in that case.",
+      "body": "**A failed paste under a dialog now sends up to 64 Ctrl-U presses into the dialog, and the CLI then says the box \"was cleared\"**\n\nWhen the paste never shows whole, `pasteIntoPane` now calls `clearInputBox` without checking whether a box is still on screen:\n\n```ts\nexport function pasteIntoPane(pane: SessionPane, message: string): boolean {\n  pasteText(pane, message);\n  if (awaitPasteLanded(pane, message)) return true;\n  clearInputBox(pane);\n  return false;\n}\n```\n\nHow `clearInputBox` behaves under a dialog:\n\n- It stops early only when `hasUnsubmittedInput(captureInputBox(pane))` turns false.\n- `hasUnsubmittedInput` still goes through `inputBoxText`, which takes the last column-0 `❯` and has no frame check. Only `inputBoxState` got the frame check in this commit.\n- So on this commit's own fixture (an echoed `❯ merge t-1 next` above ` ❯ 1. Wait for the limit to reset`), it reads the echo as text every time.\n- The loop therefore runs to `CLEAR_KEY_LIMIT` = 64 × `CLEAR_SETTLE_MS` = 150 ms: about 10 s of `C-u` presses into the dialog. It then returns false, and `pasteIntoPane` ignores that result.\n\nThe trigger is reachable:\n\n- `tellConductor` only needs a framed, empty box before the paste, and the conductor can be mid-turn with its last prompt echoed above the box.\n- A usage-limit or model-fallback selector can replace the box during the at least 5 × 700 ms `awaitPasteLanded` window.\n- A dialog appearing is one of the likeliest reasons a paste never shows whole, so this is the main way into the clear step, not a rare edge.\n\nBefore this commit, this path pressed nothing. Now it presses keys in a dialog, which is the echo-reads-as-text mistake the same commit fixes for the second Enter (decision 85: \"never when a dialog has replaced the box\"). `src/cli/index.ts` also tells the operator unconditionally that the box \"was cleared\", which is false here.\n\nFix: clear only a box that is still framed. `readInputBox` is in the same module and already runs the frame check. If you take this, also make the CLI's \"(and was cleared)\" wording conditional or drop it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9cec9b361dda5f5bb942d1c01a3e3c87f0602667/src/claude/session-runtime.service.ts#L750-L755\nhttps://github.com/AlexisBalayre/pupitre/blob/9cec9b361dda5f5bb942d1c01a3e3c87f0602667/src/cli/index.ts#L509-L513",
+      "suggestion": "export function pasteIntoPane(pane: SessionPane, message: string): boolean {\n  pasteText(pane, message);\n  if (awaitPasteLanded(pane, message)) return true;\n  if (readInputBox(pane) !== 'absent') clearInputBox(pane);\n  return false;\n}"
+    },
+    {
+      "file": "src/claude/pane.utils.ts",
+      "line": "157-166",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The change copies the \"last column-0 `INPUT_PROMPT` row\" search into `inputBoxState`, which already exists in `inputBoxText` (lines 117-122). The two now answer \"where is the input box\" separately: `inputBoxText` accepts any last column-0 prompt with no frame check, while `inputBoxState` also requires `BOX_BORDER` above it. `hasUnsubmittedInput` and `pasteLanded` still use the unframed version, so the same pane gets different answers depending on the entry point. `inputBoxState` also parses the pane twice, because it calls `hasUnsubmittedInput`. One shared locator that applies the frame rule would keep them from drifting.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4430-4434",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 85's Tests paragraph credits `tellConductor` with the runtime mocked for two tests it doesn't have. \"Clears the box\" is tested on `pasteIntoPane` against the fake tmux in session-runtime.test.ts, and conductor.test.ts mocks `pasteIntoPane` and only asserts that no Enter was pressed. \"Reads a dialog under an echoed prompt as no box\" is tested on `inputBoxState` in pane-utils.test.ts. The inserted line is also not re-wrapped to the paragraph's width.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/pane.utils.ts",
+      "line": "105-115",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc on `inputBoxText` still says the input box is the last column-0 `❯` and that it returns undefined when there is no box (\"a dialog, a dead pane\"). After this change, a dialog under an echoed prompt returns the echo's text, and `inputBoxState` decides whether that row is really the box. Say \"undefined when no column-0 `❯` is on screen\" and point to `inputBoxState`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/pane.utils.ts",
+      "line": "17",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The JSDoc on `BOX_BORDER` still calls it \"the box's bottom border\", but `inputBoxState` now also uses it as the top border that tells the box from an echo. The comment should say it matches both borders.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4959812,
+  "duration_ms": 238524,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 10733,
+    "cache_read": 292394,
+    "cache_creation": 43255,
+    "total": 346396
+  }
+}
