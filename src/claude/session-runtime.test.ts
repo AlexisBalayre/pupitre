@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -28,7 +28,9 @@ vi.mock('node:child_process', async (importOriginal) => {
     if (file === 'which') return '/fake/bin/claude\n';
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
   });
-  return { ...actual, execFileSync: fakeExecFileSync };
+  // The attach hands this terminal to tmux; here it hands it to nothing.
+  const fakeSpawnSync = vi.fn(() => ({ status: 0 }));
+  return { ...actual, execFileSync: fakeExecFileSync, spawnSync: fakeSpawnSync };
 });
 
 // Fakes existsSync/writeFileSync for the operator's real ~/.claude.json only —
@@ -53,10 +55,12 @@ vi.mock('node:fs', async (importOriginal) => {
 import {
   attachArgs,
   attachCommand,
+  attachConductor,
   conductorName,
   conductorPane,
   deadTurnError,
   hasConductorWindow,
+  inputBoxHolds,
   interruptPane,
   kickoff,
   killConductor,
@@ -65,11 +69,13 @@ import {
   launchConductor,
   launchSession,
   launchWatcher,
+  pasteIntoPane,
   preseedTrust,
   type SessionPane,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   steerPane,
+  submitPane,
   transcriptDir,
   windowLabel,
 } from './session-runtime.service.js';
@@ -462,6 +468,28 @@ describe('windowLabel, attachArgs and attachCommand', () => {
     expect(attachCommand({ conductorOf: 'proj-1' })).toBe(
       "tmux -L pup-conductor-proj-1 attach -t '=pup-conductor-proj-1:'",
     );
+  });
+});
+
+describe('attachConductor', () => {
+  it('runs the argv the attach line prints, on the terminal it was called from', () => {
+    expect(attachConductor('proj-1')).toBe(0);
+
+    expect(spawnSync).toHaveBeenCalledWith('tmux', attachArgs({ conductorOf: 'proj-1' }), {
+      stdio: 'inherit',
+    });
+  });
+
+  it("answers tmux's own exit status", () => {
+    vi.mocked(spawnSync).mockReturnValueOnce({ status: 1 } as never);
+
+    expect(attachConductor('proj-1')).toBe(1);
+  });
+
+  it('throws when tmux could not be run at all', () => {
+    vi.mocked(spawnSync).mockReturnValueOnce({ status: null, error: new Error('ENOENT') } as never);
+
+    expect(() => attachConductor('proj-1')).toThrow('ENOENT');
   });
 });
 
@@ -1003,6 +1031,43 @@ describe('steerPane with a fake tmux on PATH', () => {
       // can't-find-pane the steer does.
       expect(() => kickoff(conductorOnDefault, 'anything')).toThrow(SessionPaneMissingError);
       expect(typedInto(5, socket)).toBeUndefined();
+    });
+  });
+
+  /**
+   * The primitives `pup conductor tell` drives (decision 85), on the
+   * conductor's own server: the text rides stdin into a buffer and is on no
+   * tmux command line, where any process on the machine could read it.
+   */
+  describe('pasteIntoPane, submitPane and inputBoxHolds', () => {
+    const socket = 'pup-conductor-proj-1';
+    const CONDUCTOR: SessionPane = { sessionId: 'conductor-proj-1', paneId: '%5', socket };
+    const TELL = 'SECRETWORD merge t-1 then land it ENDWORD';
+
+    beforeEach(() => {
+      serverWithPane(socket, 5);
+    });
+
+    it('pastes through load-buffer and paste-buffer, never with the text on an argv', () => {
+      pasteIntoPane(CONDUCTOR, TELL);
+
+      expect(argvLog()).toEqual([
+        `-L ${socket} load-buffer -`,
+        `-L ${socket} paste-buffer -d -p -t %5`,
+      ]);
+      expect(typedInto(5, socket)).toBe(`${TELL}\n`);
+    });
+
+    it('reads the message in the box until Enter submits it', () => {
+      landsAfter = 1;
+      pasteIntoPane(CONDUCTOR, TELL);
+      expect(inputBoxHolds(CONDUCTOR, TELL)).toBe(true);
+
+      submitPane(CONDUCTOR);
+
+      expect(inputBoxHolds(CONDUCTOR, TELL)).toBe(false);
+      expect(argvLog()).toContain(`-L ${socket} send-keys -t %5 Enter`);
+      expect(argvLog().filter((line) => line.includes('SECRETWORD'))).toEqual([]);
     });
   });
 

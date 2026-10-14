@@ -4395,6 +4395,40 @@ changes back into those docs is pending.
     session and runs for the conductor, prints a refusal scrubbed, and `pup status` stops listing
     the PR once the event exists.
 
+85. **`pup attach` hands the terminal to the conductor, and `pup conductor tell <message>` types
+    into it (2026-10-14).**
+    Reaching the conductor meant copying the attach line `pup status` prints, and the two keys an
+    operator reaches for to leave a Claude Code window, Ctrl-c and `/exit`, end the conductor
+    rather than leave it. Telling it something meant attaching to type it. `pup attach` refuses when
+    no conductor runs, naming `pup conductor start`, and otherwise prints `Ctrl-b d detaches and
+    leaves the conductor running; Ctrl-c or /exit would kill it` before it runs the argv the attach
+    line spells (`attachArgs`, socket and pinned target included, decision 47) with the terminal
+    inherited, as the operator running the line would; pup exits with tmux's status.
+    `pup conductor tell <message>` refuses an empty or blank message and one over 800 characters,
+    since Claude Code folds a longer paste into a placeholder and it arrives truncated, then pastes
+    the message into the conductor's pane, found by `conductorPane` on its own socket. The text rides
+    tmux's stdin through `load-buffer -` and `paste-buffer -p` names only the pane, so it is on no
+    tmux command line, which any process on the machine can read, and `send-keys` never carries it.
+    After one settle it presses Enter, waits one submit beat, captures the pane, and presses Enter a
+    second time only when the message is still in the input box; it prints whether it landed, which
+    is the box no longer holding it after the last Enter, and fails when it does not. It is not
+    `steerPane`: the tell checks the box after Enter rather than waiting for the paste to show whole
+    before it, and owns its single retry, so the runtime exports the three steps (`pasteIntoPane`,
+    `submitPane`, `inputBoxHolds`, which `steerPane` shares the paste and the Enter with) and the
+    sequence lives in `tellConductor` in `conductor.service.ts`. The tmux calls stay in
+    `src/claude/`, `pup attach`'s included (`attachConductor`). Both commands are the operator's: a
+    session or the conductor running either is refused, as `pup status` withholds the socket from
+    them and the socket exists to keep every session from typing into the conductor (decision 47).
+    `pup conductor start` and `stop` refuse a message rather than drop it.
+    Tests: `tellConductor` with the runtime mocked refuses an empty, a blank and an 801-character
+    message before looking for a pane, refuses with `pup conductor start` when there is no pane,
+    takes 800, presses Enter once when the box clears, twice when it still holds the message, and
+    answers not landed when the second Enter leaves it there. Against the fake tmux the paste is
+    `load-buffer -` then `paste-buffer -d -p -t <pane>` on the conductor's socket with the text on
+    no argv. `pup attach` refuses with no conductor, prints the hint before attaching, carries
+    tmux's failing status, and refuses a session and the conductor; `pup conductor tell` prints
+    landed or not, prints core's refusals, and refuses a session and the conductor.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

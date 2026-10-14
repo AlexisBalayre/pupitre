@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -543,6 +543,20 @@ export function attachCommand(target: WindowTarget): string {
   return ['tmux', ...attachArgs(target).map(shellWord)].join(' ');
 }
 
+/**
+ * Hand this terminal to the conductor's window and take it back when the
+ * operator detaches: the argv `attachCommand` prints, run as the operator
+ * would run that line, terminal and environment inherited. The exit status
+ * is tmux's, `null` when a signal ended it.
+ */
+export function attachConductor(repoProjectId: string): number | null {
+  const result = spawnSync('tmux', attachArgs({ conductorOf: repoProjectId }), {
+    stdio: 'inherit',
+  });
+  if (result.error) throw result.error;
+  return result.status;
+}
+
 /** A word a shell takes literally, single-quoted when it would not. */
 function shellWord(word: string): string {
   return /^[\w.,:/@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
@@ -682,25 +696,60 @@ export class SteerNotDeliveredError extends Error {
  * read is harmless.
  */
 export function steerPane(pane: SessionPane, message: string): void {
-  const target = paneTarget(pane);
   // A paste appends to whatever the box holds (a draft, a leftover), and the
   // box then never reads as the message alone; start from an empty one, and
   // say so when one cannot be had rather than paste into it and refuse later.
   if (hasUnsubmittedInput(captureInputBox(pane)) && !clearInputBox(pane)) {
     throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');
   }
-  tmuxAt(pane, ['load-buffer', '-'], message);
-  tmuxAt(pane, ['paste-buffer', '-d', '-p', '-t', target]);
+  pasteText(pane, message);
   if (!awaitPasteLanded(pane, message)) {
     clearInputBox(pane);
     throw new SteerNotDeliveredError(pane.sessionId, message.length);
   }
-  tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
+  pressEnter(pane);
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
     if (!hasUnsubmittedInput(captureInputBox(pane))) return;
-    tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
+    pressEnter(pane);
   }
+}
+
+/**
+ * Put `message` in the pane's input box. The text rides tmux's stdin into a
+ * buffer and `paste-buffer` names only the pane, so it is never on a tmux
+ * command line: an argv is readable by every process on the machine, and
+ * `send-keys` would type it a key at a time (decision 85).
+ */
+function pasteText(pane: SessionPane, message: string): void {
+  tmuxAt(pane, ['load-buffer', '-'], message);
+  tmuxAt(pane, ['paste-buffer', '-d', '-p', '-t', paneTarget(pane)]);
+}
+
+function pressEnter(pane: SessionPane): void {
+  tmuxAt(pane, ['send-keys', '-t', paneTarget(pane), 'Enter']);
+}
+
+/**
+ * Paste `message` into the pane and give the UI one beat to fold it into the
+ * box. The half of a steer `pup conductor tell` takes as it stands: the tell
+ * checks the box after Enter rather than before it, and owns its one retry
+ * (decision 85).
+ */
+export function pasteIntoPane(pane: SessionPane, message: string): void {
+  pasteText(pane, message);
+  syncSleep(PASTE_SETTLE_MS);
+}
+
+/** Press Enter in the pane, then wait the beat a submit takes to clear the box. */
+export function submitPane(pane: SessionPane): void {
+  pressEnter(pane);
+  syncSleep(SUBMIT_VERIFY_MS);
+}
+
+/** Whether the pane's input box still shows `message`, as far as a capture can show it. */
+export function inputBoxHolds(pane: SessionPane, message: string): boolean {
+  return pasteLanded(captureInputBox(pane), message);
 }
 
 /** Settle, then look for the message in the input box; bounded by its length. */

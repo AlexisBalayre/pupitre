@@ -4,11 +4,15 @@ import type { Database } from 'better-sqlite3';
 import { failureSummary } from '../adapters/capability.utils.js';
 import {
   conductorName,
+  conductorPane,
   hasConductorWindow,
+  inputBoxHolds,
   kickoff,
   killConductor,
   launchConductor,
   launchWatcher,
+  pasteIntoPane,
+  submitPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { assertNoArmedGitDrivers, currentBranch, runGit } from './git-diff.client.js';
@@ -225,4 +229,52 @@ export function stopConductor(repoPath: string): void {
 
 export function isConductorRunning(repoPath: string): boolean {
   return hasConductorWindow(projectId(repoPath));
+}
+
+/**
+ * The longest message `pup conductor tell` pastes. Claude Code folds a paste
+ * over ~800 chars into a placeholder, and a longer one arrives in the box
+ * truncated, so it is refused rather than half-delivered (decision 85).
+ */
+export const TELL_MAX_CHARS = 800;
+
+/** A tell refused before anything was typed: nothing reached the conductor. */
+export class ConductorTellRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConductorTellRefusedError';
+  }
+}
+
+/**
+ * Type `message` into the conductor's input box and submit it, answering
+ * whether it landed. Pasted through a tmux buffer, never typed by `send-keys`,
+ * so the text is on no command line. Enter is pressed once, the box is read,
+ * and Enter is pressed a second time only when the message is still sitting in
+ * it: a second Enter on a box that already submitted would press it on whatever
+ * the conductor shows next. Landed means the box no longer holds the message
+ * after the last Enter (decision 85).
+ */
+export function tellConductor(repoPath: string, message: string): boolean {
+  if (message.trim() === '') {
+    throw new ConductorTellRefusedError('Nothing to tell the conductor: the message is empty.');
+  }
+  if (message.length > TELL_MAX_CHARS) {
+    throw new ConductorTellRefusedError(
+      `The message is ${message.length} characters, over the ${TELL_MAX_CHARS} the conductor's ` +
+        'input box takes whole; a longer paste arrives truncated. Nothing was sent. Shorten it, ' +
+        'or write the detail to a file and tell the conductor where it is.',
+    );
+  }
+  const pane = conductorPane(projectId(repoPath));
+  if (!pane) {
+    throw new ConductorTellRefusedError(
+      'No conductor is running for this project; start one with `pup conductor start`.',
+    );
+  }
+  pasteIntoPane(pane, message);
+  submitPane(pane);
+  if (!inputBoxHolds(pane, message)) return true;
+  submitPane(pane);
+  return !inputBoxHolds(pane, message);
 }
