@@ -1,0 +1,94 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T08:58:53.364Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38538529527",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38538529527",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3ccfa1b9b99615550ab75afe88efb21580b3190b",
+  "source": "pr",
+  "pr_number": 142,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "dcfe5d326f474da816a5c1e677954a254251b36f",
+  "prior_importants": [
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "126-160",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "129-134",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`isNewGap` counts a gap as new even when it comes from an adapter the previous capture never detected. A TS repo that adds a `pyproject.toml` without vulture therefore refuses every `pup audit` and `--sweep`, while protecting a dead-code figure that never had a Python share.",
+      "body": "**A TS repo that later gains a Python manifest (and has no vulture) refuses every `pup audit` until someone re-runs `pup init`.**\n\n`isNewGap` only checks whether the previous capture's `gaps` record holds the pair. It doesn't check whether the previous capture ran that adapter at all:\n\n```ts\nfunction isNewGap(previous: ProjectBaseline, gap: DebtGap): boolean {\n  if (previous.gaps === undefined) return false;\n  return !previous.gaps.some(\n    (g) => g.adapterId === gap.adapterId && g.capability === gap.capability,\n  );\n}\n```\n\nHow it plays out:\n- A TS-only repo stores `{ adapters: ['typescript'], gaps: [] }`.\n- The repo later gains a `pyproject.toml` or a `requirements.txt`. `pythonAdapter.detect` turns on from the manifest alone (`src/adapters/python.adapter.ts` L25, L249-251). The CLI runs `auditProject` with the adapters it detects now, `detectAdapters(repoPath)` (`src/cli/index.ts` L1920), not the stored list.\n- With no vulture declared, `deadCode` returns `unavailable` (python.adapter.ts L293-294). `measureDebt` then records the gap `('python', 'dead code')`.\n- `previous.gaps` is `[]`, so the gap counts as new. `persistBaseline` is skipped, so `gaps` never learns about the Python gap. The merge-gate ratchet (`src/core/merge-gate.service.ts` L1132-1138) carries the old `gaps` forward too. Every plain audit and every `--sweep` exits 1 with \"Baseline kept\".\n- Nothing is protected. The stored `deadExports` only ever held the TS share, which is the case this function's docstring says must not block. The refusal tells the operator to \"fix the measurement and re-run `pup audit`\" and never mentions `pup init`, which is the only way out short of installing vulture.\n\nCoverage doesn't hit this with the built-in adapters. `measureDebt` takes coverage from the first adapter that offers it, so a newly detected adapter that takes over coverage would really drop `coverageRatio`. The guard below is therefore limited to dead code. A test that inits with `[ts]` and audits with `[ts, pyWithout]` would pin this down.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3ccfa1b9b99615550ab75afe88efb21580b3190b/src/core/audit.service.ts#L129-L134",
+      "suggestion": "function isNewGap(previous: ProjectBaseline, gap: DebtGap): boolean {\n  if (previous.gaps === undefined) return false;\n  // An adapter the stored capture did not run added no share to its flat deadExports.\n  if (gap.capability === 'dead code' && !previous.adapters.includes(gap.adapterId)) return false;\n  return !previous.gaps.some(\n    (g) => g.adapterId === gap.adapterId && g.capability === gap.capability,\n  );\n}"
+    },
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "130",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "On a baseline with no `gaps` field (every existing project on its first audit after upgrade), a coverage failure no longer blocks. The run stores no `coverageRatio` and records `('<adapter>', 'coverage')` in `gaps`, so from then on that gap counts as already known and is never refused again: the figure is lost for good. A legacy fallback such as `return gap.capability === 'coverage' && previous.debt?.coverageRatio !== undefined` would keep the old protection.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/init.types.ts",
+      "line": "43",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The inline `{ adapterId: string; capability: string }[]` on `ProjectBaseline.gaps` restates the first two fields of `DebtGap` in `src/core/types/debt.types.ts`. Declaring it as `Pick<DebtGap, 'adapterId' | 'capability'>[]` would keep one source of truth for the field names.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1980-1984",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refusal branch re-implements the drift loop that `printBaselineTail` already runs on `debtTransitions`, so the same drift lines now have two print sites that can diverge in indent or format.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2416125,
+  "duration_ms": 191834,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 7588,
+    "cache_read": 225547,
+    "cache_creation": 37738,
+    "total": 270885
+  }
+}
