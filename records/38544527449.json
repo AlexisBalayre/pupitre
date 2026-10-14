@@ -1,0 +1,119 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T09:47:35.757Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38544527449",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38544527449",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7173da4f0c71445231bcb64b451fe58eb6f14987",
+  "source": "pr",
+  "pr_number": 143,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "407-417",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "No code writes a `landed` event. So every session merged with `pup merge --pr` stays in \"Needs you\" and in the fleet view forever, even after its PR is merged or closed on GitHub, and the operator has no way to clear it.",
+      "body": "**A `pr-open` inbox entry can never be cleared.**\n\n`openPullRequest` treats a merged session's PR as open until a `landed` event follows it. Nothing in `src/` writes `landed`: the only references are this reader, its doc comments, and a test that inserts the row with raw SQL (`dashboard.test.ts`). Decision 83 says \"Nothing writes `landed` yet; `pup land` will\", but it doesn't say what follows from that.\n\n```ts\nfunction openPullRequest(newestFirst: EventRow[]): string | undefined {\n  for (const row of newestFirst) {\n    const type: string = row.type;\n    if (type === 'landed') return undefined;\n    ...\n    return event.prUrl === undefined ? undefined : sanitizeReason(event.prUrl) || undefined;\n```\n\nWhat follows:\n- **Nothing clears an entry.** `merged` is a terminal state (`session-state.utils.ts:37`) and no code prunes sessions. So `needOf` returns `pr-open` for that session for as long as its row exists. That holds whether the PR was merged on GitHub, closed, or left open.\n- **Every conductor merge adds one.** The conductor may only use `pup merge --pr` (`profile-compiler.service.ts:571-576`), and `merge-gate.service.ts:1113-1119` stores `prUrl` on each of those merges.\n- **Old stores flood on upgrade.** Every `--pr` session a project ever ran appears at once as `PR opened, not landed → <url>`. That puts back, at the top of the output, the \"stayed on it for good\" clutter decision 83 sets out to remove.\n- **The fleet view regresses.** `fleetSummary.needsYou` now folds from `needsYou(snapshot)` (L133). `fleetBlockLines` (`src/cli/ui/dashboard-text.utils.ts:163`) prints each entry with `sessionLine`, so every registered project now shows bare `merged <id> <branch>` rows with no reason.\n- **The conductor is misinformed.** It reads `pup status` on every step and is told permanently that this finished work is waiting.\n\nPossible fixes:\n- Hold back the `pr-open` kind until a `landed` writer exists.\n- Or check the PR's real state through the adapter layer.\n- Or, at minimum, keep `pr-open` out of `fleetSummary` and record the limitation in decision 83.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7173da4f0c71445231bcb64b451fe58eb6f14987/src/core/dashboard.service.ts#L407-L417",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "281-294",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`stallReason` copies the `STALLED (...)` and `TURN DIED (API error) — ...` wording from `activityLabel`/`deadTurnLabel` in src/cli/ui/dashboard-text.utils.ts instead of sharing it. Its JSDoc promises the inbox and the table \"never describe one stall two ways\" (decision 52), but only a test keeps the two copies in step. Moving the stall wording next to `formatStaleAge` in src/core would let both call one function.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "163",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The fleet view now lists question and open-PR sessions, but prints them with `sessionLine`, which shows neither the question nor the PR url. A merged row reads only `merged <id> <branch>` and doesn't say why it needs the operator.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "414",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`openPullRequest` scrubs control characters from the stored prUrl but doesn't check that it is an http(s) URL, as `safeHttpUrl` in session-dossier.service.ts does. A tampered merge event could therefore put any one-line command text in the inbox's \"answer\" slot, which the conductor reads. This is defence in depth only: it needs a store write, which decisions 46 and 57 already accept.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "printDashboard (history filter)",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The CLI decides which states count as finished (`s.state !== 'merged' && s.state !== 'killed'`) inline. That classification belongs in src/core next to `fleetSummary`, which already counts merged and killed, so src/cli stays thin.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "123-126",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The edited `fleetSummary` JSDoc now mixes the new inbox set (\"Awaiting review is there…\") with the old fleet-summary wording about awaiting-input, so it no longer describes a single set clearly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4296-4297",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 83's \"says `Nothing running and nothing planned.` again\" is loose: that line was never removed. The decision also doesn't mention that an open-PR inbox line can print directly above it, because the merged row is hidden from the table but still listed in the inbox.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.65754,
+  "duration_ms": 163924,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 7949,
+    "cache_read": 168825,
+    "cache_creation": 36675,
+    "total": 213459
+  }
+}
