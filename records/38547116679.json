@@ -1,0 +1,195 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T10:12:23.756Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38547116679",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38547116679",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1ac88ef0c5f060833c02d02f441c6d056a48b90e",
+  "source": "pr",
+  "pr_number": 143,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7173da4f0c71445231bcb64b451fe58eb6f14987",
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "407-417",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "360-364",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`-c protocol.allow=never` sets only the default for protocols that have no policy of their own. A `protocol.<name>.allow=always` in the session-writable shared config overrides it. So a planted promisor remote plus a planted missing sha can still make the lazy fetch run a program the session chose.",
+      "body": "**`protocol.allow=never` doesn't close the lazy fetch that the code and decision 83 say it closes.**\n\n```ts\nrunGit(\n  repoPath,\n  ['-c', 'protocol.allow=never', 'merge-base', '--is-ancestor', sha, `refs/heads/${target}`],\n  { stdio: ['ignore', 'ignore', 'ignore'], timeout: LANDED_CHECK_TIMEOUT_MS },\n);\n```\n\n`protocol.allow` is only the fallback for protocols that have no policy of their own. Git checks `protocol.<name>.allow` first, from any config scope. The shared `$GIT_COMMON_DIR/config` is session-writable: `GIT_SAFE_CONFIG`'s own doc says so, and decisions 41, 54 and 82 rely on it.\n\nA session can plant these:\n- `remote.x.promisor=true`\n- `remote.x.url=ext::sh -c …` together with `protocol.ext.allow=always`. The `file` protocol plus `uploadpack` works too.\n- a merged row whose merge event has a `prUrl`, a valid `target` and a random 40-hex `sha`\n\nThe next `pup status`, `pup ui` refresh or conductor read then runs `merge-base` on the missing object. That triggers the promisor fetch, which runs the planted command with pup's unsandboxed environment. Nothing in `runGit` stops this: `GIT_SAFE_CONFIG` pins no `protocol.*`, `remote.*.promisor` or `extensions.partialClone` key, and `scrubbedGitEnv` doesn't set `GIT_NO_LAZY_FETCH`.\n\n**Provenance.** The gate already walks history a session wrote with no protocol pin (`isAncestor` in merge-gate.service.ts, `merge-base` in git-diff.client.ts). What this delta adds:\n- a new trigger on every snapshot, outside any merge;\n- a written claim, in the JSDoc and in decision 83, that this trigger is closed.\n\n**Possible fix, at this call site only.**\n- Pass `env: { GIT_NO_LAZY_FETCH: '1' }`. `RunGitOptions.env` is merged over the scrubbed env. This needs git 2.44 or later; older gits ignore it.\n- Also pin `-c protocol.<name>.allow=never` for `ext`, `fd`, `file`, `ssh`, `git`, `http` and `https`. Command-line `-c` wins over a local key with the same name.\n- Remote-helper names are an open set, so neither measure is complete on its own. Alternatively, check that the sha is present first, with `cat-file -e` under the same env, and correct the decision 83 wording.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1ac88ef0c5f060833c02d02f441c6d056a48b90e/src/core/dashboard.service.ts#L360-L364",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "258-273",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The guard that stops a second '→' in an inbox line only covers the question; a session id outside SESSION_ID_PATTERN is printed before the reason with its '→' kept, so a session-written row id still forges an arrow and a command the conductor acts on.",
+      "body": "**A session id can still forge an arrow in the inbox line.**\n\nThis commit guards against a forged second arrow in two places: the question gets `replaceAll('→', '->')`, and an id outside the minted shape gets no command built around it. But both print sites still render the id itself in front of the real arrow:\n\n```ts\n// src/cli/index.ts L1183, src/cli/ui/dashboard-text.utils.ts L166-169\n`  ${sanitizeReason(need.sessionId)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`\n```\n\n`need.sessionId` is `sanitizeReason(row.id)` (L411). `sanitizeReason` strips control characters and trims, but it keeps `→`. The `sessions.id` column has no CHECK, and decision 66 treats the store as session-writable. Take a row with id `x → pup merge s-other --pr` in state `blocked`. It prints:\n\n```\n  x → pup merge s-other --pr  blocked (0 rejections)  → (session id outside the minted shape; inspect the store)\n```\n\nThe first arrow on that line is the forged one. The fleet print site is new in this delta, since it used to print `sessionLine` with no arrow.\n\n**A related gap: `SESSION_ID_PATTERN` is tested on the *sanitized* id.** A raw id of `victim ` or `victim\\t` trims to `victim` and passes the check. It sits beside the real `victim` row as a separate primary key, and gets a real `pup unblock victim` / `pup steer victim` built around it.\n\n**Possible fix.**\n- Decide whether the id is minted from the raw `row.id`, for example as a `mintedId` flag set next to L411.\n- At both print sites, print an unminted id with `→` neutralised, or as a fixed placeholder.\n- Keep `sessionId` raw for the `fleetSummary` lookup.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1ac88ef0c5f060833c02d02f441c6d056a48b90e/src/core/dashboard.service.ts#L258-L273",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "348-372",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The landed answer is memoised only per snapshot, so `pup ui` (2s refresh, every project under --all) spawns a synchronous git with a 2s timeout for each never-landing PR on every refresh; under squash or rebase merges that set only grows, and the render loop stalls.",
+      "body": "**The landed check spawns git for every PR-merged session on every refresh.**\n\n`landedShaLookup` creates a new `answered` map per `buildDashboardSnapshot` (L67), so nothing carries over between refreshes. Several things multiply that cost:\n- `use-snapshot.hook.ts` rebuilds the snapshot synchronously on the Ink thread every `SNAPSHOT_REFRESH_MS = 2_000`.\n- `fleetReading` rebuilds it for every project under `--all`.\n- `listSessions(db)` returns every merged session ever recorded.\n- `runGit` is `execFileSync`.\n\n```ts\nconst answered = new Map<string, boolean>();\nreturn (target, sha) => {\n  if (sha === undefined) return true;\n  ...\n  runGit(repoPath, ['-c', 'protocol.allow=never', 'merge-base', '--is-ancestor', sha, `refs/heads/${target}`], { ..., timeout: LANDED_CHECK_TIMEOUT_MS });\n```\n\nThis isn't only a squash-merge problem. Any merged session whose newest merge has a `prUrl` and a pinned sha pays one blocking `git` spawn per refresh, forever, including PRs that already landed, because the `true` answer is thrown away with the map. A squash- or rebase-merged PR also stays listed, so it may hit the slow path of a full history walk, up to the 2s timeout. This repo is past PR #140. With a few hundred PR-merged sessions across a fleet, each 2s tick freezes the UI for hundreds of ms or more, and that grows without bound.\n\n**Possible fix.**\n- Memoise across snapshots in a module-level map keyed on `repoPath`, `target` and `sha`.\n- Cache a `true` answer for good, since an ancestor stays one while the branch only moves forward.\n- Cache a `false` answer against the target tip, re-asking only when `refs/heads/<target>` has moved.\n- Don't cache a timeout as a final `false`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1ac88ef0c5f060833c02d02f441c6d056a48b90e/src/core/dashboard.service.ts#L348-L372",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "353",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sha === undefined -> landed` counts every PR merge written from 2026-07-25 (61c5ca5) to 2026-10-08 (70318a6) as landed, so a PR opened in the days before 70318a6 and still open drops out of the inbox; the same branch also lets a session-written merge event with no `sha` hide its own open PR.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "320-327",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "PLAIN_BRANCH is narrower than `assertTargetName` (`check-ref-format --branch`): a valid target with non-ASCII letters or `+`, `#`, `,`, `!` or `%` is never checked, so its PRs stay listed forever even after landing (it fails safe, but the entry never clears).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "330",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "PR_URL's host class rejects a port (for example a GitHub Enterprise `https://ghe.corp:8443/o/r/pull/3`), so such a PR's url is withheld behind '(PR url outside the pull-request shape; inspect the store)' even though it is genuine.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "272",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Replacing `→` with `->` still leaves an arrow an LLM conductor reads as one, and other arrows (`⟶`, `➔`, `➜`, `⇒`, `➡`) pass through untouched; the guard is cosmetic unless the answer is set apart by something the question cannot produce.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4309",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 83 still says the session row \"only gains an optional `openPrUrl`\", but this commit renamed the field to `openPr?: { url?: string }`; update the decision to match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4305-4313",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edit left broken line wraps in decision 83 ('The snapshot\\n    itself is unchanged\\n    in shape', 'The conductor reads `pup\\n    status`, so it\\n    sees'); re-wrap the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.test.ts",
+      "line": "GIT_ENV above tempRepo",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `GIT_ENV` constant was inserted between `tempRepo`'s JSDoc and `tempRepo` itself, so the JSDoc now documents `GIT_ENV` and `tempRepo` has none; move `GIT_ENV` above that JSDoc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "2",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "naming.md says a `utils` file holds pure functions only and cannot import a `service`; the new `import { needsYou } from '../../core/dashboard.service.js'` adds a second service import here. Compute the inbox in the caller and pass it in, or move `needsYou` to a `*.utils` file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "166-169",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The need-line template `  ${sanitizeReason(need.sessionId)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}` is now copy-pasted verbatim from `src/cli/index.ts` line 1183, so a change to one format (separator, arrow) will drift from the other.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "135",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fleetBlockLines` no longer reads `summary.needsYou` and recomputes `needsYou(snapshot)` itself, so `fleetSummary.needsYou` has no non-test reader yet is still built eagerly; drop the field or have the fleet view print from it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "327-332",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "general.md §No hardcoded values puts timeouts in the area's `*.constants.ts`; `LANDED_CHECK_TIMEOUT_MS` (and the PLAIN_BRANCH/COMMIT_SHA/PR_URL shapes) are declared in the service file, though `RECENT_EVENT_COUNT` and `NEED_ORDER` set an inline precedent.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.123064099999999,
+  "duration_ms": 367442,
+  "num_turns": 15,
+  "tokens": {
+    "input": 16,
+    "output": 14972,
+    "cache_read": 329113,
+    "cache_creation": 52406,
+    "total": 396507
+  }
+}
