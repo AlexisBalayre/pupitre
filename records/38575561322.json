@@ -1,0 +1,114 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T13:57:04.467Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38575561322",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38575561322",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e0ce75a4300b9546a58ac1ac5e81ba6cb44e833c",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "108f0194af2ea32c341f88e93d34d6babb3ccb11",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1864-1872",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1142-1170",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Behaviour change in `pup merge`. `deleteBranchAt` now rethrows a killed `update-ref --no-deref -d`. In the gate this call sits in a try with no catch, after `fastForward` and `transitionSession(..., 'merged')`. A Ctrl-C landing on that call now lets the error escape past the `finally`, which still appends the `merge` event. The result: the ratchet and the decision record are skipped, and the CLI prints a raw `Command failed: git ... update-ref` refusal for a session that is merged on the target. Before this delta it returned false: `commitsPastPin` gave 0 because the branch still named the sha, and the merge completed with its ratchet. Reading the failure as false was harmless here, because the branch survives either way. The window is a few milliseconds at the end of the gate, and `killTmux` and `worktree remove` in the same block already behave this way when killed. Code: `isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);` inside `try { ... } finally { ... appendEvent(db, session.id, 'merge', ...) }`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "502-532",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two catches the delta did not touch still turn the rethrown signal error into an answer. (1) `assertTargetAt` (`catch (error) { if (error instanceof Error && error.message.includes('symbolic ref')) throw error; now = 'nowhere'; }`): the killed symref probe's message reads `Command failed: git ... symbolic-ref -q ...` (hyphen, not space), so it becomes `now = 'nowhere'`. Under both `pup land` and `pup merge`, a Ctrl-C on that probe inside `fastForward` aborts with \"<target> moved from X to nowhere while the gate ran; ... the session is not merged\". The operator is told the target branch was deleted, and on the land path is told about a gate and a session that is not merged. It still aborts, so only the message is wrong. (2) `commitsPastPin` (`catch { return 0; }`): a killed `resolveCommit` there drops `leftBehind` from the merge event and skips the warning even when later commits are on the branch. Adding `rethrowIfKilled(error)` at the top of both catches would make them consistent with the rest of the delta.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "654-670",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `it.each` test sets `process.env.PATH` to put the fake git first, but it only restores PATH on the happy path, after the assertions. A failing assertion leaves the fake git on PATH for later tests (the file's `afterEach` may restore it). The temp dir is never removed. Restore PATH in `try/finally`, or use `vi.stubEnv`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4362-4366",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The list of guarded git calls is incomplete. The text names \"the ancestry checks, the symref probe, the worktree removal or the branch delete\", but `rethrowIfKilled` also guards the `resolveCommit(repoPath, branchRef)` branch read in `tearDown` (`src/core/land.service.ts` L302-304), which the new test covers as 'the branch read'. Add \"the branch read\" to the list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4366-4367",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The paragraph's wrapping was not re-flowed after the edit. The line `A git that crashed on its own keeps the catch's fallback. The audit runs outside the lock with node's default disposition, so a Ctrl-C there` runs well past the ~100-column wrap around it, and `a change of its own. The session's worktree is removed, when` is short. Re-flow the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "179-181",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`withMergeLock` keeps node alive only through SIGINT and SIGTERM (`process.on('SIGINT', stayAlive); process.on('SIGTERM', stayAlive);`). A SIGHUP from a closed terminal or a dropped ssh session, during a multi-minute `pup merge` gate or a `pup land`, hits node's default disposition, kills it mid-call and leaves `.git/pup-merge.lock` on disk. Every later merge and land then refuses with `MergeLockHeldError`. `rethrowIfKilled` treats `SIGHUP` as an interrupt, but with no listener node dies alongside the child, so that branch only triggers when a signal reaches the child alone. Decision 84's text lists SIGKILL and a crash as the ways a lock gets stranded, not a hangup. The CLI's `releaseLock` at the merge base had the same gap (SIGINT and SIGTERM only), so this is not new in the PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4640568999999999,
+  "duration_ms": 213230,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 7820,
+    "cache_read": 221278,
+    "cache_creation": 41534,
+    "total": 270644
+  }
+}
