@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T18:16:06.051Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38613066512",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38613066512",
+  "actor": "AlexisBalayre",
+  "commit_sha": "109a1903376a19ae33b46a5a9937ec70e265937a",
+  "source": "pr",
+  "pr_number": 145,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "07fa0d537d2712706a9f4ea654dbadd08559a7f9",
+  "prior_importants": [
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "108",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "95",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edit left the `pragmaAnchors` JSDoc badly wrapped. The line 'ranges are read: together they split the trivia at its first line break. Comments come' runs to about 90 columns, while the surrounding JSDoc lines wrap at about 78. Re-wrap the paragraph, for example breaking after 'first line break.' and starting the next line with 'Comments come from the parsed tree, ...'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "93",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new sentence says the two ranges 'together split the trivia at its first line break'. That is false for the first token (pos 0). There TypeScript's comment scanner reads from the start of the file in both modes, so a pragma on line 1 before the first token is returned by both calls and recorded twice as [0,false,c]. The result is unaffected: the duplication is deterministic, and every anchor at token 0 without a preceding line break comes from line 1, so it is always doubled and never matches a different layout. Only the comment overstates the split. Possible wording: '...split the trivia at its first line break (at the start of the file both read the first line, which only duplicates those entries)'. Or skip the trailing read at pos 0, as the earlier finding suggested.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "114",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "pragmaAnchors records only whether a line break comes before a pragma. It does not record the layout between the pragma and the code it governs, yet line-based directives depend on exactly that. Examples are `@ts-ignore` and eslint `disable-next-line`/`disable-line`. `/* eslint-disable-next-line */ bad();` on one line does nothing; adding a newline after the comment makes it apply, and the fingerprint is unchanged. For TypeScript, `// @ts-ignore\\n/* why */\\nbad();` does not suppress `bad()`, because TS walks back only over blank and `//` lines. Changing `/* why */` to `// why` turns the suppression on, and it is a pure comment edit with an identical fingerprint. The gap existed before this delta for leading comments and still exists for the trailing comments it adds. Impact is limited: the pragma and the code must already be in a reviewed version, the skip sets a pending `claude-review` status rather than success, and the next push that does get reviewed covers the skipped change. So the real exposure is merging on that pending status.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3366368,
+  "duration_ms": 227897,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 6640,
+    "cache_read": 205787,
+    "cache_creation": 34488,
+    "total": 246927
+  }
+}
