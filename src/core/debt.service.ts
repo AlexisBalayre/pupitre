@@ -35,8 +35,8 @@ export function quotePath(path: string): string {
 }
 
 /** Capability names as `pup init`'s findings and this module's gaps call them. */
-const DEAD_CODE = 'dead code';
-const COVERAGE = 'coverage';
+export const DEAD_CODE = 'dead code';
+export const COVERAGE = 'coverage';
 
 /**
  * Run every debt capability the detected adapters declare, over one checkout.

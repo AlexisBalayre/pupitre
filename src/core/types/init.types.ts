@@ -1,4 +1,5 @@
 import type { DeadExport } from '../../adapters/types/adapter.types.js';
+import type { DebtGap } from './debt.types.js';
 
 export type BaselineStageStatus = 'pass' | 'fail' | 'skipped';
 
@@ -40,7 +41,7 @@ export interface ProjectBaseline {
    * capture records it, empty included; absent only on baselines stored
    * before it existed.
    */
-  gaps?: { adapterId: string; capability: string }[];
+  gaps?: Pick<DebtGap, 'adapterId' | 'capability'>[];
 }
 
 export interface InitReport {

@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { COVERAGE, DEAD_CODE } from './debt.service.js';
 import { measureBaseline, persistBaseline } from './init.service.js';
 import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
@@ -123,14 +124,26 @@ interface AuditOutcome extends AuditReport {
  * record at its own capture. A metric that has never measured (no coverage
  * runner declared, no vulture beside the TS adapter) gaps on every run, and
  * refusing for it would block the audit for good while protecting a figure
- * the baseline never had. A baseline from before gaps were recorded answers
- * for none of them, so the first audit after the upgrade refreshes and records.
+ * the baseline never had. A baseline from before gaps were recorded is judged
+ * by the figures it holds instead, which cannot tell a second adapter's share
+ * apart; the refusal names `pup init` as the way to put a metric that never
+ * measured here on record.
  */
 function isNewGap(previous: ProjectBaseline, gap: DebtGap): boolean {
-  if (previous.gaps === undefined) return false;
+  // An adapter the stored capture did not run added no share to its flat
+  // `deadExports`; coverage is taken from the first adapter offering it, so a
+  // newcomer there can really drop the figure.
+  if (gap.capability === DEAD_CODE && !previous.adapters.includes(gap.adapterId)) return false;
+  if (previous.gaps === undefined) return holdsLegacyFigure(previous.debt, gap.capability);
   return !previous.gaps.some(
     (g) => g.adapterId === gap.adapterId && g.capability === gap.capability,
   );
+}
+
+function holdsLegacyFigure(debt: DebtBaseline | undefined, capability: string): boolean {
+  if (capability === COVERAGE) return debt?.coverageRatio !== undefined;
+  if (capability === DEAD_CODE) return debt?.deadExports !== undefined;
+  return true;
 }
 
 /**

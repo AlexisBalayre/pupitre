@@ -314,6 +314,18 @@ describe('auditProject', () => {
       expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
     });
 
+    it('refreshes when the second adapter was not run by the stored capture at all', () => {
+      initProject(db, repo, [ts]);
+
+      const report = auditProject(db, repo, [ts, pyWithout]);
+
+      expect(report.unmeasured).toEqual([]);
+      const stored = JSON.parse(
+        getProject(db, projectId(repo))?.baseline ?? '{}',
+      ) as ProjectBaseline;
+      expect(stored.gaps).toEqual([{ adapterId: 'py', capability: 'dead code' }]);
+    });
+
     it('keeps the baseline when the second adapter measured before and failed now', () => {
       initProject(db, repo, [ts, makeAdapter({ id: 'py', deadCode: () => [] })]);
       const stored = getProject(db, projectId(repo))?.baseline;
@@ -325,21 +337,43 @@ describe('auditProject', () => {
     });
   });
 
-  it('refreshes once for a baseline stored before gaps were recorded, then records them', () => {
-    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
-    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
-    const { gaps: _gaps, ...legacy } = stored;
-    saveProjectBaseline(db, projectId(repo), legacy.adapters, JSON.stringify(legacy));
+  // Stored before gaps were recorded: judged by the figures it holds, so a
+  // coverage figure is still protected and a metric it never had still is not.
+  describe('with a baseline stored before gaps were recorded', () => {
+    function storeLegacy(adapter: Adapter): void {
+      initProject(db, repo, [adapter]);
+      const stored = JSON.parse(
+        getProject(db, projectId(repo))?.baseline ?? '{}',
+      ) as ProjectBaseline;
+      const { gaps: _gaps, ...legacy } = stored;
+      saveProjectBaseline(db, projectId(repo), legacy.adapters, JSON.stringify(legacy));
+    }
 
-    const report = auditProject(db, repo, [
-      makeAdapter({ coverage: () => ({ unavailable: 'boom' }) }),
-    ]);
+    it('keeps the baseline when a coverage figure it holds went unmeasured', () => {
+      storeLegacy(makeAdapter({ coverage: () => coverageReport(90, 100) }));
+      const stored = getProject(db, projectId(repo))?.baseline;
 
-    expect(report.unmeasured).toEqual([]);
-    const refreshed = JSON.parse(
-      getProject(db, projectId(repo))?.baseline ?? '{}',
-    ) as ProjectBaseline;
-    expect(refreshed.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
+      const report = auditProject(db, repo, [
+        makeAdapter({ coverage: () => ({ unavailable: 'boom' }) }),
+      ]);
+
+      expect(report.unmeasured).toEqual(['fake: coverage not measured — boom']);
+      expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
+    });
+
+    it('refreshes and records the gap for a metric it never held', () => {
+      storeLegacy(makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }));
+
+      const report = auditProject(db, repo, [
+        makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
+      ]);
+
+      expect(report.unmeasured).toEqual([]);
+      const refreshed = JSON.parse(
+        getProject(db, projectId(repo))?.baseline ?? '{}',
+      ) as ProjectBaseline;
+      expect(refreshed.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
+    });
   });
 
   it('stores a first baseline with a gap like `pup init` does: there is nothing to keep', () => {

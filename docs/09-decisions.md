@@ -936,8 +936,10 @@ changes back into those docs is pending.
     whole, a plain audit prints the drift first, `--sweep` refuses at once, and both exit 1
     saying "Baseline kept". A gap the record already holds (no coverage runner declared, no
     vulture beside the TS adapter) does not block, since the refusal would protect a figure that
-    was never there; a baseline stored before gaps were recorded blocks on nothing once and
-    records from then on. `pup init` is unchanged.
+    was never there, and neither does a dead-code gap from an adapter the stored capture did not
+    run, which added no share to the flat figure. A baseline stored before gaps were recorded is
+    judged by the figures it holds, and the refusal names `pup init` as the way to put a metric
+    that never measured here on record. `pup init` is unchanged.
     *Backfill* — the first capture on an upgraded store seeds a row from the outgoing
     pre-table baseline before `saveProjectBaseline` discards it, so the numbers already
     ratcheted over 11 days of dogfooding are the trend's first point rather than lost. The

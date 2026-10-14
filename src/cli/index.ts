@@ -1924,7 +1924,7 @@ export function buildProgram(): Command {
       const refuseKept = (): void => {
         for (const line of report.unmeasured) console.error(line);
         refuse(
-          `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`.`,
+          `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`; if the metric never measured in this repo, \`pup init\` re-captures the baseline with that on record.`,
         );
       };
       if (opts.sweep) {
