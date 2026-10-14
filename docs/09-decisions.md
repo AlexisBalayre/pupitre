@@ -4360,9 +4360,11 @@ changes back into those docs is pending.
     never runs, since a synchronous body never yields to the event loop that dispatches it, so a
     signal sent to pup alone, which kills no child, is discarded and the locked section runs to its
     end. A git child an interrupt killed is not read as git's answer to the ancestry checks, the
-    symref probes, the worktree removal or the branch read (not an ancestor, a locked worktree): the
-    land stops before the audit and the `landed` event, and a re-run picks up where it stopped. A
-    git that crashed on its own keeps the catch's fallback. The audit runs outside the lock with
+    symref probes, the worktree removal, the branch read or the branch delete (not an ancestor, a
+    locked worktree): the land stops before the audit and the `landed` event, and a re-run picks up
+    where it stopped. The gate swallows an interrupted branch delete, which it reaches only after
+    the merge landed, so the branch stays and the ratchet still runs. A git that crashed on its own
+    keeps the catch's fallback. The audit runs outside the lock with
     node's default disposition, so a Ctrl-C there ends the land before it is recorded. A lock a
     killed process strands, by SIGKILL or a crash, is a change of its own. The session's worktree is
     removed, when git still registers it, the way `pnpm worktree:clean` removes one whose PR merged;

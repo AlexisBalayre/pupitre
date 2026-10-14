@@ -543,7 +543,8 @@ export function deleteBranchAt(repoPath: string, branchRef: string, sha: string)
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return true;
-  } catch {
+  } catch (error) {
+    rethrowIfKilled(error);
     return false;
   }
 }
@@ -1147,7 +1148,12 @@ function gateAndMerge(
     // Deleted only while it still names the gated commit, in both modes: a
     // commit the session added after the pin was never measured, so it is left
     // on the branch for the operator rather than merged or thrown away.
-    isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
+    try {
+      isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
+    } catch {
+      // Interrupted after the merge landed: the branch stays, as one that
+      // moved past the pin does, rather than skip the ratchet and the draft.
+    }
   } finally {
     // Counted only once the session is killed and its worktree gone, so no
     // commit can land after the count; recorded even if the teardown threw,

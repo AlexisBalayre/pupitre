@@ -528,6 +528,31 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(payload).not.toHaveProperty('leftBehind');
     });
 
+    it('keeps the branch and completes a merge whose branch delete an interrupt killed', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const gitDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-git-')));
+      writeFileSync(
+        join(gitDir, 'git'),
+        `#!/bin/sh\ncase " $* " in *" update-ref --no-deref -d refs/heads/${BRANCH} "*) kill -TERM $$ ;; esac\nexec ${realGit} "$@"\n`,
+        { mode: 0o755 },
+      );
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${gitDir}:${originalPath}`;
+      onTestFinished(() => {
+        process.env.PATH = originalPath;
+      });
+
+      expect(merge().status).toBe('merged');
+
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
+      expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).toBe(pinned);
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect(JSON.parse(mergeEvent?.payload ?? '{}')).not.toHaveProperty('leftBehind');
+    });
+
     it('prints nothing and records no leftBehind when the branch is gone after the pin', () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
