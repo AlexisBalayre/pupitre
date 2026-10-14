@@ -254,8 +254,6 @@ describe('auditProject', () => {
     expect(history[1]?.captured_at).toBe(report.baseline.capturedAt);
   });
 
-  // A half-applied fast-forward failed the instrumented run, and the audit
-  // still stamped a baseline with no coverage figure for the gate to compare to.
   it('keeps the stored baseline and its history whole when coverage was not measured', () => {
     initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
     const stored = getProject(db, projectId(repo))?.baseline;
@@ -282,6 +280,19 @@ describe('auditProject', () => {
     expect(report.unmeasured).toEqual([]);
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.coverageRatio).toBe(0.95);
+    expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
+  });
+
+  // A runner that was never declared gaps on every run; refusing for it would
+  // block the audit for good over a figure the baseline never held.
+  it('refreshes the baseline when the unmeasured metric was never measured before', () => {
+    initProject(db, repo, [makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) })]);
+
+    const report = auditProject(db, repo, [
+      makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
+    ]);
+
+    expect(report.unmeasured).toEqual([]);
     expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
   });
 

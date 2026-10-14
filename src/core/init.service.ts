@@ -267,7 +267,11 @@ export function measureBaseline(
   return { projectId: pid, baseline, findings, sandbox, gaps };
 }
 
-/** Store a measured baseline as the project's bar, with its history row. */
+/**
+ * Store a measured baseline as the project's bar, with its history row. The one
+ * place that appends history (decision 38), shared by init and the audit, which
+ * calls it only once every metric the stored baseline holds has measured.
+ */
 export function persistBaseline(db: Database, pid: string, baseline: ProjectBaseline): void {
   // History (decision 38): every capture appends its own row before the
   // overwrite, so the only stored baseline with no row is one written before

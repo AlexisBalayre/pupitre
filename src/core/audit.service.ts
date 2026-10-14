@@ -109,11 +109,24 @@ export function formatDebtTransition(t: DebtTransition): string {
 
 interface AuditOutcome extends AuditReport {
   /**
-   * One line per debt metric the adapter could not measure, each meaning the
-   * stored baseline was kept rather than refreshed. Empty on a first run, which
-   * stores what it measured exactly like `pup init`: there is nothing to keep.
+   * One line per debt metric the adapter could not measure although the stored
+   * baseline holds a figure for it, each meaning that baseline was kept rather
+   * than refreshed. Empty on a first run, which stores what it measured exactly
+   * like `pup init`: there is nothing to keep.
    */
   unmeasured: string[];
+}
+
+/**
+ * Whether the stored baseline carries the figure a gap would drop. A metric
+ * that has never measured (no coverage runner declared, no vulture) gaps on
+ * every run, and refusing for it would block the audit for good while
+ * protecting a figure the baseline never had.
+ */
+function holdsFigure(debt: DebtBaseline | undefined, capability: string): boolean {
+  if (capability === 'coverage') return debt?.coverageRatio !== undefined;
+  if (capability === 'dead code') return debt?.deadExports !== undefined;
+  return true;
 }
 
 /**
@@ -121,10 +134,11 @@ interface AuditOutcome extends AuditReport {
  * diff against the previously stored baseline, and refresh it. First run (no
  * stored baseline) degenerates to plain init: no transitions to report.
  *
- * A debt metric the adapter could not measure keeps the stored baseline whole:
- * refreshing would stamp a bar with no figure for it, which the next gate
- * compares against as if the metric had never existed. Measured first and
- * stored only after, so nothing is written to be undone.
+ * A debt metric the adapter could not measure, where the stored baseline holds
+ * a figure for it, keeps that baseline and its history whole: refreshing would
+ * stamp a bar with no figure, which the next gate compares against as if the
+ * metric had never existed. The project row and its origin url are recorded
+ * before that decision; only the baseline and its history row are held back.
  */
 export function auditProject(
   db: Database,
@@ -136,10 +150,12 @@ export function auditProject(
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
   const report = measureBaseline(db, repoPath, adapters, gateEnv);
   const unmeasured = previous
-    ? report.gaps.map(
-        (gap) =>
-          `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,
-      )
+    ? report.gaps
+        .filter((gap) => holdsFigure(previous.debt, gap.capability))
+        .map(
+          (gap) =>
+            `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,
+        )
     : [];
   if (unmeasured.length === 0) persistBaseline(db, report.projectId, report.baseline);
   const transitions = previous ? compareBaselines(previous, report.baseline) : [];

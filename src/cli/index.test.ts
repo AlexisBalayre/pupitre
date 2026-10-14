@@ -1897,8 +1897,6 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    // A failed measurement is not a figure: the stored baseline stands and the
-    // audit fails rather than print 'Baseline refreshed' over a missing metric.
     it('keeps the baseline and exits 1 when a debt metric was not measured', () => {
       const repo = initRepo();
       useCwd(repo);
@@ -1917,6 +1915,8 @@ describe('CLI commands', () => {
 
       expect(errors[0]).toMatch(/^probe: coverage not measured — coverage command failed: .*boom/);
       expect(errors[1]).toMatch(/^Baseline kept: a debt metric was not measured/);
+      // The drift still prints: the measured metrics moved whether or not the bar follows.
+      expect(logs.join('\n')).toContain('build    PASS');
       expect(logs.join('\n')).not.toContain('Baseline refreshed');
       expect(process.exitCode).toBe(1);
       expect(baselineRows(repo)).toEqual(before);

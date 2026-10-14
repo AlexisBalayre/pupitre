@@ -1921,15 +1921,14 @@ export function buildProgram(): Command {
         ),
       );
       if (!report) return;
-      // A failed measurement is not a figure: refreshing would stamp a bar
-      // without it, so the stored baseline stands and the audit fails.
-      if (report.unmeasured.length > 0) {
+      const refuseKept = (): void => {
         for (const line of report.unmeasured) console.error(line);
-        return refuse(
+        refuse(
           `Baseline kept: ${report.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, so the baseline from ${sanitizeReason(report.previous?.capturedAt ?? '')} still stands. Fix the measurement and re-run \`pup audit\`.`,
         );
-      }
+      };
       if (opts.sweep) {
+        if (report.unmeasured.length > 0) return refuseKept();
         if (report.hasRegression) {
           return refuse('Baseline regressed — fix the regression before sweeping.');
         }
@@ -1979,6 +1978,9 @@ export function buildProgram(): Command {
           console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
       }
       printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
+      // After the drift, which the operator still wants to see: the measured
+      // metrics moved whether or not the bar follows them.
+      if (report.unmeasured.length > 0) return refuseKept();
       console.log('Baseline refreshed.');
       if (report.hasRegression) process.exitCode = 1;
     });
