@@ -164,7 +164,7 @@ function runBaselineStage(
 }
 
 /** A baseline measured but not yet stored, with the debt capabilities that could not measure. */
-export interface MeasuredBaseline extends InitReport {
+interface MeasuredBaseline extends InitReport {
   gaps: DebtGap[];
 }
 
