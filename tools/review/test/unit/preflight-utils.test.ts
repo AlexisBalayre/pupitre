@@ -67,7 +67,7 @@ describe("decideMode", () => {
     forceFull: false,
     isAncestor: true,
     hasMerges: false,
-    commentOnly: false,
+    isCommentOnly: false,
   };
 
   it("resolves full when the PR has never been reviewed", () => {
@@ -106,14 +106,14 @@ describe("decideMode", () => {
   });
 
   it("skips a delta of comments and Markdown alone", () => {
-    expect(decideMode({ ...base, prior: record(), commentOnly: true })).toEqual({
+    expect(decideMode({ ...base, prior: record(), isCommentOnly: true })).toEqual({
       kind: "skip-comment-only",
       priorPath: "records/1.json",
     });
   });
 
   it("reviews a comment-only delta when a human asked by comment", () => {
-    expect(decideMode({ ...base, prior: record(), commentOnly: true, trigger: "comment" })).toEqual({
+    expect(decideMode({ ...base, prior: record(), isCommentOnly: true, trigger: "comment" })).toEqual({
       kind: "incremental",
       fromSha: "aaa",
       priorPath: "records/1.json",
@@ -121,7 +121,7 @@ describe("decideMode", () => {
   });
 
   it("reviews in full a comment-only delta whose ancestry broke", () => {
-    expect(decideMode({ ...base, prior: record(), commentOnly: true, isAncestor: false })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), isCommentOnly: true, isAncestor: false })).toEqual({ kind: "full" });
   });
 });
 
@@ -139,7 +139,7 @@ describe("parseRawDiff", () => {
 });
 
 describe("isProseMarkdown", () => {
-  it.each(["README.md", "CHANGELOG.md", "docs/01-architecture.md"])("takes %s as prose", (path) => {
+  it.each(["README.md", "CHANGELOG.md", "CONTRIBUTING.md"])("takes %s as prose", (path) => {
     expect(isProseMarkdown(path)).toBe(true);
   });
 
@@ -154,11 +154,13 @@ describe("isProseMarkdown", () => {
     "tools/review/README.md",
     "docs/page.mdx",
     "docs/09-decisions.md",
+    "docs/08-roadmap.md",
+    "docs/03-profiles.md",
     "CLAUDE.local.md",
     "tools/x/notes.md",
     "pkg/.claude/agents/x.md",
     "Skills/pup/LOOP.md",
-  ])("takes %s as config, not prose", (path) => {
+  ])("does not take %s as prose", (path) => {
     expect(isProseMarkdown(path)).toBe(false);
   });
 });
@@ -216,6 +218,24 @@ describe("sameCodeIgnoringComments", () => {
     expect(same("// old\n// biome-ignore lint: why\nrun();\n", "// new\n// biome-ignore lint: why\nrun();\n")).toBe(true);
   });
 
+  it("sees a pragma after a template substitution, a regex or JSX text", () => {
+    const tail = "\nrun();\nconst t = `t`;\n";
+    expect(same("const u = `${b}/x`;" + tail, "const u = `${b}/x`;\n/* v8 ignore next */" + tail)).toBe(false);
+    expect(same("const r = /'/;" + tail, "const r = /'/;\n// @ts-ignore" + tail)).toBe(false);
+    expect(same("const r = /`/;" + tail, "const r = /`/;\n// biome-ignore lint: x" + tail)).toBe(false);
+    const jsx = (pragma: string) => `const e = <p>it's</p>;\n${pragma}run();\n`;
+    expect(same(jsx(""), jsx("// @ts-ignore\n"), "src/a.tsx")).toBe(false);
+  });
+
+  it("accepts a JSDoc tag added above code that a pragma follows", () => {
+    const code = "function f(x) {}\n// @ts-ignore\nrun();\n";
+    expect(same(`/** a */\n${code}`, `/** @param x the x */\n${code}`, "src/a.js")).toBe(true);
+  });
+
+  it("refuses a changed shebang", () => {
+    expect(same("#!/usr/bin/env node\nrun();\n", "#!/usr/bin/env bash\nrun();\n", "src/a.js")).toBe(false);
+  });
+
   it("refuses a version that does not parse", () => {
     expect(same("run();\n", "run(;\n// note\n")).toBe(false);
   });
@@ -235,7 +255,7 @@ describe("isCommentOnlyDelta", () => {
   const delta = (...entries: RawDiffEntry[]) => isCommentOnlyDelta(entries, (sha) => blobs[sha] ?? "");
 
   it("accepts comment edits in code and edits to prose Markdown", () => {
-    expect(delta(entry(), entry({ path: "docs/01-architecture.md", newBlob: "c" }))).toBe(true);
+    expect(delta(entry(), entry({ path: "README.md", newBlob: "c" }))).toBe(true);
   });
 
   it("refuses a code change anywhere in the delta", () => {

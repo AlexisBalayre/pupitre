@@ -147,7 +147,7 @@ async function main(): Promise<void> {
     }
   }
   const isAncestor = priorSha !== null && gitOk("merge-base", "--is-ancestor", priorSha, "HEAD");
-  let commentOnly = false;
+  let isCommentOnly = false;
   if (priorSha !== null && isAncestor && !hasMerges) {
     try {
       // `--ignore-submodules=none` overrides an `ignore = all` the PR's own
@@ -159,14 +159,14 @@ async function main(): Promise<void> {
       );
       // Fatal decoding: two invalid byte runs must not both read as U+FFFD.
       const utf8 = new TextDecoder("utf-8", { fatal: true });
-      commentOnly = isCommentOnlyDelta(parseRawDiff(raw), (sha) =>
+      isCommentOnly = isCommentOnlyDelta(parseRawDiff(raw), (sha) =>
         utf8.decode(execFileSync("git", ["cat-file", "blob", sha])),
       );
     } catch {
-      commentOnly = false; // an unreadable delta is reviewed, never skipped
+      isCommentOnly = false; // an unreadable delta is reviewed, never skipped
     }
   }
-  const decision = decideMode({ prior, headSha, trigger, forceFull, isAncestor, hasMerges, commentOnly });
+  const decision = decideMode({ prior, headSha, trigger, forceFull, isAncestor, hasMerges, isCommentOnly });
 
   if (decision.kind === "skip-duplicate") {
     process.stdout.write(`::notice::head ${headSha} already reviewed (${decision.priorPath}); nothing new to review\n`);

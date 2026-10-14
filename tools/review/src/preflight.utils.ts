@@ -69,13 +69,13 @@ export function parseRawDiff(raw: string): RawDiffEntry[] {
 }
 
 /**
- * Markdown nobody loads as instructions, as an allowlist: agent config here is
- * Markdown too (`CLAUDE.md`, skills, agent manifests, rules and the
- * conventions they import), and the reviewers read `docs/09-decisions.md` as
- * the accepted exposures, so only the design chapters and repo meta qualify.
+ * Markdown nobody loads as instructions, as an allowlist of the root's repo
+ * meta. Everything else steers an agent: `CLAUDE.md`, skills, manifests and
+ * rules directly, and the design docs as the spec and stack decisions
+ * `AGENTS.md` and the reviewers send sessions to.
  */
 export function isProseMarkdown(path: string): boolean {
-  return /^(README|CONTRIBUTING|CHANGELOG)\.md$/.test(path) || /^docs\/0[0-8]-[^/]+\.md$/.test(path);
+  return /^(README|CONTRIBUTING|CHANGELOG)\.md$/.test(path);
 }
 
 const CODE_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
@@ -86,37 +86,34 @@ const CODE_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
  * is caught too.
  */
 const PRAGMA =
-  /(?:istanbul|[cv]8|node:coverage)\s+ignore|@ts-|biome-ignore|eslint|[#@]__PURE__|__NO_SIDE_EFFECTS__|@jsx|@vite-ignore|webpack[A-Z]|[#@]\s*source(?:Mapping)?URL|^\/\/\/\s*<|@vitest|@license|@preserve/i;
+  /(?:istanbul|[cv]8|node:coverage)\s+ignore|@ts-|biome-ignore|eslint|[#@]__PURE__|__NO_SIDE_EFFECTS__|@jsx|@vite-ignore|webpack[A-Z]|[#@]\s*source(?:Mapping)?URL|^\/\/\/\s*<|@vitest|@jest-environment|@flow|@refresh|@license|@preserve/i;
 
 /**
- * Each pragma with where it sits: the count of code tokens before it, and
- * whether a line break separates it from the last one. The scanner breaks
- * lines where TypeScript does (CR, U+2028), and a pragma moved onto other code
- * changes its count, so a moved `v8 ignore next` reads as a change.
+ * Each pragma with where it sits: the index of the code token it precedes,
+ * and whether a line break separates it from the token before. Comments come
+ * from the parsed tree, whose tokens know template parts, regexes and JSX
+ * text, so no backtick or slash hides a comment; a pragma moved onto other
+ * code changes its index, so a moved `v8 ignore next` reads as a change.
  */
-function pragmaAnchors(path: string, text: string): string[] {
-  const variant = /x$/i.test(path) ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard;
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, variant, text);
+function pragmaAnchors(file: ts.SourceFile): string[] {
+  const { text } = file;
   const anchors: string[] = [];
-  let codeTokens = 0;
-  let lineBreak = false;
-  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    if (kind === ts.SyntaxKind.NewLineTrivia) {
-      lineBreak = true;
-    } else if (
-      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
-      kind === ts.SyntaxKind.MultiLineCommentTrivia ||
-      kind === ts.SyntaxKind.ShebangTrivia
-    ) {
-      const comment = scanner.getTokenText();
-      if (kind === ts.SyntaxKind.ShebangTrivia || PRAGMA.test(comment)) {
-        anchors.push(`${codeTokens}:${lineBreak}:${comment}`);
-      }
-    } else if (kind !== ts.SyntaxKind.WhitespaceTrivia) {
-      codeTokens += 1;
-      lineBreak = false;
+  let tokenIndex = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isJSDoc(node)) return;
+    if (node.kind > ts.SyntaxKind.LastToken) {
+      for (const child of node.getChildren(file)) visit(child);
+      return;
     }
-  }
+    for (const range of ts.getLeadingCommentRanges(text, node.pos) ?? []) {
+      const comment = text.slice(range.pos, range.end);
+      if (!PRAGMA.test(comment)) continue;
+      const hasLineBreak = /[\n\r\u2028\u2029]/.test(text.slice(node.pos, range.pos));
+      anchors.push(`${tokenIndex}:${hasLineBreak}:${comment}`);
+    }
+    tokenIndex += 1;
+  };
+  visit(file);
   return anchors;
 }
 
@@ -130,18 +127,16 @@ function pragmaAnchors(path: string, text: string): string[] {
  */
 export function sameCodeIgnoringComments(path: string, before: string, after: string): boolean {
   const printer = ts.createPrinter({ removeComments: true });
-  const print = (text: string): string | null => {
+  const read = (text: string): string | null => {
     // With parent nodes the printer keeps each literal's source text, so an
-    // escaped `'use\\x20strict'` does not print as the directive it is not.
+    // escaped `'use\x20strict'` does not print as the directive it is not.
     const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
     const { diagnostics } = ts.transpileModule(text, { fileName: path, reportDiagnostics: true });
     if ((diagnostics ?? []).length > 0) return null;
-    return printer.printFile(file);
+    return JSON.stringify([printer.printFile(file), pragmaAnchors(file)]);
   };
-  const printedBefore = print(before);
-  const printedAfter = print(after);
-  if (printedBefore === null || printedAfter === null || printedBefore !== printedAfter) return false;
-  return JSON.stringify(pragmaAnchors(path, before)) === JSON.stringify(pragmaAnchors(path, after));
+  const readBefore = read(before);
+  return readBefore !== null && readBefore === read(after);
 }
 
 /**
@@ -173,9 +168,9 @@ export function decideMode(args: {
   forceFull: boolean;
   isAncestor: boolean;
   hasMerges: boolean;
-  commentOnly: boolean;
+  isCommentOnly: boolean;
 }): ModeDecision {
-  const { prior, headSha, trigger, forceFull, isAncestor, hasMerges, commentOnly } = args;
+  const { prior, headSha, trigger, forceFull, isAncestor, hasMerges, isCommentOnly } = args;
   if (prior === null || prior.commit_sha === null) return { kind: "full" };
   // An already-reviewed head re-reviews only on an explicit human request: a
   // synchronize or opened retrigger of the same SHA has nothing new to look at,
@@ -191,6 +186,6 @@ export function decideMode(args: {
   // A delta of comments and prose alone waits for the next code push, whose
   // incremental review starts from the same prior head and so still reads it;
   // a person asking by comment gets the review now.
-  if (commentOnly && trigger !== "comment") return { kind: "skip-comment-only", priorPath: prior.path };
+  if (isCommentOnly && trigger !== "comment") return { kind: "skip-comment-only", priorPath: prior.path };
   return { kind: "incremental", fromSha: prior.commit_sha, priorPath: prior.path };
 }

@@ -161,7 +161,9 @@ jobs:
       # a failure is a red step the poster turns into a "not reviewed" verdict,
       # never a model stalled at a permission prompt. It also skips the run when
       # the head SHA already has a non-errored record (a synchronize retrigger
-      # with nothing new), except on an explicit `@claude review`.
+      # with nothing new), or when only comments and repo-meta prose changed
+      # since that record (marked "Not reviewed" on the head), except on an
+      # explicit `@claude review`.
       # The merge base is resolved here, while the checkout is still complete:
       # claude-code-action restores the PR's config paths from the base branch
       # with a `--depth=1` fetch, which grafts `origin/<base>` parentless. From
@@ -282,9 +284,11 @@ jobs:
         run: pnpm --dir .review-tooling --ignore-workspace --silent run review:post
 
       - name: Emit review metrics
-        # No record for a merged-PR or already-reviewed skip: a review that never
-        # ran is not an errored run, and an is_error record for it would pollute
-        # the retro's outage signal.
+        # No record for a merged-PR, already-reviewed or comment-only skip: a
+        # review that never ran is not an errored run, and an is_error record
+        # for it would pollute the retro's outage signal. A comment-only delta
+        # is read by the next code push's review, which starts from the same
+        # prior record.
         if: always() && steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         env:
           REVIEW_EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
