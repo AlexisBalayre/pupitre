@@ -508,6 +508,22 @@ function commitsPastPin(repoPath: string, branchRef: string, sha: string): numbe
   return Number(runGit(repoPath, ['rev-list', '--count', `${sha}..${now}`]).trim());
 }
 
+/**
+ * Delete `branchRef` only while it still names `sha`; false when it moved, and
+ * it is kept. `--no-deref`: a branch turned into a symref after the pin must
+ * not delete the branch it points at.
+ */
+export function deleteBranchAt(repoPath: string, branchRef: string, sha: string): boolean {
+  try {
+    runGit(repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** One shell word, for a command the operator is asked to paste. */
 function shellWord(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
@@ -1107,16 +1123,7 @@ function gateAndMerge(
     // Deleted only while it still names the gated commit, in both modes: a
     // commit the session added after the pin was never measured, so it is left
     // on the branch for the operator rather than merged or thrown away.
-    try {
-      // `--no-deref`: a branch turned into a symref after the pin must not
-      // delete the branch it points at.
-      runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      isDeleted = true;
-    } catch {
-      // moved past the pin — kept, see above
-    }
+    isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
   } finally {
     // Counted only once the session is killed and its worktree gone, so no
     // commit can land after the count; recorded even if the teardown threw,

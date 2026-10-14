@@ -1825,7 +1825,7 @@ export function buildProgram(): Command {
       // what origin holds and re-stamps the baseline, so the conductor may run
       // it, and a session may not, as it may not run the audit (decision 84).
       if (callingSession(db)) {
-        return refuse('`pup land` is operator-only; sessions cannot land sessions.');
+        return refuse('`pup land` is refused to sessions; the operator or the conductor runs it.');
       }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;

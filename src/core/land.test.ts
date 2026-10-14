@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -260,6 +261,129 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(land).toThrow('opened no pull request');
     expectNothingChanged(before);
     expect(existsSync(ghLog)).toBe(false);
+  });
+
+  // The store is session-writable: a merge row can lack what the land checks against.
+  it.each<[string, (pin: string) => Record<string, string>]>([
+    ['no pinned sha', () => ({ target: 'main' })],
+    ['a sha outside the pinned shape', () => ({ sha: '--upload-pack=x', target: 'main' })],
+    ['no target', (pin) => ({ sha: pin })],
+  ])('refuses a merge event with %s, changing nothing', (_label, fields) => {
+    transitionSession(db, SESSION_ID, 'merged');
+    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'merge', ?)").run(
+      SESSION_ID,
+      JSON.stringify({ branch: BRANCH, files: [], prUrl: PR_URL, ...fields(pinned) }),
+    );
+    const before = mainSha();
+    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+
+    expect(land).toThrow('merge event names no pinned sha and target');
+    expectNothingChanged(before);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  // The audit is the land's last step; with nothing to measure it must not start.
+  it('refuses with no adapter, changing nothing', () => {
+    seedPrMerge();
+    mergeOnGitHub();
+    const before = mainSha();
+    fakeGh({ state: 'MERGED', mergeCommit: { oid: pinned } });
+
+    expect(() => landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [] })).toThrow(
+      `No adapter for ${repo}; the audit after the land would measure nothing.`,
+    );
+    expectNothingChanged(before);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  it('refuses a session the store does not hold', () => {
+    const before = mainSha();
+
+    expect(() =>
+      landSession(db, { repoPath: repo, sessionId: 'nope', adapters: [passingAdapter] }),
+    ).toThrow('No session nope. Nothing was landed.');
+    expectNothingChanged(before);
+  });
+
+  it('refuses a merged session with no merge event, changing nothing', () => {
+    transitionSession(db, SESSION_ID, 'merged');
+    const before = mainSha();
+
+    expect(land).toThrow('opened no pull request');
+    expectNothingChanged(before);
+  });
+
+  it('refuses a MERGED answer that names no merge commit, changing nothing', () => {
+    seedPrMerge();
+    mergeOnGitHub();
+    const before = mainSha();
+    fakeGh({ state: 'MERGED', mergeCommit: null });
+
+    expect(land).toThrow(`GitHub reports ${PR_URL} merged with no merge commit.`);
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it('refuses when origin cannot be fetched, changing nothing', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    rmSync(origin, { recursive: true, force: true });
+    const before = mainSha();
+    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+
+    expect(land).toThrow(`Fetching main from ${ORIGIN_URL} failed. Nothing was landed.`);
+    expectNothingChanged(before);
+  });
+
+  it('refuses a local main with commits origin lacks, leaving it where it is', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(
+      repo,
+      'git',
+      '-c',
+      'user.email=l@test',
+      '-c',
+      'user.name=land',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'local',
+    );
+    const before = mainSha();
+    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+
+    expect(land).toThrow(`Local main at ${before} has commits origin's main at ${merge} lacks`);
+    expectNothingChanged(before);
+  });
+
+  // The checkout the fast-forward writes must be the target's, as at the gate.
+  it('refuses when the main checkout is on another branch, moving nothing', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'elsewhere');
+    const before = mainSha();
+    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+
+    expect(land).toThrow('The main checkout is on elsewhere, not main');
+    expectNothingChanged(before);
+  });
+
+  // The gate's teardown usually removed both already; the land then has nothing to do there.
+  it('lands a session whose worktree and branch are already gone', () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
+    sh(repo, 'git', 'branch', '-q', '-D', BRANCH);
+    fakeGh({ state: 'MERGED', mergeCommit: { oid: merge } });
+
+    const outcome = land();
+
+    expect(outcome.removedWorktree).toBe(false);
+    expect(outcome.keptBranch).toBeUndefined();
+    expect(mainSha()).toBe(merge);
+    expect(landedEvents()).toHaveLength(1);
   });
 
   // The url is store text: one outside origin's repo would land on another PR's word.

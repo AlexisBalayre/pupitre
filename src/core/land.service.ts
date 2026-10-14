@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { sanitizeReason } from '../adapters/capability.utils.js';
+import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { type AuditOutcome, auditProject } from './audit.service.js';
 import { assertNoArmedGitDrivers, currentBranch, runGit } from './git-diff.client.js';
@@ -10,6 +10,7 @@ import { originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertTargetName,
+  deleteBranchAt,
   fastForward,
   isAncestor,
   pushTarget,
@@ -205,13 +206,10 @@ function fetchTarget(
     );
     return git(['rev-parse', '--verify', 'refs/heads/origin^{commit}']).trim();
   } catch (error) {
-    if (error instanceof Error && 'stderr' in error) {
-      throw new Error(
-        `Fetching ${target} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
-          sanitizeReason(String(error.stderr)),
-      );
-    }
-    throw error;
+    throw new Error(
+      `Fetching ${target} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
+        failureSummary(error),
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -242,10 +240,11 @@ function tearDown(
     // already gone, or a symref the gate refuses to follow
     return { removedWorktree };
   }
-  if (!isAncestor(repoPath, branchSha, targetSha)) {
-    return { removedWorktree, keptBranch: session.branch };
+  if (
+    isAncestor(repoPath, branchSha, targetSha) &&
+    deleteBranchAt(repoPath, branchRef, branchSha)
+  ) {
+    return { removedWorktree };
   }
-  // `--no-deref` and the old value, like the gate's own delete.
-  runGit(repoPath, ['update-ref', '--no-deref', '-d', branchRef, branchSha]);
-  return { removedWorktree };
+  return { removedWorktree, keptBranch: session.branch };
 }

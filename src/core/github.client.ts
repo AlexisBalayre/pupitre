@@ -58,6 +58,23 @@ function ghJson(repoPath: string, args: string[]): unknown {
   }
 }
 
+/** `gh pr view` of the PR at `url`, pinned to `repo`, as the fields asked for. */
+function viewPullRequest(
+  repoPath: string,
+  url: string,
+  repo: string,
+  fields: string[],
+): Record<string, unknown> {
+  return objectFields(
+    ghJson(repoPath, ['pr', 'view', url, '--repo', repo, '--json', fields.join(',')]),
+  );
+}
+
+/** gh's JSON as an object; anything else has no fields, so each reads as absent. */
+function objectFields(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
 /**
  * URL of the open PR pupitre may adopt for `ref.head`, if one exists. Probed
  * before the push so a retried `pup merge --pr` reuses the PR a previous run
@@ -179,11 +196,7 @@ export function assertPullRequestHead(
   repo: string,
   sha: string,
 ): void {
-  const parsed = ghJson(repoPath, ['pr', 'view', url, '--repo', repo, '--json', 'headRefOid']);
-  const head =
-    parsed !== null && typeof parsed === 'object'
-      ? (parsed as { headRefOid?: unknown }).headRefOid
-      : undefined;
+  const head = viewPullRequest(repoPath, url, repo, ['headRefOid']).headRefOid;
   if (head !== sha) {
     throw new Error(
       `PR ${url} has its head at ${typeof head === 'string' ? head : 'an unreadable commit'}, ` +
@@ -205,23 +218,8 @@ export function readPullRequestLanding(
   url: string,
   repo: string,
 ): { state: string | undefined; mergeCommit: string | undefined } {
-  const parsed = ghJson(repoPath, [
-    'pr',
-    'view',
-    url,
-    '--repo',
-    repo,
-    '--json',
-    'state,mergeCommit',
-  ]);
-  const fields =
-    parsed !== null && typeof parsed === 'object'
-      ? (parsed as { state?: unknown; mergeCommit?: unknown })
-      : {};
-  const commit =
-    fields.mergeCommit !== null && typeof fields.mergeCommit === 'object'
-      ? (fields.mergeCommit as { oid?: unknown }).oid
-      : undefined;
+  const fields = viewPullRequest(repoPath, url, repo, ['state', 'mergeCommit']);
+  const commit = objectFields(fields.mergeCommit).oid;
   return {
     state: typeof fields.state === 'string' ? fields.state : undefined,
     mergeCommit: typeof commit === 'string' ? commit : undefined,

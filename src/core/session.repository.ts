@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { SessionState } from './db.client.js';
+import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { canTransition, claimedStates } from './session-state.utils.js';
@@ -76,10 +76,10 @@ export interface TaskRow {
 }
 
 /**
- * Every type the store holds, keyed off the payloads written for them, so a
- * new writer adds its type and its payload in one place.
+ * Every type the store holds: the schema's, and `landed`, which `pup land`
+ * writes (decision 84) and `EventType` has yet to join.
  */
-type StoredEventType = keyof EventPayloads;
+type StoredEventType = EventType | 'landed';
 
 export interface EventRow {
   id: number;

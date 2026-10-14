@@ -2024,11 +2024,14 @@ describe('CLI commands', () => {
       mkdirSync(join(repo, '.pupitre'), { recursive: true });
       writeFileSync(
         adapterYml,
-        `id: probe\nbuild: exit 0\ncoverage: echo '{"files":{"a.ts":{"covered":[1],"instrumented":[1]}}}'\n`,
+        `id: probe\nbuild: exit 0\ndeadCode: echo '[]'\ncoverage: echo '{"files":{"a.ts":{"covered":[1],"instrumented":[1]}}}'\n`,
       );
       buildProgram().parse(['init'], { from: 'user' });
       const before = baselineRows(repo);
-      writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\ncoverage: echo boom >&2; exit 1\n');
+      writeFileSync(
+        adapterYml,
+        "id: probe\nbuild: exit 0\ndeadCode: echo '[]'\ncoverage: echo boom >&2; exit 1\n",
+      );
       logs.length = 0;
 
       buildProgram().parse(['audit'], { from: 'user' });
@@ -2037,10 +2040,31 @@ describe('CLI commands', () => {
       expect(errors).toHaveLength(2);
       expect(errors[1]).toMatch(/^Baseline kept: a debt metric was not measured/);
       expect(logs.join('\n')).toContain('build    PASS');
+      // The drift of what did measure still prints, above the refusal.
+      expect(logs).toContainEqual(expect.stringMatching(/^ {2}dead-code 0 -> 0\s*$/));
       expect(logs.join('\n')).not.toContain('debt baseline:');
       expect(logs.join('\n')).not.toContain('Baseline refreshed');
       expect(process.exitCode).toBe(1);
       expect(baselineRows(repo)).toEqual(before);
+    });
+
+    it('launches no sweep when a debt metric was not measured', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const adapterYml = join(repo, '.pupitre', 'adapter.yml');
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(
+        adapterYml,
+        `id: probe\nbuild: exit 0\ncoverage: echo '{"files":{"a.ts":{"covered":[1],"instrumented":[1]}}}'\n`,
+      );
+      buildProgram().parse(['init'], { from: 'user' });
+      writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\ncoverage: echo boom >&2; exit 1\n');
+
+      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+
+      expect(errors.at(-1)).toMatch(/^Baseline kept: a debt metric was not measured/);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
     });
 
     it('refreshes the baseline when every metric measured', () => {
@@ -4837,7 +4861,9 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['land', 's1'], { from: 'user' });
 
-      expect(errors).toEqual(['`pup land` is operator-only; sessions cannot land sessions.']);
+      expect(errors).toEqual([
+        '`pup land` is refused to sessions; the operator or the conductor runs it.',
+      ]);
       expect(process.exitCode).toBe(1);
       expect(landSession).not.toHaveBeenCalled();
     });
@@ -4857,6 +4883,37 @@ describe('CLI commands', () => {
       );
       expect(logs).toContain('Removed the session worktree.');
       expect(process.exitCode).toBeUndefined();
+    });
+
+    it('names a kept branch and a target that already held the merge', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockReturnValue({
+        ...landedOutcome(),
+        fastForwarded: false,
+        removedWorktree: false,
+        keptBranch: 'pup/s1',
+      });
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        `Landed s1: ${PR} merged as ${'a'.repeat(40)}; main already held it at ${'a'.repeat(40)}.`,
+      );
+      expect(logs).toContain('Kept pup/s1: it holds commits main does not.');
+      expect(logs).not.toContain('Removed the session worktree.');
+    });
+
+    // It ends on the audit, which runs children: refused before anything moves (decision 78).
+    it('refuses off darwin with no sandbox declared, landing nothing', () => {
+      useCwd(initRepoWithAdapter());
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
+      expect(process.exitCode).toBe(1);
+      expect(landSession).not.toHaveBeenCalled();
     });
 
     it('prints a refusal on one line with its control characters gone', () => {
