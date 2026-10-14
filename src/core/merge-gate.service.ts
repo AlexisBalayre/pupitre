@@ -504,6 +504,7 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
   try {
     now = resolveCommit(repoPath, `refs/heads/${target}`);
   } catch (error) {
+    rethrowIfKilled(error);
     if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
     now = 'nowhere';
   }
@@ -542,8 +543,7 @@ export function deleteBranchAt(repoPath: string, branchRef: string, sha: string)
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return true;
-  } catch (error) {
-    rethrowIfKilled(error);
+  } catch {
     return false;
   }
 }

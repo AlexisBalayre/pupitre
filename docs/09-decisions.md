@@ -4360,26 +4360,26 @@ changes back into those docs is pending.
     never runs, since a synchronous body never yields to the event loop that dispatches it, so a
     signal sent to pup alone, which kills no child, is discarded and the locked section runs to its
     end. A git child an interrupt killed is not read as git's answer to the ancestry checks, the
-    symref probe, the worktree removal or the branch delete (not an ancestor, a locked worktree):
-    the land stops before the audit and the `landed` event, and a re-run picks up where it stopped.
-    A git that crashed on its own keeps the catch's fallback. The audit runs outside the lock with node's default disposition, so a Ctrl-C there
-    ends the land before it is recorded. A lock a killed process strands, by SIGKILL or a crash, is
-    a change of its own. The session's worktree is removed, when
-    git still registers it, the way `pnpm worktree:clean` removes one whose PR merged; one `--force`
-    cannot remove, a session having locked its own, is kept together with its branch and named as
-    such, since deleting the branch a surviving worktree has checked out would leave it on a branch
-    that does not exist. Otherwise its branch is deleted only while main holds every commit of it,
-    with the old value and `--no-deref` like the gate's delete; a branch with later commits is kept
-    and named. Then `auditProject` runs, as `pup audit` would and printed the same way, except that
-    a regressed measurement is reported and the baseline kept, since the conductor may run this and
-    no human then stands between an observed regression and the bar; `pup audit`, which the operator
-    runs, still ratchets (decision 48). Then a `landed` event records the merge commit GitHub made,
-    the target and the url, which the needs-you inbox reads to drop the PR (decision 83) whatever
-    this checkout has pulled. A failure part-way is safe to re-run: each step skips what is already
-    done, and the event is written last. `landed` is added to `EventPayloads` for its payload, and
-    to `EventRow` and `appendEvent` as `StoredEventType = EventType | 'landed'`, until `EventType`
-    itself takes it. The `--pr` merge's closing line names `pup land <session>` instead of `pup
-    audit`.
+    symref probes, the worktree removal or the branch read (not an ancestor, a locked worktree): the
+    land stops before the audit and the `landed` event, and a re-run picks up where it stopped. A
+    git that crashed on its own keeps the catch's fallback. The audit runs outside the lock with
+    node's default disposition, so a Ctrl-C there ends the land before it is recorded. A lock a
+    killed process strands, by SIGKILL or a crash, is a change of its own. The session's worktree is
+    removed, when git still registers it, the way `pnpm worktree:clean` removes one whose PR merged;
+    one `--force` cannot remove, a session having locked its own, is kept together with its branch
+    and named as such, since deleting the branch a surviving worktree has checked out would leave it
+    on a branch that does not exist. Otherwise its branch is deleted only while main holds every
+    commit of it, with the old value and `--no-deref` like the gate's delete; a branch with later
+    commits is kept and named. Then `auditProject` runs, as `pup audit` would and printed the same
+    way, except that a regressed measurement is reported and the baseline kept, since the conductor
+    may run this and no human then stands between an observed regression and the bar; `pup audit`,
+    which the operator runs, still ratchets (decision 48). Then a `landed` event records the merge
+    commit GitHub made, the target and the url, which the needs-you inbox reads to drop the PR
+    (decision 83) whatever this checkout has pulled. A failure part-way is safe to re-run: each step
+    skips what is already done, and the event is written last. `landed` is added to `EventPayloads`
+    for its payload, and to `EventRow` and `appendEvent` as `StoredEventType = EventType |
+    'landed'`, until `EventType` itself takes it. The `--pr` merge's closing line names `pup land
+    <session>` instead of `pup audit`.
     The conductor may run it: the human decision, merging the PR, already happened on GitHub, and
     what is left moves main only to what origin holds, so it is the bookkeeping decision 75 lets the
     conductor relay, not the local fast-forward decision 47 keeps from it. A session is refused, as

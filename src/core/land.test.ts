@@ -639,7 +639,6 @@ describe('landSession', { timeout: 20_000 }, () => {
     ['an ancestry check', 'merge-base'],
     ['the symref probe', 'symbolic-ref -q'],
     ['the branch read', `rev-parse --verify --quiet refs/heads/${BRANCH}^{commit}`],
-    ['the branch delete', 'update-ref --no-deref -d'],
   ])('stops on a signal that kills %s, records nothing, and lands on the re-run', (_, call) => {
     seedPrMerge();
     const merge = mergeOnGitHub();
