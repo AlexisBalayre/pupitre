@@ -1,0 +1,149 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T08:37:38.671Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38536076086",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38536076086",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f91f702352da5ccd1c0d2ba4d86828c56289be2a",
+  "source": "pr",
+  "pr_number": 142,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "138-144",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Every debt gap now blocks the refresh, including capabilities that were never available and are missing from the stored baseline. Projects without vulture, pytest-cov or vitest coverage now fail every `pup audit` (and `--sweep`) for good with \"Baseline kept\".",
+      "body": "**A metric that was never measured now blocks every audit, not just one whose measurement failed.**\n\nWhenever a stored baseline exists, `auditProject` turns every entry of `report.gaps` into an `unmeasured` line. It never checks whether the previous baseline actually held a figure for that metric:\n\n```ts\nconst unmeasured = previous\n  ? report.gaps.map(\n      (gap) =>\n        `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}`,\n    )\n  : [];\nif (unmeasured.length === 0) persistBaseline(db, report.projectId, report.baseline);\n```\n\nThe built-in adapters return `{ unavailable }` for permanent setup reasons as well as for failed runs. `measureDebt` (`src/core/debt.service.ts`) only skips a capability whose method is missing, so each of these becomes a gap on every run:\n\n- `typescript.adapter.ts` L307-308: `no vitest + @vitest/coverage-* in package.json`. This hits every Jest-based or test-less TS repo.\n- `python.adapter.ts` L293-294: `no vulture declared …`\n- `python.adapter.ts` L346-347: `no pytest-cov declared …`\n\nFor these projects, `pup init` stores a baseline with no `coverageRatio` or `deadExports`. Every later `pup audit` then hits the same gap, prints \"Baseline kept … Fix the measurement\" and exits 1. The CLI check at `src/cli/index.ts` L1926-1931 runs before the `opts.sweep` branch, so `pup audit --sweep` is blocked the same way. Before this PR these audits refreshed normally. The refusal is protecting a figure the stored baseline never had.\n\nThe motivating incident and the new tests both cover a metric that measured at init and then broke. A suggested fix is to block only when the gap would drop a figure the previous baseline holds:\n\n- a coverage gap when `previous.debt?.coverageRatio !== undefined`\n- a dead-code gap when `previous.debt?.deadExports !== undefined`\n\nIn a multi-adapter repo, dead code is still an edge case: `deadExports` is stored flat, not per adapter.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f91f702352da5ccd1c0d2ba4d86828c56289be2a/src/core/audit.service.ts#L138-L144",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1926-1931",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the audit refuses because a metric went unmeasured, it returns before printing the stage and debt transitions it computed, so the operator sees no drift report.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "110-128",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `auditProject` JSDoc still says it refreshes the baseline unconditionally. It also claims 'nothing is written to be undone', but `measureBaseline` still writes the project row and origin URL (`ensureProject`/`recordOriginUrl`) before a kept-baseline refusal; only the baseline and its history row are held back.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1924-1925",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment 'A failed measurement is not a figure…' repeats the `auditProject`/`AuditOutcome.unmeasured` JSDoc and the 'Baseline kept' message (AGENTS.md §Comments: a call-site copy of the seam's WHY is a duplicate).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1900-1901",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment repeats the test title and the `src/cli/index.ts` comment; delete it or cut it to one line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/audit.test.ts",
+      "line": "257-258",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment narrates the triggering incident (half-applied fast-forward). That belongs in the commit/PR text, since the test title already states the behaviour.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "269",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `persistBaseline` JSDoc mostly restates the function name; the real WHY (history seeding) is already in the inline comment inside the function.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "266",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 38 in docs/09-decisions.md names `initProject` as the one choke point that appends baseline history. That append now lives in `persistBaseline`, called directly by `auditProject`, and the new rule (an unmeasured metric keeps the baseline and appends no row) is not recorded.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "138-143",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Core formats the user-facing 'not measured' lines while the CLI composes the rest of the same refusal. Returning structured `DebtGap[]` and formatting in the CLI would keep one refusal's presentation in one layer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "185-192",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`initProject` destructures four fields from `measureBaseline` and rebuilds the object only to drop `gaps`; `const { gaps: _gaps, ...report } = measureBaseline(...)` says the same thing more directly.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4360271,
+  "duration_ms": 143383,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 8243,
+    "cache_read": 203822,
+    "cache_creation": 52479,
+    "total": 264556
+  }
+}
