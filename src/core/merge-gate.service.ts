@@ -492,6 +492,22 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
   }
 }
 
+/**
+ * How many commits `branchRef` gained after the gate pinned `sha`: none when it
+ * still names the pin, and none when it is gone or turned into a symref, which
+ * hold no commit of the session's own.
+ */
+function commitsPastPin(repoPath: string, branchRef: string, sha: string): number {
+  let now: string;
+  try {
+    now = resolveCommit(repoPath, branchRef);
+  } catch {
+    return 0;
+  }
+  if (now === sha) return 0;
+  return Number(runGit(repoPath, ['rev-list', '--count', `${sha}..${now}`]).trim());
+}
+
 /** One shell word, for a command the operator is asked to paste. */
 function shellWord(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
@@ -1060,16 +1076,48 @@ function gateAndMerge(
     }
   }
   transitionSession(db, session.id, 'merged', { report });
-  // The pinned sha rides along untyped: the payload type and its decoder are
-  // read elsewhere and do not name it yet.
-  const mergedEvent = {
-    branch: session.branch,
-    sha,
-    target,
-    files: changedPaths,
-    ...(prUrl !== undefined ? { prUrl } : {}),
-  };
-  appendEvent(db, session.id, 'merge', mergedEvent);
+  // Torn down and recorded before the ratchet and the decision draft: both can
+  // throw, and the draft runs `claude -p` for up to two minutes, while the
+  // target already holds the sha and `pup status` already reads merged.
+  let isDeleted = false;
+  try {
+    // By pane as well as name: a rename from inside the session would leave
+    // the name pointing at nothing while the window ran on (decision 46).
+    killTmux(session.id, session.tmux_target);
+    runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    // Deleted only while it still names the gated commit, in both modes: a
+    // commit the session added after the pin was never measured, so it is left
+    // on the branch for the operator rather than merged or thrown away.
+    try {
+      // `--no-deref`: a branch turned into a symref after the pin must not
+      // delete the branch it points at.
+      runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      isDeleted = true;
+    } catch {
+      // moved past the pin — kept, see above
+    }
+  } finally {
+    // Counted only once the session is killed and its worktree gone, so no
+    // commit can land after the count; recorded even if the teardown threw,
+    // since the target already holds the pinned sha.
+    const leftBehind = isDeleted ? 0 : commitsPastPin(req.repoPath, branchRef, sha);
+    if (leftBehind > 0) {
+      console.error(
+        `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
+          `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
+      );
+    }
+    appendEvent(db, session.id, 'merge', {
+      branch: session.branch,
+      sha,
+      target,
+      files: changedPaths,
+      ...(prUrl !== undefined ? { prUrl } : {}),
+      ...(leftBehind > 0 ? { leftBehind } : {}),
+    });
+  }
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
     // the next `pup audit` after the PR lands ratchets it (decision 26).
@@ -1095,23 +1143,6 @@ function gateAndMerge(
     files: changedPaths,
     commitSubjects,
   });
-
-  // By pane as well as name: a rename from inside the session would leave
-  // the name pointing at nothing while the window ran on (decision 46).
-  killTmux(session.id, session.tmux_target);
-  runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
-  // Deleted only while it still names the gated commit, in both modes: a
-  // commit the session added after the pin was never measured, so it is left
-  // on the branch for the operator rather than merged or thrown away.
-  try {
-    // `--no-deref`: a branch turned into a symref after the pin must not
-    // delete the branch it points at.
-    runGit(req.repoPath, ['update-ref', '--no-deref', '-d', branchRef, sha], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } catch {
-    // moved past the pin — kept, see above
-  }
   return {
     status: 'merged',
     report,

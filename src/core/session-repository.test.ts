@@ -539,6 +539,30 @@ describe('decodeEvent', () => {
     expect(decodeEvent({ type: 'merge', payload: '{}' })).toEqual({ type: 'merge', files: [] });
   });
 
+  it('reads a merge with its pinned sha and the commits left behind', () => {
+    expect(
+      decodeEvent({
+        type: 'merge',
+        payload: JSON.stringify({
+          branch: 'pup/s1',
+          sha: 'abc123',
+          target: 'main',
+          files: ['src/a.ts'],
+          leftBehind: 2,
+        }),
+      }),
+    ).toEqual({
+      type: 'merge',
+      sha: 'abc123',
+      target: 'main',
+      files: ['src/a.ts'],
+      leftBehind: 2,
+    });
+    expect(
+      decodeEvent({ type: 'merge', payload: JSON.stringify({ sha: 7, leftBehind: '2' }) }),
+    ).toEqual({ type: 'merge', files: [] });
+  });
+
   it('reads a dead turn and a handoff signal', () => {
     expect(
       decodeEvent({

@@ -23,7 +23,18 @@ export interface EventPayloads {
   gate_result:
     | ({ from: SessionState; to: SessionState } & TransitionPayload)
     | { outcome: 'refused'; report: GateReport };
-  merge: { branch: string; target: string; files: string[]; prUrl?: string };
+  /**
+   * `sha` is the commit the gate pinned and landed (decision 80); `leftBehind`
+   * counts the commits the branch gained after the pin, set only when it moved.
+   */
+  merge: {
+    branch: string;
+    sha?: string;
+    target: string;
+    files: string[];
+    prUrl?: string;
+    leftBehind?: number;
+  };
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };
@@ -68,7 +79,14 @@ export type SessionEvent =
       outcome?: string;
       reason?: string;
     }
-  | { type: 'merge'; target?: string; files: string[]; prUrl?: string }
+  | {
+      type: 'merge';
+      sha?: string;
+      target?: string;
+      files: string[];
+      prUrl?: string;
+      leftBehind?: number;
+    }
   | { type: 'steer'; kind?: string; by?: string }
   | { type: 'session_done'; summary?: string }
   | { type: 'question'; text?: string }

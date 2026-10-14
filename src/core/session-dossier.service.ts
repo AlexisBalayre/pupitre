@@ -116,8 +116,7 @@ function timelineDatum(row: EventRow) {
       break;
     }
     case 'merge': {
-      datum.title =
-        event.target === undefined ? 'merged' : displayText(`merged into ${event.target}`);
+      datum.title = displayText(mergeLine(event));
       datum.files = event.files.map(displayText);
       datum.body = safeHttpUrl(event.prUrl);
       break;
@@ -147,9 +146,18 @@ function timelineDatum(row: EventRow) {
   return datum;
 }
 
+/** "merged into main at <sha>": whichever of the target and the pinned sha were stored. */
+function mergeLine(event: Extract<SessionEvent, { type: 'merge' }>): string {
+  const into = event.target === undefined ? '' : ` into ${event.target}`;
+  const at = event.sha === undefined ? '' : ` at ${event.sha}`;
+  return `merged${into}${at}`;
+}
+
 function mergeDatum(event: Extract<SessionEvent, { type: 'merge' }>) {
   return {
     target: event.target === undefined ? null : displayText(event.target),
+    // Absent rather than null when unstored, so the embedded JSON drops it.
+    sha: event.sha === undefined ? undefined : displayText(event.sha),
     files: event.files.map(displayText),
     prUrl: safeHttpUrl(event.prUrl),
   };
@@ -314,7 +322,10 @@ ${PAGE_SHELL_JS}
     hint(landed, 'Nothing merged from this session.');
   } else {
     const line = el('div', 'body');
-    line.textContent = data.merge.target ? 'merged into ' + data.merge.target : 'merged';
+    line.textContent =
+      'merged' +
+      (data.merge.target ? ' into ' + data.merge.target : '') +
+      (data.merge.sha ? ' at ' + data.merge.sha : '');
     landed.appendChild(line);
     if (data.merge.prUrl) {
       const a = el('a');
