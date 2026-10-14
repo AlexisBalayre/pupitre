@@ -25,12 +25,17 @@ import {
   type TaskRow,
   taskSpecForDisplay,
 } from './session.repository.js';
-import { classifySessionActivity, isSessionStalled } from './session-activity.utils.js';
+import {
+  classifySessionActivity,
+  formatStaleAge,
+  isSessionStalled,
+} from './session-activity.utils.js';
 import type {
   DashboardBaseline,
   DashboardDeadTurn,
   DashboardEvent,
   DashboardGate,
+  DashboardNeed,
   DashboardSession,
   DashboardSnapshot,
   DashboardSteer,
@@ -113,8 +118,9 @@ export function buildDashboardSnapshot(
 }
 
 /**
- * A project folded to what the operator has to act on (decision 60). Awaiting
- * review is here though nothing is wrong with it, because nothing moves until
+ * A project folded to what the operator has to act on (decision 60): the
+ * sessions the needs-you inbox names, in its order (decision 83). Awaiting
+ * review is there though nothing is wrong with it, because nothing moves until
  * a person merges it; awaiting-input is not, because a permission ask answers
  * itself or turns into a stall within minutes, and the fleet is read across
  * projects rather than watched.
@@ -122,10 +128,9 @@ export function buildDashboardSnapshot(
 export function fleetSummary(snapshot: DashboardSnapshot): FleetSummary {
   const count = (state: DashboardSession['state']): number =>
     snapshot.sessions.filter((session) => session.state === state).length;
+  const byId = new Map(snapshot.sessions.map((session) => [session.id, session]));
   return {
-    needsYou: snapshot.sessions.filter(
-      (session) => sortsFirst(session) || session.state === 'awaiting-review',
-    ),
+    needsYou: needsYou(snapshot).flatMap((need) => byId.get(need.sessionId) ?? []),
     running: count('running'),
     planned: snapshot.backlog.length,
     merged: count('merged'),
@@ -223,6 +228,71 @@ function sortsFirst(session: DashboardSession): boolean {
   return session.state === 'blocked' || session.stalledAgeMs !== undefined;
 }
 
+/**
+ * The inbox's order (decision 83): what only the operator can answer, by what
+ * leaving it costs — a question idles a worker that has said why, a block or a
+ * stall one that has stopped, a review and an open PR only hold finished work
+ * back.
+ */
+const NEED_ORDER: DashboardNeed['kind'][] = [
+  'question',
+  'blocked',
+  'stalled',
+  'awaiting-review',
+  'pr-open',
+];
+
+/**
+ * The needs-you inbox (decision 83), read off a snapshot like `fleetSummary`
+ * so `pup status`, the fleet view and the conductor that reads `pup status`
+ * cannot disagree about what waits on the operator. One line per session, its
+ * first reason in `NEED_ORDER`; within a kind, the snapshot's own row order.
+ */
+export function needsYou(snapshot: DashboardSnapshot): DashboardNeed[] {
+  const needs = snapshot.sessions.flatMap((session) => needOf(session) ?? []);
+  return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
+}
+
+function needOf(session: DashboardSession): DashboardNeed | undefined {
+  const { id } = session;
+  const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
+    kind,
+    sessionId: id,
+    reason,
+    answer,
+  });
+  if (session.question !== undefined) {
+    return need('question', `question: ${session.question}`, `pup steer ${id} "..."`);
+  }
+  if (session.state === 'blocked') {
+    return need('blocked', `blocked (${session.rejectCount} rejections)`, `pup unblock ${id}`);
+  }
+  if (session.stalledAgeMs !== undefined) {
+    return need('stalled', stallReason(session, session.stalledAgeMs), `pup steer ${id} "..."`);
+  }
+  if (session.state === 'awaiting-review') {
+    return need('awaiting-review', 'awaiting review', `pup review ${id} then pup merge ${id} --pr`);
+  }
+  if (session.openPrUrl !== undefined) {
+    return need('pr-open', 'PR opened, not landed', session.openPrUrl);
+  }
+  return undefined;
+}
+
+/**
+ * A stall in the words the session row gives it, so the inbox and the table
+ * below it never describe one stall two ways (decision 52): the age, or what
+ * the watchdog did about a dead turn (addendum to decision 35).
+ */
+function stallReason(session: DashboardSession, stalledAgeMs: number): string {
+  const died = session.deadTurn;
+  if (!died) return `STALLED (${formatStaleAge(stalledAgeMs)})`;
+  const at = new Date(died.at).toTimeString().slice(0, 5);
+  return died.refusal
+    ? `TURN DIED (API error) — resume refused at ${at}, needs a human`
+    : `TURN DIED (API error) — resumed by watch at ${at}`;
+}
+
 function dashboardSession(
   db: Database,
   row: SessionRow,
@@ -249,6 +319,7 @@ function dashboardSession(
   // Like activity: a question is a running session's. Killed or merged, nothing
   // can answer it (steers refuse terminal sessions), so it must not outlive it.
   const question = row.state === 'running' ? openQuestion(events) : undefined;
+  const openPrUrl = row.state === 'merged' ? openPullRequest(events) : undefined;
   const lastGate = newestGate(events);
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
@@ -275,6 +346,7 @@ function dashboardSession(
     ...(contextTokens === undefined ? {} : { contextTokens }),
     ...(lastSteer ? { lastSteer } : {}),
     ...(question === undefined ? {} : { question }),
+    ...(openPrUrl === undefined ? {} : { openPrUrl }),
     ...(lastGate ? { lastGate } : {}),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     needsHuman:
@@ -319,6 +391,27 @@ function openQuestion(newestFirst: EventRow[]): string | undefined {
     if (event.type !== 'question') continue;
     // Session-written text bound for the operator's terminal (decision 29).
     return event.text === undefined ? undefined : sanitizeReason(event.text) || undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The PR the newest merge opened, unless a `landed` event came after it
+ * (decision 83). Only the newest merge counts: a session merged twice is
+ * described by the merge that stands. A merge with no PR is a local
+ * fast-forward, already on the target, so nothing is open.
+ *
+ * Nothing writes `landed` yet — `pup land` will — so the type is read as the
+ * store's text rather than as an `EventType` it has yet to join.
+ */
+function openPullRequest(newestFirst: EventRow[]): string | undefined {
+  for (const row of newestFirst) {
+    const type: string = row.type;
+    if (type === 'landed') return undefined;
+    const event = decodeEvent(row);
+    if (event.type !== 'merge') continue;
+    // Read back out of a session-writable store, bound for a terminal (decision 29).
+    return event.prUrl === undefined ? undefined : sanitizeReason(event.prUrl) || undefined;
   }
   return undefined;
 }

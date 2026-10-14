@@ -26,6 +26,7 @@ import {
   findStalledSessions,
   fleetSummary,
   goalHeadline,
+  needsYou,
 } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -838,9 +839,10 @@ describe('buildDashboardSnapshot', () => {
 
       const summary = fleetSummary(buildDashboardSnapshot(db, repo, NOW));
 
+      // The inbox's order (decision 83): blocked before stalled.
       expect(summary.needsYou.map((session) => session.id)).toEqual([
-        's-stalled',
         's-blocked',
+        's-stalled',
         's-review',
       ]);
       // A killed session's task is planned again, beside the one never claimed.
@@ -934,6 +936,148 @@ describe('goalHeadline', () => {
 
   it('is empty for a task with no goal', () => {
     expect(goalHeadline(undefined)).toBe('');
+  });
+});
+
+// Decision 83: what waits on the operator, each with what answers it.
+describe('needsYou', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
+    db = openStore(':memory:');
+    repo = tempRepo();
+  });
+
+  afterEach(() => {
+    db.close();
+    vi.unstubAllEnvs();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function seedIn(sessionId: string, path: SessionState[]): void {
+    seedSession(db, repo, sessionId);
+    for (const state of path) transitionSession(db, sessionId, state);
+  }
+
+  function seedMerge(sessionId: string, prUrl?: string): void {
+    seedIn(sessionId, ['running', 'awaiting-review', 'merged']);
+    appendEvent(db, sessionId, 'merge', {
+      branch: `pup/${sessionId}`,
+      target: 'main',
+      files: ['src/a.ts'],
+      ...(prUrl === undefined ? {} : { prUrl }),
+    });
+  }
+
+  /** `pup land`'s event: no writer in pup yet, so it goes in as the store's row. */
+  function seedLanded(sessionId: string): void {
+    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'landed', '{}')").run(
+      sessionId,
+    );
+  }
+
+  const inbox = () => needsYou(buildDashboardSnapshot(db, repo, NOW));
+
+  it('lists questions, blocks, stalls, reviews and open PRs in that order, each with its answer', () => {
+    // Seeded against the order, so the inbox's own order is what puts them right.
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+    seedIn('s-review', ['running', 'awaiting-review']);
+    seedIn('s-stalled', ['running']);
+    seedEventsFile(
+      repo,
+      's-stalled',
+      { hook_event_name: 'PostToolUse' },
+      STALLED_AFTER_MS + 60_000,
+    );
+    seedIn('s-blocked', ['running', 'blocked']);
+    incrementRejectCount(db, 's-blocked');
+    seedIn('s-asking', ['running']);
+    appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+    seedIn('s-busy', ['running']);
+
+    expect(inbox()).toEqual([
+      {
+        kind: 'question',
+        sessionId: 's-asking',
+        reason: 'question: rebase or merge?',
+        answer: 'pup steer s-asking "..."',
+      },
+      {
+        kind: 'blocked',
+        sessionId: 's-blocked',
+        reason: 'blocked (1 rejections)',
+        answer: 'pup unblock s-blocked',
+      },
+      {
+        kind: 'stalled',
+        sessionId: 's-stalled',
+        reason: 'STALLED (11m)',
+        answer: 'pup steer s-stalled "..."',
+      },
+      {
+        kind: 'awaiting-review',
+        sessionId: 's-review',
+        reason: 'awaiting review',
+        answer: 'pup review s-review then pup merge s-review --pr',
+      },
+      {
+        kind: 'pr-open',
+        sessionId: 's-pr',
+        reason: 'PR opened, not landed',
+        answer: 'https://github.com/o/r/pull/7',
+      },
+    ]);
+  });
+
+  it('names a dead turn the way the session row does', () => {
+    seedIn('s-dead', ['running']);
+    seedEventsFile(repo, 's-dead', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
+    const stalledAt = new Date(NOW - STALLED_AFTER_MS - 60_000).toISOString();
+    appendEvent(db, 's-dead', 'turn_died', { reason: API_ERROR, stalledAt, refusal: 'no pane' });
+
+    expect(inbox()[0]?.reason).toMatch(
+      /^TURN DIED \(API error\) — resume refused at \d{2}:\d{2}, needs a human$/,
+    );
+  });
+
+  // A question is the first reason a running session has, so a stalled one
+  // that asked is listed once, as the question.
+  it('lists a session once, under its first reason', () => {
+    seedIn('s1', ['running']);
+    seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
+    appendEvent(db, 's1', 'question', { text: 'which way?' });
+
+    expect(inbox().map((need) => need.kind)).toEqual(['question']);
+  });
+
+  // A local fast-forward is already on the target: there is no PR to land.
+  it('leaves out a merge that carried no PR', () => {
+    seedMerge('s-local');
+
+    expect(inbox()).toEqual([]);
+  });
+
+  it('leaves out a PR once a landed event comes after its merge', () => {
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+    seedLanded('s-pr');
+
+    expect(inbox()).toEqual([]);
+    expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.openPrUrl).toBeUndefined();
+  });
+
+  it('reads only the newest merge, so a later local merge closes an older PR', () => {
+    seedMerge('s-twice', 'https://github.com/o/r/pull/7');
+    appendEvent(db, 's-twice', 'merge', { branch: 'pup/s-twice', target: 'main', files: [] });
+
+    expect(inbox()).toEqual([]);
+  });
+
+  it('scrubs a PR url read back out of the store (decision 29)', () => {
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7\u001b[2J');
+
+    expect(inbox()[0]?.answer).toBe('https://github.com/o/r/pull/7 [2J');
   });
 });
 

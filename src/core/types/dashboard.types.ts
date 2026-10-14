@@ -120,6 +120,12 @@ export interface DashboardSession {
    * answered yet, scrubbed and cut (decision 76).
    */
   question?: string;
+  /**
+   * The PR the gate opened for a merged session, while no `landed` event has
+   * come after it (decision 83). Absent on a local fast-forward, which carries
+   * no PR and has already landed.
+   */
+  openPrUrl?: string;
   lastGate?: DashboardGate;
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];
@@ -130,6 +136,18 @@ export interface DashboardSession {
    * being hoisted above the sessions that have stopped for good.
    */
   needsHuman: boolean;
+}
+
+/**
+ * One line of the needs-you inbox (decision 83): the session, why it waits on
+ * the operator, and the one command — or the PR url — that answers it.
+ */
+export interface DashboardNeed {
+  /** The inbox's own order: question, blocked, stalled, awaiting-review, pr-open. */
+  kind: 'question' | 'blocked' | 'stalled' | 'awaiting-review' | 'pr-open';
+  sessionId: string;
+  reason: string;
+  answer: string;
 }
 
 interface DashboardBacklogTask {
@@ -181,7 +199,7 @@ export interface DashboardSnapshot {
  * off the store, so the fleet and the single-project table cannot disagree.
  */
 export interface FleetSummary {
-  /** Blocked, stalled (a dead turn is a stall) and awaiting-review, in the snapshot's order. */
+  /** The sessions the snapshot's needs-you inbox names, in its order (decision 83). */
   needsYou: DashboardSession[];
   running: number;
   planned: number;

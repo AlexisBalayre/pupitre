@@ -550,7 +550,8 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      const line = logs.find((entry) => entry.includes('s1')) ?? '';
+      // The session row, below the inbox line that leads with the same question.
+      const line = logs.find((entry) => entry.includes('pup/s1')) ?? '';
       expect(line).toMatch(/pup\/s1 {2}question: rebase \[2J or merge\?$/);
       expect(logs.join('\n')).not.toContain('\u001b');
 
@@ -562,6 +563,119 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.join('\n')).not.toContain('question');
+    });
+
+    // Decision 83: what waits on the operator leads, with what answers it.
+    it('prints the needs-you inbox before everything else, one line of each kind in order', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-pr');
+      seedSession(repo, 's-local');
+      seedSession(repo, 's-review');
+      seedStalledSession(repo, 's-stalled');
+      seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
+      seedSession(repo, 's-asking');
+      const { db } = resolveProject(repo);
+      for (const id of ['s-pr', 's-local', 's-review']) {
+        transitionSession(db, id, 'running');
+        transitionSession(db, id, 'awaiting-review');
+      }
+      for (const id of ['s-pr', 's-local']) {
+        transitionSession(db, id, 'merged');
+        appendEvent(db, id, 'merge', {
+          branch: `pup/${id}`,
+          target: 'main',
+          files: [],
+          ...(id === 's-pr' ? { prUrl: 'https://github.com/o/r/pull/7' } : {}),
+        });
+      }
+      transitionSession(db, 's-asking', 'running');
+      appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+      db.close();
+      seedLedgerEntry(repo, { reviewBy: '2020-01-01' });
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.slice(0, 6)).toEqual([
+        'Needs you',
+        '  s-asking  question: rebase or merge?  → pup steer s-asking "..."',
+        '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
+        expect.stringMatching(
+          /^ {2}s-stalled {2}STALLED \(\d+m\) {2}→ pup steer s-stalled "\.\.\."$/,
+        ),
+        '  s-review  awaiting review  → pup review s-review then pup merge s-review --pr',
+        '  s-pr  PR opened, not landed  → https://github.com/o/r/pull/7',
+      ]);
+      expect(logs[6]).toMatch(/^OVERDUE DEBT/);
+      // A local fast-forward has landed already: no PR waits on anyone.
+      expect(logs.join('\n')).not.toContain('s-local');
+    });
+
+    it('prints no inbox when nothing waits on the operator', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      db.close();
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).not.toContain('Needs you');
+    });
+
+    it('leaves merged and killed rows to --history', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-live');
+      seedSession(repo, 's-merged');
+      seedKilledSession(repo, 's-killed');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-live', 'running');
+      transitionSession(db, 's-merged', 'running');
+      transitionSession(db, 's-merged', 'awaiting-review');
+      transitionSession(db, 's-merged', 'merged');
+      db.close();
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const table = logs.join('\n');
+      expect(table).toMatch(/^running +s-live/m);
+      expect(table).not.toContain('s-merged');
+      // Only the session row goes: its task is planned again.
+      expect(table).not.toMatch(/^killed/m);
+
+      logs.length = 0;
+      buildProgram().parse(['status', '--history'], { from: 'user' });
+
+      expect(logs).toEqual([
+        expect.stringMatching(/^running +s-live/),
+        expect.stringMatching(/^merged +s-merged/),
+        expect.stringMatching(/^killed +s-killed/),
+        // The killed session's task is planned again.
+        expect.stringMatching(/^planned +t-s-killed/),
+      ]);
+    });
+
+    it('says nothing runs when every session has finished, until --history', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-merged');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-merged', 'running');
+      transitionSession(db, 's-merged', 'awaiting-review');
+      transitionSession(db, 's-merged', 'merged');
+      db.close();
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).toEqual(['Nothing running and nothing planned.']);
+
+      logs.length = 0;
+      buildProgram().parse(['status', '--history'], { from: 'user' });
+
+      expect(logs).toEqual([expect.stringMatching(/^merged +s-merged/)]);
     });
 
     it('drops a task from the backlog once a session claims it', () => {
