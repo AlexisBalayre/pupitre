@@ -1,0 +1,161 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T15:19:11.921Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38587403518",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38587403518",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d99e067f680ce3c3a6478fbd9617761802c1669c",
+  "source": "pr",
+  "pr_number": 146,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "750-753",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "inputBoxHolds is the strict 'paste landed whole' predicate, so tellConductor's !inputBoxHolds treats any box it can't match as landed: no input box parsed, a partial paste missing its head, or a leftover draft in front of the message. It then skips the second Enter.",
+      "body": "`inputBoxHolds` is documented as \"Whether the pane's input box still shows `message`\". It actually returns `pasteLanded(...)`:\n\n```ts\nexport function inputBoxHolds(pane: SessionPane, message: string): boolean {\n  return pasteLanded(captureInputBox(pane), message);\n}\n```\n\n`pasteLanded` (`src/claude/pane.utils.ts` L155-171) was built for `steerPane`, where `false` means \"don't press Enter yet\", so it returns false whenever it is unsure. It is true only when the box exists, does not match the `Try \"` placeholder, starts with the message's first word and ends with its last. Its JSDoc says a mid-word wrap \"is refused rather than guessed\".\n\n`tellConductor` (`src/core/conductor.service.ts` L275-279) negates it, so in the tell that same `false` means success:\n\n```ts\nsubmitPane(pane);\nif (!inputBoxHolds(pane, message)) return true;\nsubmitPane(pane);\nreturn !inputBoxHolds(pane, message);\n```\n\nIn each case below the tell skips the second Enter and the CLI prints `Told the conductor; the message landed.`:\n\n- **A draft in front of the message.** The operator typed in the box via `pup attach` and left with Ctrl-b d. The tell never clears the box first, so `startsWith(first)` fails.\n- **A first or last word wrapped across rows.** A long path or URL in a message of up to 800 characters, or a pane narrowed by an attach from a smaller terminal.\n- **A paste that lost its head.** This is the decision-45 failure.\n- **No input box on screen**, such as an open dialog. `inputBoxText` is `undefined`.\n\nDecision 85 defines \"landed\" as \"the box no longer holding it after the last Enter\". That is not what this predicate tests.\n\nA partial fix: test for any unsubmitted text after Enter (`hasUnsubmittedInput(captureInputBox(pane))`, already imported in this file). That covers the draft, wrap and missing-head cases. The no-box case still needs pane.utils to tell \"no box\" apart from \"empty box\", so the tell can report it as not landed.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d99e067f680ce3c3a6478fbd9617761802c1669c/src/claude/session-runtime.service.ts#L750-L753\nhttps://github.com/AlexisBalayre/pupitre/blob/d99e067f680ce3c3a6478fbd9617761802c1669c/src/core/conductor.service.ts#L275-L279",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "269-276",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The tell pastes into the conductor's input box without checking that it is empty first. Text already there (the operator's draft, or a message an earlier failed tell left behind) gets submitted joined to the new message with no separator, and the CLI still prints that the message landed.",
+      "body": "`steerPane` guards against this exact case (`src/claude/session-runtime.service.ts` L699-704):\n\n```ts\n// A paste appends to whatever the box holds (a draft, a leftover), and the\n// box then never reads as the message alone; start from an empty one, ...\nif (hasUnsubmittedInput(captureInputBox(pane)) && !clearInputBox(pane)) {\n  throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');\n}\n```\n\n`tellConductor` has no such precondition:\n\n```ts\npasteIntoPane(pane, message);\nsubmitPane(pane);\nif (!inputBoxHolds(pane, message)) return true;\n```\n\nThis PR's own workflow reaches it two ways:\n\n1. **Operator draft.** `pup attach` hands over the conductor's terminal. The operator types part of a prompt and leaves with Ctrl-b d, the exit the hint recommends. The next `pup conductor tell \"merge t-1\"` submits `<draft>merge t-1` as one prompt and reports it landed.\n2. **Leftover from a failed tell.** When a tell does not land, the CLI says the message is still in the box and to \"Look with `pup attach`\" (`src/cli/index.ts` L506-508). The next tell appends to that text. If the box stays stuck, `pasteLanded`'s `startsWith(first)` fails against the new message, so the tell reports \"landed\" while nothing was sent.\n\nDecision 85 compares the tell with `steerPane` only on timing. It never mentions a draft, a leftover or an empty-box precondition, so the gap does not read as deliberate.\n\nPossible fix: before `pasteIntoPane`, refuse when `hasUnsubmittedInput(captureInputBox(pane))`, exposed through a runtime export. Refusing keeps the operator's draft intact, where clearing it would erase it. Or clear the box the way `steerPane` does.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d99e067f680ce3c3a6478fbd9617761802c1669c/src/core/conductor.service.ts#L269-L279",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "724-727",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`load-buffer -` and `paste-buffer -d` use unnamed buffers, so the paste takes whatever buffer is on top of the server's stack. Two writers on the conductor socket can swap or mix their texts: the tell plus the watchdog's `steerPane(conductor, CONDUCTOR_NUDGE)`, or operator copy-mode while attached via `pup attach`. The tell's buffer is then left on the server. Naming both ends (`-b pup-<pid>-<n>`) closes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "718-723",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The pasteText JSDoc and decision 85 (docs/09-decisions.md L4410-4411) say the tell text stays off any command line because an argv is readable by every process on the machine. But `pup conductor tell <message>` (src/cli/index.ts L979, L996) puts the same text on pup's own argv (/proc/<pid>/cmdline) for the whole tell: the paste settle plus up to two submit beats. So the stated control does not hold end to end. Either say the text is off tmux's argv only (pup's own argv has it, as `pup steer` already does), or read the message from stdin.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "552-558",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "attachConductor is the only tmux call in the runtime that skips `env: tmuxEnv()`. Decision 47 says every tmux call drops $TMUX, PUP_*, ^CLAUDE, ^ANTHROPIC_ and NODE_OPTIONS. If the conductor's server is gone between the isConductorRunning check and the spawn, `tmux -L pup-conductor-<id> attach` can start a server on that computable socket. That server's global environment (`show-environment -g`) would hold the operator's unscrubbed environment. This is narrow: it needs that race, and the server only stays up if the operator's tmux.conf creates a session. Passing `env: tmuxEnv()` closes it and keeps TERM, PATH and TMUX_TMPDIR. The medium confidence rests on attach-session being able to start a server, which is tmux behaviour I did not read in its source.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1055-1058",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The diff adds the refusal `'No conductor is running for this project; start one with \\`pup conductor start\\`.'` twice, once in the CLI `attach` action and once in core `tellConductor`. If the wording changes in one place, the other drifts. Exporting it from `conductor.service.ts`, which already owns `isConductorRunning`, gives both commands one copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "501",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`tellOrRefuse` catches with `isRefusedSteer`, which also lets `SteerNotDeliveredError` through. The tell path can't throw that error. `pasteIntoPane`, `submitPane` and `inputBoxHolds` go through `tmuxAt`, whose only typed error is `SessionPaneMissingError`. So the catch suggests a \"steer not delivered\" outcome the tell never produces. `error instanceof SessionPaneMissingError` would state the real contract.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "An unknown conductor verb with a message, such as `pup conductor foo hi`, now gets \"`pup conductor foo` takes no message\" instead of the \"Unknown conductor action\" error. That points the operator at the wrong problem. Move the `message !== undefined` check below the unknown-verb check, or restrict it to `start` and `stop`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In decision 85, \"The text rides tmux's stdin through `load-buffer -` and `paste-buffer -p` names only the pane\" fuses two clauses, so it reads as if the text rides through `paste-buffer -p`. Add a comma: \"…through `load-buffer -`, and `paste-buffer -p` names only the pane, so…\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the tellConductor JSDoc, \"Pasted through a tmux buffer, never typed by `send-keys`, so the text is on no command line.\" repeats what the pasteText JSDoc in session-runtime.service.ts already says, and nothing in it is specific to the tell. Delete the sentence and keep the WHY about the Enter retry.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `attach` action comment's \"the conductor is the pane, and tmux's detach is the way out that keeps it\" is cryptic, and the printed hint and decision 85 already say why Ctrl-c and /exit kill the conductor. It could shrink to \"Said before the terminal is handed over, since attach blocks until detach.\"",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.8685381000000008,
+  "duration_ms": 308671,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 13385,
+    "cache_read": 216178,
+    "cache_creation": 40931,
+    "total": 270506
+  }
+}
