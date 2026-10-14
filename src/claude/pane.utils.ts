@@ -144,13 +144,24 @@ export function hasUnsubmittedInput(pane: string): boolean {
   return content.length > 0 && !PLACEHOLDER_PREFIX.test(content);
 }
 
+export type InputBoxState = 'empty' | 'holds' | 'absent';
+
 /**
  * What the input box shows: nothing unsubmitted, some text, or no box at all.
  * A pane with no box (a dialog, a selector) is kept apart from an empty one:
  * text sent there does not reach the prompt, and Enter there picks an option.
+ * The box is framed, its prompt row right under the top border, and an
+ * echoed prompt is not: right after a submit the echo is still on screen, so
+ * a dialog that replaced the box would otherwise read as holding text.
  */
-export function inputBoxState(pane: string): 'empty' | 'holds' | 'absent' {
-  if (inputBoxText(pane) === undefined) return 'absent';
+export function inputBoxState(pane: string): InputBoxState {
+  const rows = paneRows(pane);
+  let promptIndex = -1;
+  rows.forEach((row, index) => {
+    if (INPUT_PROMPT.test(row.text)) promptIndex = index;
+  });
+  const above = rows[promptIndex - 1];
+  if (above === undefined || !BOX_BORDER.test(above.text)) return 'absent';
   return hasUnsubmittedInput(pane) ? 'holds' : 'empty';
 }
 

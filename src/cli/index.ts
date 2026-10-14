@@ -508,8 +508,8 @@ function tellOrRefuse(repoPath: string, message: string): void {
   }
   if (!landed) {
     refuse(
-      "The message did not land: the conductor's input box never showed it whole, still holds " +
-        'text after a second Enter, or left the screen. Look with `pup attach`.',
+      "The message did not land: the conductor's input box never showed it whole (and was " +
+        'cleared), still holds text after a second Enter, or left the screen. Look with `pup attach`.',
     );
     return;
   }

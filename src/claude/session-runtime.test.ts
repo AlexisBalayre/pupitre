@@ -1074,12 +1074,14 @@ describe('steerPane with a fake tmux on PATH', () => {
       expect(argvLog().filter((line) => line.includes('SECRETWORD'))).toEqual([]);
     });
 
-    it('waits for the paste to show whole, and answers false with nothing pressed when it never does', () => {
+    it('waits for the paste to show whole, and when it never does clears the box and presses no Enter', () => {
       landsAfter = Number.MAX_SAFE_INTEGER;
 
       expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
 
-      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([]);
+      const keys = argvLog().filter((line) => line.includes('send-keys'));
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.every((line) => line.endsWith('C-u'))).toBe(true);
     });
 
     it('reads the box as empty, then holding text until Enter submits it', () => {

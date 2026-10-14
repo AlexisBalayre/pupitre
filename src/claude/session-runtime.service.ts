@@ -4,7 +4,12 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { runGit } from '../core/git-diff.client.js';
-import { hasUnsubmittedInput, inputBoxState, pasteLanded } from './pane.utils.js';
+import {
+  hasUnsubmittedInput,
+  type InputBoxState,
+  inputBoxState,
+  pasteLanded,
+} from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
 // (decision 1); state comes from hooks + transcripts, never pane scraping.
@@ -736,13 +741,17 @@ function pressEnter(pane: SessionPane): void {
 
 /**
  * Paste `message` into the pane and wait, as a steer does, until the box
- * shows it whole; false when it never does, with nothing pressed. The half of
- * a steer `pup conductor tell` takes as it stands: the tell owns the empty-box
- * check before and its one Enter retry after (decision 85).
+ * shows it whole; when it never does, clear the box, which held nothing
+ * before, and answer false with no Enter pressed, so no part of it is left
+ * for a later Enter to submit (decision 45). The half of a steer
+ * `pup conductor tell` takes as it stands: the tell owns the empty-box check
+ * before and its one Enter retry after (decision 85).
  */
 export function pasteIntoPane(pane: SessionPane, message: string): boolean {
   pasteText(pane, message);
-  return awaitPasteLanded(pane, message);
+  if (awaitPasteLanded(pane, message)) return true;
+  clearInputBox(pane);
+  return false;
 }
 
 /** Press Enter in the pane, then wait the beat a submit takes to clear the box. */
@@ -751,8 +760,8 @@ export function submitPane(pane: SessionPane): void {
   syncSleep(SUBMIT_VERIFY_MS);
 }
 
-/** What the pane's input box shows: nothing unsubmitted, some text, or no box at all. */
-export function readInputBox(pane: SessionPane): 'empty' | 'holds' | 'absent' {
+/** `inputBoxState` of a fresh capture of the pane. */
+export function readInputBox(pane: SessionPane): InputBoxState {
   return inputBoxState(captureInputBox(pane));
 }
 

@@ -4413,9 +4413,12 @@ changes back into those docs is pending.
     It refuses, sending nothing, unless the input box is on screen and empty: a paste appends to
     what the box holds, and a draft there may be the operator's own from `pup attach`, so the tell
     neither submits it with the message nor erases it. It waits, as a steer does, until the paste
-    shows whole, and presses nothing when it never does. Then it presses Enter, waits one submit
-    beat, and presses Enter a second time only when text is still in the box, never when a dialog
-    has replaced the box, where Enter would pick an option. It prints whether it landed, which is
+    shows whole; when it never does it clears the box, which it saw empty, and presses no Enter, so
+    no part of the message is left for a later Enter (decision 45). Then it presses Enter, waits one
+    submit beat, and presses Enter a second time only when text is still in the box, never when a
+    dialog has replaced the box, where Enter would pick an option. The box is told apart from a
+    dialog by its frame: its prompt row sits right under the top border, and the echo of the prompt
+    just submitted, still on screen above a dialog, does not. It prints whether it landed, which is
     the box on screen and empty after the last Enter, and fails when it does not. It is not
     `steerPane`: the tell refuses a non-empty box rather than clearing it and owns its single
     retry, so the runtime exports the steps (`pasteIntoPane`, `submitPane`, `readInputBox`, which
@@ -4427,8 +4430,8 @@ changes back into those docs is pending.
     `pup conductor start` and `stop` refuse a message rather than drop it.
     Tests: `tellConductor` with the runtime mocked refuses an empty, a blank and an 801-character
     message before looking for a pane, refuses with `pup conductor start` when there is no pane,
-    takes 800, refuses a box holding text or off screen before the paste, presses nothing when the
-    paste never shows whole, presses Enter once when the box clears, twice when it still holds text,
+    takes 800, refuses a box holding text or off screen before the paste, clears the box and presses
+    no Enter when the paste never shows whole, reads a dialog under an echoed prompt as no box, presses Enter once when the box clears, twice when it still holds text,
     once only when a dialog replaced it, and answers not landed when the second Enter leaves text
     there or the box is gone. Against the fake tmux the paste is
     `load-buffer -` then `paste-buffer -d -p -t <pane>` on the conductor's socket with the text on

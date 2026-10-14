@@ -129,6 +129,20 @@ describe('inputBoxState', () => {
   it('reads a pane with no input box, such as a dialog, as absent', () => {
     expect(inputBoxState('Accessing workspace:\n ❯ 1. Yes, I trust this folder')).toBe('absent');
   });
+
+  // Right after a submit the prompt is echoed at column 0 with the box's own
+  // glyph; a dialog that then replaces the box must not read as text in it.
+  it('reads a dialog under an echoed prompt as absent, not as text', () => {
+    const pane = [
+      '❯ merge t-1 next',
+      '⏺ Checking the queue.',
+      '',
+      ' Usage limit reached. What would you like to do?',
+      ' ❯ 1. Wait for the limit to reset',
+      '   2. Switch model',
+    ].join('\n');
+    expect(inputBoxState(pane)).toBe('absent');
+  });
 });
 
 describe('hasUnsubmittedInput', () => {
