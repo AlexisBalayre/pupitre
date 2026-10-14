@@ -1,0 +1,134 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T13:16:05.061Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38569755666",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38569755666",
+  "actor": "AlexisBalayre",
+  "commit_sha": "108f0194af2ea32c341f88e93d34d6babb3ccb11",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4fe6c94e0ce1a7711876b9a305823da148e724e0",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1843-1846",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1864-1872",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The listener wraps all of landSession, including auditProject, which runs after the lock is released. A Ctrl-C during the audit (the longest phase) used to end the land. Now it kills one stage child, which counts as a stage `fail`. The rest of the audit still runs, the output shows a regression that did not happen, and a `landed` event is recorded, so re-running `pup land` refuses.",
+      "body": "**Concern.** The listener is only needed while the merge lock is held. It is installed in the CLI around the whole of `landSession`, which also covers `auditProject` and `appendEvent(..., 'landed')` after `withMergeLock` returns ([land.service.ts L195-L201](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/core/land.service.ts#L195-L201)).\n\n```ts\noutcome = withNodeAliveThroughSignals(() =>\n  landSession(db, { ... }),\n);\n```\n[src/cli/index.ts L1864-L1872](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/cli/index.ts#L1864-L1872)\n\nThe audit runs its build/test/lint stages through `runGateChild` (`execFileSync`, no `detached`, so the children share node's process group; [sandbox.utils.ts L246-L254](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/core/sandbox.utils.ts#L246-L254)). `runBaselineStage` ([init.service.ts L136-L164](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/core/init.service.ts#L136-L164)) catches any error, including a child killed by SIGINT, and returns `status: 'fail'`. It does not check `error.signal`. `measureBaseline` then moves on to the next stage and the debt tools.\n\n**What a terminal Ctrl-C during the audit now does:**\n- **Before this commit:** node died. There was no `landed` event, the baseline was untouched, the PR stayed in the inbox, and re-running was safe (decision 84: \"each step skips what is already done\").\n- **After this commit:**\n  - Only the running stage dies. The land keeps going: the remaining stages and the debt runs still execute.\n  - `stageDelta` reports a regression that did not happen (pass -> fail; [audit.service.ts L23](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/core/audit.service.ts#L23)). `heldOnRegression` keeps the baseline and the exit code is 1.\n  - `appendEvent(db, session.id, 'landed', ...)` still runs unconditionally ([land.service.ts L201](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/core/land.service.ts#L201)).\n  - The PR leaves the inbox. `pup land` now refuses with \"has already landed\" ([land.service.ts L57](https://github.com/AlexisBalayre/pupitre/blob/108f0194af2ea32c341f88e93d34d6babb3ccb11/src/core/land.service.ts#L57)), so the land cannot be retried. The operator is left with a printed regression that never happened.\n\n*(The claim that a listener suppresses node's default SIGINT exit is pinned-version Node knowledge. The commit relies on the same claim.)*\n\n**Fix direction.** Hold the listener only while the lock is held. One way is to install it inside `withMergeLock` itself (core, `merge-gate.service.ts`), which would also cover `pup merge`. Another is to split `landSession` so the CLI wraps only the locked section. Either way, the audit and the `landed` event should sit outside the listener, so a Ctrl-C there stops the land before it is recorded, as it did before.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "506-525",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "withNodeAliveThroughSignals also listens for SIGTERM, but the commit only argues for Ctrl-C (SIGINT). A SIGTERM sent to the pup node process alone (`kill <pid>`, a supervisor or tool timeout that signals the direct child) kills no child, so nothing unwinds. Node ignores it for the whole land, including the minutes-long audit. The land then finishes, records `landed`, and exits with a normal status, and the pending signal is silently dropped when the listener is removed. Previously SIGTERM ended `pup land` immediately. Either drop SIGTERM from the listener or record it in the JSDoc and decision 84 as an intended 'unkillable except SIGKILL' trade-off. `pup merge` is shaped the same way, so this is consistent, but it is not stated anywhere.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "286-291",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Now that a Ctrl-C no longer kills node under the lock, a Ctrl-C that kills `git worktree remove --force` is caught by tearDown's bare `catch` and returned as keptWorktree. The land carries on to the audit and the `landed` event. The CLI says git 'could not remove it (a lock, most likely)'. The same applies to a deleteBranchAt/isAncestor child killed in the branch step, which is reported as 'Kept pup/<id>: it holds commits <target> does not.' The window is narrow and nothing is destroyed, but the message is wrong and the land cannot be re-run. Checking `(error as {signal?: string}).signal` and rethrowing would let an interrupt abort the land instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4889-4891",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above the new signal-listener test repeats the `withNodeAliveThroughSignals` JSDoc: Ctrl-C reaches node and git, node dies without a listener, and the lock's `finally` never runs. The only extra fact, 'removed after it', is already in the test title and the `toEqual(before)` assertion. AGENTS.md counts a WHY comment that repeats the callee's docs as a duplicate, so delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "513",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `withNodeAliveThroughSignals` JSDoc, 'the signal is dropped when the listener goes' is vague: it does not say whether a signal that arrived during the land is discarded or delivered after `process.off`. State the actual behavior or delete the clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "4892-4907",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new CLI test checks only `process.listeners('SIGINT')`, but the helper also registers and removes a SIGTERM listener. Dropping the SIGTERM pair, or leaking it, would leave the test green. Assert `process.listeners('SIGTERM')` the same way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/land.types.ts",
+      "line": "14-22",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`keptWorktree` and `keptBranch` are now mutually exclusive, and the branch survives whenever `keptWorktree` is set. Only a subordinate clause in the `keptWorktree` JSDoc says so, and no type enforces it. A caller that tests only `keptBranch` will miss the surviving branch. State the exclusivity on `keptBranch` too, or model the two outcomes as a discriminated union.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1762-1776",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`pup merge`'s comment says its signal handler removes the lock on the way out. By the reasoning this PR now documents (a synchronous body never yields to the event loop), `releaseLock` can never run while the synchronous `runMergeGate` is running. The lock is released only because the listener keeps node alive and the gate's own `finally` runs. The pending signal is then dropped by the `off` in the `finally`, so `process.exit(130/143)` never happens. The comment and the handler body are misleading.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4147755000000002,
+  "duration_ms": 223952,
+  "num_turns": 12,
+  "tokens": {
+    "input": 16,
+    "output": 9335,
+    "cache_read": 309884,
+    "cache_creation": 38694,
+    "total": 357929
+  }
+}
