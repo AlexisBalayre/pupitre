@@ -1,0 +1,226 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T12:53:16.877Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38566335633",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38566335633",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4bdd00e081a1d004af6ccf7892eaac3f527942e3",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e52ea340e0a10a1083f47338290808a766d390af",
+  "prior_importants": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "101-124",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1240-1263",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1816-1860",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "90-100",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4355-4356",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "514-531",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`withLockReleasedOnSignal` adds `process.once('SIGINT'|'SIGTERM', releaseLock)` around a callback that never yields. `landSession`, `runMergeGate`, `runGit`, `gh` and `auditProject` all run their children with `execFileSync`. A Node signal listener only runs when the event loop turns, and the `finally` removes the listeners before that. So `releaseLock` can never run during the run, and the lock is not released by it. Installing the listeners also replaces the default terminate behaviour, so a SIGINT or SIGTERM that arrives mid-run is caught and then dropped when the listener is removed. Before this delta, Ctrl-C killed `pup land`. Now Node keeps going and only the child in Ctrl-C's process group dies: a `git fetch` becomes a \"Nothing was landed\" refusal, and a killed audit stage reads as a regression. That fires the new `heldOnRegression` branch, and the land still records `landed` and exits 1. The new test passes only because it calls the listener by hand from inside the mocked `landSession`, which cannot happen at runtime.",
+      "body": "**The signal handler never fires, so `pup land` now swallows Ctrl-C and SIGTERM instead of releasing the lock.**\n\n```ts\nprocess.once('SIGINT', releaseLock);\nprocess.once('SIGTERM', releaseLock);\ntry {\n  return fn();\n} finally {\n  process.off('SIGINT', releaseLock);\n  process.off('SIGTERM', releaseLock);\n}\n```\n\n`fn` is synchronous all the way down: `landSession` → `withMergeLock` → `fetchTarget` / `runGit` / `execFileSync('gh', …)`, then `auditProject` → `runGateChild` (`execFileSync`, `sandbox.utils.ts`). Node dispatches a JS signal listener from the event loop, and the event loop cannot turn while that stack is running. The `finally` removes the listeners before control gets back to the loop, so `releaseLock` can never run in a real process. Registering the listener has one effect: it replaces Node's default terminate action for the whole run, and the pending signal is dropped once the listener is removed.\n\nWhat this changes for `pup land`, which this delta newly wraps (the `pup merge` half predates this PR):\n- **Ctrl-C at the terminal** kills only the current child, which is in the same process group. Node keeps running.\n  - During the fetch, the run becomes an ordinary refusal.\n  - During the post-land audit, `runBaselineStage` turns the killed stage into `fail`, and `classifyDelta` reads that as `regressed`. The baseline is held, `landed` is still recorded, and the CLI prints \"Baseline kept: the measurement regressed…\" and exits 1, a regression that never happened.\n- **SIGTERM sent to the pid**, as `pup ui`'s `q` does, is ignored, and the land runs to completion.\n\nThe test `removes the lock this run took when a signal interrupts it` passes only because it calls `handlers[0]('SIGINT')` by hand.\n\nThe wrapper's scope has a second problem: it also covers `auditProject`, which runs *after* `withMergeLock` has released the lock (land.service.ts L196-L200). If the handler could ever fire, it would see `heldOnEntry === false` and `rmSync` a lock that a concurrent `pup merge` took during the audit.\n\n*(Node signal-dispatch semantics are pinned-version knowledge, hence medium confidence.)*\n\n**Suggested direction:** there is no small, safe swap. One approach is to record the owner pid in the lock dir in `withMergeLock` and reclaim a lock whose pid is dead, then drop these listeners. At a minimum, keep `auditProject` outside the wrapped region and stop decision 84 from saying the lock \"is released on a signal as `pup merge` releases it\".\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4bdd00e081a1d004af6ccf7892eaac3f527942e3/src/cli/index.ts#L514-L531\nhttps://github.com/AlexisBalayre/pupitre/blob/4bdd00e081a1d004af6ccf7892eaac3f527942e3/src/cli/index.ts#L1858-L1865\nhttps://github.com/AlexisBalayre/pupitre/blob/4bdd00e081a1d004af6ccf7892eaac3f527942e3/src/core/land.service.ts#L196-L200",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "280-290",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When `git worktree remove --force` fails (for example on a locked worktree), the catch sets `removedWorktree = false`. That is the same value as \"was already gone\", so the CLI prints nothing about the leftover. tearDown then deletes `pup/<id>` with `update-ref -d` while the worktree that still exists has it checked out, the `landed` event is written, and every re-run refuses with \"already landed\". The worktree is never reported to the operator, although the comment says the operator removes it by hand. Before this delta, the throw stopped the land before the branch was deleted.",
+      "body": "**When the worktree can't be removed, the land treats it as already gone, deletes the branch it has checked out, and never reports it.**\n\n```ts\nif (registered) {\n  // A session can lock its own worktree, which one `--force` refuses: the\n  // land goes on and the operator removes it by hand, as for a kept branch.\n  try {\n    runGit(repoPath, ['worktree', 'remove', '--force', session.worktree_path]);\n    removedWorktree = true;\n  } catch {\n    removedWorktree = false;\n  }\n}\n```\n\nWhen the removal fails, for example on a worktree the session locked (the case the comment names):\n- `removedWorktree: false` is also what an already-gone worktree returns. `pup land` only prints a line when it is `true` (index.ts L1876), and there is no counterpart to the `keptBranch` line. The only trace is git's raw `fatal: cannot remove a locked working tree` on stderr. pup's own output reads as a clean land.\n- `tearDown` then deletes `refs/heads/pup/<id>` through `deleteBranchAt`, i.e. `update-ref --no-deref -d`. Nothing checks whether the worktree survived. Unlike `git branch -d`, that plumbing does not refuse a branch checked out in another worktree, so the surviving worktree's HEAD now points at a branch that doesn't exist.\n- The `landed` event is then appended, so every re-run refuses with \"already landed\" and cannot recover.\n\nBefore this delta, the uncaught throw stopped the land before the branch deletion and before the event. No test covers this path.\n\n**Suggested fix:** when the removal fails, keep both the worktree and the branch and report them. Add `keptWorktree?: string` to `tearDown`'s return type and to `LandOutcome` (`src/core/types/land.types.ts`), return early from the catch with `{ removedWorktree: false, keptWorktree: session.worktree_path, keptBranch: session.branch }`, and print the kept worktree in `pup land`'s output next to the kept-branch line. Then add a test with a `git worktree lock`ed worktree.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4bdd00e081a1d004af6ccf7892eaac3f527942e3/src/core/land.service.ts#L280-L305\nhttps://github.com/AlexisBalayre/pupitre/blob/4bdd00e081a1d004af6ccf7892eaac3f527942e3/src/cli/index.ts#L1876-L1881",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "488-533",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`refuseScrubbed` and `withLockReleasedOnSignal` were inserted between `refuse`'s JSDoc (\"Refuse the command the caller may not run ... Every guard below reads `return refuse(…)`\") and `function refuse(message: string)`. That JSDoc now sits directly above `refuseScrubbed`'s own `/** A refusal whose text came partly from the store ... */` block. `refuse` loses its documentation and the orphaned comment block attaches to nothing. Move both helpers below `refuse` so the JSDoc stays on the function it describes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "407-423",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The only test for \"The main checkout is on elsewhere, not main\" runs with local main behind origin, so it goes through the fast-forward branch. The case this delta adds, where local main already holds origin's tip (a re-run after a partial failure, or an operator who pulled), has no test. Neither does the locked-worktree catch in tearDown (`runGit(repoPath, ['worktree', 'remove', '--force', ...])` failing).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "425-426, 189-683",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "(1) The new tests were inserted directly after the existing comment `// The gate's teardown usually removed both already; the land then has nothing to do there.` (line 425, unprefixed context). That comment now sits on 'refuses a merge commit over a head that moved past the pin' and no longer on 'lands a session whose worktree and branch are already gone' (line 614), which it describes. (2) The delta widens every `fakeGh({ state: 'MERGED', mergeCommit: ... })` call into the four-field `{ state: 'MERGED', baseRefName: 'main', headRefOid: pinned, mergeCommit: { oid: X } }`, now repeated about 24 times. Only `mergeCommit` varies in most of them. A `mergedOnGitHub(oid, overrides?)` helper next to `fakeGh` would collapse them, so the next field the land reads changes one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "384-398",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `if (report.heldOnRegression)` branch repeats the debt-transition loop `for (const t of report.debtTransitions) console.log(`  ${formatDebtTransition(t)}`);` from the `unmeasured` branch just above it. It then reports the kept baseline on stdout with a hand-set `process.exitCode = 1`, while its sibling kept-baseline path, `refuseKeptBaseline`, goes through `refuse()` on stderr. That gives two parallel 'Baseline kept' exits with different streams. The land-specific text ('a land does not move the bar over a regression') also now lives in the shared `pup audit` printer. A `refuseHeldBaseline` sibling next to `refuseKeptBaseline`, sharing the drift loop, would keep both kept-baseline paths on one pattern.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/audit.service.ts",
+      "line": "120-125, 166-191",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`auditProject` gains a fifth positional mode parameter, `onRegression: 'refresh' | 'keep' = 'refresh'`, after the optional `gateEnv`, and `AuditOutcome` gains `heldOnRegression`, defined as `hasRegression && onRegression === 'keep'`. The outcome now has two flags where one is the other ANDed with an input the caller already holds. The only caller passing `'keep'` (land.service.ts:197) could decide the hold itself. Alternatively, an options object would carry the mode instead of a trailing positional flag behind an optional argument.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "78-91",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ownership guard rebuilds the launch's naming inline: `session.worktree_path !== `${req.repoPath}/.worktrees/${session.id}` || session.branch !== `pup/${session.id}``. The canonical derivation is in session-lifecycle.service.ts:189-190 (`const branch = `pup/${sessionId}`; const worktreePath = join(req.repoPath, '.worktrees', sessionId);`). The two now have to change together, and they already differ: launch uses `join`, which normalises a trailing slash or `.` segment in `repoPath`, while land uses string concatenation, which does not. A shared `sessionWorktreePath`/`sessionBranch` helper used by both would keep one source.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "16-21",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertGhAvailable(command = '`pup merge --pr`')` puts one caller's identity into the shared GitHub client as a default, and there are exactly two callers (merge-gate.service.ts:243 with no argument, land.service.ts:111). Land then passes the literal `assertGhAvailable('`pup land`')` even though `LAND_USE.command` already holds that same string in the file. Making the parameter required, and passing `LAND_USE.command` here and the merge's command at the gate, removes both the hidden default and the duplicated literal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/land.types.ts",
+      "line": "1",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new types module imports from a service: `import type { AuditOutcome } from '../audit.service.js';`. No other file in `src/core/types/` imports from a service module, and `src/core/types/audit.types.ts` already exists and holds `AuditReport`, which `AuditOutcome` extends. Moving `AuditOutcome` into `audit.types.ts` would keep the types layer free of service imports; the point of extracting `LandOutcome` was to do the same for the CLI.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "280-289",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In `tearDown`, `let removedWorktree = false;` is followed by `try { ...; removedWorktree = true; } catch { removedWorktree = false; }`. The assignment in the catch writes the value the variable already holds, so the catch body is dead. An empty `catch {}` with the existing WHY comment, or a `const removedWorktree = registered && tryRemove()`, says the same with less code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "15",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertGhAvailable`'s JSDoc '/** Fail before the gate runs, not after ten minutes of stages. */' describes only the `pup merge --pr` caller. `pup land` now calls it too (`assertGhAvailable('`pup land`')`), and landing runs no gate stages. Neutralise it, for example 'Fail before any work starts, not partway through'. The new `command` parameter is also undocumented.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4336-4338",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The sentence reads 'compared without case within ASCII since GitHub prints the repo in its canonical case, since it is store text and another repo's merged PR would otherwise vouch for it'. The two stacked 'since' clauses give different reasons, and the second one reads as if it belongs to the first. Split it, for example: '...is a pull request of the repo the recorded origin names (it is store text, and another repo's merged PR would otherwise vouch for it), compared without case within ASCII because GitHub prints the repo in its canonical case'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "145-166",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The three containment checks call `isAncestor(req.repoPath, …)`, which runs `merge-base --is-ancestor` in the shared repo. Besides `refs/replace/*` (already noted), git there also reads `$GIT_COMMON_DIR/info/grafts` and `objects/info/commit-graph`, both writable by a session and both able to fake parent links, so a future fix for refs/replace alone (e.g. `GIT_NO_REPLACE_OBJECTS`) would not close it. Impact is low: the fetched tip is real origin content a human merged; the worst case is a squash merge landing instead of refusing. Running the containment checks through `withScratchGitDir`'s runner would drop replace refs and grafts.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned: the delta touches no CORS/HTTP/docker/CI/settings surface. Security and maintainability ran as one instance each, not two, even though the delta is about 740 changed lines. 289 of those lines are in land.test.ts, and the trust-boundary changes are concentrated in land.service.ts and withScratchGitDir."
+    },
+    {
+      "component": "maintainability",
+      "description": "A compound Bash grep was blocked by the permission prompt, so the reviewer took line numbers from the Grep tool instead. The reviewer did not review the 29-line src/cli/index.test.ts delta line by line."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.0275279,
+  "duration_ms": 393169,
+  "num_turns": 22,
+  "tokens": {
+    "input": 18,
+    "output": 18110,
+    "cache_read": 452952,
+    "cache_creation": 72531,
+    "total": 543611
+  }
+}
