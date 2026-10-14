@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T14:22:21.672Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38579434784",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38579434784",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f162ad1286bc17ef083bf3acdd66605cd37063da",
+  "source": "pr",
+  "pr_number": 144,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e0ce75a4300b9546a58ac1ac5e81ba6cb44e833c",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "540-549",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Removing the rethrow from deleteBranchAt fixes the gate's call but breaks the land's: if Ctrl-C kills `update-ref -d` during `pup land`, the land no longer stops. It runs the audit, records `landed` (so a re-run is refused), and wrongly reports 'Kept pup/<id>: it holds commits main does not.' for a branch that main already contains.",
+      "body": "`deleteBranchAt` has two callers, and this commit changed the behaviour of both. In `land.service.ts` `tearDown`, the call runs under `withMergeLock`, which installs a no-op `SIGINT`/`SIGTERM` listener (`stayAlive`). A Ctrl-C reaches the process group, so it kills only the git child and node keeps running. Now that the bare `catch { return false; }` reads that dead child as \"moved\", this happens:\n\n```ts\nif (\n  isAncestor(repoPath, branchSha, targetSha) &&\n  deleteBranchAt(repoPath, branchRef, branchSha)   // killed -> false\n) {\n  return { removedWorktree };\n}\nreturn { removedWorktree, keptBranch: session.branch };\n```\n\n1. The lock is released with no error, and the operator's interrupt is swallowed.\n2. `auditProject` runs, which can take minutes.\n3. The `landed` event is appended (`land.service.ts` L205-206).\n4. The CLI prints `` Kept ${keptBranch}: it holds commits ${target} does not. `` (`src/cli/index.ts` L1867-1870). That is false, because `isAncestor` has just shown the target holds every commit of the branch.\n5. A re-run stops at `Session … has already landed.` (`newestMerge`, `land.service.ts` L62), so nothing ever deletes the branch.\n\nAt e0ce75a this path threw, so the land recorded nothing and finished on a re-run. The removed `['the branch delete', 'update-ref --no-deref -d']` `it.each` row tested exactly that. Every other git call in `tearDown` still calls `rethrowIfKilled`. Decision 84 still says the land \"stops before the audit and the `landed` event\" on an interrupted git, and that only a branch \"with later commits is kept and named\".\n\nThe window is short, since it is a single `update-ref`, but the result is permanent. One fix: restore `rethrowIfKilled(error)` in `deleteBranchAt`'s catch and swallow the error at the gate's call only. The gate's merge has already landed there, so it can wrap `isDeleted = deleteBranchAt(...)` in its own `try { … } catch {}`. Then restore the test row. The alternative is for `deleteBranchAt` to take the policy as a parameter.\n\n<https://github.com/AlexisBalayre/pupitre/blob/f162ad1286bc17ef083bf3acdd66605cd37063da/src/core/merge-gate.service.ts#L540-L549>\n<https://github.com/AlexisBalayre/pupitre/blob/f162ad1286bc17ef083bf3acdd66605cd37063da/src/core/land.service.ts#L308-L314>",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1904352000000002,
+  "duration_ms": 151621,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 6592,
+    "cache_read": 167197,
+    "cache_creation": 33755,
+    "total": 207554
+  }
+}
