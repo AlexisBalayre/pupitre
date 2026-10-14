@@ -1,0 +1,159 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T15:20:38.461Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38587144522",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38587144522",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fa84a8c589d694c4b7547c68aa5625d08da6631c",
+  "source": "pr",
+  "pr_number": 145,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "97-120",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`pragmaAnchors` runs a raw `ts.createScanner` loop that the parser never re-scans. After any template literal with a `${…}` substitution, it reads the closing backtick as the start of a new template. Everything up to the next backtick in the file then counts as string text, so any pragma written there is never seen, and adding or editing one still passes as \"comment-only\".",
+      "body": "**Template literals hide pragmas from the pragma check**\n\n`pragmaAnchors` lists comments with a raw scan:\n\n```ts\nconst scanner = ts.createScanner(ts.ScriptTarget.Latest, false, variant, text);\nfor (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fa84a8c589d694c4b7547c68aa5625d08da6631c/tools/review/src/preflight.utils.ts#L97-L120\n\nA bare `scan()` never gets the parser's `reScanTemplateToken` or `reScanSlashToken`. So the `}` that closes a `${…}` substitution comes back as `CloseBraceToken`, and the template's closing backtick starts a phantom template. That phantom runs to the next backtick in the file, across lines, and no comment inside it is ever returned as a comment token.\n\nRepro:\n\n```ts\n// before\nconst url = `${base}/x`;\nrun();\nconst tag = `t`;\n// after: only a pragma added\nconst url = `${base}/x`;\n/* v8 ignore next */\nrun();\nconst tag = `t`;\n```\n\n- `pragmaAnchors` returns `[]` for both versions.\n- The printer runs with `removeComments: true`, so its output is identical.\n- `sameCodeIgnoringComments` therefore returns true, and `decideMode` returns `skip-comment-only`.\n\nThe same goes for `// @ts-ignore`, `// biome-ignore`, `/* c8 ignore start */` and `// eslint-disable`, which are the pragmas the PR says it always reviews. Templates with substitutions are common in this repo. For example, `src/core/merge-gate.service.ts:125` hides everything up to line 137. Regex literals such as `/'/` and JSX text also mis-tokenize, but only up to the end of their line.\n\nIf such a push is the last one before merge, an unreviewed coverage or type suppression lands on main behind a pending status. Later PR diffs won't show it, because by then it is in the base. No test puts a pragma after a template that has a substitution.\n\n**Suggested fix:** take the comments from the parsed `SourceFile`, not a separate scan:\n\n1. Walk the leaf tokens via `node.getChildren(sourceFile)`. Template parts, regexes and JSX text are real nodes there.\n2. Before each leaf, including `EndOfFileToken`, collect `ts.getLeadingCommentRanges` and `ts.getTrailingCommentRanges` at the previous token's end.\n3. Anchor each pragma by its leaf index and by whether a line break comes before it.\n\nAlso add tests with a pragma after `` `${x}` ``, after `/'/`, and after `` /`/ ``.",
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "77-78",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`isProseMarkdown` treats `docs/00-08` as \"Markdown nobody loads as instructions\". But `AGENTS.md:29`, which every session loads at startup, says \"no new dependency without checking `docs/08-roadmap.md` stack decisions\". `.claude/agents/convention-checker.md:19-21` and `architecture-explainer.md` also send agents to `docs/03`, `04` and `06` as the spec. A session can push a prose edit to `docs/08` after review, for example a \"stack decision\" approving a dependency of its choice. That push is skipped as prose, and if it is merged on the pending status, later sessions and reviewers treat it as approved.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-preflight.script.ts",
+      "line": "54-64",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`markNotReviewed` re-implements `setCommitStatus` in `post-review.script.ts` (lines 125-135) almost line for line. It builds the same `runUrl` and POSTs to `repos/${repo}/statuses/${sha}` with `--input -` and context `claude-review`. It swallows the failure with the same `warn(\"could not set the claude-review commit status\")`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "88-89",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`PRAGMA` is a long single-line regex. A pragma it misses (e.g. `@refresh`, `@flow`, `@jest-environment`, `@tsx`) would let a toolchain-affecting comment change be skipped; splitting it into a named, test-pinned list of patterns would make gaps visible.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "131-145",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`print` runs `ts.createSourceFile` and then `ts.transpileModule` over the same text, so each blob is parsed twice. `transpileModule` is used only to get syntactic diagnostics.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "176",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new boolean `commentOnly` in `decideMode`'s args breaks `docs/conventions/general.md:84` (\"Boolean names start with `is` / `has` / `should` / `can`\"); `isCommentOnly` would follow it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "102",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`let lineBreak = false` in `pragmaAnchors` breaks the boolean-prefix rule in `docs/conventions/general.md:84`; `hasLineBreak` would follow it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/README.md",
+      "line": "30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The README preflight row stacks four clauses into one cell and says \"prose Markdown\" without defining it, though `isProseMarkdown` is a narrow allowlist (root README/CONTRIBUTING/CHANGELOG, `docs/00`–`08`). It also omits that an `@claude review` comment bypasses the comment-only skip.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/test/unit/preflight-utils.test.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `isProseMarkdown` `it.each` title `\"takes %s as config, not prose\"` mislabels cases like `docs/page.mdx`, `tools/x/notes.md` and `docs/09-decisions.md`, which are just outside the allowlist, not config; `\"does not take %s as prose\"` would be accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "131-145",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment in `sameCodeIgnoringComments`'s `print` helper writes ``'use\\\\x20strict'`` with a doubled backslash, which in prose reads as two literal backslashes; the source text it describes is `'use\\x20strict'`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/claude-code-review.yml",
+      "line": "162-164",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The workflow comments (lines 162–164 and 285–288) describe the preflight skip as only the already-reviewed-head case; the new comment-only skip also sets `skip=true` and writes no record, and the workflow prose no longer says so.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.9464161000000004,
+  "duration_ms": 510392,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 11212,
+    "cache_read": 216488,
+    "cache_creation": 38696,
+    "total": 266408
+  }
+}
