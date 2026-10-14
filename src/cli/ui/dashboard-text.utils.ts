@@ -1,7 +1,7 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
-import type { DashboardSession } from '../../core/types/dashboard.types.js';
+import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
 
 /**
@@ -91,8 +91,11 @@ function deadTurnLabel(session: DashboardSession): string {
 export function contextLabel(session: DashboardSession): string {
   const tokens = session.contextTokens;
   if (tokens === undefined) return '';
+  // No command around an id outside the minted shape, here as in the inbox (decision 83).
   const suggestion =
-    tokens > RESPAWN_SUGGEST_TOKENS ? ` — consider \`pup respawn ${session.id}\`` : '';
+    tokens > RESPAWN_SUGGEST_TOKENS && session.isMintedId
+      ? ` — consider \`pup respawn ${session.id}\``
+      : '';
   return `ctx ~${Math.round(tokens / 1000)}k${suggestion}`;
 }
 
@@ -119,14 +122,29 @@ export function trailing(label: string): string {
   return label ? `  ${label}` : '';
 }
 
-/** One session row, the same in the single-project table and the fleet view. */
+/**
+ * One inbox line, for `pup status` and the fleet alike: built off a sanitized
+ * snapshot and sanitized again at the print site (decision 68). The two
+ * double-space separators cannot be forged, since the scrub collapses runs of
+ * whitespace; the label and reason have their own symbols taken away upstream.
+ */
+export function needLine(need: DashboardNeed): string {
+  return `${sanitizeReason(need.label)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`;
+}
+
+/**
+ * One session row of the single-project table. An id outside the minted shape
+ * prints as a placeholder and gets no command built around it, as in the
+ * inbox (decision 83).
+ */
 export function sessionLine(session: DashboardSession): string {
+  const shownId = session.isMintedId ? session.id : '(unminted session id)';
   const marker =
-    session.state === 'blocked'
+    session.state === 'blocked' && session.isMintedId
       ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
       : '';
   return (
-    `${session.state.padEnd(16)} ${session.id.padEnd(28)} ${session.branch}${marker}` +
+    `${session.state.padEnd(16)} ${shownId.padEnd(28)} ${session.branch}${marker}` +
     `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`
   );
 }
@@ -160,7 +178,9 @@ function fleetBlockLines(block: Exclude<FleetBlock, { reason: string }>): string
       (entry) =>
         `  OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`,
     ),
-    ...summary.needsYou.map((session) => `  ${sessionLine(session)}`),
+    // The inbox's own lines, reason and answer, not the bare session row: a
+    // merged session listed for its PR says nothing by its state alone.
+    ...summary.needsYou.map((need) => `  ${needLine(need)}`),
     `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
   ];
 }

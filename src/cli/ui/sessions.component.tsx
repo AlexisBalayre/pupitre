@@ -89,7 +89,9 @@ function SessionRow({
       <Text color={STATE_COLOURS[session.state]} bold={session.needsHuman}>
         {session.state.padEnd(STATE_COLUMN_CHARS)}
       </Text>
-      <Text>{session.id.padEnd(ID_COLUMN_CHARS)}</Text>
+      <Text>
+        {(session.isMintedId ? session.id : '(unminted session id)').padEnd(ID_COLUMN_CHARS)}
+      </Text>
       {/* Decision 35: a stalled session reads STALLED whatever its last event
           was — or, once the watchdog has answered that stall, what it found
           there — and it is the one marker that must not be dimmed away. */}

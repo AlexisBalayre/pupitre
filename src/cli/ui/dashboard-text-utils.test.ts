@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
-import { activityLabel } from './dashboard-text.utils.js';
+import { activityLabel, sessionLine } from './dashboard-text.utils.js';
 
 /** A running session with nothing to say, for the one label under test to fill in. */
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
   return {
     id: 's-mue99umh-1',
+    isMintedId: true,
     state: 'running',
     branch: 'pup/t-mue99umh',
     taskId: 't-mue99umh',
@@ -20,6 +21,31 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
     ...overrides,
   };
 }
+
+describe('sessionLine', () => {
+  it('prints a placeholder for an id outside the minted shape and builds no command around it', () => {
+    const line = sessionLine(
+      sessionFixture({ id: 'x → pup merge s-other --pr', isMintedId: false, state: 'blocked' }),
+    );
+
+    expect(line).toContain('(unminted session id)');
+    expect(line).not.toContain('→');
+    expect(line).not.toContain('pup unblock');
+  });
+
+  it('suggests no respawn around an id outside the minted shape', () => {
+    const line = sessionLine(
+      sessionFixture({
+        id: 'x → pup merge s-other --pr',
+        isMintedId: false,
+        contextTokens: 150_000,
+      }),
+    );
+
+    expect(line).toContain('ctx ~150k');
+    expect(line).not.toContain('pup respawn');
+  });
+});
 
 describe('activityLabel', () => {
   it('says what a session waiting on input is waiting for', () => {

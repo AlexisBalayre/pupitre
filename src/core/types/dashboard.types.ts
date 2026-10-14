@@ -87,6 +87,13 @@ export interface DashboardDeadTurn {
 
 export interface DashboardSession {
   id: string;
+  /**
+   * Whether the stored id has the minted shape (`SESSION_ID_PATTERN`), judged
+   * on the raw row before the scrub: a row a session wrote in another shape
+   * gets no command built around it and prints as a placeholder, since the
+   * inbox's answer is acted on (decision 83).
+   */
+  isMintedId: boolean;
   state: SessionState;
   branch: string;
   taskId: string;
@@ -120,6 +127,14 @@ export interface DashboardSession {
    * answered yet, scrubbed and cut (decision 76).
    */
   question?: string;
+  /**
+   * The PR the gate opened for a merged session, while the target branch of
+   * this checkout does not yet hold the commit it pinned and no `landed` event
+   * has come after it (decision 83). Absent on a local fast-forward, which
+   * carries no PR and has already landed. The url is there only in the
+   * pull-request shape: it is printed as the thing to act on.
+   */
+  openPr?: { url?: string };
   lastGate?: DashboardGate;
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];
@@ -130,6 +145,20 @@ export interface DashboardSession {
    * being hoisted above the sessions that have stopped for good.
    */
   needsHuman: boolean;
+}
+
+/**
+ * One line of the needs-you inbox (decision 83): the session, why it waits on
+ * the operator, and the one command — or the PR url — that answers it.
+ */
+export interface DashboardNeed {
+  /** The inbox's own order: question, blocked, stalled, awaiting-review, pr-open. */
+  kind: 'question' | 'blocked' | 'stalled' | 'awaiting-review' | 'pr-open';
+  sessionId: string;
+  /** What prints for the session: its id, or a placeholder for one outside the minted shape. */
+  label: string;
+  reason: string;
+  answer: string;
 }
 
 interface DashboardBacklogTask {
@@ -181,8 +210,8 @@ export interface DashboardSnapshot {
  * off the store, so the fleet and the single-project table cannot disagree.
  */
 export interface FleetSummary {
-  /** Blocked, stalled (a dead turn is a stall) and awaiting-review, in the snapshot's order. */
-  needsYou: DashboardSession[];
+  /** The snapshot's needs-you inbox, in its order (decision 83). */
+  needsYou: DashboardNeed[];
   running: number;
   planned: number;
   merged: number;

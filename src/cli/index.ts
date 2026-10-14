@@ -37,6 +37,7 @@ import {
   buildDashboardSnapshot,
   findStalledSessions,
   goalHeadline,
+  needsYou,
 } from '../core/dashboard.service.js';
 import {
   type DecisionRecordRow,
@@ -129,6 +130,7 @@ import { App, type AppProps } from './ui/app.component.js';
 import {
   fleetLines,
   goalColumn,
+  needLine,
   originMarker,
   sessionLine,
   trailing,
@@ -1048,19 +1050,27 @@ export function buildProgram(): Command {
 
   program
     .command('status')
-    .description('Sessions by state, blocked and stalled first; planned work and overdue debt too')
+    .description(
+      'What needs you first, then live sessions by state; planned work and overdue debt too',
+    )
     .option(
       '--all',
       'every registered project, what needs you in each (the default outside a repo)',
     )
     .option('--dormant', 'include dormant projects in the fleet view')
-    .action((opts: { all?: boolean; dormant?: boolean }) => {
+    .option('--history', 'include merged and killed sessions in the table')
+    .action((opts: { all?: boolean; dormant?: boolean; history?: boolean }) => {
+      const shouldShowHistory = opts.history === true;
       // Outside a repo, or with `--all`, the fleet view; `--project` names one
       // project's full table and so wins over `--all` (decision 60).
       const selected = program.opts().project as string | undefined;
       const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
       if (own && !opts.all) {
-        printDashboard(own.db, buildDashboardSnapshot(own.db, own.repoPath, Date.now()));
+        printDashboard(
+          own.db,
+          buildDashboardSnapshot(own.db, own.repoPath, Date.now()),
+          shouldShowHistory,
+        );
         return;
       }
       if (selected === undefined) {
@@ -1069,7 +1079,7 @@ export function buildProgram(): Command {
         return;
       }
       const { repoPath, db } = project();
-      printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
+      printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()), shouldShowHistory);
     });
 
   program
@@ -1094,7 +1104,7 @@ export function buildProgram(): Command {
       if (!process.stdout.isTTY) {
         if (!isSingleProject) return printFleet(opts.dormant === true);
         const { repoPath, db } = own ?? project();
-        printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()));
+        printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()), false);
         return;
       }
       let props: AppProps;
@@ -1154,8 +1164,21 @@ export function buildProgram(): Command {
    * the operator would have read anyway; sharing the function is what keeps the
    * two from drifting into two different accounts of the same store
    * (decision 52).
+   *
+   * What needs the operator leads, each line with the command that answers
+   * it, and a finished session is history the table leaves to `--history`
+   * (decision 83).
    */
-  function printDashboard(db: Database, snapshot: DashboardSnapshot): void {
+  function printDashboard(
+    db: Database,
+    snapshot: DashboardSnapshot,
+    shouldShowHistory: boolean,
+  ): void {
+    const needs = needsYou(snapshot);
+    if (needs.length > 0) {
+      console.log('Needs you');
+      for (const need of needs) console.log(`  ${needLine(need)}`);
+    }
     for (const entry of snapshot.overdueDebt) {
       console.log(
         `OVERDUE DEBT #${entry.id}  ${sanitizeReason(entry.description)}  (review by: ${sanitizeReason(entry.reviewBy)})`,
@@ -1172,11 +1195,14 @@ export function buildProgram(): Command {
           : 'conductor running',
       );
     }
-    if (snapshot.sessions.length === 0 && snapshot.backlog.length === 0) {
+    const sessions = shouldShowHistory
+      ? snapshot.sessions
+      : snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');
+    if (sessions.length === 0 && snapshot.backlog.length === 0) {
       console.log('Nothing running and nothing planned.');
       return;
     }
-    for (const session of snapshot.sessions) {
+    for (const session of sessions) {
       const question = session.question === undefined ? '' : `question: ${session.question}`;
       console.log(`${sessionLine(session)}${trailing(question)}`);
     }
