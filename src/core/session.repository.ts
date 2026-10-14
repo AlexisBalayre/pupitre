@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { EventType, SessionState } from './db.client.js';
+import type { SessionState } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { canTransition, claimedStates } from './session-state.utils.js';
@@ -75,10 +75,16 @@ export interface TaskRow {
   created_at: string;
 }
 
+/**
+ * Every type the store holds, keyed off the payloads written for them, so a
+ * new writer adds its type and its payload in one place.
+ */
+type StoredEventType = keyof EventPayloads;
+
 export interface EventRow {
   id: number;
   session_id: string | null;
-  type: EventType;
+  type: StoredEventType;
   /** JSON object; shape depends on `type`. */
   payload: string;
   created_at: string;
@@ -426,7 +432,7 @@ export function transitionSession(
   return tx(id, to);
 }
 
-export function appendEvent<TType extends EventType>(
+export function appendEvent<TType extends StoredEventType>(
   db: Database,
   sessionId: string | null,
   type: TType,

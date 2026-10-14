@@ -78,7 +78,7 @@ import type {
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
-function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
+export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
     runGit(repoPath, ['merge-base', '--is-ancestor', maybeAncestor, ref]);
     return true;
@@ -157,7 +157,7 @@ export function countChangedLines(
   return { lines, forged };
 }
 
-function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
+export function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
   try {
     mkdirSync(lockPath);
@@ -420,7 +420,7 @@ function dropGateCheckout(repoPath: string, root: string): void {
  * about. The `=` refusal is decision 79's, from when the merge keyed a `-c` on
  * the name; it stays because a refusal set only grows (decision 80).
  */
-function assertTargetName(repoPath: string, target: string): void {
+export function assertTargetName(repoPath: string, target: string): void {
   const refuse = (why: string): never => {
     throw new Error(
       `Target branch ${sanitizeReason(target)} ${why}; rename it from the trusted checkout ` +
@@ -452,7 +452,7 @@ function assertTargetName(repoPath: string, target: string): void {
  * symbolic ref is refused: its sha is another branch's, so a gate that pinned
  * it would measure an empty diff and then move or delete that branch through it.
  */
-function resolveCommit(repoPath: string, ref: string): string {
+export function resolveCommit(repoPath: string, ref: string): string {
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   const symbolic = (() => {
     try {
@@ -525,7 +525,12 @@ function shellWord(word: string): string {
  * also the race the HEAD re-read before this leaves open. `--no-deref`, so a
  * target turned into a symref after the pin is rewritten, not followed.
  */
-function fastForward(repoPath: string, target: string, targetSha: string, sha: string): void {
+export function fastForward(
+  repoPath: string,
+  target: string,
+  targetSha: string,
+  sha: string,
+): void {
   const shown = sanitizeReason(target);
   // Before the checkout is touched, not only at the compare-and-swap after it
   // (decision 80).
@@ -625,9 +630,17 @@ function fastForward(repoPath: string, target: string, targetSha: string, sha: s
 }
 
 const PUSH_TARGET_HELP =
-  'Nothing was pushed. The config the value lives in is shared with every worktree and a ' +
-  'session can rewrite it, so treat a session that moved it as compromised; if origin really ' +
-  'moved, re-record it with `pup init --origin-moved` from the trusted checkout.';
+  'The config the value lives in is shared with every worktree and a session can rewrite it, ' +
+  'so treat a session that moved it as compromised; if origin really moved, re-record it with ' +
+  '`pup init --origin-moved` from the trusted checkout.';
+
+/** Who asks `pushTarget`, and what its refusal leaves undone, for the message. */
+interface OriginUse {
+  command: string;
+  untouched: string;
+}
+
+const MERGE_PR_USE: OriginUse = { command: '`pup merge --pr`', untouched: 'Nothing was pushed.' };
 
 /**
  * Where the branch is pushed and which repo the PR is pinned to: the URL
@@ -642,11 +655,17 @@ const PUSH_TARGET_HELP =
  * the live read is here to say when something moved it rather than to be
  * quietly worked around. Both refusals are decision 6's loud backstop: they
  * name both values and happen before the gate runs, so nothing is pushed.
+ * `pup land` fetches from the same value for the same reason (decision 84).
  */
-function pushTarget(db: Database, session: SessionRow, repoPath: string): string {
+export function pushTarget(
+  db: Database,
+  session: SessionRow,
+  repoPath: string,
+  use: OriginUse = MERGE_PR_USE,
+): string {
   const configured = readOriginUrl(repoPath);
   if (!configured) {
-    throw new Error('`pup merge --pr` needs an `origin` remote to push the branch to.');
+    throw new Error(`${use.command} needs an \`origin\` remote. ${use.untouched}`);
   }
   const task = getTask(db, session.task_id);
   if (!task) throw new Error(`Session ${session.id} has no task row; cannot resolve its project.`);
@@ -658,7 +677,7 @@ function pushTarget(db: Database, session: SessionRow, repoPath: string): string
   if (project && project.repo_path !== repoPath) {
     throw new Error(
       `Session ${session.id} belongs to project ${task.project_id}, recorded at ` +
-        `${project.repo_path}, not the ${repoPath} this merge was asked for. Nothing was pushed.`,
+        `${project.repo_path}, not the ${repoPath} this command was asked for. ${use.untouched}`,
     );
   }
   const recorded = project?.origin_url ?? undefined;
@@ -667,14 +686,14 @@ function pushTarget(db: Database, session: SessionRow, repoPath: string): string
       'No push target is recorded for this project, so there is nothing to check origin ' +
         `against: origin says ${sanitizeReason(configured)}, and nothing says that is where ` +
         'the operator pointed it. Run `pup init` from the trusted checkout to record it, ' +
-        'then retry. Nothing was pushed.',
+        `then retry. ${use.untouched}`,
     );
   }
   if (recorded !== configured) {
     throw new Error(
-      "Refusing `pup merge --pr`: origin's URL is not the one recorded when this project " +
+      `Refusing ${use.command}: origin's URL is not the one recorded when this project ` +
         `was set up.\n  recorded:   ${sanitizeReason(recorded)}\n  configured: ` +
-        `${sanitizeReason(configured)}\n${PUSH_TARGET_HELP}`,
+        `${sanitizeReason(configured)}\n${use.untouched} ${PUSH_TARGET_HELP}`,
     );
   }
   return recorded;
@@ -1120,7 +1139,7 @@ function gateAndMerge(
   }
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
-    // the next `pup audit` after the PR lands ratchets it (decision 26).
+    // `pup land` ratchets it once the PR has (decisions 26, 84).
     !req.openPr &&
     project &&
     baseline &&

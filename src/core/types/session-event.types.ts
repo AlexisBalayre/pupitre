@@ -35,6 +35,11 @@ export interface EventPayloads {
     prUrl?: string;
     leftBehind?: number;
   };
+  /**
+   * `pup land` saw the PR merged on GitHub and main holding the pinned sha;
+   * `sha` is the merge commit GitHub made (decision 84).
+   */
+  landed: { sha: string; target: string; prUrl: string };
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };

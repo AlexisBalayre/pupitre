@@ -85,6 +85,8 @@ vi.mock('../core/merge-gate.service.js', () => ({
   // are rows in a store and not real branches, so there is nothing to count.
   countChangedLines: vi.fn(() => ({ lines: 0, forged: [] })),
 }));
+// The land's own git and gh work is land.test.ts's, against a real repo.
+vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
@@ -125,6 +127,8 @@ import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
+import type { LandOutcome } from '../core/land.service.js';
+import { landSession } from '../core/land.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -4777,6 +4781,114 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('land', () => {
+    const PR = 'https://github.com/o/r/pull/7';
+
+    function landedOutcome(): LandOutcome {
+      return {
+        prUrl: PR,
+        mergeCommit: 'a'.repeat(40),
+        target: 'main',
+        targetSha: 'a'.repeat(40),
+        fastForwarded: true,
+        removedWorktree: true,
+        audit: {
+          projectId: 'p',
+          previous: null,
+          baseline: {
+            adapters: [],
+            capturedAt: '2026-10-14T00:00:00Z',
+            stages: [],
+          } as unknown as LandOutcome['audit']['baseline'],
+          transitions: [],
+          debtTransitions: [],
+          hasRegression: false,
+          findings: [],
+          sandbox: 'sandbox-exec (macOS)',
+          unmeasured: [],
+        },
+      };
+    }
+
+    /** A session merged with --pr whose sha the repo's unborn main cannot hold. */
+    function seedOpenPr(repo: string): void {
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', 'merged');
+      appendEvent(db, 's1', 'merge', {
+        branch: 'pup/s1',
+        sha: 'f'.repeat(40),
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
+      db.close();
+    }
+
+    // A session landing a branch picks the moment the baseline moves, which is
+    // why it may not run the audit either (decision 84).
+    it('refuses when a session is calling, landing nothing', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedOpenPr(repo);
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['`pup land` is operator-only; sessions cannot land sessions.']);
+      expect(process.exitCode).toBe(1);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    // The human merged the PR on GitHub; what is left is the conductor's to run.
+    it('lands from the conductor and reports what moved', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+      vi.mocked(landSession).mockReturnValue(landedOutcome());
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+
+      expect(firstCall(landSession)[1]).toMatchObject({ repoPath: repo, sessionId: 's1' });
+      expect(logs).toContain(
+        `Landed s1: ${PR} merged as ${'a'.repeat(40)}; main fast-forwarded to ${'a'.repeat(40)}.`,
+      );
+      expect(logs).toContain('Removed the session worktree.');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('prints a refusal on one line with its control characters gone', () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockImplementation(() => {
+        throw new Error('PR is OPEN\u001b[2J on GitHub, not MERGED. Nothing was landed.');
+      });
+
+      buildProgram().parse(['land', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['PR is OPEN [2J on GitHub, not MERGED. Nothing was landed.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('drops the PR from the status inbox once the landed event exists', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedOpenPr(repo);
+
+      buildProgram().parse(['status'], { from: 'user' });
+      expect(logs).toContain(`  s1  PR opened, not landed  → ${PR}`);
+
+      logs.length = 0;
+      const { db } = resolveProject(repo);
+      appendEvent(db, 's1', 'landed', { sha: 'a'.repeat(40), target: 'main', prUrl: PR });
+      db.close();
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.join('\n')).not.toContain('PR opened');
+    });
+  });
+
   describe('merge', () => {
     function mergedOutcome(overrides: Partial<MergeOutcome> = {}): MergeOutcome {
       return {
@@ -5029,7 +5141,7 @@ describe('CLI commands', () => {
 
       expect(firstCall(runMergeGate)[1].openPr).toBe(true);
       expect(logs).toContain(
-        'Gate passed; opened https://github.com/acme/repo/pull/7 — merge it there, then run `pup audit`.',
+        'Gate passed; opened https://github.com/acme/repo/pull/7 — merge it there, then run `pup land s1`.',
       );
     });
 
@@ -5043,7 +5155,7 @@ describe('CLI commands', () => {
 
       expect(logs).toContain(
         'Gate passed; reused the open PR https://github.com/acme/repo/pull/7 and rewrote its ' +
-          'description with this gate report — check it, merge it there, then run `pup audit`.',
+          'description with this gate report — check it, merge it there, then run `pup land s1`.',
       );
     });
 
@@ -5298,7 +5410,7 @@ describe('CLI commands', () => {
 
         expect(firstCall(runMergeGate)[1].openPr).toBe(true);
         expect(logs).toContain(
-          'Gate passed; opened https://github.com/acme/repo/pull/7 — merge it there, then run `pup audit`.',
+          'Gate passed; opened https://github.com/acme/repo/pull/7 — merge it there, then run `pup land s1`.',
         );
         expect(process.exitCode).toBeUndefined();
       });

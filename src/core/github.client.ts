@@ -193,3 +193,37 @@ export function assertPullRequestHead(
     );
   }
 }
+
+/**
+ * What GitHub says became of the PR at `url`: its state (`OPEN`, `CLOSED`,
+ * `MERGED`) and, once merged, the commit the merge made on the base branch.
+ * Pinned to `repo` like every other call here. A field outside its shape reads
+ * as absent, so the caller refuses rather than trusting it.
+ */
+export function readPullRequestLanding(
+  repoPath: string,
+  url: string,
+  repo: string,
+): { state: string | undefined; mergeCommit: string | undefined } {
+  const parsed = ghJson(repoPath, [
+    'pr',
+    'view',
+    url,
+    '--repo',
+    repo,
+    '--json',
+    'state,mergeCommit',
+  ]);
+  const fields =
+    parsed !== null && typeof parsed === 'object'
+      ? (parsed as { state?: unknown; mergeCommit?: unknown })
+      : {};
+  const commit =
+    fields.mergeCommit !== null && typeof fields.mergeCommit === 'object'
+      ? (fields.mergeCommit as { oid?: unknown }).oid
+      : undefined;
+  return {
+    state: typeof fields.state === 'string' ? fields.state : undefined,
+    mergeCommit: typeof commit === 'string' ? commit : undefined,
+  };
+}

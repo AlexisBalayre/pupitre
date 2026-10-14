@@ -4324,6 +4324,49 @@ changes back into those docs is pending.
     is scrubbed. `pup status` prints the inbox before the overdue debt line, prints no header when
     nothing waits, hides merged and killed rows by default and prints them with `--history`.
 
+84. **`pup land <session>` closes the GitHub half of a `--pr` merge, and the conductor may run it
+    (2026-10-14).**
+    A `--pr` merge stops at the pull request: main does not move, the baseline is not ratcheted
+    (decision 26), and what was left to do once the human merged on GitHub was the operator's by
+    hand: pull, clean the worktree and branch the gate's best-effort teardown may have left, run
+    `pup audit`, and nothing told the store the PR had landed. `pup land <session>` does it, with
+    the logic in `land.service.ts` and the CLI thin. Every refusal comes before anything moves, and
+    each says nothing was landed: the session must be in state `merged` with a `prUrl` and a pinned
+    sha on its newest `merge` event, and no `landed` event after it; the url must be a pull request
+    of the repo the recorded origin names, since it is store text and another repo's merged PR would
+    otherwise vouch for it; `gh pr view <url> --repo <pin> --json state,mergeCommit`, called the way
+    `github.client.ts` calls gh, must say `MERGED`; and the target fetched from origin must contain
+    the sha the gate pinned. A squash or rebase merge therefore refuses: it lands commits the gate
+    never measured, and the PR vouched for the pinned sha only (decision 82). The fetch reads origin
+    from the URL `pup init` recorded, refused on a live value that moved exactly as the push is
+    (decision 56), and runs from the scratch git dir the push uses, borrowing the repo's object
+    store and lending the local tip as a ref, so the shared config a session can write is never read
+    (decision 54); the tracking ref is written only once the tip passes. Then, under the merge lock,
+    the local target is fast-forwarded with the gate's plumbing (`fastForward`, decision 80), after
+    the same checks the gate makes before its checkout: the main checkout on the target and no
+    driver armed. A local target with commits origin lacks refuses; one already at or past origin's
+    tip is left alone. The session's worktree is removed the way `pnpm worktree:clean` removes one
+    whose PR merged, and its branch is deleted only while main holds every commit of it, with the
+    old value and `--no-deref` like the gate's delete; a branch with later commits is kept and
+    named. Then `auditProject` runs, as `pup audit` would and printed the same way, and a `landed`
+    event records the merge commit GitHub made, the target and the url, which the needs-you inbox
+    reads to drop the PR (decision 83) whatever this checkout has pulled. A failure part-way is
+    safe to re-run: each step skips what is already done, and the event is written last. `landed`
+    joins the store's event types through `EventPayloads`, which `appendEvent` and `EventRow` now
+    key on. The `--pr` merge's closing line names `pup land <session>` instead of `pup audit`.
+    The conductor may run it: the human decision, merging the PR, already happened on GitHub, and
+    what is left moves main only to what origin holds, so it is the bookkeeping decision 75 lets the
+    conductor relay, not the local fast-forward decision 47 keeps from it. A session is refused, as
+    it is refused `pup audit`: landing picks the moment the baseline moves.
+    Tests: against a real repo, a bare origin and a fake gh, the land fast-forwards main to GitHub's
+    merge commit with the checkout clean, records the tracking ref, removes the worktree and branch,
+    stores a baseline, appends the event and empties the inbox, and asks gh with the pinned repo; a
+    second land refuses; a branch with a later commit is kept; a session not merged, a merge with no
+    PR, a url outside origin's repo, an `OPEN` or `CLOSED` PR and a squash merge each refuse with
+    main, the worktree, the branch, the baseline and the event untouched. `pup land` refuses a
+    session and runs for the conductor, prints a refusal scrubbed, and `pup status` stops listing
+    the PR once the event exists.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

@@ -985,11 +985,13 @@ describe('needsYou', () => {
     });
   }
 
-  /** `pup land`'s event: no writer in pup yet, so it goes in as the store's row. */
+  /** `pup land`'s event, as it writes it (decision 84). */
   function seedLanded(sessionId: string): void {
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'landed', '{}')").run(
-      sessionId,
-    );
+    appendEvent(db, sessionId, 'landed', {
+      sha: 'e'.repeat(40),
+      target: 'main',
+      prUrl: 'https://github.com/o/r/pull/7',
+    });
   }
 
   const inbox = () => needsYou(buildDashboardSnapshot(db, repo, NOW));

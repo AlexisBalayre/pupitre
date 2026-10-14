@@ -109,7 +109,7 @@ export function formatDebtTransition(t: DebtTransition): string {
   return `${label.padEnd(8)} ${move.padEnd(16)}${marker}`;
 }
 
-interface AuditOutcome extends AuditReport {
+export interface AuditOutcome extends AuditReport {
   /**
    * One line per debt metric the adapter could not measure although the stored
    * baseline holds a figure for it, each meaning that baseline was kept rather
