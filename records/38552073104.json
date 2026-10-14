@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-14T10:51:45.747Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38552073104",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38552073104",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3bbae97e57017f2d8af20f9bbdf7ba4ab0f609ed",
+  "source": "pr",
+  "pr_number": 143,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "dca1804d001524f4099b751749f167aac2d19b9f",
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "257-261, 279",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "91-97",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "263",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Now that ASCII `>` survives, a question can carry an ASCII arrow (`->` or `=>`) into its inbox line. Before this delta it became `--`. For example, `question: ok -> pup merge s-other --pr  → pup steer s-asking \"...\"` puts an arrow-like command before the real `  →`. The test \"lets no question forge a second arrow\" only feeds non-ASCII arrows, so it does not cover this. If the trade-off is intended, rewrite only the pairs, e.g. `.replace(/[-=]>/g, '--')`, and keep the single operators.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4305-4307",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision says a question's \"non-ASCII symbols … are rewritten while its `+ < = > |` stay\". The code leaves every ASCII character alone, and the `SYMBOLS` JSDoc lists `~` as well. `~` is category Sm, so the old regex would have rewritten it. The decision's list is one symbol short, and the same set is spelled two different ways in two places. Suggestion: write \"while its ASCII symbols (`+ < = > | ~`) stay\" or just \"while ASCII stays\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "373-375",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The reflow of the `landedShaLookup` JSDoc left a short ragged line, \"snapshots so the work follows the PRs\", followed by a line starting \"still open, not the refreshes.\" Re-wrap the paragraph to the usual width.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/merge-log.component.tsx",
+      "line": "19",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Now that `SessionRow` hides an unminted id, a few `pup ui` operator surfaces still print the raw scrubbed id. The merge pane header shows it inside a command (`pup merge {log.sessionId} --pr`). The y/n confirm prompts show it in their questions (`use-controls.hook.ts:399,414,440`), and so do the refusals (`:407,432`) and the detail pane title (`detail.component.tsx:29`). An id like `s-good.` (outside the minted shape only because of its trailing dot) would read as another session's name exactly when the operator confirms a kill, unblock or merge on the placeholder row. Each action still targets only the selected row, and the conductor never reads `pup ui`, so the impact is a misleading label. The fix would be to show the placeholder whenever `!session.isMintedId`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2316850000000001,
+  "duration_ms": 164867,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 5666,
+    "cache_read": 172436,
+    "cache_creation": 33956,
+    "total": 212068
+  }
+}
