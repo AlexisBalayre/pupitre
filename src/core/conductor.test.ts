@@ -17,7 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  conductorPane: vi.fn(),
   hasConductorWindow: vi.fn(() => true),
+  readInputBox: vi.fn(),
   kickoff: vi.fn(() => true),
   killConductor: vi.fn(),
   launchConductor: vi.fn(({ projectId }: { projectId: string }) => ({
@@ -26,22 +28,31 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     socket: `pup-conductor-${projectId}`,
   })),
   launchWatcher: vi.fn(() => ({ target: 'pup-watch-1' })),
+  pasteIntoPane: vi.fn(),
+  submitPane: vi.fn(),
 }));
 
 import {
+  conductorPane,
   hasConductorWindow,
   kickoff,
   killConductor,
   launchConductor,
   launchWatcher,
+  pasteIntoPane,
+  readInputBox,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  submitPane,
 } from '../claude/session-runtime.service.js';
 import {
+  ConductorTellRefusedError,
   conductorCheckoutDir,
   isConductorRunning,
   startConductor,
   stopConductor,
+  TELL_MAX_CHARS,
+  tellConductor,
 } from './conductor.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
@@ -432,5 +443,129 @@ describe('startConductor code graph', () => {
     expect(existsSync(join(projectPaths(repo).conductorCompiledDir, 'mcp.json'))).toBe(false);
     expect(launchedWith()?.mcpConfigPath).toBeUndefined();
     expect(kickoffContext()).not.toContain('## Code graph');
+  });
+});
+
+describe('tellConductor', () => {
+  const PANE = { sessionId: `conductor-${projectId(REPO)}`, paneId: '%3', socket: 'sock' };
+  /** What reached the pane, in order: each paste's text, each Enter, each look at the box. */
+  let typed: string[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    typed = [];
+    vi.mocked(conductorPane).mockReturnValue(PANE);
+    vi.mocked(pasteIntoPane).mockImplementation((_pane, message) => {
+      typed.push(`paste ${message}`);
+      return true;
+    });
+    vi.mocked(submitPane).mockImplementation(() => {
+      typed.push('Enter');
+    });
+  });
+
+  /** The box answers each look in turn. */
+  function box(...answers: Array<'empty' | 'holds' | 'absent'>): void {
+    for (const answer of answers) {
+      vi.mocked(readInputBox).mockImplementationOnce(() => {
+        typed.push(`look ${answer}`);
+        return answer;
+      });
+    }
+  }
+
+  it('checks the box is empty, pastes, presses Enter once, and stops once the box is empty again', () => {
+    box('empty', 'empty');
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
+
+    expect(conductorPane).toHaveBeenCalledWith(projectId(REPO));
+    expect(typed).toEqual(['look empty', 'paste merge t-1 next', 'Enter', 'look empty']);
+    expect(vi.mocked(pasteIntoPane).mock.calls[0]?.[0]).toBe(PANE);
+  });
+
+  it('presses Enter a second time only while text is still in the box', () => {
+    box('empty', 'holds', 'empty');
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
+
+    expect(typed).toEqual([
+      'look empty',
+      'paste merge t-1 next',
+      'Enter',
+      'look holds',
+      'Enter',
+      'look empty',
+    ]);
+  });
+
+  it('says it did not land when the second Enter leaves text in the box, and stops there', () => {
+    box('empty', 'holds', 'holds');
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
+
+    expect(typed.filter((step) => step === 'Enter')).toHaveLength(2);
+  });
+
+  it('presses no second Enter on a dialog that replaced the box, and says it did not land', () => {
+    box('empty', 'absent');
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
+
+    expect(typed.filter((step) => step === 'Enter')).toHaveLength(1);
+  });
+
+  it('presses nothing when the paste never shows whole, and says it did not land', () => {
+    box('empty');
+    vi.mocked(pasteIntoPane).mockReturnValueOnce(false);
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
+
+    expect(submitPane).not.toHaveBeenCalled();
+  });
+
+  it.each(['holds', 'absent'] as const)(
+    'refuses, sending nothing, when the box %s before the paste',
+    (state) => {
+      box(state);
+
+      expect(() => tellConductor(REPO, 'merge t-1 next')).toThrow(
+        /holds unsent text.*`pup attach`/,
+      );
+
+      expect(pasteIntoPane).not.toHaveBeenCalled();
+      expect(submitPane).not.toHaveBeenCalled();
+    },
+  );
+
+  it('takes a message of exactly the limit', () => {
+    box('empty', 'empty');
+
+    expect(tellConductor(REPO, 'x'.repeat(TELL_MAX_CHARS))).toBe(true);
+  });
+
+  it.each([
+    ['an empty message', ''],
+    ['a blank message', '  \n '],
+    ['a message over the limit', 'x'.repeat(TELL_MAX_CHARS + 1)],
+  ])('refuses %s before looking for a pane or typing anything', (_what, message) => {
+    expect(() => tellConductor(REPO, message)).toThrow(ConductorTellRefusedError);
+
+    expect(conductorPane).not.toHaveBeenCalled();
+    expect(pasteIntoPane).not.toHaveBeenCalled();
+    expect(submitPane).not.toHaveBeenCalled();
+  });
+
+  it('names the truncation and the length in the over-limit refusal', () => {
+    expect(() => tellConductor(REPO, 'x'.repeat(801))).toThrow(/801 characters.*truncated/);
+  });
+
+  it('refuses when no conductor runs, naming `pup conductor start`', () => {
+    vi.mocked(conductorPane).mockReturnValue(undefined);
+
+    expect(() => tellConductor(REPO, 'hello')).toThrow(/`pup conductor start`/);
+
+    expect(pasteIntoPane).not.toHaveBeenCalled();
+    expect(submitPane).not.toHaveBeenCalled();
   });
 });

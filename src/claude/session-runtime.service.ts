@@ -1,10 +1,15 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { runGit } from '../core/git-diff.client.js';
-import { hasUnsubmittedInput, pasteLanded } from './pane.utils.js';
+import {
+  hasUnsubmittedInput,
+  type InputBoxState,
+  inputBoxState,
+  pasteLanded,
+} from './pane.utils.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
 // (decision 1); state comes from hooks + transcripts, never pane scraping.
@@ -543,6 +548,23 @@ export function attachCommand(target: WindowTarget): string {
   return ['tmux', ...attachArgs(target).map(shellWord)].join(' ');
 }
 
+/**
+ * Hand this terminal to the conductor's window and take it back when the
+ * operator detaches: the argv `attachCommand` prints, run on the terminal it
+ * was called from. The environment is scrubbed like every tmux call's: an
+ * attach that finds the server gone starts one on that socket, whose global
+ * environment would otherwise hold the operator's (decision 47). The exit
+ * status is tmux's, `null` when a signal ended it.
+ */
+export function attachConductor(repoProjectId: string): number | null {
+  const result = spawnSync('tmux', attachArgs({ conductorOf: repoProjectId }), {
+    stdio: 'inherit',
+    env: tmuxEnv(),
+  });
+  if (result.error) throw result.error;
+  return result.status;
+}
+
 /** A word a shell takes literally, single-quoted when it would not. */
 function shellWord(word: string): string {
   return /^[\w.,:/@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
@@ -682,25 +704,67 @@ export class SteerNotDeliveredError extends Error {
  * read is harmless.
  */
 export function steerPane(pane: SessionPane, message: string): void {
-  const target = paneTarget(pane);
   // A paste appends to whatever the box holds (a draft, a leftover), and the
   // box then never reads as the message alone; start from an empty one, and
   // say so when one cannot be had rather than paste into it and refuse later.
   if (hasUnsubmittedInput(captureInputBox(pane)) && !clearInputBox(pane)) {
     throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');
   }
-  tmuxAt(pane, ['load-buffer', '-'], message);
-  tmuxAt(pane, ['paste-buffer', '-d', '-p', '-t', target]);
+  pasteText(pane, message);
   if (!awaitPasteLanded(pane, message)) {
     clearInputBox(pane);
     throw new SteerNotDeliveredError(pane.sessionId, message.length);
   }
-  tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
+  pressEnter(pane);
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
     if (!hasUnsubmittedInput(captureInputBox(pane))) return;
-    tmuxAt(pane, ['send-keys', '-t', target, 'Enter']);
+    pressEnter(pane);
   }
+}
+
+/**
+ * Put `message` in the pane's input box. The text rides tmux's stdin into a
+ * buffer and `paste-buffer` names only the pane, so it is on no tmux argv,
+ * which every process on the machine can read, and `send-keys` would type it
+ * a key at a time. The caller's own argv may still carry it, as `pup steer`'s
+ * and `pup conductor tell`'s do (decision 85).
+ */
+function pasteText(pane: SessionPane, message: string): void {
+  tmuxAt(pane, ['load-buffer', '-'], message);
+  tmuxAt(pane, ['paste-buffer', '-d', '-p', '-t', paneTarget(pane)]);
+}
+
+function pressEnter(pane: SessionPane): void {
+  tmuxAt(pane, ['send-keys', '-t', paneTarget(pane), 'Enter']);
+}
+
+/**
+ * Paste `message` into the pane and wait, as a steer does, until the box
+ * shows it whole; when it never does, clear the box if it is still on screen,
+ * having held nothing before, and answer false with no Enter pressed, so no part of it is left
+ * for a later Enter to submit (decision 45). The half of a steer
+ * `pup conductor tell` takes as it stands: the tell owns the empty-box check
+ * before and its one Enter retry after (decision 85).
+ */
+export function pasteIntoPane(pane: SessionPane, message: string): boolean {
+  pasteText(pane, message);
+  if (awaitPasteLanded(pane, message)) return true;
+  // A dialog that took the screen is a likely reason the paste never showed,
+  // and Ctrl-U there would press keys into it.
+  if (readInputBox(pane) !== 'absent') clearInputBox(pane);
+  return false;
+}
+
+/** Press Enter in the pane, then wait the beat a submit takes to clear the box. */
+export function submitPane(pane: SessionPane): void {
+  pressEnter(pane);
+  syncSleep(SUBMIT_VERIFY_MS);
+}
+
+/** `inputBoxState` of a fresh capture of the pane. */
+export function readInputBox(pane: SessionPane): InputBoxState {
+  return inputBoxState(captureInputBox(pane));
 }
 
 /** Settle, then look for the message in the input box; bounded by its length. */
@@ -713,13 +777,18 @@ function awaitPasteLanded(pane: SessionPane, message: string): boolean {
   return false;
 }
 
-/** Press Ctrl-U until the input box is empty; false when the press budget is spent first. */
+/**
+ * Press Ctrl-U until the input box is empty; false when the press budget is
+ * spent first, or when the box leaves the screen, so no more keys go into a
+ * dialog that replaced it (its echoed prompt above would read as text).
+ */
 function clearInputBox(pane: SessionPane): boolean {
   const target = paneTarget(pane);
   for (let press = 0; press < CLEAR_KEY_LIMIT; press++) {
     tmuxAt(pane, ['send-keys', '-t', target, 'C-u']);
     syncSleep(CLEAR_SETTLE_MS);
-    if (!hasUnsubmittedInput(captureInputBox(pane))) return true;
+    const box = readInputBox(pane);
+    if (box !== 'holds') return box === 'empty';
   }
   return false;
 }

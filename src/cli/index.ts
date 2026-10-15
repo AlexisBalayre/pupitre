@@ -21,9 +21,11 @@ import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import {
   attachCommand,
+  attachConductor,
   conductorName,
   killWatcher,
   launchWatcher,
+  SessionPaneMissingError,
   SteerNotDeliveredError,
   windowLabel,
 } from '../claude/session-runtime.service.js';
@@ -31,7 +33,14 @@ import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audi
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
-import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
+import {
+  ConductorTellRefusedError,
+  isConductorRunning,
+  NO_CONDUCTOR_RUNNING,
+  startConductor,
+  stopConductor,
+  tellConductor,
+} from '../core/conductor.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -481,6 +490,33 @@ function steerOrRefuse(act: () => void, done: string): void {
 }
 
 /**
+ * Type a message into the conductor's window and say whether it landed. A
+ * refusal — empty, too long, no conductor, its pane gone — sent nothing; a
+ * message still in the box after the second Enter was typed but not submitted,
+ * and the operator is told to look.
+ */
+function tellOrRefuse(repoPath: string, message: string): void {
+  let landed: boolean;
+  try {
+    landed = tellConductor(repoPath, message);
+  } catch (error) {
+    if (!(error instanceof ConductorTellRefusedError || error instanceof SessionPaneMissingError)) {
+      throw error;
+    }
+    refuse(error.message);
+    return;
+  }
+  if (!landed) {
+    refuse(
+      "The message did not land: the conductor's input box never showed it whole, still holds " +
+        'text after a second Enter, or left the screen. Look with `pup attach`.',
+    );
+    return;
+  }
+  console.log('Told the conductor; the message landed.');
+}
+
+/**
  * Refuse the command the caller may not run, or the one it asked for that
  * cannot be done: the reason on stderr and a failing exit code, never a throw.
  * Every guard below reads `return refuse(…)`, so a refusal is one line and
@@ -667,6 +703,11 @@ function operatorOnlyProject(): ProjectResolutionError {
   return new ProjectResolutionError(
     'Reaching another project is operator-only; a session controls only the project it runs in.',
   );
+}
+
+interface ConductorOptions {
+  model?: string;
+  workerModel?: string;
 }
 
 interface PlanOptions {
@@ -939,20 +980,26 @@ export function buildProgram(): Command {
     });
 
   program
-    .command('conductor [action]')
+    .command('conductor [action] [message]')
     .description(
-      'Start a Claude session that plans, launches, steers and reports on sessions (start|stop)',
+      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>)',
     )
     .option('--model <model>', 'claude model for the conductor itself')
     .option('--worker-model <model>', 'claude model the conductor launches sessions on')
-    .action((action: string | undefined, opts: { model?: string; workerModel?: string }) => {
+    .action((action: string | undefined, message: string | undefined, opts: ConductorOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'start';
       // The conductor holds every operator power but the merge, so only the
       // operator starts one — a session or a conductor minting a conductor
       // would be a session launching sessions under another name (decision 47).
+      // A tell is the operator typing into its window, which its own socket
+      // exists to keep every session from doing (decision 85).
       if (callingSession(db) || callingConductor()) {
         return refuse(`\`pup conductor ${verb}\` is operator-only.`);
+      }
+      if (verb === 'tell') return tellOrRefuse(repoPath, message ?? '');
+      if (message !== undefined && (verb === 'start' || verb === 'stop')) {
+        return refuse(`\`pup conductor ${verb}\` takes no message; \`pup conductor tell\` does.`);
       }
       if (verb === 'stop') {
         stopConductor(repoPath);
@@ -960,7 +1007,7 @@ export function buildProgram(): Command {
         return;
       }
       if (verb !== 'start') {
-        return refuse(`Unknown conductor action \`${action}\` (expected start|stop).`);
+        return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell).`);
       }
       let handle: ConductorHandle;
       try {
@@ -998,6 +1045,24 @@ export function buildProgram(): Command {
           `Conflict radar started with it (tmux: ${handle.radarTarget}) — it runs the turn watchdog.`,
         );
       }
+    });
+
+  program
+    .command('attach')
+    .description("Attach this terminal to the conductor's window (Ctrl-b d detaches)")
+    .action(() => {
+      const { repoPath, db } = project();
+      // The operator attaches; a session and the conductor are not handed the
+      // socket its window lives on, as `pup status` does not print it to them
+      // (decision 47).
+      if (!showAttachCommand(db)) return refuse('`pup attach` is operator-only.');
+      if (!isConductorRunning(repoPath)) return refuse(NO_CONDUCTOR_RUNNING);
+      // Said before the terminal is handed over, since attach blocks until detach.
+      console.log(
+        'Ctrl-b d detaches and leaves the conductor running; Ctrl-c or /exit would kill it',
+      );
+      const status = attachConductor(projectId(repoPath));
+      if (status !== 0) process.exitCode = status ?? 1;
     });
 
   program

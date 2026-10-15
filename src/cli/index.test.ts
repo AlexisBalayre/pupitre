@@ -46,6 +46,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     .attachCommand,
   windowLabel: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .windowLabel,
+  // `pup attach` hands the terminal to tmux; here it hands it to nothing.
+  attachConductor: vi.fn(() => 0),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -67,9 +69,13 @@ vi.mock('ink', async (importOriginal) => ({
   render: vi.fn(),
 }));
 vi.mock('../core/conductor.service.js', () => ({
+  ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
+  NO_CONDUCTOR_RUNNING:
+    'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
+  tellConductor: vi.fn(() => true),
 }));
 vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../core/git-diff.client.js')>()),
@@ -117,12 +123,19 @@ vi.mock('../core/session-handoff.service.js', () => ({
 
 import { render } from 'ink';
 import {
+  attachConductor,
   deadTurnError,
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
-import { isConductorRunning, startConductor, stopConductor } from '../core/conductor.service.js';
+import {
+  ConductorTellRefusedError,
+  isConductorRunning,
+  startConductor,
+  stopConductor,
+  tellConductor,
+} from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
@@ -2558,6 +2571,15 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('names an unknown action as unknown even when a message follows it', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['conductor', 'restart', 'now'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('Unknown conductor action');
+      expect(errors.join('\n')).not.toContain('takes no message');
+    });
+
     // `startConductor` kills the window itself and answers with both halves
     // (src/core/conductor.test.ts); this command adds the retry, which on a
     // terminal is the command to type again.
@@ -2620,6 +2642,145 @@ describe('CLI commands', () => {
       expect(startConductor).not.toHaveBeenCalled();
       expect(stopConductor).not.toHaveBeenCalled();
       expect(errors).toEqual([`\`pup conductor ${verb}\` is operator-only.`]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    describe('tell', () => {
+      it('hands the message to the conductor and says it landed', () => {
+        const repo = initRepo();
+        useCwd(repo);
+
+        buildProgram().parse(['conductor', 'tell', 'merge t-1 next'], { from: 'user' });
+
+        expect(tellConductor).toHaveBeenCalledWith(repo, 'merge t-1 next');
+        expect(logs).toEqual(['Told the conductor; the message landed.']);
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      it('says so, and fails, when the message did not land', () => {
+        useCwd(initRepo());
+        vi.mocked(tellConductor).mockReturnValueOnce(false);
+
+        buildProgram().parse(['conductor', 'tell', 'merge t-1 next'], { from: 'user' });
+
+        expect(logs).toEqual([]);
+        expect(errors.join('\n')).toContain('The message did not land');
+        expect(process.exitCode).toBe(1);
+      });
+
+      // Core's refusals (empty, over the limit, no conductor) and a pane gone
+      // under it are each the operator's to read, and sent nothing.
+      it.each([
+        ['a refusal', new ConductorTellRefusedError('No conductor is running for this project.')],
+        ['a gone pane', new SessionPaneMissingError('conductor-p1', '%3', 'gone')],
+      ])('prints %s as a refusal', (_what, error) => {
+        useCwd(initRepo());
+        vi.mocked(tellConductor).mockImplementationOnce(() => {
+          throw error;
+        });
+
+        buildProgram().parse(['conductor', 'tell', 'hello'], { from: 'user' });
+
+        expect(errors).toEqual([error.message]);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('hands core an empty message when none was given, for it to refuse', () => {
+        const repo = initRepo();
+        useCwd(repo);
+
+        buildProgram().parse(['conductor', 'tell'], { from: 'user' });
+
+        expect(tellConductor).toHaveBeenCalledWith(repo, '');
+      });
+
+      it.each([
+        ['a session', 'PUP_SESSION_ID', 's1'],
+        ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+      ])('refuses %s', (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        vi.stubEnv(variable, value);
+
+        buildProgram().parse(['conductor', 'tell', 'hello'], { from: 'user' });
+
+        expect(tellConductor).not.toHaveBeenCalled();
+        expect(errors).toEqual(['`pup conductor tell` is operator-only.']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('refuses a message given to another action', () => {
+        useCwd(initRepo());
+
+        buildProgram().parse(['conductor', 'stop', 'now'], { from: 'user' });
+
+        expect(stopConductor).not.toHaveBeenCalled();
+        expect(errors).toEqual([
+          '`pup conductor stop` takes no message; `pup conductor tell` does.',
+        ]);
+        expect(process.exitCode).toBe(1);
+      });
+    });
+  });
+
+  describe('attach', () => {
+    it('refuses when no conductor runs, naming `pup conductor start`', () => {
+      useCwd(initRepo());
+      vi.mocked(isConductorRunning).mockReturnValue(false);
+
+      buildProgram().parse(['attach'], { from: 'user' });
+
+      expect(attachConductor).not.toHaveBeenCalled();
+      expect(logs).toEqual([]);
+      expect(errors.join('\n')).toContain('`pup conductor start`');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('prints the detach hint, then attaches to the conductor of this project', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      let printedBeforeAttach: string[] = [];
+      vi.mocked(attachConductor).mockImplementationOnce(() => {
+        printedBeforeAttach = [...logs];
+        return 0;
+      });
+
+      buildProgram().parse(['attach'], { from: 'user' });
+
+      expect(printedBeforeAttach).toEqual([
+        'Ctrl-b d detaches and leaves the conductor running; Ctrl-c or /exit would kill it',
+      ]);
+      expect(attachConductor).toHaveBeenCalledWith(projectId(repo));
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it("exits with tmux's status when the attach fails", () => {
+      useCwd(initRepo());
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(attachConductor).mockReturnValueOnce(1);
+
+      buildProgram().parse(['attach'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+    });
+
+    // As `pup status` keeps the socket from them (decision 47).
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['attach'], { from: 'user' });
+
+      expect(attachConductor).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup attach` is operator-only.']);
       expect(process.exitCode).toBe(1);
     });
   });

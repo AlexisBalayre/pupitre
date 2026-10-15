@@ -14,7 +14,7 @@
  */
 
 const INPUT_PROMPT = /^❯(.*)$/;
-/** The box's bottom border; the rows between the prompt and it are the box. */
+/** The box's top and bottom borders: the prompt row sits right under the top one. */
 const BOX_BORDER = /^─/;
 /**
  * The generic idle hint, for a capture with no styling to read. A styled one
@@ -111,7 +111,8 @@ function applySgr(dim: boolean, params: string): boolean {
  * column-0 matches count, and the input box is the last one — a submitted
  * prompt is echoed above it with the same glyph. The box's prompt is followed
  * by a non-breaking space, which trims away like any other.
- * Undefined when the pane has no input box (a dialog, a dead pane).
+ * Undefined when no column-0 `❯` is on screen. A dialog under an echoed prompt
+ * still returns the echo's text here; `inputBoxState` checks the frame.
  */
 function inputBoxText(pane: string): string | undefined {
   const lines = paneRows(pane);
@@ -142,6 +143,27 @@ function inputBoxText(pane: string): string | undefined {
 export function hasUnsubmittedInput(pane: string): boolean {
   const content = inputBoxText(pane)?.trim() ?? '';
   return content.length > 0 && !PLACEHOLDER_PREFIX.test(content);
+}
+
+export type InputBoxState = 'empty' | 'holds' | 'absent';
+
+/**
+ * What the input box shows: nothing unsubmitted, some text, or no box at all.
+ * A pane with no box (a dialog, a selector) is kept apart from an empty one:
+ * text sent there does not reach the prompt, and Enter there picks an option.
+ * The box is framed, its prompt row right under the top border, and an
+ * echoed prompt is not: right after a submit the echo is still on screen, so
+ * a dialog that replaced the box would otherwise read as holding text.
+ */
+export function inputBoxState(pane: string): InputBoxState {
+  const rows = paneRows(pane);
+  let promptIndex = -1;
+  rows.forEach((row, index) => {
+    if (INPUT_PROMPT.test(row.text)) promptIndex = index;
+  });
+  const above = rows[promptIndex - 1];
+  if (above === undefined || !BOX_BORDER.test(above.text)) return 'absent';
+  return hasUnsubmittedInput(pane) ? 'holds' : 'empty';
 }
 
 /**

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -28,7 +28,9 @@ vi.mock('node:child_process', async (importOriginal) => {
     if (file === 'which') return '/fake/bin/claude\n';
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
   });
-  return { ...actual, execFileSync: fakeExecFileSync };
+  // The attach hands this terminal to tmux; here it hands it to nothing.
+  const fakeSpawnSync = vi.fn(() => ({ status: 0 }));
+  return { ...actual, execFileSync: fakeExecFileSync, spawnSync: fakeSpawnSync };
 });
 
 // Fakes existsSync/writeFileSync for the operator's real ~/.claude.json only —
@@ -53,6 +55,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import {
   attachArgs,
   attachCommand,
+  attachConductor,
   conductorName,
   conductorPane,
   deadTurnError,
@@ -65,11 +68,14 @@ import {
   launchConductor,
   launchSession,
   launchWatcher,
+  pasteIntoPane,
   preseedTrust,
+  readInputBox,
   type SessionPane,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   steerPane,
+  submitPane,
   transcriptDir,
   windowLabel,
 } from './session-runtime.service.js';
@@ -465,6 +471,43 @@ describe('windowLabel, attachArgs and attachCommand', () => {
   });
 });
 
+describe('attachConductor', () => {
+  it('runs the argv the attach line prints, on the terminal it was called from', () => {
+    expect(attachConductor('proj-1')).toBe(0);
+
+    expect(spawnSync).toHaveBeenCalledWith('tmux', attachArgs({ conductorOf: 'proj-1' }), {
+      stdio: 'inherit',
+      env: expect.anything(),
+    });
+  });
+
+  // An attach that finds the server gone starts one on that socket, and its
+  // global environment is whatever the attach was spawned with.
+  it('spawns tmux with the scrubbed environment every tmux call gets', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-operator');
+    vi.stubEnv('TMUX', '/private/tmp/tmux-501/default,1,0');
+
+    attachConductor('proj-1');
+
+    const env = vi.mocked(spawnSync).mock.calls.at(-1)?.[2]?.env ?? {};
+    expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(env).not.toHaveProperty('TMUX');
+    expect(env.PATH).toBe(process.env.PATH);
+  });
+
+  it("answers tmux's own exit status", () => {
+    vi.mocked(spawnSync).mockReturnValueOnce({ status: 1 } as never);
+
+    expect(attachConductor('proj-1')).toBe(1);
+  });
+
+  it('throws when tmux could not be run at all', () => {
+    vi.mocked(spawnSync).mockReturnValueOnce({ status: null, error: new Error('ENOENT') } as never);
+
+    expect(() => attachConductor('proj-1')).toThrow('ENOENT');
+  });
+});
+
 /**
  * The one place this suite runs the real tmux instead of the fake: what is
  * under test IS tmux's own name resolution, and the fake models what pup
@@ -626,6 +669,7 @@ case "$1" in
     else sed 's/^/%/' "$server/window"; fi ;;
   send-keys)
     echo "$4" >> "$typed"
+    [ "$4" = C-u ] && echo $(( $(cat "$server/clears" 2>/dev/null || echo 0) + 1 )) > "$server/clears"
     [ "$4" = Enter ] && rm -f "$box"
     if [ "$4" = C-u ] && [ -z "$FAKE_TMUX_STUCK" ] && [ -f "$box" ]; then
       rows=$(grep -c '' "$box")
@@ -646,7 +690,12 @@ case "$1" in
       else line='❯ [Pasted text #1]'; fi
     fi
     printf 'capture => %s\\n' "$line" >> "$FAKE_TMUX_LOG"
-    printf '  ? for shortcuts\\n%s\\n────\\n%s\\n────\\n' "$FAKE_TMUX_TRANSCRIPT" "$line" ;;
+    clears=$(cat "$server/clears" 2>/dev/null || echo 0)
+    if [ -n "$FAKE_TMUX_DIALOG" ] || { [ -n "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ] && [ "$clears" -ge "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ]; }; then
+      printf '❯ earlier prompt\\n⏺ ok\\n Usage limit reached.\\n ❯ 1. Wait\\n   2. Switch model\\n'
+    else
+      printf '  ? for shortcuts\\n%s\\n────\\n%s\\n────\\n' "$FAKE_TMUX_TRANSCRIPT" "$line"
+    fi ;;
 esac
 `;
 
@@ -661,6 +710,8 @@ describe('steerPane with a fake tmux on PATH', () => {
   let state: string;
   let landsAfter: number;
   let stuck: boolean;
+  let dialog: boolean;
+  let dialogAfterClears: number;
   let down: boolean;
   let suggestion: string;
   let transcript: string;
@@ -680,6 +731,8 @@ describe('steerPane with a fake tmux on PATH', () => {
     writeFileSync(join(state, 'active'), '3\n');
     landsAfter = 0;
     stuck = false;
+    dialog = false;
+    dialogAfterClears = 0;
     down = false;
     suggestion = '';
     transcript = '';
@@ -704,6 +757,10 @@ describe('steerPane with a fake tmux on PATH', () => {
                 FAKE_TMUX_SUGGESTION: suggestion,
                 FAKE_TMUX_TRANSCRIPT: transcript,
                 ...(stuck ? { FAKE_TMUX_STUCK: '1' } : {}),
+                ...(dialog ? { FAKE_TMUX_DIALOG: '1' } : {}),
+                ...(dialogAfterClears > 0
+                  ? { FAKE_TMUX_DIALOG_AFTER_CLEARS: String(dialogAfterClears) }
+                  : {}),
                 ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
               },
             },
@@ -1003,6 +1060,75 @@ describe('steerPane with a fake tmux on PATH', () => {
       // can't-find-pane the steer does.
       expect(() => kickoff(conductorOnDefault, 'anything')).toThrow(SessionPaneMissingError);
       expect(typedInto(5, socket)).toBeUndefined();
+    });
+  });
+
+  /**
+   * The primitives `pup conductor tell` drives (decision 85), on the
+   * conductor's own server: the text rides stdin into a buffer and is on no
+   * tmux command line, where any process on the machine could read it.
+   */
+  describe('pasteIntoPane, submitPane and readInputBox', () => {
+    const socket = 'pup-conductor-proj-1';
+    const CONDUCTOR: SessionPane = { sessionId: 'conductor-proj-1', paneId: '%5', socket };
+    const TELL = 'SECRETWORD merge t-1 then land it ENDWORD';
+
+    beforeEach(() => {
+      serverWithPane(socket, 5);
+    });
+
+    it('pastes through load-buffer and paste-buffer, never with the text on an argv', () => {
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
+
+      expect(argvLog().slice(0, 2)).toEqual([
+        `-L ${socket} load-buffer -`,
+        `-L ${socket} paste-buffer -d -p -t %5`,
+      ]);
+      expect(typedInto(5, socket)).toBe(`${TELL}\n`);
+      expect(argvLog().filter((line) => line.includes('SECRETWORD'))).toEqual([]);
+    });
+
+    it('waits for the paste to show whole, and when it never does clears the box and presses no Enter', () => {
+      landsAfter = Number.MAX_SAFE_INTEGER;
+
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
+
+      const keys = argvLog().filter((line) => line.includes('send-keys'));
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.every((line) => line.endsWith('C-u'))).toBe(true);
+    });
+
+    it('stops clearing at the first look that finds a dialog in place of the box', () => {
+      landsAfter = Number.MAX_SAFE_INTEGER;
+      stuck = true;
+      dialogAfterClears = 1;
+
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
+
+      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([
+        `-L ${socket} send-keys -t %5 C-u`,
+      ]);
+    });
+
+    it('presses nothing into a dialog that replaced the box when the paste never showed', () => {
+      landsAfter = Number.MAX_SAFE_INTEGER;
+      dialog = true;
+
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(false);
+
+      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([]);
+    });
+
+    it('reads the box as empty, then holding text until Enter submits it', () => {
+      landsAfter = 1;
+      expect(readInputBox(CONDUCTOR)).toBe('empty');
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
+      expect(readInputBox(CONDUCTOR)).toBe('holds');
+
+      submitPane(CONDUCTOR);
+
+      expect(readInputBox(CONDUCTOR)).toBe('empty');
+      expect(argvLog()).toContain(`-L ${socket} send-keys -t %5 Enter`);
     });
   });
 
