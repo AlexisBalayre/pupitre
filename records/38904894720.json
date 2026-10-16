@@ -1,0 +1,118 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T13:05:38.932Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38904894720",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38904894720",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8f93144ccf622cb3d0d487c7f8e39585069b67a1",
+  "source": "pr",
+  "pr_number": 148,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1614-1617",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "debtKind only replaces `\\d+` inside a matched figure span. A coverage-gap percentage that moves between a whole number and a decimal (\"71%\" vs \"71.3%\") therefore gives different kinds (\"#%\" vs \"#.#%\"), and the re-gate files a duplicate ledger entry for a flag already held. The old whole-description `\\d+` had the same gap. Normalise `\\d+(?:\\.\\d+)?` instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4506",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision 86 amendment's example `(patch coverage 71.0% below baseline 80.0%)` can't occur. `pct` in src/core/debt.service.ts:391 (`Math.round(ratio * 1000) / 10`) never writes a trailing `.0`, so the real text is `71%` / `80%`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1888-1889",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"A merged session has no window to steer: accepting the debt is its only way through (decision 86)\" restates the new `MergeOutcome.regated` JSDoc, which already says the session has no window to steer and cites decision 86 (general.md §Comments: a call-site comment that restates the callee's JSDoc is a duplicate). It also contradicts the message below it, which offers \"or fix it on the branch, push, then re-gate\". Delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1598-1602",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `DEBT_FIGURES` regexes pin the exact wording of flag descriptions built in src/core/debt.service.ts, with no compile-time link. If that wording changes, the figures stop being normalised, and every re-gate where a figure moved files a duplicate ledger entry. The it.each held-flag tests catch some rewordings, but `debtKind` has no direct test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1292-1296",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`measureBranch`'s acceptHint decides it is a re-gate from `session.state === 'merged'`, while the CLI now uses `MergeOutcome.regated`, so there are two sources of truth for the same fact. They agree today because only `regateMerged` reaches `measureBranch` with a merged session.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1887-1898",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new flag-only re-gate refusal message repeats the `--accept-debt \"<reason>\" --review-by \"<condition>\"${approvedByHint}` clause from the plain refusal below it, and the \"Re-gate refused: … vouches for the earlier pin only\" prefix from the failed-stage branch above it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4517-4522",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The decision 86 amendment's \"Tests:\" sentence is a long run-on that lists test cases the test files already state, so it will go stale as the tests change. Keep the behavioural rules and drop the test inventory.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1789553000000004,
+  "duration_ms": 117447,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 6573,
+    "cache_read": 194821,
+    "cache_creation": 46650,
+    "total": 248056
+  }
+}
