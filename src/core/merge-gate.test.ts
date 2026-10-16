@@ -2841,6 +2841,127 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(prEdits()).toBe(1);
     });
 
+    /** Run a re-gate expected to refuse, and assert it wrote nothing. */
+    function expectRefusedUnwritten(refusal: RegExp, gh = fakeGh([openPrOnMain])): void {
+      const events = listEvents(db, SESSION_ID).length;
+      const ledger = listLedgerEntries(db, 'proj-1').length;
+      const edits = prEdits();
+
+      expect(() => regate([fixChecking], gh)).toThrow(refusal);
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(ledger);
+      expect(prEdits()).toBe(edits);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    }
+
+    /** A merge event as the store can hold it: session-writable, so any shape. */
+    function plantMerge(fields: Record<string, unknown>): void {
+      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'merge', ?)").run(
+        SESSION_ID,
+        JSON.stringify({ branch: BRANCH, files: [], ...fields }),
+      );
+    }
+
+    it.each<[string, (pin: string) => Record<string, string>]>([
+      ['no pinned sha', () => ({ target: 'main' })],
+      ['a sha outside the pinned shape', () => ({ sha: '--upload-pack=x', target: 'main' })],
+      ['no target', (pin) => ({ sha: pin })],
+    ])('refuses a merge event with %s, asking gh nothing', (_label, fields) => {
+      gateThenFix();
+      plantMerge({ prUrl: PR_URL, ...fields(pinned) });
+      const calls = ghCalls().length;
+
+      expectRefusedUnwritten(/merge event names no pinned sha and target/);
+
+      expect(ghCalls()).toHaveLength(calls);
+    });
+
+    it("refuses a recorded PR url outside origin's repo, asking gh nothing", () => {
+      gateThenFix();
+      plantMerge({ prUrl: 'https://github.com/other/repo/pull/7', sha: pinned, target: 'main' });
+      const calls = ghCalls().length;
+
+      expectRefusedUnwritten(/is not a pull request of github\.com\/owner\/repo/);
+
+      // The availability probe only: no PR was asked about.
+      expect(ghCalls().slice(calls)).toEqual(['--version']);
+    });
+
+    it('refuses when the main checkout is on another branch than the merge targeted', () => {
+      gateThenFix();
+      sh(repo, 'git', 'switch', '-q', '-c', 'release');
+
+      expectRefusedUnwritten(/was gated onto main, but the main checkout is on release/);
+    });
+
+    it('refuses a PR GitHub reports in a state it cannot read', () => {
+      gateThenFix();
+
+      expectRefusedUnwritten(
+        /is UNKNOWN on GitHub, not OPEN: only an open PR is re-gated/,
+        fakeGh([openPrOnMain], undefined, 'UNKNOWN'),
+      );
+    });
+
+    it('refuses a PR whose state gh leaves out', () => {
+      gateThenFix();
+      const stateless = fakeGh([openPrOnMain]).replace('"state":"OPEN",', '');
+      expect(stateless).not.toContain('"state"');
+
+      expectRefusedUnwritten(/is in an unreadable state on GitHub, not OPEN/, stateless);
+    });
+
+    it('refuses a PR GitHub reports with an unreadable head', () => {
+      gateThenFix();
+
+      expectRefusedUnwritten(/with an unreadable head/, fakeGh([openPrOnMain], 'not-a-sha'));
+    });
+
+    it.each<[string, unknown[], RegExp]>([
+      [
+        'another open PR',
+        [{ ...openPrOnMain, url: 'https://github.com/owner/repo/pull/8' }],
+        /open pull request for pup\/s1 is https:\/\/github\.com\/owner\/repo\/pull\/8, not .*pull\/7/,
+      ],
+      ['no open PR', [], /open pull request for pup\/s1 is none, not .*pull\/7/],
+    ])('refuses when adoption finds %s for the branch', (_label, listed, refusal) => {
+      gateThenFix();
+
+      expectRefusedUnwritten(refusal, fakeGh(listed));
+    });
+
+    it('refuses a local branch turned into a symref, with the symref refusal', () => {
+      gateThenFix();
+      sh(
+        repo,
+        'git',
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.worktrees', `${SESSION_ID}-review`),
+      );
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+      sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
+
+      expectRefusedUnwritten(/is a symbolic ref to refs\/heads\/main/);
+    });
+
+    it('refuses when the local branch is missing, before any stage', () => {
+      gateThenFix();
+      sh(
+        repo,
+        'git',
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.worktrees', `${SESSION_ID}-review`),
+      );
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+
+      expectRefusedUnwritten(/pup\/s1 is missing in this repo, but .* has its head at/);
+    });
+
     it('refuses a merged session that opened no PR, asking gh nothing', () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -2908,6 +3029,16 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
       gateThenFix({ firstFile: 'src/big.ts', firstContent: 'const line = 1;\n'.repeat(700) }, debt);
       expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
+      // Another session's debt over the same file holds no kind for this one,
+      // and stays a candidate to close.
+      const other = insertLedgerEntry(db, {
+        projectId: 'proj-1',
+        description: 'Oversize diff (900 lines) merged from session s9',
+        files: ['src/big.ts'],
+        reason: 'older',
+        acceptedBy: 'human',
+        reviewBy: 'later',
+      });
 
       const outcome = regate([passingAdapter], fakeGh([openPrOnMain]), debt);
 
@@ -2915,8 +3046,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.report.stages.find((stage) => stage.stage === 'diff-size')?.status).toBe(
         'flagged',
       );
-      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
-      expect(outcome.debtCandidates).toEqual([]);
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(2);
+      expect(outcome.debtCandidates).toEqual([
+        { id: other, description: 'Oversize diff (900 lines) merged from session s9' },
+      ]);
     });
   });
 
