@@ -17,6 +17,7 @@ import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
+import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -435,10 +436,74 @@ describe('landSession', { timeout: 20_000 }, () => {
     });
     const mainBefore = mainSha();
 
-    expect(() => land()).toThrow(/merged with its head at .* not .* the commit the gate pinned/);
+    expect(() => land()).toThrow(
+      /merged with its head at .* not .* the commit the gate pinned; .* re-gated with `pup merge s1 --pr`/,
+    );
 
     expectNothingChanged(mainBefore);
     expect(hasTrackingRef()).toBe(false);
+  });
+
+  // A CI fix round moved the PR's head: the PR is re-gated before it is merged,
+  // and the land then trusts the head the newest merge event pinned (decision 86).
+  it('refuses an open PR whose head moved, naming the re-gate', () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+    fakeGh({ state: 'OPEN', baseRefName: 'main', headRefOid: later });
+    const mainBefore = mainSha();
+
+    expect(() => land()).toThrow(/is OPEN on GitHub with its head at .*`pup merge s1 --pr`/);
+
+    expectNothingChanged(mainBefore);
+  });
+
+  it('lands a PR GitHub merged at the head a re-gate pinned', () => {
+    db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+      JSON.stringify({ id: 'task-s1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+      'task-s1',
+    );
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    // gh for the re-gate: the PR open at the fix round's head, listed for the
+    // branch, its description edit taken.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-gh-')));
+    const listed = [{ url: PR_URL, baseRefName: 'main', isCrossRepository: false }];
+    writeFileSync(
+      join(dir, 'gh'),
+      [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> ${ghLog}`,
+        `if [ "$2" = "list" ]; then echo '${JSON.stringify(listed)}'; exit 0; fi`,
+        'cat >/dev/null',
+        `echo '${JSON.stringify({ state: 'OPEN', baseRefName: 'main', headRefOid: later })}'`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath}`;
+    const regated = runMergeGate(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      openPr: true,
+    });
+    expect(regated.status).toBe('merged');
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = land();
+
+    expect(outcome).toMatchObject({ prUrl: PR_URL, mergeCommit: merge, fastForwarded: true });
+    expect(mainSha()).toBe(merge);
+    expect(readFileSync(join(repo, 'src/fix.ts'), 'utf8')).toContain('fix');
+    expect(landedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+      { sha: merge, target: 'main', prUrl: PR_URL },
+    ]);
   });
 
   it('refuses a PR merged into another base, changing nothing', () => {

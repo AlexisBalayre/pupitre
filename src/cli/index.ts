@@ -1735,7 +1735,10 @@ export function buildProgram(): Command {
       '--approved-by <who>',
       'who approved the debt, for the ledger entry (required from the conductor; default: human)',
     )
-    .option('--pr', 'on pass, push the branch and open a pull request instead of merging locally')
+    .option(
+      '--pr',
+      'on pass, push the branch and open a pull request instead of merging locally; on a merged session, re-gate its PR after a pushed fix',
+    )
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .action(
       (
@@ -1802,6 +1805,9 @@ export function buildProgram(): Command {
             'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
           );
         }
+        // A merged session is re-gated on its PR's new head, or refused by the
+        // gate itself; read here only to word the outcome (decision 86).
+        const regate = getSession(db, session)?.state === 'merged';
         let outcome: MergeOutcome;
         // The gate holds a lock directory it removes in a `finally`, which a
         // process killed by a signal never reaches — and the next merge then
@@ -1847,7 +1853,11 @@ export function buildProgram(): Command {
         printGateReport(outcome.report);
         switch (outcome.status) {
           case 'merged':
-            if (outcome.prUrl) {
+            if (regate && outcome.prUrl) {
+              console.log(
+                `Re-gated ${session}; ${outcome.prUrl} now carries this gate report for its new head — merge it there, then run \`pup land ${session}\`.`,
+              );
+            } else if (outcome.prUrl) {
               console.log(
                 outcome.prWasAdopted
                   ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup land ${session}\`.`
@@ -1866,6 +1876,13 @@ export function buildProgram(): Command {
             }
             break;
           case 'refused': {
+            const failedStage = outcome.report.stages.find((s) => s.status === 'fail');
+            if (regate && failedStage) {
+              console.log(
+                `Re-gate refused: ${sanitizeReason(failedStage.stage)} failed on the new head, and the PR still vouches for the earlier pin only. Fix it on the branch, push, then re-run \`pup merge ${session} --pr\`.`,
+              );
+              break;
+            }
             const flagged = outcome.report.stages
               .filter((s) => s.status === 'flagged')
               .map((s) => sanitizeReason(s.stage))

@@ -4342,7 +4342,8 @@ changes back into those docs is pending.
     fetched from origin must contain the merge commit, which must contain the pinned sha. A squash
     or rebase merge therefore refuses, and so does a merge commit over a head that moved past the
     pin, GitHub's own "Update branch" included: each lands commits the gate never measured, and the
-    PR vouched for the pinned sha only (decision 82). The fetch reads origin from the URL `pup init`
+    PR vouched for the pinned sha only (decision 82); decision 86 makes that refusal name the
+    re-gate, and refuses an open PR whose head moved before it is merged. The fetch reads origin from the URL `pup init`
     recorded, refused on a live value that moved exactly as the push is (decision 56), and runs from
     the scratch git dir the push uses, borrowing the repo's object store and lending the local tip
     as a ref, so the shared config a session can write is never read (decision 54), with auto
@@ -4440,6 +4441,65 @@ changes back into those docs is pending.
     text on no argv. `pup attach` refuses with no conductor, prints the hint before attaching, carries
     tmux's failing status, and refuses a session and the conductor; `pup conductor tell` prints
     landed or not, prints core's refusals, and refuses a session and the conductor.
+
+86. **`pup merge <session> --pr` re-gates a merged session whose open PR took a fix round, so
+    `pup land` can land it (2026-10-16, amends 84).**
+    A `--pr` merge pins one sha and the PR vouches for it alone (decision 82), so once an operator
+    pushed a CI fix round to the PR (#144, #146) its head moved past the pin, the gate refused the
+    session as no longer awaiting review, and `pup land` refused the merge as landing commits the
+    gate never measured: such a PR could never land. Now `pup merge <session> --pr` also takes a
+    session in state `merged`, when its newest `merge` event carries a `prUrl` and a pinned sha with
+    no `landed` event after it. Before the lock, as a first `--pr` gate settles adoption (decision
+    27), the url must be a pull request of origin's recorded repo (the check `pup land` makes,
+    now shared as `assertPullRequestOf`), the event's target must be the branch the main checkout
+    is on, `gh pr view` must report the PR `OPEN` with a head other than the pin, and the open PR
+    `findOpenPullRequest` finds for the branch, past its fork, base and auto-merge checks, must be
+    that same url. A head that does not descend from the pin is allowed, since a fix round can
+    rebase. Each refusal names why (no PR, a local fast-forward; already landed; `CLOSED`;
+    `MERGED`, pointing at `pup land`; head still at the pin, pointing at merging and landing) and
+    says nothing was re-gated; nothing is written. Without `--pr` a merged session is refused as
+    before. Under the lock the local branch is pinned first and must be at the head GitHub
+    reported, since the stages read local objects and no rebase follows; a branch elsewhere or
+    missing refuses, naming both, before any stage. Then every stage runs on that pin from the
+    gate's checkout (decision 81), except two: `worktree-clean` is skipped and says so, since the
+    session's worktree went with the first merge, and `fresh-base` fails instead of rebasing a head
+    not based on the target, since there is no worktree to rebase in and a rebased head would no
+    longer be the one the PR shows. A failing stage or an unaccepted flag refuses as a flagged
+    merge does, with a `gate_result` refused event and status `refused`: the session has no window
+    to re-steer and no state to fall back to, so it stays `merged`, the reject count is untouched,
+    and the earlier `merge` event stays the newest. On a pass the PR is adopted the usual way, its
+    description rewritten with the new report and the gated sha, and its head read back and
+    required to equal the new pin; nothing is pushed, since the pin is the head GitHub already
+    shows, and a lease on a tracking ref the fix round's own push left behind would refuse. Then a
+    `gate_result` moving `merged` to `merged` logs the report for every reader of the newest gate
+    run, and a new `merge` event records the new sha, the same `prUrl` and the target. Nothing the
+    first merge did repeats: no tmux kill, worktree removal or branch delete (the branch is left
+    for `pup land`'s teardown, which deletes it once the target holds it), no ratchet (decision 26
+    keeps PR mode off it), no decision-record draft, and no ledger entry for a flag the session
+    already holds open. The stages measure the whole branch, so a flag the first gate filed comes
+    back with the figures the fix round moved (`Oversize diff (812 lines)` after 780); a flag
+    whose description, figures dropped, matches an open entry this session filed is not filed
+    again, while a new kind is. `--accept-debt` is still asked for: the human sees the flags with
+    their new figures, as on any retry. The debt candidates leave out the session's own entries,
+    which a re-gate or a retry would otherwise offer to close. `pup land` reads the newest `merge`
+    event, so it lands the re-gated head unchanged. Its refusals are amended: an `OPEN` PR whose
+    head is not the pin is refused naming `pup merge <id> --pr`, ahead of the plain not-`MERGED`
+    refusal, and a PR merged over a moved head says such a PR is re-gated before it is merged.
+    `pup merge` prints `Re-gated <id>` with the PR on a pass, and on a hard failure names the
+    stage, says the PR still vouches for the earlier pin, and gives the push-then-re-run retry.
+    LOOP.md's CI review step ends with the re-gate after a pushed fix round.
+    Tests: against a real repo, a bare origin and a fake gh, a `--pr` gate then a fix round pushed
+    from a review worktree is re-gated with every stage passing on the new head (a build that needs
+    the fix round's file), a second `merge` event with the new sha and the same url, the session
+    still merged, a `merged`-to-`merged` gate result, the PR edited and read back at the new pin,
+    origin's branch untouched and no draft; a `CLOSED` PR, a `MERGED` one and a head still at the
+    pin each refuse writing no event and editing no PR; a merge with no PR refuses asking gh
+    nothing; a landed session refuses; a merged session without `--pr` keeps the old refusal; a
+    local branch past the PR head refuses before any stage; a failing build refuses with the first
+    merge event newest and nothing steered; a head not based on the moved target fails
+    `fresh-base`; an accepted oversize diff re-gated larger files no second entry. `pup land`
+    lands a PR GitHub merged at the head a real re-gate pinned, and refuses an open PR whose head
+    moved naming the re-gate. The CLI prints both new lines.
 
 ## Implementation notes
 

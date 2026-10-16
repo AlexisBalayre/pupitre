@@ -42,6 +42,18 @@ resolve each thread, leave one PR comment for notes taken versus left as is, the
 `git worktree remove` it. Before pushing a rename or a move, grep the decisions doc for the old
 name. Never claim a fix in a reply before it is pushed.
 
+After pushing a fix round, re-gate before anyone merges the PR:
+
+```
+pup merge <task> --pr
+```
+
+The PR vouches only for the sha the gate pinned, and `pup land` refuses a PR whose head moved past
+it. The re-gate runs every stage on the pushed head, rewrites the PR description and records the
+new sha. It needs the local `pup/<task>` at the PR's head, which the review worktree leaves it at.
+Pass the same `--accept-debt` flags if stages flag again; a kind already in the ledger is not
+filed twice.
+
 ## 5. After the human merges
 
 ```
