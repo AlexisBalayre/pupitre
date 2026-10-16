@@ -1,0 +1,146 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T14:25:31.031Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38915108516",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38915108516",
+  "actor": "AlexisBalayre",
+  "commit_sha": "66f726b63a0aaf9528d724982dcd387984cfaedf",
+  "source": "pr",
+  "pr_number": 149,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "737-739",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the paste never lands and a dialog has taken the screen, steerPane skips clearInputBox but still throws the 'never-landed' refusal, which says \"Cleared the box … still running with an empty prompt\". Nothing was cleared, so the pasted text may still sit in the box behind the dialog. Reword the message for this branch or give it its own reason.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "698-700",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "kickoff goes through steerPane, so a launch that hits a startup dialog now refuses with 'box-absent' and deliverKickoff kills the session. The refusal still tells the operator \"The session runs on; answer what its window shows, then steer again\", right next to the \"Launch rolled back (session … killed)\" line printed at src/cli/index.ts:461. The existing 'never-landed' text has the same contradiction.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1066-1081",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "attachWindow strips $TMUX, so `pup attach <session>` or `pup ui` run from inside the operator's own tmux opens a nested client instead of being refused. The outer tmux then catches Ctrl-b, so the hint \"Ctrl-b d detaches\" detaches the outer client, not the nested one. The conductor attach already behaved this way. Consider mentioning Ctrl-b Ctrl-b d when process.env.TMUX is set.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "515",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`WindowTarget` is now exported from a *.service.ts file, which docs/conventions/general.md §Type separation forbids (\"Never inline an exported type/interface in a *.service.ts\"). It belongs in a *.types.ts file. AttachTarget in actions.service.ts is earlier precedent for the same break.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1062-1084",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conductor and session branches of `pup attach` repeat the same tail: the detach hint, attachWindow(...), and `if (status !== 0) process.exitCode = status ?? 1`. They differ only in the precheck, the noun and the target, so compute {target, noun} after the checks and run one shared tail.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "687-701",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "SteerNotDeliveredError now builds its message with a three-way nested ternary. A Record<reason, string> lookup or a switch would keep each reason's text separate and make adding the next reason easy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "718-724",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new steerPane JSDoc paragraph repeats inputBoxState's frame rule and decision 87, and its last sentence only narrates the three code branches. Keep only the WHY (a dialog under the echoed prompt must not read as a box holding text, because a key there picks an option) and cut the rest.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1056",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The added clause \"nor another session's window to type into (decision 87)\" adds a second rationale to the operator-only comment that decision 87 already records. Per AGENTS.md §Comments it may be a duplicate; keep it only if the reason isn't stated elsewhere at the seam.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "698-700",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'box-absent' message says \"(a dialog or menu holds the pane)\" as fact, but inputBoxState returns 'absent' for any pane without a box frame. Hedge it, e.g. \"usually a dialog or menu\". The same wording appears in decision 87 and SKILL.md.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "No review-context reviewer was spawned because the PR touches no spec, protocol or infra surface (CORS, HTTP, docker, CI or settings). Security and maintainability each ran a single instance even though the diff (540 lines) is past the size gate: the non-test source changes are about 200 lines with a narrow trust surface. Maintainability ran on sonnet. Two docs nits were reported at low confidence and recorded as medium, because the schema allows only high or medium."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4232383,
+  "duration_ms": 201811,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 10855,
+    "cache_read": 257527,
+    "cache_creation": 58022,
+    "total": 326418
+  }
+}
