@@ -368,9 +368,15 @@ describe('dashboard actions', () => {
     // Pinned, so an attach to a session whose window is gone refuses rather
     // than landing in a live `pup-<id>-1` the bare name prefix-matches
     // (decision 46).
-    it('targets the session window on the default server, by its pinned name', () => {
-      expect(sessionAttachTarget(SESSION).args).toEqual(['attach', '-t', `=pup-${SESSION}:`]);
+    it('attaches to the session window on the default server, by its pinned name', () => {
       expect(sessionAttachTarget(SESSION).label).toBe(`pup-${SESSION}`);
+
+      attachTo(sessionAttachTarget(SESSION));
+
+      expect(vi.mocked(spawnSync).mock.calls[0]?.slice(0, 2)).toEqual([
+        'tmux',
+        ['attach', '-t', `=pup-${SESSION}:`],
+      ]);
     });
 
     // The conductor's window is on a tmux server of its own, so a bare
@@ -381,7 +387,9 @@ describe('dashboard actions', () => {
         conductor: { running: true, name: 'pup-conductor-ab12cd34ef56', attachCommand: '' },
       } as DashboardSnapshot;
 
-      expect(conductorAttachTarget(snapshot).args).toEqual([
+      attachTo(conductorAttachTarget(snapshot));
+
+      expect(vi.mocked(spawnSync).mock.calls[0]?.[1]).toEqual([
         '-L',
         'pup-conductor-ab12cd34ef56',
         'attach',
@@ -393,16 +401,44 @@ describe('dashboard actions', () => {
     it('hands tmux the terminal it is holding', () => {
       const result = attachTo(sessionAttachTarget(SESSION));
 
-      expect(spawnSync).toHaveBeenCalledWith('tmux', ['attach', '-t', `=pup-${SESSION}:`], {
-        stdio: 'inherit',
-      });
+      expect(vi.mocked(spawnSync).mock.calls[0]?.[2]).toMatchObject({ stdio: 'inherit' });
       expect(result.message).toContain(`pup-${SESSION}`);
+    });
+
+    // The spawn used to be this screen's own, with the operator's whole
+    // environment: an attach that starts a server hands it that environment,
+    // and `$TMUX` makes tmux refuse to nest (decisions 47, 87).
+    it("keeps the operator's API key and $TMUX out of tmux's environment", () => {
+      vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-operator');
+      vi.stubEnv('TMUX', '/private/tmp/tmux-501/default,1,0');
+      try {
+        attachTo(sessionAttachTarget(SESSION));
+      } finally {
+        vi.unstubAllEnvs();
+      }
+
+      const env = vi.mocked(spawnSync).mock.calls[0]?.[2]?.env;
+      expect(env).toBeDefined();
+      expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
+      expect(env).not.toHaveProperty('TMUX');
     });
 
     it('reports a tmux that refused rather than claiming a detach', () => {
       vi.mocked(spawnSync).mockReturnValue({ status: 1 } as ReturnType<typeof spawnSync>);
 
       expect(attachTo(sessionAttachTarget(SESSION)).failed).toBe(true);
+    });
+
+    it('reports a tmux that could not be spawned', () => {
+      vi.mocked(spawnSync).mockReturnValueOnce({
+        status: null,
+        error: new Error('spawnSync tmux ENOENT'),
+      } as unknown as ReturnType<typeof spawnSync>);
+
+      expect(attachTo(sessionAttachTarget(SESSION))).toEqual({
+        message: 'spawnSync tmux ENOENT',
+        failed: true,
+      });
     });
   });
 

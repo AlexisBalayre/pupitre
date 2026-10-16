@@ -21,8 +21,9 @@ import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import {
   attachCommand,
-  attachConductor,
+  attachWindow,
   conductorName,
+  hasSessionWindow,
   killWatcher,
   launchWatcher,
   SessionPaneMissingError,
@@ -1048,20 +1049,38 @@ export function buildProgram(): Command {
     });
 
   program
-    .command('attach')
-    .description("Attach this terminal to the conductor's window (Ctrl-b d detaches)")
-    .action(() => {
+    .command('attach [session]')
+    .description(
+      "Attach this terminal to the conductor's window, or to a session's (Ctrl-b d detaches)",
+    )
+    .action((session?: string) => {
       const { repoPath, db } = project();
       // The operator attaches; a session and the conductor are not handed the
       // socket its window lives on, as `pup status` does not print it to them
-      // (decision 47).
+      // (decision 47), nor another session's window to type into (decision 87).
       if (!showAttachCommand(db)) return refuse('`pup attach` is operator-only.');
-      if (!isConductorRunning(repoPath)) return refuse(NO_CONDUCTOR_RUNNING);
-      // Said before the terminal is handed over, since attach blocks until detach.
+      if (session === undefined) {
+        if (!isConductorRunning(repoPath)) return refuse(NO_CONDUCTOR_RUNNING);
+        // Said before the terminal is handed over, since attach blocks until detach.
+        console.log(
+          'Ctrl-b d detaches and leaves the conductor running; Ctrl-c or /exit would kill it',
+        );
+        const status = attachWindow({ conductorOf: projectId(repoPath) });
+        if (status !== 0) process.exitCode = status ?? 1;
+        return;
+      }
+      // Looked up first, so the id tmux is handed is one this project minted.
+      if (!getSession(db, session)) return refuse(`No session ${sanitizeReason(session)}.`);
+      if (!hasSessionWindow(session)) {
+        return refuse(
+          `Session ${sanitizeReason(session)} has no live window to attach to: it has ended, ` +
+            'or its window was killed. `pup status --history` shows its state.',
+        );
+      }
       console.log(
-        'Ctrl-b d detaches and leaves the conductor running; Ctrl-c or /exit would kill it',
+        'Ctrl-b d detaches and leaves the session running; Ctrl-c or /exit would kill it',
       );
-      const status = attachConductor(projectId(repoPath));
+      const status = attachWindow({ sessionId: session });
       if (status !== 0) process.exitCode = status ?? 1;
     });
 

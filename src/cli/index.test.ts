@@ -47,7 +47,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   windowLabel: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .windowLabel,
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
-  attachConductor: vi.fn(() => 0),
+  attachWindow: vi.fn(() => 0),
+  hasSessionWindow: vi.fn(() => true),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -123,8 +124,9 @@ vi.mock('../core/session-handoff.service.js', () => ({
 
 import { render } from 'ink';
 import {
-  attachConductor,
+  attachWindow,
   deadTurnError,
+  hasSessionWindow,
   launchWatcher,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -2731,7 +2733,7 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['attach'], { from: 'user' });
 
-      expect(attachConductor).not.toHaveBeenCalled();
+      expect(attachWindow).not.toHaveBeenCalled();
       expect(logs).toEqual([]);
       expect(errors.join('\n')).toContain('`pup conductor start`');
       expect(process.exitCode).toBe(1);
@@ -2742,7 +2744,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       vi.mocked(isConductorRunning).mockReturnValue(true);
       let printedBeforeAttach: string[] = [];
-      vi.mocked(attachConductor).mockImplementationOnce(() => {
+      vi.mocked(attachWindow).mockImplementationOnce(() => {
         printedBeforeAttach = [...logs];
         return 0;
       });
@@ -2752,14 +2754,14 @@ describe('CLI commands', () => {
       expect(printedBeforeAttach).toEqual([
         'Ctrl-b d detaches and leaves the conductor running; Ctrl-c or /exit would kill it',
       ]);
-      expect(attachConductor).toHaveBeenCalledWith(projectId(repo));
+      expect(attachWindow).toHaveBeenCalledWith({ conductorOf: projectId(repo) });
       expect(process.exitCode).toBeUndefined();
     });
 
     it("exits with tmux's status when the attach fails", () => {
       useCwd(initRepo());
       vi.mocked(isConductorRunning).mockReturnValue(true);
-      vi.mocked(attachConductor).mockReturnValueOnce(1);
+      vi.mocked(attachWindow).mockReturnValueOnce(1);
 
       buildProgram().parse(['attach'], { from: 'user' });
 
@@ -2779,9 +2781,90 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['attach'], { from: 'user' });
 
-      expect(attachConductor).not.toHaveBeenCalled();
+      expect(attachWindow).not.toHaveBeenCalled();
       expect(errors).toEqual(['`pup attach` is operator-only.']);
       expect(process.exitCode).toBe(1);
+    });
+
+    describe('<session>', () => {
+      it("prints the detach hint, then attaches to that session's window", () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        let printedBeforeAttach: string[] = [];
+        vi.mocked(attachWindow).mockImplementationOnce(() => {
+          printedBeforeAttach = [...logs];
+          return 0;
+        });
+
+        buildProgram().parse(['attach', 's1'], { from: 'user' });
+
+        expect(hasSessionWindow).toHaveBeenCalledWith('s1');
+        expect(printedBeforeAttach).toEqual([
+          'Ctrl-b d detaches and leaves the session running; Ctrl-c or /exit would kill it',
+        ]);
+        expect(attachWindow).toHaveBeenCalledWith({ sessionId: 's1' });
+        expect(isConductorRunning).not.toHaveBeenCalled();
+        expect(process.exitCode).toBeUndefined();
+      });
+
+      it('refuses a session with no live window, attaching nothing', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        vi.mocked(hasSessionWindow).mockReturnValueOnce(false);
+
+        buildProgram().parse(['attach', 's1'], { from: 'user' });
+
+        expect(attachWindow).not.toHaveBeenCalled();
+        expect(logs).toEqual([]);
+        expect(errors).toEqual([
+          'Session s1 has no live window to attach to: it has ended, or its window was killed. ' +
+            '`pup status --history` shows its state.',
+        ]);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('refuses a session this project does not hold, before asking tmux', () => {
+        useCwd(initRepo());
+
+        buildProgram().parse(['attach', 's-elsewhere'], { from: 'user' });
+
+        expect(hasSessionWindow).not.toHaveBeenCalled();
+        expect(attachWindow).not.toHaveBeenCalled();
+        expect(errors).toEqual(['No session s-elsewhere.']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it("exits with tmux's status when the attach fails", () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        vi.mocked(attachWindow).mockReturnValueOnce(1);
+
+        buildProgram().parse(['attach', 's1'], { from: 'user' });
+
+        expect(process.exitCode).toBe(1);
+      });
+
+      // A session handed another's window could type into it as the operator.
+      it.each([
+        ['a session', 'PUP_SESSION_ID', 's1'],
+        ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+      ])('refuses %s', (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        seedSession(repo, 's2');
+        vi.stubEnv(variable, value);
+
+        buildProgram().parse(['attach', 's2'], { from: 'user' });
+
+        expect(hasSessionWindow).not.toHaveBeenCalled();
+        expect(attachWindow).not.toHaveBeenCalled();
+        expect(errors).toEqual(['`pup attach` is operator-only.']);
+        expect(process.exitCode).toBe(1);
+      });
     });
   });
 
