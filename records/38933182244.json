@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T16:38:28.655Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38933182244",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38933182244",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1d2e2c468ee9b510da16fa55eb319e8f588d7d23",
+  "source": "pr",
+  "pr_number": 152,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7b0b7b005333d27b845a81fa80ae48c0093e3fe4",
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1247-1254",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1255",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "GNU make exits 2 whenever a recipe fails. So a custom adapter whose test command is `make test` (built as `sh -c` in src/adapters/custom.adapter.ts L156-161) never gets a re-run for a real flake. It is also treated the same as pytest's interrupt exit 2. This fails safe and falls under decision 94's accepted 'failing-tests status is not 1' case. But the decision text names only runners (cargo's 101), not wrappers that rewrite the runner's status 1, so the docs could mention make as a common case that loses the re-run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1238-1247",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `isRerunnable` JSDoc lists exit codes (130, pytest's 2, 129, 143) and the status-1 runners. All of that follows from `status === 1` and decision 94 already records it. The list will go stale as runner conventions change. Trimming the comment to the two WHYs (a Ctrl-C reaches the child; a timed-out re-run doubles the merge-lock hold) would leave the exit-code details in decision 94 alone.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8608931999999999,
+  "duration_ms": 127033,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 4593,
+    "cache_read": 202244,
+    "cache_creation": 30618,
+    "total": 237467
+  }
+}
