@@ -42,7 +42,7 @@ export interface RegatePlan extends PullRequestPlan {
   regate: { head: string; prUrl: string };
 }
 
-export interface MergeToRegate {
+interface MergeToRegate {
   prUrl: string;
   sha: string;
   target: string;
