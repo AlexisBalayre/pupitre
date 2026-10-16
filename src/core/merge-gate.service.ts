@@ -1134,7 +1134,10 @@ function regateMerged(
       detail: 'not measured — a re-gate reads the pushed branch, not the session worktree',
     },
   ];
-  const refused = (): MergeOutcome => refuseGate(db, session, sandbox, stages);
+  const refused = (): MergeOutcome => ({
+    ...refuseGate(db, session, sandbox, stages),
+    regated: true,
+  });
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // Pinned first, and once: no rebase will move the branch.
   const sha = pinRegatedHead(req.repoPath, session.branch, regate.head, regate.prUrl);
@@ -1185,6 +1188,7 @@ function regateMerged(
     debtCandidates: measured.debtCandidates,
     prUrl: regate.prUrl,
     prWasAdopted: true,
+    regated: true,
   };
 }
 
@@ -1285,8 +1289,11 @@ function measureBranch(
   }
 
   const flaggedDebt: { description: string; files: string[] }[] = [];
+  // A merged session being re-gated has no window to steer (decision 86).
   const acceptHint =
-    'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
+    session.state === 'merged'
+      ? 'Re-run with --accept-debt "<reason>" --review-by "<condition>".'
+      : 'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
   const flagDetail = (summary: string): string =>
     req.acceptDebt
       ? `${summary} — accepted as debt: ${req.acceptDebt.reason}`
@@ -1585,12 +1592,16 @@ function pinRegatedHead(repoPath: string, branch: string, head: string, prUrl: s
 /**
  * A ledger description with its figures dropped, so a re-gate tells the kind
  * of a flag from the numbers a fix round moved; undefined unless `sessionId`
- * filed it, which every flag description says at its end.
+ * filed it, which every flag description says at its end. The figures are the
+ * parenthesised group right before "merged from", and only its digits go: a
+ * digit in a path or name (`packages/app2`) is part of the kind (decision 86).
  */
 function debtKind(description: string, sessionId: string): string | undefined {
   const suffix = ` session ${sessionId}`;
   if (!description.endsWith(suffix)) return undefined;
-  return description.slice(0, -suffix.length).replace(/\d+/g, '#');
+  return description
+    .slice(0, -suffix.length)
+    .replace(/\([^()]*\)(?= merged from$)/, (figures) => figures.replace(/\d+/g, '#'));
 }
 
 /**

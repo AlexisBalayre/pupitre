@@ -1805,9 +1805,6 @@ export function buildProgram(): Command {
             'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
           );
         }
-        // A merged session is re-gated on its PR's new head, or refused by the
-        // gate itself; read here only to word the outcome (decision 86).
-        const regate = getSession(db, session)?.state === 'merged';
         let outcome: MergeOutcome;
         // The gate holds a lock directory it removes in a `finally`, which a
         // process killed by a signal never reaches — and the next merge then
@@ -1853,7 +1850,7 @@ export function buildProgram(): Command {
         printGateReport(outcome.report);
         switch (outcome.status) {
           case 'merged':
-            if (regate && outcome.prUrl) {
+            if (outcome.regated && outcome.prUrl) {
               console.log(
                 `Re-gated ${session}; ${outcome.prUrl} now carries this gate report for its new head — merge it there, then run \`pup land ${session}\`.`,
               );
@@ -1877,7 +1874,7 @@ export function buildProgram(): Command {
             break;
           case 'refused': {
             const failedStage = outcome.report.stages.find((s) => s.status === 'fail');
-            if (regate && failedStage) {
+            if (outcome.regated && failedStage) {
               console.log(
                 `Re-gate refused: ${sanitizeReason(failedStage.stage)} failed on the new head, and the PR still vouches for the earlier pin only. Fix it on the branch, push, then re-run \`pup merge ${session} --pr\`.`,
               );
@@ -1887,8 +1884,17 @@ export function buildProgram(): Command {
               .filter((s) => s.status === 'flagged')
               .map((s) => sanitizeReason(s.stage))
               .join(', ');
+            const approvedByHint = conductor ? ' --approved-by <who>' : '';
+            // A merged session has no window to steer: accepting the debt is
+            // its only way through (decision 86).
+            if (outcome.regated) {
+              console.log(
+                `Re-gate refused: ${flagged} flagged on the new head, and the PR still vouches for the earlier pin only. Re-run \`pup merge ${session} --pr\` with --accept-debt "<reason>" --review-by "<condition>"${approvedByHint}, or fix it on the branch, push, then re-gate.`,
+              );
+              break;
+            }
             console.log(
-              `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>"${conductor ? ' --approved-by <who>' : ''}, or steer the session to address the flags.`,
+              `Merge refused: ${flagged} flagged. Re-run with --accept-debt "<reason>" --review-by "<condition>"${approvedByHint}, or steer the session to address the flags.`,
             );
             break;
           }
