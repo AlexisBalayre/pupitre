@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T15:51:33.246Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38926976922",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38926976922",
+  "actor": "AlexisBalayre",
+  "commit_sha": "53c588068be9d310318c37eb2f70166e2b5713f9",
+  "source": "pr",
+  "pr_number": 150,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4524",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision-86 amendment says mergeToRegate, planRegate, regateMerged and pinRegatedHead \"moved there unchanged\", but the same paragraph then says planRegate now returns RegatePlan and regateMerged takes the plan alone, so two of them did change signature; say \"with their logic unchanged\" instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "41",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `export interface RegatePlan` is declared inline in a *.service.ts file, which docs/conventions/general.md forbids (\"Never inline an exported type/interface in a *.service.ts or *.routes.ts file\"). Earlier review rounds already raised this.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer said it did not read the merge-gate.test.ts diff, read only the first 120 lines of regate.service.ts, and read only part of the merge-gate.service.ts diff. So testing.md compliance was not checked by the conventions area. Both correctness instances did cover the test file's behaviour."
+    },
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned because the PR touches no spec, protocol, infra or CI surface (it is a move inside src/core plus a note in docs/09-decisions.md)."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4470438000000003,
+  "duration_ms": 112090,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 7931,
+    "cache_read": 167518,
+    "cache_creation": 36135,
+    "total": 211594
+  }
+}
