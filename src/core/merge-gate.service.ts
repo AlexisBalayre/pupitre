@@ -88,9 +88,6 @@ import type {
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
-// land.service.ts still imports COMMIT_SHA from here; a later task switches that import and drops this line.
-export { COMMIT_SHA } from './merge-gate.constants.js';
-
 export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
     runGit(repoPath, ['merge-base', '--is-ancestor', maybeAncestor, ref]);

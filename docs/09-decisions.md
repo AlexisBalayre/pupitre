@@ -4530,9 +4530,7 @@ changes back into those docs is pending.
     while loading. `planRegate` returns a `RegatePlan`, whose `regate` field is no longer an
     optional part of every `PullRequestPlan`, and `regateMerged` takes that plan alone instead of
     the plan and its `regate` field. `COMMIT_SHA` is defined once, in `merge-gate.constants.ts`,
-    and the dashboard imports it instead of keeping its own copy; `merge-gate.service.ts`
-    re-exports it for `land.service.ts` only, until a later task switches that import and drops
-    the line. No behaviour changed: every
+    and the dashboard and `land.service.ts` import it from there. No behaviour changed: every
     re-gate test asserts what it did, the refusals that throw before writing share
     `expectRefusedUnwritten`, and the two that delete the local branch share one teardown helper.
 
