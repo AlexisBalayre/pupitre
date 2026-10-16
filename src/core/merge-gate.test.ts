@@ -3079,6 +3079,99 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         { id: other, description: 'Oversize diff (900 lines) merged from session s9' },
       ]);
     });
+
+    it.each<[string, string, Adapter]>([
+      [
+        'duplication',
+        'Duplicated lines rose from 0 to 5',
+        debtAdapter({ duplication: () => ({ duplicatedLines: 8, blocks: [] }) }),
+      ],
+      [
+        'unmeasured coverage',
+        'Coverage unmeasured over 1 changed source file(s)',
+        debtAdapter({ coverableFiles, coverage: () => ({ files: {} }) }),
+      ],
+    ])(
+      'files no second ledger entry for a held %s flag whose figures moved',
+      (_label, held, adapter) => {
+        const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
+        gateThenFix();
+        seedDebtBaseline({ duplicatedLines: 0 });
+        insertLedgerEntry(db, {
+          projectId: 'proj-1',
+          description: `${held} in session ${SESSION_ID}`,
+          files: ['src/feature.ts'],
+          reason: 'older',
+          acceptedBy: 'human',
+          reviewBy: 'later',
+        });
+
+        const outcome = regate([adapter], fakeGh([openPrOnMain]), debt);
+
+        expect(outcome).toMatchObject({ status: 'merged', regated: true });
+        expect(outcome.report.stages.filter((stage) => stage.status === 'flagged')).toHaveLength(1);
+        expect(listLedgerEntries(db, 'proj-1').map((entry) => entry.description)).toEqual([
+          `${held} in session ${SESSION_ID}`,
+        ]);
+      },
+    );
+
+    /** The fix round's package: its name carries a digit, and it has no test script. */
+    const untestedApp2: Adapter = {
+      ...fixChecking,
+      touchedNestedPackages: () => [
+        {
+          dir: 'src/app2',
+          changedFiles: ['src/fix.ts'],
+          droppedSources: [],
+          commands: [],
+          missing: ['test'],
+        },
+      ],
+    };
+
+    it('files a new ledger entry for a flag differing from a held one only by a digit in a name', () => {
+      const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
+      gateThenFix();
+      insertLedgerEntry(db, {
+        projectId: 'proj-1',
+        description: `Nested package src/app1 changed with no test script, merged from session ${SESSION_ID}`,
+        files: ['src/app1/index.ts'],
+        reason: 'older',
+        acceptedBy: 'human',
+        reviewBy: 'later',
+      });
+
+      const outcome = regate([untestedApp2], fakeGh([openPrOnMain]), debt);
+
+      expect(outcome).toMatchObject({ status: 'merged', regated: true });
+      expect(listLedgerEntries(db, 'proj-1').map((entry) => entry.description)).toEqual(
+        expect.arrayContaining([
+          `Nested package src/app1 changed with no test script, merged from session ${SESSION_ID}`,
+          `Nested package src/app2 changed with no test script, merged from session ${SESSION_ID}`,
+        ]),
+      );
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(2);
+    });
+
+    it('refuses a flag without --accept-debt, writing nothing and suggesting no steer', () => {
+      gateThenFix();
+      const ledger = listLedgerEntries(db, 'proj-1').length;
+
+      const outcome = regate([untestedApp2]);
+
+      expect(outcome).toMatchObject({ status: 'refused', regated: true });
+      expect(outcome.report.stages.some((stage) => stage.status === 'fail')).toBe(false);
+      const flagged = outcome.report.stages.find((stage) => stage.status === 'flagged');
+      expect(flagged?.detail).toContain('--accept-debt');
+      expect(flagged?.detail).not.toContain('steer');
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(ledger);
+      expect(merges()).toHaveLength(1);
+      expect(merges().at(-1)?.sha).toBe(pinned);
+      expect(prEdits()).toBe(1);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(steerPane).not.toHaveBeenCalled();
+    });
   });
 
   it('with openPr requires an origin remote', () => {

@@ -72,6 +72,12 @@ export interface MergeOutcome {
    */
   prWasAdopted?: boolean;
   /**
+   * True when this run re-gated a merged session on its PR's new head
+   * (decision 86): passed or refused, the session has no window to steer, and
+   * a refusal leaves the PR vouching for the earlier pin only.
+   */
+  regated?: boolean;
+  /**
    * On merge: open ledger entries whose files this diff touched — candidates
    * for `pup debt close`, pending human confirmation (docs/04).
    */
