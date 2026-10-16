@@ -37,7 +37,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Backlog | `pup plan` (list), `pup plan drop|edit <task>` |
 | Start a session for a task | `pup launch <task> [--model m]`; `pup new "<goal>" --scope ...` plans and launches |
 | Who needs me | `pup status`, `pup ui` (live), `pup watch` (conflict radar) |
-| Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool |
+| Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
 | Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |
@@ -58,6 +58,9 @@ checkable sentences. A criterion or goal starting with `--` is parsed as an opti
 - The conductor runs in tmux on its own socket. `pup status` prints the attach line when it is
   up. Hand it an order with `pup conductor tell "<message>"`, which keeps the text off tmux's
   argv and says whether it landed, or look at it with `pup attach` (Ctrl-b d detaches).
+  `pup attach <session>` enters a worker's window the same way; it refuses a session whose
+  window is gone. A steer refuses, pressing nothing, when a dialog holds the session's pane:
+  attach, answer the dialog, then steer again.
 - `pup merge` runs from the project's main checkout, never from inside a `.worktrees/<task>`
   directory, which is refused as "sessions cannot merge sessions".
 

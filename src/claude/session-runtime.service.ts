@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -511,7 +512,7 @@ function conductorSocket(repoProjectId: string): string {
  * know — a caller names the window it means and gets back a label to print or
  * an argv to run.
  */
-type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
+export type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
 
 /** What the window is called: what a peer addresses it by, and what the operator reads. */
 export function windowLabel(target: WindowTarget): string {
@@ -549,15 +550,18 @@ export function attachCommand(target: WindowTarget): string {
 }
 
 /**
- * Hand this terminal to the conductor's window and take it back when the
+ * Hand this terminal to a window pup opened and take it back when the
  * operator detaches: the argv `attachCommand` prints, run on the terminal it
- * was called from. The environment is scrubbed like every tmux call's: an
- * attach that finds the server gone starts one on that socket, whose global
- * environment would otherwise hold the operator's (decision 47). The exit
+ * was called from — by `pup attach` and `pup ui` alike. The environment is
+ * scrubbed like every tmux call's: an attach that finds the server gone
+ * starts one on that socket, whose global environment would otherwise hold
+ * the operator's, and an inherited `$TMUX` would point a session's attach,
+ * which names no socket, at whichever server the operator's terminal is on
+ * rather than the default one sessions live on (decisions 47, 87). The exit
  * status is tmux's, `null` when a signal ended it.
  */
-export function attachConductor(repoProjectId: string): number | null {
-  const result = spawnSync('tmux', attachArgs({ conductorOf: repoProjectId }), {
+export function attachWindow(target: WindowTarget): number | null {
+  const result = spawnSync('tmux', attachArgs(target), {
     stdio: 'inherit',
     env: tmuxEnv(),
   });
@@ -626,6 +630,11 @@ export function hasConductorWindow(repoProjectId: string): boolean {
   return hasWindow(conductorName(repoProjectId), conductorSocket(repoProjectId));
 }
 
+/** Whether the session's window is up on the default server, where every session's lives. */
+export function hasSessionWindow(sessionId: string): boolean {
+  return hasWindow(tmuxName(sessionId));
+}
+
 /**
  * The pane the conductor's window runs in, or undefined when no conductor is
  * up. Nothing typed into it after its kickoff until the turn watchdog did, so
@@ -664,10 +673,10 @@ export function conductorPane(repoProjectId: string): SessionPane | undefined {
 }
 
 /**
- * A steer that was not submitted: either its paste never showed up whole in
- * the session's input box (the box was then cleared), or the box held text
- * Ctrl-U could not clear, so nothing was pasted at all. Either way nothing
- * was submitted and the session runs on untouched.
+ * A steer that was not submitted: its paste never showed up whole in the
+ * session's input box (the box was then cleared), or the box held text Ctrl-U
+ * could not clear, or no box was on screen at all, so nothing was pasted.
+ * Either way nothing was submitted and the session runs on untouched.
  */
 export class SteerNotDeliveredError extends Error {
   readonly sessionId: string;
@@ -675,16 +684,20 @@ export class SteerNotDeliveredError extends Error {
   constructor(
     sessionId: string,
     chars: number,
-    reason: 'never-landed' | 'box-not-cleared' = 'never-landed',
+    reason: 'never-landed' | 'box-not-cleared' | 'box-absent' = 'never-landed',
   ) {
     super(
       reason === 'never-landed'
         ? `Steer to session ${sessionId} did not land: its input box never held the whole ` +
             `${chars}-char message. Cleared the box and submitted nothing; the session is ` +
             'still running with an empty prompt.'
-        : `Steer to session ${sessionId} did not land: its input box held text that Ctrl-U ` +
+        : reason === 'box-not-cleared'
+          ? `Steer to session ${sessionId} did not land: its input box held text that Ctrl-U ` +
             `could not clear, so the ${chars}-char message was not pasted. Nothing was ` +
-            'submitted; the session is still running with the box as it was.',
+            'submitted; the session is still running with the box as it was.'
+          : `Steer to session ${sessionId} did not land: its input box is not on screen (a ` +
+            `dialog or menu holds the pane), so the ${chars}-char message was not pasted and ` +
+            'no key was pressed. The session runs on; answer what its window shows, then steer again.',
     );
     this.name = 'SteerNotDeliveredError';
     this.sessionId = sessionId;
@@ -702,23 +715,33 @@ export class SteerNotDeliveredError extends Error {
  * After Enter, submission is verified against the pane and Enter retried: an
  * extra Enter on an empty input box is a no-op, so a false "still pending"
  * read is harmless.
+ *
+ * The box is read by its frame (`inputBoxState`), as `pup conductor tell`
+ * reads it: a dialog under the echo of the prompt just submitted is no box,
+ * where the echo alone read as one holding text, and a key pressed there picks
+ * an option (decision 87). So a steer refuses a box that is not on screen
+ * before any key, and stops pressing Enter once the box leaves the screen.
  */
 export function steerPane(pane: SessionPane, message: string): void {
+  const box = readInputBox(pane);
+  if (box === 'absent') {
+    throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-absent');
+  }
   // A paste appends to whatever the box holds (a draft, a leftover), and the
   // box then never reads as the message alone; start from an empty one, and
   // say so when one cannot be had rather than paste into it and refuse later.
-  if (hasUnsubmittedInput(captureInputBox(pane)) && !clearInputBox(pane)) {
+  if (box === 'holds' && !clearInputBox(pane)) {
     throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');
   }
   pasteText(pane, message);
   if (!awaitPasteLanded(pane, message)) {
-    clearInputBox(pane);
+    if (readInputBox(pane) !== 'absent') clearInputBox(pane);
     throw new SteerNotDeliveredError(pane.sessionId, message.length);
   }
   pressEnter(pane);
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
-    if (!hasUnsubmittedInput(captureInputBox(pane))) return;
+    if (readInputBox(pane) !== 'holds') return;
     pressEnter(pane);
   }
 }
@@ -729,10 +752,22 @@ export function steerPane(pane: SessionPane, message: string): void {
  * which every process on the machine can read, and `send-keys` would type it
  * a key at a time. The caller's own argv may still carry it, as `pup steer`'s
  * and `pup conductor tell`'s do (decision 85).
+ *
+ * The buffer is named for this call. An unnamed load lands on top of the
+ * server's stack and an unnamed paste takes whatever is on top, so a steer
+ * and a tell racing on one server pasted each other's text (decision 87).
+ * `-d` deletes it once pasted; a paste that failed deletes it too, so the
+ * message is not left on the server for `show-buffer` to read.
  */
 function pasteText(pane: SessionPane, message: string): void {
-  tmuxAt(pane, ['load-buffer', '-'], message);
-  tmuxAt(pane, ['paste-buffer', '-d', '-p', '-t', paneTarget(pane)]);
+  const buffer = `pup-paste-${randomUUID()}`;
+  tmuxAt(pane, ['load-buffer', '-b', buffer, '-'], message);
+  try {
+    tmuxAt(pane, ['paste-buffer', '-b', buffer, '-d', '-p', '-t', paneTarget(pane)]);
+  } catch (error) {
+    tmuxProbe(pane.socket, ['delete-buffer', '-b', buffer]);
+    throw error;
+  }
 }
 
 function pressEnter(pane: SessionPane): void {
