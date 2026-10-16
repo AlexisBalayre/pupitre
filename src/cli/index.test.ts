@@ -5364,6 +5364,57 @@ describe('CLI commands', () => {
       );
     });
 
+    /** A session a `--pr` gate merged, whose PR a CI fix round has since moved. */
+    function seedMergedSession(repo: string): void {
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      for (const state of ['running', 'awaiting-review', 'merged'] as const) {
+        transitionSession(db, 's1', state);
+      }
+      db.close();
+    }
+
+    it('reports a re-gate of a merged session as the PR vouching for its new head', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedMergedSession(repo);
+      vi.mocked(runMergeGate).mockReturnValue(
+        mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: true }),
+      );
+
+      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+
+      expect(logs).toContain(
+        'Re-gated s1; https://github.com/acme/repo/pull/7 now carries this gate report for its ' +
+          'new head — merge it there, then run `pup land s1`.',
+      );
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reports a re-gate a hard stage refused, naming the stage and the retry', () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedMergedSession(repo);
+      vi.mocked(runMergeGate).mockReturnValue({
+        status: 'refused',
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'sandbox-exec (macOS)',
+          stages: [{ stage: 'build', status: 'fail', detail: 'tsc exited 2' }],
+        },
+        rejectCount: 0,
+      });
+
+      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+
+      expect(logs).toContain(
+        'Re-gate refused: build failed on the new head, and the PR still vouches for the ' +
+          'earlier pin only. Fix it on the branch, push, then re-run `pup merge s1 --pr`.',
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
     it('reports an adopted PR when one was already open', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockReturnValue(

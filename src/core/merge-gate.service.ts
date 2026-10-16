@@ -39,10 +39,16 @@ import {
   createPullRequest,
   findOpenPullRequest,
   originRepoSlug,
+  readPullRequestLanding,
   rewritePullRequest,
 } from './github.client.js';
 import { readOriginUrl } from './init.service.js';
-import { hasOpenLedgerEntry, insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
+import {
+  hasOpenLedgerEntry,
+  insertLedgerEntry,
+  type LedgerEntryRow,
+  listLedgerEntries,
+} from './ledger.repository.js';
 import {
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_FLAG_LINES,
@@ -59,10 +65,13 @@ import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
+  decodeEvent,
   getProject,
   getSession,
   getTask,
   incrementRejectCount,
+  listEvents,
+  type ProjectRow,
   readTaskSpec,
   type SessionRow,
   saveProjectBaseline,
@@ -70,7 +79,7 @@ import {
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import type { PullRequestRef } from './types/github.types.js';
-import type { ProjectBaseline } from './types/init.types.js';
+import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type {
   GateReport,
   GateStageResult,
@@ -222,12 +231,15 @@ function formatGateReport(report: GateReport): string {
  * at two rejections then park as blocked (decisions 7, 15). Any soft flag without
  * --accept-debt refuses the merge but leaves the session reviewable (decision 17);
  * with it, each flag writes a ledger entry. The whole run holds the per-repo
- * merge lock.
+ * merge lock. A merged session whose open PR's head moved past the pin is gated
+ * again on that head with `--pr` (decision 86).
  */
 export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   const session = getSession(db, req.sessionId);
   if (!session) throw new Error(`No session ${req.sessionId}.`);
-  if (session.state !== 'awaiting-review') {
+  const merged =
+    session.state === 'merged' && req.openPr ? mergeToRegate(db, session.id) : undefined;
+  if (session.state !== 'awaiting-review' && !merged) {
     throw new SessionNotReviewableError(req.sessionId, session.state);
   }
   // First of the refusals that spawn nothing: everything below runs children,
@@ -252,9 +264,10 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   // rebase runs in the worktree and the fast-forward's checkout in the main
   // one, and a worktree-scoped config is only visible from its own worktree
   // (decision 50). The main checkout is asked again under the lock, since the
-  // stages run while the session is alive (decision 80).
+  // stages run while the session is alive (decision 80). A re-gate rebases
+  // nothing and its worktree is gone with the first merge.
   assertNoArmedGitDrivers(req.repoPath);
-  assertNoArmedGitDrivers(session.worktree_path);
+  if (!merged) assertNoArmedGitDrivers(session.worktree_path);
   const target = currentBranch(req.repoPath);
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
@@ -275,7 +288,9 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     // Everything GitHub can refuse is settled here, before ten minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
-    pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
+    pullRequest = merged
+      ? planRegate(req.repoPath, session.id, merged, ref, originUrl)
+      : { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
   return withMergeLock(req.repoPath, () => {
     // Not under the project's state dir beside the conductor's checkout: the
@@ -284,15 +299,19 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     // resolved, because the sandbox matches resolved paths.
     const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
     try {
-      return gateAndMerge(
-        db,
-        req,
-        session,
-        target,
-        sandbox,
-        join(checkoutRoot, 'checkout'),
-        pullRequest,
-      );
+      const checkoutDir = join(checkoutRoot, 'checkout');
+      return pullRequest?.regate
+        ? regateMerged(
+            db,
+            req,
+            session,
+            pullRequest,
+            pullRequest.regate,
+            target,
+            sandbox,
+            checkoutDir,
+          )
+        : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest);
     } finally {
       // Still under the lock, on a pass, a failed stage and a throw alike.
       // Swallowed: a cleanup failure must not replace the gate's outcome or
@@ -746,6 +765,146 @@ interface PullRequestPlan extends PullRequestRef {
   originUrl: string;
   /** Set when an open PR for this branch already exists and passed adoption checks. */
   adoptedUrl?: string;
+  /**
+   * Set on a re-gate (decision 86): the merged session's open PR, and the head
+   * GitHub reports for it, which the local branch must hold when it is pinned.
+   */
+  regate?: { head: string; prUrl: string };
+}
+
+/** A sha as the gate pins it, which can then never read as an option. */
+export const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+const NOT_REGATED = 'Nothing was re-gated.';
+
+/**
+ * The newest merge event, or `'landed'` when a `landed` event came after it:
+ * the merge that stands describes the session, like the inbox reads it.
+ */
+export function newestMerge(
+  db: Database,
+  sessionId: string,
+): { prUrl?: string; sha?: string; target?: string } | 'landed' | undefined {
+  for (const row of listEvents(db, sessionId).reverse()) {
+    if (row.type === 'landed') return 'landed';
+    const event = decodeEvent(row);
+    if (event.type === 'merge') return event;
+  }
+  return undefined;
+}
+
+/**
+ * Refuse a PR url that is not a pull request of `repo`. The url is store text:
+ * one of another repo would have gh answer for any PR. GitHub prints the repo in
+ * its canonical case whatever case the recorded origin uses, so the prefix is
+ * compared without case, within ASCII so no letter can fold into a match.
+ */
+export function assertPullRequestOf(prUrl: string, repo: string, untouched: string): void {
+  const prefix = `https://${repo}/pull/`;
+  const head = prUrl.slice(0, prefix.length);
+  if (
+    !/^[!-~]+$/.test(head) ||
+    !/^[!-~]+$/.test(prefix) ||
+    head.toLowerCase() !== prefix.toLowerCase() ||
+    !/^\d+$/.test(prUrl.slice(prefix.length))
+  ) {
+    throw new Error(
+      `${sanitizeReason(prUrl)} is not a pull request of ${sanitizeReason(repo)}, the repo ` +
+        `origin was recorded as. ${untouched}`,
+    );
+  }
+}
+
+interface MergeToRegate {
+  prUrl: string;
+  sha: string;
+  target: string;
+}
+
+/**
+ * The merge a re-gate starts from (decision 86): the newest `merge` event of a
+ * merged session, which must have opened a PR, pinned a sha and not landed.
+ * Read before anything spawns, so a merged session with nothing to re-gate is
+ * refused as cheaply as one in any other state.
+ */
+function mergeToRegate(db: Database, sessionId: string): MergeToRegate {
+  const id = sanitizeReason(sessionId);
+  const merge = newestMerge(db, sessionId);
+  if (merge === 'landed') {
+    throw new Error(`Session ${id} has already landed; there is no PR to re-gate. ${NOT_REGATED}`);
+  }
+  if (merge?.prUrl === undefined) {
+    throw new Error(
+      `Session ${id} is merged with no pull request: its merge was a local fast-forward, ` +
+        `already on the target, so there is no PR to re-gate. ${NOT_REGATED}`,
+    );
+  }
+  const { prUrl, sha, target } = merge;
+  if (sha === undefined || !COMMIT_SHA.test(sha) || target === undefined) {
+    throw new Error(
+      `Session ${id}'s merge event names no pinned sha and target, so there is no pin to tell ` +
+        `a moved head from. ${NOT_REGATED}`,
+    );
+  }
+  return { prUrl, sha, target };
+}
+
+/**
+ * Settle a re-gate with GitHub before the lock, as `findOpenPullRequest`
+ * settles a first `--pr` gate (decisions 27, 86): the PR the merge recorded
+ * must still be OPEN onto the same target, with a head other than the pinned
+ * sha, and be the open PR adoption finds for the branch, past the same checks.
+ * A head that is not a descendant of the pin is allowed: a fix round can
+ * rebase. The stages then measure that head, never anything the merge recorded.
+ */
+function planRegate(
+  repoPath: string,
+  sessionId: string,
+  merge: MergeToRegate,
+  ref: PullRequestRef,
+  originUrl: string,
+): PullRequestPlan {
+  const { prUrl, sha: pinned } = merge;
+  assertPullRequestOf(prUrl, ref.repo, NOT_REGATED);
+  if (merge.target !== ref.base) {
+    throw new Error(
+      `${prUrl} was gated onto ${sanitizeReason(merge.target)}, but the main checkout is on ` +
+        `${sanitizeReason(ref.base)}; check out ${sanitizeReason(merge.target)} there and re-run. ` +
+        NOT_REGATED,
+    );
+  }
+  const pr = readPullRequestLanding(repoPath, prUrl, ref.repo);
+  if (pr.state !== 'OPEN') {
+    const why =
+      pr.state === 'MERGED'
+        ? `it merged already; \`pup land ${sanitizeReason(sessionId)}\` lands it if its head ` +
+          'was the pinned sha'
+        : pr.state === 'CLOSED'
+          ? 'a closed PR has nothing to re-gate'
+          : 'only an open PR is re-gated';
+    throw new Error(
+      `${prUrl} is ${sanitizeReason(pr.state ?? 'in an unreadable state')} on GitHub, not ` +
+        `OPEN: ${why}. ${NOT_REGATED}`,
+    );
+  }
+  if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
+    throw new Error(`GitHub reports ${prUrl} with an unreadable head. ${NOT_REGATED}`);
+  }
+  if (pr.head === pinned) {
+    throw new Error(
+      `${prUrl} still has its head at ${pinned}, the commit the gate pinned: there is nothing ` +
+        `new to gate. Merge it on GitHub, then run \`pup land ${sanitizeReason(sessionId)}\`. ` +
+        NOT_REGATED,
+    );
+  }
+  const adoptedUrl = findOpenPullRequest(repoPath, ref);
+  if (adoptedUrl !== prUrl) {
+    throw new Error(
+      `The open pull request for ${sanitizeReason(ref.head)} is ${adoptedUrl ?? 'none'}, not ${prUrl}, the one ` +
+        `the merge recorded. ${NOT_REGATED}`,
+    );
+  }
+  return { ...ref, originUrl, adoptedUrl, regate: { head: pr.head, prUrl } };
 }
 
 function gateAndMerge(
@@ -822,6 +981,245 @@ function gateAndMerge(
     return failed();
   }
 
+  const measured = measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
+  if (!measured) return failed();
+  const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
+
+  if (flaggedDebt.length > 0 && !req.acceptDebt) return refuseGate(db, session, sandbox, stages);
+  // Before the ledger write, not only before the checkout: a target moved while
+  // the stages ran is the one under-lock refusal that can be settled this early,
+  // and debt filed for a merge that then aborts reads as merged from this
+  // session (decision 82). `fastForward` reads it again right before the
+  // checkout, with the compare-and-swap as the backstop.
+  if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
+  const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  // What `--accept-debt` filed, for the refusals that must stay after it.
+  const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, flaggedDebt);
+
+  const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
+  let prUrl: string | undefined;
+  let prWasAdopted = false;
+  if (pullRequest) {
+    const newPr = {
+      ...pullRequest,
+      ...pullRequestText(spec, session.id, report, commitSubjects, sha),
+    };
+    try {
+      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
+      if (pullRequest.adoptedUrl) {
+        rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
+        prWasAdopted = true;
+        prUrl = pullRequest.adoptedUrl;
+      } else {
+        prUrl = createPullRequest(req.repoPath, newPr);
+      }
+      // The body vouches for `sha`; a session holding the operator's gh login
+      // can push the branch between our push and the PR call (decision 82).
+      assertPullRequestHead(req.repoPath, prUrl, pullRequest.repo, sha);
+    } catch (error) {
+      throw withLedgerKept(error, ledgerKept);
+    }
+  } else {
+    try {
+      // Re-read under the lock: `target` was read before it, and the checkout
+      // below moves whatever index HEAD names (decision 79). The drivers too: a
+      // session alive during the stages can re-arm `info/attributes`, and the
+      // checkout runs a smudge filter on every file it writes (decision 80).
+      // Both stay last, after the ledger write, because they guard the checkout.
+      const checkedOut = currentBranch(req.repoPath);
+      if (checkedOut !== target) {
+        throw new Error(
+          `Main worktree moved from ${sanitizeReason(target)} to ` +
+            `${checkedOut ? sanitizeReason(checkedOut) : 'no branch'} while the gate ran; ` +
+            'nothing was merged.',
+        );
+      }
+      assertNoArmedGitDrivers(req.repoPath);
+      fastForward(req.repoPath, target, targetSha, sha);
+    } catch (error) {
+      throw withLedgerKept(error, ledgerKept);
+    }
+  }
+  transitionSession(db, session.id, 'merged', { report });
+  // Torn down and recorded before the ratchet and the decision draft: both can
+  // throw, and the draft runs `claude -p` for up to two minutes, while the
+  // target already holds the sha and `pup status` already reads merged.
+  let isDeleted = false;
+  try {
+    // By pane as well as name: a rename from inside the session would leave
+    // the name pointing at nothing while the window ran on (decision 46).
+    killTmux(session.id, session.tmux_target);
+    runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    // Deleted only while it still names the gated commit, in both modes: a
+    // commit the session added after the pin was never measured, so it is left
+    // on the branch for the operator rather than merged or thrown away.
+    try {
+      isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
+    } catch {
+      // Interrupted after the merge landed: keep the branch, which the
+      // `finally` still checks for commits past the pin, rather than skip the
+      // ratchet and the draft.
+    }
+  } finally {
+    // Counted only once the session is killed and its worktree gone, so no
+    // commit can land after the count; recorded even if the teardown threw,
+    // since the target already holds the pinned sha.
+    recordMerge(db, req.repoPath, session, { sha, target, files: changedPaths, prUrl }, isDeleted);
+  }
+  if (
+    // In PR mode the target branch has not moved, so the bar must not either:
+    // `pup land` ratchets it once the PR has (decisions 26, 84).
+    !req.openPr &&
+    project &&
+    baseline &&
+    Object.keys(measured.ratchet).length > 0
+  ) {
+    // Ratchet (docs/04): the merged state becomes the new bar. Accepted-debt merges
+    // move it too — the accepted amount lives in the ledger, and re-flagging it would
+    // punish later sessions for debt they didn't add.
+    const next: ProjectBaseline = { ...baseline, debt: { ...baseline.debt, ...measured.ratchet } };
+    saveProjectBaseline(
+      db,
+      measured.projectId,
+      JSON.parse(project.adapters) as string[],
+      JSON.stringify(next),
+    );
+  }
+  const decisionRecordId = draftDecisionRecord(db, {
+    sessionId: session.id,
+    spec,
+    files: changedPaths,
+    commitSubjects,
+  });
+  return {
+    status: 'merged',
+    report,
+    rejectCount: session.reject_count,
+    debtCandidates,
+    decisionRecordId,
+    ...(prUrl !== undefined ? { prUrl, prWasAdopted } : {}),
+  };
+}
+
+/**
+ * A re-gate of a merged session whose open PR's head moved past the pin
+ * (decision 86), with what `planRegate` settled. The stages are
+ * `gateAndMerge`'s, on the local branch pinned at the head GitHub reports; the
+ * rest is what a merged session leaves to do. `worktree-clean` is skipped, the
+ * session's worktree having gone with the first merge, and `fresh-base` fails
+ * rather than rebasing: there is no worktree to rebase in, and a rebased head
+ * would no longer be the one the PR shows. A merged session has no window to
+ * re-steer and no state to fall back to, so a failure is refused and the merge
+ * event that stands stays the newest. On a pass nothing is pushed, the pin
+ * being the head GitHub already shows, and a lease on a tracking ref the fix
+ * round's push left behind would refuse it; the PR is rewritten and read back
+ * at the pin, and the session stays merged. Nothing the first merge did
+ * repeats: no teardown (the branch is left for `pup land`), no ratchet, no
+ * decision draft, and no ledger entry of a kind the session already holds open.
+ */
+function regateMerged(
+  db: Database,
+  req: MergeRequest,
+  session: SessionRow,
+  pullRequest: PullRequestPlan,
+  regate: { head: string; prUrl: string },
+  target: string,
+  sandbox: string,
+  checkoutDir: string,
+): MergeOutcome {
+  const stages: GateStageResult[] = [
+    {
+      stage: 'worktree-clean',
+      status: 'skipped',
+      detail: 'not measured — a re-gate reads the pushed branch, not the session worktree',
+    },
+  ];
+  const refused = (): MergeOutcome => refuseGate(db, session, sandbox, stages);
+  const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
+  // Pinned first, and once: no rebase will move the branch.
+  const sha = pinRegatedHead(req.repoPath, session.branch, regate.head, regate.prUrl);
+  if (!isAncestor(req.repoPath, targetSha, sha)) {
+    stages.push({
+      stage: 'fresh-base',
+      status: 'fail',
+      detail:
+        `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ` +
+        `${targetSha}. Rebase it onto ${sanitizeReason(target)}, push it to the PR, then re-gate.`,
+    });
+    return refused();
+  }
+  stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
+
+  const measured = measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
+  if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
+  const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  // The stages measure the whole branch again, so the flags the first gate
+  // filed come back with figures the fix round moved: a kind this session
+  // already holds open is not filed twice.
+  const held = new Set(
+    measured.openEntries.flatMap((entry) => debtKind(entry.description, session.id) ?? []),
+  );
+  const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, measured.flaggedDebt, (flag) =>
+    held.has(debtKind(flag.description, session.id) as string),
+  );
+
+  const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
+  try {
+    rewritePullRequest(req.repoPath, regate.prUrl, {
+      ...pullRequest,
+      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha),
+    });
+    assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
+  } catch (error) {
+    throw withLedgerKept(error, ledgerKept);
+  }
+  // Logged as a transition onto the state the session keeps, so every reader
+  // of the newest gate run finds it.
+  appendEvent(db, session.id, 'gate_result', { from: 'merged', to: 'merged', report });
+  const files = measured.changedPaths;
+  recordMerge(db, req.repoPath, session, { sha, target, files, prUrl: regate.prUrl }, false);
+  return {
+    status: 'merged',
+    report,
+    rejectCount: session.reject_count,
+    debtCandidates: measured.debtCandidates,
+    prUrl: regate.prUrl,
+    prWasAdopted: true,
+  };
+}
+
+/** What the stages measured, for the caller that lands it. */
+interface BranchMeasurement {
+  changedPaths: string[];
+  flaggedDebt: FlaggedDebt[];
+  debtCandidates: { id: number; description: string }[];
+  /** The project's open ledger entries, read before this run filed any. */
+  openEntries: LedgerEntryRow[];
+  projectId: string;
+  spec: TaskSpec;
+  project: ProjectRow | undefined;
+  baseline: ProjectBaseline | undefined;
+  ratchet: DebtBaseline;
+}
+
+type FlaggedDebt = { description: string; files: string[] };
+
+/**
+ * The stages every gate run measures on the pinned sha, from the gate's
+ * checkout (decision 81): build, test and lint, a touched nested package's own
+ * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
+ * hard stage has recorded its failure in `stages`; the caller decides what a
+ * failure does to the session.
+ */
+function measureBranch(
+  db: Database,
+  req: MergeRequest,
+  session: SessionRow,
+  stages: GateStageResult[],
+  checkoutDir: string,
+  targetSha: string,
+  sha: string,
+): BranchMeasurement | undefined {
   /** Runs one hard stage; false once it has recorded the failure. */
   const commandStage = (
     stage: string,
@@ -883,7 +1281,7 @@ function gateAndMerge(
       stages.push({ stage, status: 'skipped', detail: 'not measured — no command available' });
       continue;
     }
-    if (!commandStage(stage, command, checkout)) return failed();
+    if (!commandStage(stage, command, checkout)) return undefined;
   }
 
   const flaggedDebt: { description: string; files: string[] }[] = [];
@@ -903,7 +1301,7 @@ function gateAndMerge(
     const dir = quotePath(pkg.dir);
     for (const command of pkg.commands) {
       if (!commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir))) {
-        return failed();
+        return undefined;
       }
     }
     for (const stage of pkg.missing) {
@@ -945,7 +1343,7 @@ function gateAndMerge(
         .map((v) => `  ${quotePath(v.path)} (${v.reason})`)
         .join('\n')}`,
     });
-    return failed();
+    return undefined;
   }
   stages.push({
     stage: 'scope-audit',
@@ -954,8 +1352,11 @@ function gateAndMerge(
   });
 
   // Snapshot before any --accept-debt entry from THIS merge is written, so a
-  // merge never flags its own fresh debt as closeable.
-  const debtCandidates = listLedgerEntries(db, specRow.project_id)
+  // merge never flags its own fresh debt as closeable, nor, on a re-gate or a
+  // retry, the debt an earlier run of it filed.
+  const openEntries = listLedgerEntries(db, specRow.project_id);
+  const debtCandidates = openEntries
+    .filter((entry) => debtKind(entry.description, session.id) === undefined)
     .filter((entry) => {
       const files = JSON.parse(entry.files) as string[];
       return files.some((f) => changedPaths.includes(f));
@@ -1045,170 +1446,151 @@ function gateAndMerge(
     );
   }
   flaggedDebt.push(...judged.flags);
+  return {
+    changedPaths,
+    flaggedDebt,
+    debtCandidates,
+    openEntries,
+    projectId: specRow.project_id,
+    spec,
+    project,
+    baseline,
+    ratchet: judged.ratchet,
+  };
+}
 
-  if (flaggedDebt.length > 0 && !req.acceptDebt) {
-    const report: GateReport = { sessionId: session.id, passed: false, sandbox, stages };
-    appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
-    return { status: 'refused', report, rejectCount: session.reject_count };
-  }
-  // Before the ledger write, not only before the checkout: a target moved while
-  // the stages ran is the one under-lock refusal that can be settled this early,
-  // and debt filed for a merge that then aborts reads as merged from this
-  // session (decision 82). `fastForward` reads it again right before the
-  // checkout, with the compare-and-swap as the backstop.
-  if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
-  // Before the ledger write too: a session-written `log.date` can fail this,
-  // and a failure after the write would leave entries filed with no kept note.
-  const commitSubjects = runGit(req.repoPath, [
-    'log',
-    '--reverse',
-    '--format=%s',
-    `${targetSha}..${sha}`,
-  ])
+/** A soft flag without `--accept-debt`, or a re-gate's failure: recorded, nothing merged. */
+function refuseGate(
+  db: Database,
+  session: SessionRow,
+  sandbox: string,
+  stages: GateStageResult[],
+): MergeOutcome {
+  const report: GateReport = { sessionId: session.id, passed: false, sandbox, stages };
+  appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
+  return { status: 'refused', report, rejectCount: session.reject_count };
+}
+
+/**
+ * The gated commits' subjects, oldest first. Read before the ledger write: a
+ * session-written `log.date` can fail this, and a failure after the write would
+ * leave entries filed with no kept note.
+ */
+function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
+  return runGit(repoPath, ['log', '--reverse', '--format=%s', `${targetSha}..${sha}`])
     .trim()
     .split('\n')
     .filter(Boolean);
-  // What `--accept-debt` filed, for the refusals that must stay after it.
-  let ledgerKept = 0;
-  if (req.acceptDebt) {
-    for (const flag of flaggedDebt) {
-      const entry = {
-        projectId: specRow.project_id,
-        description: flag.description,
-        files: flag.files,
-        reason: req.acceptDebt.reason,
-        // The approver arrives from a flag a relay fills in (decision 75), so
-        // it is scrubbed before the store keeps it, not only where it prints.
-        acceptedBy: sanitizeReason(req.acceptDebt.acceptedBy),
-        reviewBy: req.acceptDebt.reviewBy,
-      };
-      // A retry after a partial failure (gh died after the push) re-runs the
-      // gate with the same flags — the same debt must not be counted twice.
-      // Safe because every description above embeds the session id, so this can
-      // only ever match this session's own earlier attempt.
-      if (!hasOpenLedgerEntry(db, entry)) insertLedgerEntry(db, entry);
-      ledgerKept += 1;
-    }
-  }
+}
 
-  const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
-  let prUrl: string | undefined;
-  let prWasAdopted = false;
-  if (pullRequest) {
-    const newPr = {
-      ...pullRequest,
-      title: prTitle(spec.goal) || `pup session ${session.id}`,
-      body: prBody(spec, report, commitSubjects, sha),
+/**
+ * File one ledger entry per flag under `--accept-debt`, none for a flag `held`
+ * says the session already carries; the count is every flag the accepted debt
+ * covers, for the refusals that must stay after the write.
+ */
+function fileAcceptedDebt(
+  db: Database,
+  req: MergeRequest,
+  projectId: string,
+  flaggedDebt: FlaggedDebt[],
+  held: (flag: FlaggedDebt) => boolean = () => false,
+): number {
+  if (!req.acceptDebt) return 0;
+  for (const flag of flaggedDebt) {
+    const entry = {
+      projectId,
+      description: flag.description,
+      files: flag.files,
+      reason: req.acceptDebt.reason,
+      // The approver arrives from a flag a relay fills in (decision 75), so
+      // it is scrubbed before the store keeps it, not only where it prints.
+      acceptedBy: sanitizeReason(req.acceptDebt.acceptedBy),
+      reviewBy: req.acceptDebt.reviewBy,
     };
-    try {
-      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
-      if (pullRequest.adoptedUrl) {
-        rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
-        prWasAdopted = true;
-        prUrl = pullRequest.adoptedUrl;
-      } else {
-        prUrl = createPullRequest(req.repoPath, newPr);
-      }
-      // The body vouches for `sha`; a session holding the operator's gh login
-      // can push the branch between our push and the PR call (decision 82).
-      assertPullRequestHead(req.repoPath, prUrl, pullRequest.repo, sha);
-    } catch (error) {
-      throw withLedgerKept(error, ledgerKept);
-    }
-  } else {
-    try {
-      // Re-read under the lock: `target` was read before it, and the checkout
-      // below moves whatever index HEAD names (decision 79). The drivers too: a
-      // session alive during the stages can re-arm `info/attributes`, and the
-      // checkout runs a smudge filter on every file it writes (decision 80).
-      // Both stay last, after the ledger write, because they guard the checkout.
-      const checkedOut = currentBranch(req.repoPath);
-      if (checkedOut !== target) {
-        throw new Error(
-          `Main worktree moved from ${sanitizeReason(target)} to ` +
-            `${checkedOut ? sanitizeReason(checkedOut) : 'no branch'} while the gate ran; ` +
-            'nothing was merged.',
-        );
-      }
-      assertNoArmedGitDrivers(req.repoPath);
-      fastForward(req.repoPath, target, targetSha, sha);
-    } catch (error) {
-      throw withLedgerKept(error, ledgerKept);
-    }
+    // A retry after a partial failure (gh died after the push) re-runs the
+    // gate with the same flags — the same debt must not be counted twice.
+    // Safe because every description above embeds the session id, so this can
+    // only ever match this session's own earlier attempt.
+    if (!held(flag) && !hasOpenLedgerEntry(db, entry)) insertLedgerEntry(db, entry);
   }
-  transitionSession(db, session.id, 'merged', { report });
-  // Torn down and recorded before the ratchet and the decision draft: both can
-  // throw, and the draft runs `claude -p` for up to two minutes, while the
-  // target already holds the sha and `pup status` already reads merged.
-  let isDeleted = false;
-  try {
-    // By pane as well as name: a rename from inside the session would leave
-    // the name pointing at nothing while the window ran on (decision 46).
-    killTmux(session.id, session.tmux_target);
-    runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
-    // Deleted only while it still names the gated commit, in both modes: a
-    // commit the session added after the pin was never measured, so it is left
-    // on the branch for the operator rather than merged or thrown away.
-    try {
-      isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
-    } catch {
-      // Interrupted after the merge landed: keep the branch, which the
-      // `finally` still checks for commits past the pin, rather than skip the
-      // ratchet and the draft.
-    }
-  } finally {
-    // Counted only once the session is killed and its worktree gone, so no
-    // commit can land after the count; recorded even if the teardown threw,
-    // since the target already holds the pinned sha.
-    const leftBehind = isDeleted ? 0 : commitsPastPin(req.repoPath, branchRef, sha);
-    if (leftBehind > 0) {
-      console.error(
-        `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
-          `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
-      );
-    }
-    appendEvent(db, session.id, 'merge', {
-      branch: session.branch,
-      sha,
-      target,
-      files: changedPaths,
-      ...(prUrl !== undefined ? { prUrl } : {}),
-      ...(leftBehind > 0 ? { leftBehind } : {}),
-    });
-  }
-  if (
-    // In PR mode the target branch has not moved, so the bar must not either:
-    // `pup land` ratchets it once the PR has (decisions 26, 84).
-    !req.openPr &&
-    project &&
-    baseline &&
-    Object.keys(judged.ratchet).length > 0
-  ) {
-    // Ratchet (docs/04): the merged state becomes the new bar. Accepted-debt merges
-    // move it too — the accepted amount lives in the ledger, and re-flagging it would
-    // punish later sessions for debt they didn't add.
-    const next: ProjectBaseline = { ...baseline, debt: { ...baseline.debt, ...judged.ratchet } };
-    saveProjectBaseline(
-      db,
-      specRow.project_id,
-      JSON.parse(project.adapters) as string[],
-      JSON.stringify(next),
+  return flaggedDebt.length;
+}
+
+/**
+ * The `merge` event, with the commits the branch gained after the pin counted
+ * and named unless the branch was deleted at it.
+ */
+function recordMerge(
+  db: Database,
+  repoPath: string,
+  session: SessionRow,
+  merge: { sha: string; target: string; files: string[]; prUrl: string | undefined },
+  isDeleted: boolean,
+): void {
+  const { sha, prUrl } = merge;
+  const leftBehind = isDeleted ? 0 : commitsPastPin(repoPath, `refs/heads/${session.branch}`, sha);
+  if (leftBehind > 0) {
+    console.error(
+      `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
+        `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
     );
   }
-  const decisionRecordId = draftDecisionRecord(db, {
-    sessionId: session.id,
-    spec,
-    files: changedPaths,
-    commitSubjects,
+  appendEvent(db, session.id, 'merge', {
+    branch: session.branch,
+    sha,
+    target: merge.target,
+    files: merge.files,
+    ...(prUrl !== undefined ? { prUrl } : {}),
+    ...(leftBehind > 0 ? { leftBehind } : {}),
   });
+}
+
+/** The title and body pupitre writes on a PR it opens or adopts. */
+function pullRequestText(
+  spec: TaskSpec,
+  sessionId: string,
+  report: GateReport,
+  commitSubjects: string[],
+  sha: string,
+): { title: string; body: string } {
   return {
-    status: 'merged',
-    report,
-    rejectCount: session.reject_count,
-    debtCandidates,
-    decisionRecordId,
-    ...(prUrl !== undefined ? { prUrl, prWasAdopted } : {}),
+    title: prTitle(spec.goal) || `pup session ${sessionId}`,
+    body: prBody(spec, report, commitSubjects, sha),
   };
+}
+
+/**
+ * A re-gate's pin: the local branch's tip, which must be the head GitHub
+ * reports for the PR, so the commit the stages measure is the one the PR shows
+ * (decision 86). Read once, under the lock; a symref keeps its own refusal.
+ */
+function pinRegatedHead(repoPath: string, branch: string, head: string, prUrl: string): string {
+  let tip: string | undefined;
+  try {
+    tip = resolveCommit(repoPath, `refs/heads/${branch}`);
+  } catch (error) {
+    rethrowIfKilled(error);
+    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
+  }
+  if (tip !== head) {
+    throw new Error(
+      `${sanitizeReason(branch)} is ${tip === undefined ? 'missing' : `at ${tip}`} in this ` +
+        `repo, but ${prUrl} has its head at ${head}; bring the local branch to the PR's head, ` +
+        `then re-run. ${NOT_REGATED}`,
+    );
+  }
+  return tip;
+}
+
+/**
+ * A ledger description with its figures dropped, so a re-gate tells the kind
+ * of a flag from the numbers a fix round moved; undefined unless `sessionId`
+ * filed it, which every flag description says at its end.
+ */
+function debtKind(description: string, sessionId: string): string | undefined {
+  const suffix = ` session ${sessionId}`;
+  if (!description.endsWith(suffix)) return undefined;
+  return description.slice(0, -suffix.length).replace(/\d+/g, '#');
 }
 
 /**

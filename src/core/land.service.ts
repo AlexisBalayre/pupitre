@@ -12,10 +12,13 @@ import {
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
+  assertPullRequestOf,
   assertTargetName,
+  COMMIT_SHA,
   deleteBranchAt,
   fastForward,
   isAncestor,
+  newestMerge,
   type OriginUse,
   pushTarget,
   resolveCommit,
@@ -23,11 +26,8 @@ import {
   withScratchGitDir,
 } from './merge-gate.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
-import { appendEvent, decodeEvent, getSession, listEvents } from './session.repository.js';
+import { appendEvent, getSession } from './session.repository.js';
 import type { LandOutcome } from './types/land.types.js';
-
-/** A sha as the gate pins it, which can then never read as an option. */
-const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };
 
@@ -96,26 +96,19 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
   }
   const originUrl = pushTarget(db, session, req.repoPath, LAND_USE);
   const repo = originRepoSlug(originUrl);
-  // The url is store text: one that is not a pull request of origin's repo
-  // could ask GitHub about any merged PR and land on its word. GitHub prints
-  // the repo in its canonical case whatever case the recorded origin uses, so
-  // the prefix is compared without case, within ASCII so no letter can fold
-  // into a match.
-  const prefix = `https://${repo}/pull/`;
-  const head = prUrl.slice(0, prefix.length);
-  if (
-    !/^[!-~]+$/.test(head) ||
-    !/^[!-~]+$/.test(prefix) ||
-    head.toLowerCase() !== prefix.toLowerCase() ||
-    !/^\d+$/.test(prUrl.slice(prefix.length))
-  ) {
-    throw new Error(
-      `${sanitizeReason(prUrl)} is not a pull request of ${sanitizeReason(repo)}, the repo ` +
-        'origin was recorded as. Nothing was landed.',
-    );
-  }
+  // Store text: a pull request of another repo would land on its word.
+  assertPullRequestOf(prUrl, repo, 'Nothing was landed.');
   assertGhAvailable(LAND_USE.command);
   const pr = readPullRequestLanding(req.repoPath, prUrl, repo);
+  // The PR took commits past the pin, a CI fix round's: GitHub's merge would
+  // land what the gate never measured, so the head is gated first (decision 86).
+  if (pr.state === 'OPEN' && pr.head !== undefined && pr.head !== sha) {
+    throw new Error(
+      `${prUrl} is OPEN on GitHub with its head at ${sanitizeReason(pr.head)}, not ${sha}, ` +
+        `the commit the gate pinned. Re-gate it with \`pup merge ${id} --pr\`, merge it there, ` +
+        'then re-run `pup land`. Nothing was landed.',
+    );
+  }
   if (pr.state !== 'MERGED') {
     throw new Error(
       `${prUrl} is ${sanitizeReason(pr.state ?? 'in an unreadable state')} on GitHub, not ` +
@@ -125,10 +118,12 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
   // A merge commit over a head that moved past the pin lands commits the gate
   // never measured, as a squash does; the PR vouched for the pinned sha only
   // (decision 82). GitHub's own "Update branch" moves the head too, and refuses.
+  // Only a re-gate before the merge vouches for a moved head (decision 86).
   if (pr.head !== sha) {
     throw new Error(
       `${prUrl} merged with its head at ${pr.head ?? 'an unreadable commit'}, not ${sha}, the ` +
-        'commit the gate pinned; it lands commits the gate never measured. Nothing was landed.',
+        'commit the gate pinned; it lands commits the gate never measured. A PR whose head ' +
+        `moved is re-gated with \`pup merge ${id} --pr\` before it is merged. Nothing was landed.`,
     );
   }
   // Merged into another base, the content never came through the gated one.
@@ -205,22 +200,6 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
   const audit = auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
   appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
   return { prUrl, mergeCommit, target, ...landed, audit };
-}
-
-/**
- * The newest merge event, or `'landed'` when a `landed` event came after it:
- * the merge that stands describes the session, like the inbox reads it.
- */
-function newestMerge(
-  db: Database,
-  sessionId: string,
-): { prUrl?: string; sha?: string; target?: string } | 'landed' | undefined {
-  for (const row of listEvents(db, sessionId).reverse()) {
-    if (row.type === 'landed') return 'landed';
-    const event = decodeEvent(row);
-    if (event.type === 'merge') return event;
-  }
-  return undefined;
 }
 
 /**

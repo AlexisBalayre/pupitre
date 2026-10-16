@@ -50,6 +50,7 @@ import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.erro
 import { runMergeGate, withMergeLock } from './merge-gate.service.js';
 import { UndeclaredSandboxError } from './sandbox.utils.js';
 import {
+  appendEvent,
   ensureProject,
   getProject,
   getSession,
@@ -2225,9 +2226,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
    * `ghLog`, and echoes `pr create`'s argv as the PR URL so the created-PR
    * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
    * or else as whatever the branch holds in the repo its `--repo` names, read
-   * from outside the repo so only the operator's global rewrite applies.
+   * from outside the repo so only the operator's global rewrite applies, and
+   * the PR as `state` onto main.
    */
-  const fakeGh = (openPrs: unknown[], head?: string): string =>
+  const fakeGh = (openPrs: unknown[], head?: string, state = 'OPEN'): string =>
     [
       '#!/bin/sh',
       `printf '%s\\n' "$*" >> ${ghLog}`,
@@ -2237,7 +2239,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       head === undefined
         ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
-      `  printf '{"headRefOid":"%s"}\\n' "$head"; exit 0`,
+      `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',
       'cat >/dev/null',
       'echo "$@"',
@@ -2704,6 +2706,379 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ),
     ).toThrow('gh');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  describe('re-gating a merged session whose PR head moved (decision 86)', () => {
+    const PR_URL = openPrOnMain.url;
+    let bare: string;
+    /** The sha the first gate pinned and the PR first vouched for. */
+    let pinned: string;
+
+    /** The first gate's adoption rewrote the PR once; a refused re-gate must not again. */
+    const prEdits = () => ghCalls().filter((call) => call.startsWith('pr edit')).length;
+    const merges = () =>
+      listEvents(db, SESSION_ID)
+        .filter((row) => row.type === 'merge')
+        .map((row) => JSON.parse(row.payload) as { sha: string; prUrl?: string });
+
+    /**
+     * A `--pr` gate that adopted PR #7, then, with `fixRound`, the operator's
+     * CI fix round as LOOP.md runs it: the branch back in a review worktree, a
+     * commit, a push to the PR. Returns the branch tip.
+     */
+    function gateThenFix(
+      {
+        fixRound = true,
+        firstFile = 'src/feature.ts',
+        firstContent = 'export const a = 1;\n',
+      } = {},
+      acceptDebt?: { reason: string; reviewBy: string; acceptedBy: string },
+    ): string {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, firstFile, firstContent);
+      bare = addOrigin();
+      const first = withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          openPr: true,
+          acceptDebt,
+        }),
+      );
+      expect(first.status).toBe('merged');
+      pinned = merges().at(-1)?.sha as string;
+      if (!fixRound) return pinned;
+      const review = join(repo, '.worktrees', `${SESSION_ID}-review`);
+      sh(repo, 'git', 'worktree', 'add', '-b', BRANCH, review, pinned);
+      commitIn(review, 'src/fix.ts', 'export const fix = 1;\n');
+      sh(review, 'git', 'push', '-q', bare, BRANCH);
+      return sh(review, 'git', 'rev-parse', 'HEAD').trim();
+    }
+
+    const regate = (
+      adapters: Adapter[] = [passingAdapter],
+      gh = fakeGh([openPrOnMain]),
+      acceptDebt?: { reason: string; reviewBy: string; acceptedBy: string },
+    ) =>
+      withFakeGh(gh, () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters,
+          openPr: true,
+          acceptDebt,
+        }),
+      );
+
+    /** Only the fix round's file builds: a pass proves the stages read the new head. */
+    const fixChecking: Adapter = {
+      ...passingAdapter,
+      gateCommands: () => [
+        { stage: 'build', command: 'test', args: ['-f', 'src/fix.ts'] },
+        { stage: 'test', command: 'true', args: [] },
+        { stage: 'lint', command: 'true', args: [] },
+      ],
+    };
+
+    it('runs every stage on the new head and appends a merge event with its sha and the same PR', () => {
+      const tip = gateThenFix();
+      const drafts = vi.mocked(runUtility).mock.calls.length;
+
+      const outcome = regate([fixChecking]);
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.prUrl).toBe(PR_URL);
+      expect(outcome.decisionRecordId).toBeUndefined();
+      expect(outcome.report.stages.map(({ stage, status }) => `${stage}:${status}`)).toEqual(
+        expect.arrayContaining([
+          'worktree-clean:skipped',
+          'fresh-base:pass',
+          'build:pass',
+          'test:pass',
+          'lint:pass',
+          'scope-audit:pass',
+          'diff-size:pass',
+        ]),
+      );
+      expect(outcome.report.stages.some((stage) => stage.status === 'fail')).toBe(false);
+      expect(merges()).toHaveLength(2);
+      expect(merges().at(-1)).toMatchObject({ sha: tip, prUrl: PR_URL, target: 'main' });
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      // The newest gate run is the re-gate's, logged onto the state it keeps.
+      const lastGate = listEvents(db, SESSION_ID)
+        .filter((row) => row.type === 'gate_result')
+        .at(-1);
+      expect(JSON.parse(lastGate?.payload ?? '{}')).toMatchObject({
+        from: 'merged',
+        to: 'merged',
+        report: { passed: true },
+      });
+      // Adopted and rewritten, then read back at the new pin; nothing pushed.
+      expect(prEdits()).toBe(2);
+      expect(ghCalls().at(-1)).toBe(
+        `pr view ${PR_URL} --repo github.com/owner/repo --json headRefOid`,
+      );
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+      expect(vi.mocked(runUtility).mock.calls.length).toBe(drafts);
+      expect(killSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each<[string, () => void, string, RegExp]>([
+      ['closed', () => gateThenFix(), 'CLOSED', /is CLOSED on GitHub, not OPEN: a closed PR/],
+      ['merged', () => gateThenFix(), 'MERGED', /is MERGED on GitHub, not OPEN: .*pup land s1/],
+      ['still at the pin', () => gateThenFix({ fixRound: false }), 'OPEN', /still has its head at/],
+    ])('refuses a PR %s, writing nothing', (_label, setup, state, refusal) => {
+      setup();
+      const events = listEvents(db, SESSION_ID).length;
+
+      expect(() => regate([fixChecking], fakeGh([openPrOnMain], undefined, state))).toThrow(
+        refusal,
+      );
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(merges().at(-1)?.sha).toBe(pinned);
+      expect(prEdits()).toBe(1);
+    });
+
+    /** Run a re-gate expected to refuse, and assert it wrote nothing. */
+    function expectRefusedUnwritten(refusal: RegExp, gh = fakeGh([openPrOnMain])): void {
+      const events = listEvents(db, SESSION_ID).length;
+      const ledger = listLedgerEntries(db, 'proj-1').length;
+      const edits = prEdits();
+
+      expect(() => regate([fixChecking], gh)).toThrow(refusal);
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(ledger);
+      expect(prEdits()).toBe(edits);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    }
+
+    /** A merge event as the store can hold it: session-writable, so any shape. */
+    function plantMerge(fields: Record<string, unknown>): void {
+      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'merge', ?)").run(
+        SESSION_ID,
+        JSON.stringify({ branch: BRANCH, files: [], ...fields }),
+      );
+    }
+
+    it.each<[string, (pin: string) => Record<string, string>]>([
+      ['no pinned sha', () => ({ target: 'main' })],
+      ['a sha outside the pinned shape', () => ({ sha: '--upload-pack=x', target: 'main' })],
+      ['no target', (pin) => ({ sha: pin })],
+    ])('refuses a merge event with %s, asking gh nothing', (_label, fields) => {
+      gateThenFix();
+      plantMerge({ prUrl: PR_URL, ...fields(pinned) });
+      const calls = ghCalls().length;
+
+      expectRefusedUnwritten(/merge event names no pinned sha and target/);
+
+      expect(ghCalls()).toHaveLength(calls);
+    });
+
+    it("refuses a recorded PR url outside origin's repo, asking gh nothing", () => {
+      gateThenFix();
+      plantMerge({ prUrl: 'https://github.com/other/repo/pull/7', sha: pinned, target: 'main' });
+      const calls = ghCalls().length;
+
+      expectRefusedUnwritten(/is not a pull request of github\.com\/owner\/repo/);
+
+      // The availability probe only: no PR was asked about.
+      expect(ghCalls().slice(calls)).toEqual(['--version']);
+    });
+
+    it('refuses when the main checkout is on another branch than the merge targeted', () => {
+      gateThenFix();
+      sh(repo, 'git', 'switch', '-q', '-c', 'release');
+
+      expectRefusedUnwritten(/was gated onto main, but the main checkout is on release/);
+    });
+
+    it('refuses a PR GitHub reports in a state it cannot read', () => {
+      gateThenFix();
+
+      expectRefusedUnwritten(
+        /is UNKNOWN on GitHub, not OPEN: only an open PR is re-gated/,
+        fakeGh([openPrOnMain], undefined, 'UNKNOWN'),
+      );
+    });
+
+    it('refuses a PR whose state gh leaves out', () => {
+      gateThenFix();
+      const stateless = fakeGh([openPrOnMain]).replace('"state":"OPEN",', '');
+      expect(stateless).not.toContain('"state"');
+
+      expectRefusedUnwritten(/is in an unreadable state on GitHub, not OPEN/, stateless);
+    });
+
+    it('refuses a PR GitHub reports with an unreadable head', () => {
+      gateThenFix();
+
+      expectRefusedUnwritten(/with an unreadable head/, fakeGh([openPrOnMain], 'not-a-sha'));
+    });
+
+    it.each<[string, unknown[], RegExp]>([
+      [
+        'another open PR',
+        [{ ...openPrOnMain, url: 'https://github.com/owner/repo/pull/8' }],
+        /open pull request for pup\/s1 is https:\/\/github\.com\/owner\/repo\/pull\/8, not .*pull\/7/,
+      ],
+      ['no open PR', [], /open pull request for pup\/s1 is none, not .*pull\/7/],
+    ])('refuses when adoption finds %s for the branch', (_label, listed, refusal) => {
+      gateThenFix();
+
+      expectRefusedUnwritten(refusal, fakeGh(listed));
+    });
+
+    it('refuses a local branch turned into a symref, with the symref refusal', () => {
+      gateThenFix();
+      sh(
+        repo,
+        'git',
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.worktrees', `${SESSION_ID}-review`),
+      );
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+      sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
+
+      expectRefusedUnwritten(/is a symbolic ref to refs\/heads\/main/);
+    });
+
+    it('refuses when the local branch is missing, before any stage', () => {
+      gateThenFix();
+      sh(
+        repo,
+        'git',
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.worktrees', `${SESSION_ID}-review`),
+      );
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+
+      expectRefusedUnwritten(/pup\/s1 is missing in this repo, but .* has its head at/);
+    });
+
+    it('refuses a merged session that opened no PR, asking gh nothing', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      expect(merge().status).toBe('merged');
+      addOrigin();
+      const events = listEvents(db, SESSION_ID).length;
+
+      expect(() => regate()).toThrow(/merged with no pull request: .*local fast-forward/);
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(ghCalls()).toEqual([]);
+    });
+
+    it('refuses a session that already landed', () => {
+      gateThenFix();
+      appendEvent(db, SESSION_ID, 'landed', { sha: pinned, target: 'main', prUrl: PR_URL });
+
+      expect(() => regate()).toThrow('has already landed');
+      expect(merges()).toHaveLength(1);
+    });
+
+    it('still refuses a merged session without --pr', () => {
+      gateThenFix();
+
+      expect(() => merge()).toThrow(SessionNotReviewableError);
+    });
+
+    it('refuses when the local branch is not at the PR head, before any stage', () => {
+      gateThenFix();
+      commitIn(join(repo, '.worktrees', `${SESSION_ID}-review`), 'src/local.ts', 'x;\n');
+      const events = listEvents(db, SESSION_ID).length;
+
+      expect(() => regate()).toThrow(/is at [0-9a-f]+ in this repo, but .* has its head at/);
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(prEdits()).toBe(1);
+    });
+
+    // The body vouches for the new pin only, as a first gate's does (decision 82).
+    it('refuses a re-gate whose PR head reads back elsewhere after the rewrite', () => {
+      const tip = gateThenFix();
+      const edited = join(dirname(ghLog), 'edited');
+      const elsewhere = 'e'.repeat(40);
+      const viewCheck = 'if [ "$2" = "view" ]; then';
+      expect(fakeGh([openPrOnMain]).split(viewCheck)).toHaveLength(2);
+      const movedAfterEdit = fakeGh([openPrOnMain]).replace(
+        viewCheck,
+        [
+          `[ "$2" = "edit" ] && touch ${edited}`,
+          `if [ "$2" = "view" ] && [ -e ${edited} ]; then`,
+          `  printf '{"headRefOid":"${elsewhere}"}\\n'; exit 0`,
+          'fi',
+          viewCheck,
+        ].join('\n'),
+      );
+      const events = listEvents(db, SESSION_ID).length;
+
+      expect(() => regate([fixChecking], movedAfterEdit)).toThrow(
+        `has its head at ${elsewhere}, not at ${tip}`,
+      );
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(merges().at(-1)?.sha).toBe(pinned);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    });
+
+    it('refuses a new head failing a hard stage, keeping the earlier merge event newest', () => {
+      gateThenFix();
+
+      const outcome = regate([failingBuildAdapter]);
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages.find((stage) => stage.stage === 'build')?.status).toBe('fail');
+      expect(merges()).toHaveLength(1);
+      expect(merges().at(-1)?.sha).toBe(pinned);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(prEdits()).toBe(1);
+    });
+
+    it('refuses a new head not based on the target instead of rebasing it', () => {
+      gateThenFix();
+      commitIn(repo, 'src/main-moved.ts', 'export const moved = 1;\n');
+
+      const outcome = regate();
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'fresh-base', status: 'fail' });
+      expect(merges()).toHaveLength(1);
+    });
+
+    it('files no second ledger entry for a flag the first gate already filed', () => {
+      const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
+      gateThenFix({ firstFile: 'src/big.ts', firstContent: 'const line = 1;\n'.repeat(700) }, debt);
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
+      // Another session's debt over the same file holds no kind for this one,
+      // and stays a candidate to close.
+      const other = insertLedgerEntry(db, {
+        projectId: 'proj-1',
+        description: 'Oversize diff (900 lines) merged from session s9',
+        files: ['src/big.ts'],
+        reason: 'older',
+        acceptedBy: 'human',
+        reviewBy: 'later',
+      });
+
+      const outcome = regate([passingAdapter], fakeGh([openPrOnMain]), debt);
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages.find((stage) => stage.stage === 'diff-size')?.status).toBe(
+        'flagged',
+      );
+      expect(listLedgerEntries(db, 'proj-1')).toHaveLength(2);
+      expect(outcome.debtCandidates).toEqual([
+        { id: other, description: 'Oversize diff (900 lines) merged from session s9' },
+      ]);
+    });
   });
 
   it('with openPr requires an origin remote', () => {
