@@ -4520,6 +4520,21 @@ changes back into those docs is pending.
     `--accept-debt` refuses with `regated`, no ledger entry, no merge event, no PR edit and no
     steer in the hint; the CLI prints the accept-debt line with no steer from an outcome alone,
     with no merged session in the store.
+    *Amended 2026-10-16 (debt #49):* the re-gate lives in `src/core/regate.service.ts`.
+    `mergeToRegate`, `planRegate`, `regateMerged` and `pinRegatedHead` moved there unchanged from
+    `merge-gate.service.ts`, which #147 and #148 had taken from 133 to 176 decision points; it
+    measures 150 after the move. `runMergeGate` still decides between a gate and a re-gate, and
+    the gate helpers the re-gate shares (`measureBranch`, `refuseGate`, `fileAcceptedDebt`,
+    `recordMerge`, `debtKind` and the rest) are exported from `merge-gate.service.ts`, so the two
+    modules import each other; every use sits inside a function body, so neither reads the other
+    while loading. `planRegate` returns a `RegatePlan`, whose `regate` field is no longer an
+    optional part of every `PullRequestPlan`, and `regateMerged` takes that plan alone instead of
+    the plan and its `regate` field. `COMMIT_SHA` is defined once, in `merge-gate.constants.ts`,
+    and the dashboard imports it instead of keeping its own copy; `merge-gate.service.ts`
+    re-exports it for `land.service.ts` only, until a later task switches that import and drops
+    the line. No behaviour changed: every
+    re-gate test asserts what it did, the refusals that throw before writing share
+    `expectRefusedUnwritten`, and the two that delete the local branch share one teardown helper.
 
 87. **Pastes go through a buffer named for the call, every attach spawns tmux from the runtime
     with the scrubbed environment, a steer reads the box by its frame, and `pup attach <session>`

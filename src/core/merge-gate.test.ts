@@ -2824,23 +2824,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(killSession).toHaveBeenCalledTimes(1);
     });
 
-    it.each<[string, () => void, string, RegExp]>([
-      ['closed', () => gateThenFix(), 'CLOSED', /is CLOSED on GitHub, not OPEN: a closed PR/],
-      ['merged', () => gateThenFix(), 'MERGED', /is MERGED on GitHub, not OPEN: .*pup land s1/],
-      ['still at the pin', () => gateThenFix({ fixRound: false }), 'OPEN', /still has its head at/],
-    ])('refuses a PR %s, writing nothing', (_label, setup, state, refusal) => {
-      setup();
-      const events = listEvents(db, SESSION_ID).length;
-
-      expect(() => regate([fixChecking], fakeGh([openPrOnMain], undefined, state))).toThrow(
-        refusal,
-      );
-
-      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
-      expect(merges().at(-1)?.sha).toBe(pinned);
-      expect(prEdits()).toBe(1);
-    });
-
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
     function expectRefusedUnwritten(refusal: RegExp, gh = fakeGh([openPrOnMain])): void {
       const events = listEvents(db, SESSION_ID).length;
@@ -2854,6 +2837,29 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(prEdits()).toBe(edits);
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
     }
+
+    /** The fix round's review worktree removed, and the local branch it held deleted. */
+    function dropReviewBranch(): void {
+      sh(
+        repo,
+        'git',
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.worktrees', `${SESSION_ID}-review`),
+      );
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+    }
+
+    it.each<[string, () => void, string, RegExp]>([
+      ['closed', () => gateThenFix(), 'CLOSED', /is CLOSED on GitHub, not OPEN: a closed PR/],
+      ['merged', () => gateThenFix(), 'MERGED', /is MERGED on GitHub, not OPEN: .*pup land s1/],
+      ['still at the pin', () => gateThenFix({ fixRound: false }), 'OPEN', /still has its head at/],
+    ])('refuses a PR %s, writing nothing', (_label, setup, state, refusal) => {
+      setup();
+
+      expectRefusedUnwritten(refusal, fakeGh([openPrOnMain], undefined, state));
+    });
 
     /** A merge event as the store can hold it: session-writable, so any shape. */
     function plantMerge(fields: Record<string, unknown>): void {
@@ -2933,15 +2939,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     it('refuses a local branch turned into a symref, with the symref refusal', () => {
       gateThenFix();
-      sh(
-        repo,
-        'git',
-        'worktree',
-        'remove',
-        '--force',
-        join(repo, '.worktrees', `${SESSION_ID}-review`),
-      );
-      sh(repo, 'git', 'branch', '-D', BRANCH);
+      dropReviewBranch();
       sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
 
       expectRefusedUnwritten(/is a symbolic ref to refs\/heads\/main/);
@@ -2949,15 +2947,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     it('refuses when the local branch is missing, before any stage', () => {
       gateThenFix();
-      sh(
-        repo,
-        'git',
-        'worktree',
-        'remove',
-        '--force',
-        join(repo, '.worktrees', `${SESSION_ID}-review`),
-      );
-      sh(repo, 'git', 'branch', '-D', BRANCH);
+      dropReviewBranch();
 
       expectRefusedUnwritten(/pup\/s1 is missing in this repo, but .* has its head at/);
     });
@@ -2967,11 +2957,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       expect(merge().status).toBe('merged');
       addOrigin();
-      const events = listEvents(db, SESSION_ID).length;
 
-      expect(() => regate()).toThrow(/merged with no pull request: .*local fast-forward/);
+      expectRefusedUnwritten(/merged with no pull request: .*local fast-forward/);
 
-      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(ghCalls()).toEqual([]);
     });
 
@@ -2979,8 +2967,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       gateThenFix();
       appendEvent(db, SESSION_ID, 'landed', { sha: pinned, target: 'main', prUrl: PR_URL });
 
-      expect(() => regate()).toThrow('has already landed');
-      expect(merges()).toHaveLength(1);
+      expectRefusedUnwritten(/has already landed/);
     });
 
     it('still refuses a merged session without --pr', () => {
@@ -2992,12 +2979,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     it('refuses when the local branch is not at the PR head, before any stage', () => {
       gateThenFix();
       commitIn(join(repo, '.worktrees', `${SESSION_ID}-review`), 'src/local.ts', 'x;\n');
-      const events = listEvents(db, SESSION_ID).length;
 
-      expect(() => regate()).toThrow(/is at [0-9a-f]+ in this repo, but .* has its head at/);
-
-      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
-      expect(prEdits()).toBe(1);
+      expectRefusedUnwritten(/is at [0-9a-f]+ in this repo, but .* has its head at/);
     });
 
     // The body vouches for the new pin only, as a first gate's does (decision 82).
