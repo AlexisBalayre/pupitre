@@ -1413,14 +1413,10 @@ describe('launchConductor', () => {
     // apart by which variable is set (decision 47).
     expect(spawn).toContain('PUP_CONDUCTOR=proj-1');
     expect(spawn.some((arg) => String(arg).startsWith('PUP_SESSION_ID='))).toBe(false);
-    // Yielding the CPU like a session's, so the gate it runs keeps normal
-    // priority over every worker (decision 94).
-    expect(spawn.slice(spawn.indexOf(FAKE_NICE_BIN), spawn.indexOf(FAKE_NICE_BIN) + 4)).toEqual([
-      FAKE_NICE_BIN,
-      '-n',
-      '10',
-      FAKE_CLAUDE_BIN,
-    ]);
+    // Not niced like a session's: the gate it runs inherits its priority, and
+    // must keep the CPU over every worker's suite (decision 94).
+    expect(spawn).not.toContain(FAKE_NICE_BIN);
+    expect(spawn).toContain(FAKE_CLAUDE_BIN);
     expect(spawn.slice(spawn.indexOf('--name'), spawn.indexOf('--name') + 2)).toEqual([
       '--name',
       'pup-conductor-proj-1',

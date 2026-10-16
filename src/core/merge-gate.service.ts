@@ -1235,6 +1235,25 @@ interface BranchMeasurement {
 type FlaggedDebt = { description: string; files: string[] };
 
 /**
+ * Whether a failed stage run is the runner's own failing exit, the one failure
+ * a re-run can tell from a flake. A child a signal killed is not: a Ctrl-C
+ * reaches the gate's child with pup itself (`withMergeLock` keeps pup alive
+ * through it), and a re-run that passed would turn the operator's abort into a
+ * merge. Nor is a runner that caught the interrupt and exited 130, nor a stage
+ * that ran out `GATE_COMMAND_TIMEOUT_MS`, whose re-run would hold the merge lock
+ * twice as long on a hung suite: node reports that as `ETIMEDOUT` even when the
+ * runner traps the SIGTERM and exits with an ordinary status.
+ */
+function isRerunnable(error: unknown): boolean {
+  const { status, signal, code } = error as {
+    status?: number | null;
+    signal?: string | null;
+    code?: string;
+  };
+  return typeof status === 'number' && status !== 130 && !signal && code !== 'ETIMEDOUT';
+}
+
+/**
  * The stages every gate run measures on the pinned sha, from the gate's
  * checkout (decision 81): build, test and lint, a touched nested package's own
  * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
@@ -1276,7 +1295,9 @@ function measureBranch(
    * stage runs once more, still under the lock, before it counts: a suite that
    * passes on the re-run passes, named flaky with what failed the first time,
    * so a timing-sensitive test the host's load tipped over is no rejection
-   * (decision 94). Build and lint are deterministic and never re-run.
+   * (decision 94). Build and lint are deterministic and never re-run, and
+   * neither is a test run that ended other than by the runner's own failing
+   * exit (`isRerunnable`).
    */
   const commandStage = (
     stage: string,
@@ -1288,7 +1309,7 @@ function measureBranch(
       stages.push({ stage, status: 'pass' });
       return true;
     }
-    if (command.stage !== 'test') {
+    if (command.stage !== 'test' || !isRerunnable(first)) {
       stages.push({ stage, status: 'fail', detail: commandFailureDetail(first) });
       return false;
     }

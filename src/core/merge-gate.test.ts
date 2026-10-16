@@ -1232,6 +1232,53 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(steerPane).toHaveBeenCalled();
     });
 
+    // A Ctrl-C reaches the gate's child with pup itself, and a stage timeout
+    // kills it with SIGTERM: a re-run that passed would turn an abort into a
+    // merge, or hold the lock twice as long on a hung suite.
+    it.each([
+      ['killed by SIGINT', 'kill -INT $$'],
+      ['killed by SIGTERM, as a stage timeout is', 'kill -TERM $$'],
+      ['exiting 130 on an interrupt it caught', 'exit 130'],
+    ])('never re-runs a test stage %s', (_case, end) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(
+        adapterWith('test', `if [ -e .ran-once ]; then exit 0; fi; touch .ran-once; ${end}`),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+    });
+
+    it('never re-runs a test stage that ran out its timeout, even one that trapped the SIGTERM', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      // What node throws when the timeout's SIGTERM is trapped and the runner
+      // exits 1 by itself: an ordinary status, told apart only by its code.
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        if (args.includes('test-run')) {
+          throw Object.assign(new Error('spawnSync sh ETIMEDOUT'), {
+            code: 'ETIMEDOUT',
+            status: 1,
+            signal: null,
+          });
+        }
+        return real?.(file, args, opts as never);
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+
+      const outcome = merge(adapterWith('test', 'exit 0'));
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+    });
+
     it.each(['build', 'lint'] as const)('never re-runs a failed %s', (stage) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
