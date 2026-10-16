@@ -4500,10 +4500,13 @@ changes back into those docs is pending.
     `fresh-base`; an accepted oversize diff re-gated larger files no second entry. `pup land`
     lands a PR GitHub merged at the head a real re-gate pinned, and refuses an open PR whose head
     moved naming the re-gate. The CLI prints both new lines.
-    *Amended 2026-10-16 (PR #147 review):* "figures dropped" means only the measured figures: the
-    digits inside the parenthesised group right before `merged from session <id>`
-    (`(812 lines)`, `(+3 decision points)`, `(patch coverage 71.0% below baseline 80.0%)`). A digit
-    anywhere else is part of the kind, so a nested-package flag for `packages/app2` is a new kind
+    *Amended 2026-10-16 (PR #147 review):* "figures dropped" means only the measured figures, where
+    each description shape the gate files carries them: the digits inside the parenthesised group
+    right before `merged from session <id>` (`(812 lines)`, `(+3 decision points)`,
+    `(patch coverage 71.0% below baseline 80.0%)`), the `rose from N to M` of
+    `Duplicated lines … in session <id>`, and the file count of
+    `Coverage unmeasured over N changed source file(s) in session <id>`. A digit anywhere else is
+    part of the kind, so a nested-package flag for `packages/app2` is a new kind
     beside an open one for `packages/app1` and is filed, where every digit run read as `#` had
     taken it for held. And a re-gate refused only for an unaccepted flag gets its own line: it
     names the flagged stages, says the PR still vouches for the earlier pin, and says to re-run
@@ -4512,7 +4515,8 @@ changes back into those docs is pending.
     re-gate likewise. The CLI picks every re-gate wording from `regated`, set on `MergeOutcome` by
     the core on a re-gate's pass and refusal, rather than reading the session's state itself.
     Tests: a re-gate flagging `src/app2` beside an open entry for `src/app1` files a second entry
-    (the existing oversize test still files none for moved figures); a re-gate flagging without
+    (the existing oversize test still files none for moved figures), and a held duplication flag
+    and a held unmeasured-coverage flag, re-flagged with moved figures, each file none; a re-gate flagging without
     `--accept-debt` refuses with `regated`, no ledger entry, no merge event, no PR edit and no
     steer in the hint; the CLI prints the accept-debt line with no steer from an outcome alone,
     with no merged session in the store.

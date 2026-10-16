@@ -3080,6 +3080,42 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ]);
     });
 
+    it.each<[string, string, Adapter]>([
+      [
+        'duplication',
+        'Duplicated lines rose from 0 to 5',
+        debtAdapter({ duplication: () => ({ duplicatedLines: 8, blocks: [] }) }),
+      ],
+      [
+        'unmeasured coverage',
+        'Coverage unmeasured over 1 changed source file(s)',
+        debtAdapter({ coverableFiles, coverage: () => ({ files: {} }) }),
+      ],
+    ])(
+      'files no second ledger entry for a held %s flag whose figures moved',
+      (_label, held, adapter) => {
+        const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
+        gateThenFix();
+        seedDebtBaseline({ duplicatedLines: 0 });
+        insertLedgerEntry(db, {
+          projectId: 'proj-1',
+          description: `${held} in session ${SESSION_ID}`,
+          files: ['src/feature.ts'],
+          reason: 'older',
+          acceptedBy: 'human',
+          reviewBy: 'later',
+        });
+
+        const outcome = regate([adapter], fakeGh([openPrOnMain]), debt);
+
+        expect(outcome).toMatchObject({ status: 'merged', regated: true });
+        expect(outcome.report.stages.filter((stage) => stage.status === 'flagged')).toHaveLength(1);
+        expect(listLedgerEntries(db, 'proj-1').map((entry) => entry.description)).toEqual([
+          `${held} in session ${SESSION_ID}`,
+        ]);
+      },
+    );
+
     /** The fix round's package: its name carries a digit, and it has no test script. */
     const untestedApp2: Adapter = {
       ...fixChecking,

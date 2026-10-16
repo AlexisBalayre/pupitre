@@ -1590,18 +1590,31 @@ function pinRegatedHead(repoPath: string, branch: string, head: string, prUrl: s
 }
 
 /**
+ * Where each flag description the gate files carries its measured figures,
+ * matched on the description with its ` session <id>` suffix cut: the
+ * parenthesised group before "merged from" (`Oversize diff (812 lines)`), the
+ * duplication's "rose from N to M", and the unmeasured-coverage file count.
+ */
+const DEBT_FIGURES = [
+  /\([^()]*\)(?= merged from$)/,
+  /(?<=^Duplicated lines rose from )\d+ to \d+(?= in$)/,
+  /(?<=^Coverage unmeasured over )\d+(?= changed source file\(s\) in$)/,
+];
+
+/**
  * A ledger description with its figures dropped, so a re-gate tells the kind
  * of a flag from the numbers a fix round moved; undefined unless `sessionId`
- * filed it, which every flag description says at its end. The figures are the
- * parenthesised group right before "merged from", and only its digits go: a
- * digit in a path or name (`packages/app2`) is part of the kind (decision 86).
+ * filed it, which every flag description says at its end. Only the digits
+ * `DEBT_FIGURES` places go: a digit in a path or name (`packages/app2`) is part
+ * of the kind (decision 86).
  */
 function debtKind(description: string, sessionId: string): string | undefined {
   const suffix = ` session ${sessionId}`;
   if (!description.endsWith(suffix)) return undefined;
-  return description
-    .slice(0, -suffix.length)
-    .replace(/\([^()]*\)(?= merged from$)/, (figures) => figures.replace(/\d+/g, '#'));
+  return DEBT_FIGURES.reduce(
+    (kind, figures) => kind.replace(figures, (span) => span.replace(/\d+/g, '#')),
+    description.slice(0, -suffix.length),
+  );
 }
 
 /**
