@@ -1,0 +1,139 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T15:58:06.660Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38927532254",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38927532254",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c71599c78d59bc1fd64f9247f10ce413ab0ece19",
+  "source": "pr",
+  "pr_number": 152,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1286-1295",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A Ctrl-C (SIGINT) during the gate's test stage now kills the first run, which the gate then re-runs as a flake; if the re-run passes, the gate passes and the session merges, where before this PR the same Ctrl-C failed the stage and nothing landed.",
+      "body": "**A Ctrl-C during the test stage now starts a re-run, and the merge can go ahead.**\n\n`withMergeLock` (L197-228) keeps node alive through SIGINT/SIGTERM on purpose: \"only the child dies, its failure unwinds the stack and the lock goes.\" `runGateChild` throws a signal-killed child as an `execFileSync` error. `runCommand` (L1253-1272) catches every error, and `commandStage` treats any failed test stage as a flake and runs it again (L1295). If the operator presses Ctrl-C once to abort a merge and the re-run passes, the stage is recorded as `pass — flaky …` and the gate goes on to fast-forward the session's sha. Before this PR the same keypress rejected the merge.\n\nThe gate already handles interrupts this way elsewhere under the same lock: `rethrowIfKilled` (`src/core/git-diff.client.ts` L137-141) is used at L96, 528, 552, 593 and 1639. Reusing it here as-is would be wrong, though. It also matches SIGTERM, and a stage timeout arrives as SIGTERM with `code: 'ETIMEDOUT'`, so a timed-out stage would throw out of the gate with no report. The fix below skips the re-run only for a real interrupt and keeps the timeout re-run that decision 94 targets.\n\nTwo things to consider alongside the fix:\n- Runners that catch SIGINT themselves and exit with status 130 have `signal: null`, so they would still be re-run. Skipping on `status === 130` too would cover them.\n- A stage killed by `GATE_COMMAND_TIMEOUT_MS` is also re-run, so a hung suite now holds the merge lock for up to 20 minutes instead of 10.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c71599c78d59bc1fd64f9247f10ce413ab0ece19/src/core/merge-gate.service.ts#L1286-L1295",
+      "suggestion": "    const { signal, code } = first as { signal?: string; code?: string };\n    const interrupted = code !== 'ETIMEDOUT' && (signal === 'SIGINT' || signal === 'SIGTERM');\n    if (command.stage !== 'test' || interrupted) {"
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "441-470",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Putting the conductor's window under nice 10 also puts every `pup merge --pr` the conductor runs under nice 10. A conductor-driven gate then competes with workers at the same priority, which defeats the main goal of the change.",
+      "body": "**The conductor's gate runs at nice 10, not at normal priority.**\n\n`spawnClaudeWindow` is the shared launch for both `launchSession` and `launchConductor` (L598-615), and it now always starts `[which('nice'), '-n', WINDOW_NICENESS, which('claude'), …]` (L470). The conductor's profile (`src/core/profile-compiler.service.ts` L574-578) tells it to run `pup merge <session-id> --pr`. `pup` runs `runMergeGate` in the same process (`src/cli/index.ts` ~L1844), so every gate stage it starts inherits niceness 10. Nothing in `src` raises the priority again, and an unprivileged process can't lower its own niceness.\n\nThe new JSDoc (L441-448) and decision 94 (`docs/09-decisions.md` ~L4570) both say the gate's stages run \"from the operator's or the conductor's `pup` at normal priority\". That holds only for the operator. When the conductor gates a branch, the test stage runs at the same priority as the workers' suites, so the load-induced timeouts this decision is meant to stop are still possible.\n\nSuggested fix: apply the `nice` prefix only to worker windows, for example when the caller carries `PUP_SESSION_ID` or from `launchSession` only. Then update the conductor argv test and decision 94 to match.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c71599c78d59bc1fd64f9247f10ce413ab0ece19/src/claude/session-runtime.service.ts#L441-L470",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "151",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pattern for failing-test lines reports wrong or doubled names. It picks up jest's `● Console` blocks as failing tests. It also counts one vitest failure twice: once from the `FAIL  file > name` summary line and once from the `× name 5012ms` line, which carries a duration so it isn't deduplicated. Five real failures can fill the 10-name cap and push out the rest.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "148-150",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`FAILED_TEST_NAMES_MAX` is a threshold defined in the service file, but general.md §No hardcoded values puts thresholds in the area's `*.constants.ts`. Its siblings `GATE_COMMAND_TIMEOUT_MS` and `GATE_OUTPUT_TAIL_CHARS` already live in `merge-gate.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "448",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`WINDOW_NICENESS` is a tunable value defined in the service file rather than the area's `*.constants.ts` (general.md §No hardcoded values). `WINDOW_SIZE` sets a precedent for keeping it there, so this is drift rather than a violation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4582",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 94 and the `index.test.ts` comment say the 20 s timeout matches \"decision 46's kickoff test\", but decision 46 never mentions a timeout. The 20 s budget appears only in a test comment in `session-runtime.test.ts`. Cite that test, or drop the reference.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "decision 94, first paragraph",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In decision 94, the clause \"a rejection, and two park the task as blocked\" has no clear subject. Spell it out, e.g. \"which rejected the merge, and two such rejections park the task as blocked\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "441-447",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `WINDOW_NICENESS` JSDoc repeats decision 94's machine-load rationale over four lines. Keeping only \"niceness is inherited, so it covers everything the window spawns\" plus the decision pointer would be enough.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1281-1285",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`commandStage(stage, command, cwd)` takes both a stage label and a `command` that also carries `stage`, and it decides the re-run from `command.stage`. The two names can drift. Derive the label inside the function, or pass an explicit re-run flag.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9885168000000002,
+  "duration_ms": 256127,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 9954,
+    "cache_read": 214520,
+    "cache_creation": 37439,
+    "total": 261925
+  }
+}
