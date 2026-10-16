@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // them is what keeps a rebind from passing because the action still works.
 vi.mock('./actions.service.js', () => ({
   attachTo: vi.fn(() => ({ message: 'Detached from pup-s-run-1.' })),
-  conductorAttachTarget: vi.fn(() => ({ label: 'conductor-window', args: ['-L', 's', 'attach'] })),
+  conductorAttachTarget: vi.fn(() => ({
+    label: 'conductor-window',
+    window: { conductorOf: 'proj-1' },
+  })),
   // A pure formatter, not a boundary — stubbed only because the factory
   // replaces the whole module. Its sanitizing is asserted in actions.test.ts.
   failure: (error: unknown) => ({
@@ -23,7 +26,7 @@ vi.mock('./actions.service.js', () => ({
   selectedBlockedReason: vi.fn(() => 'the reject cap'),
   sessionAttachTarget: vi.fn((id: string) => ({
     label: `pup-${id}`,
-    args: ['attach', '-t', `=pup-${id}:`],
+    window: { sessionId: id },
   })),
   steerSelected: vi.fn(() => ({ message: 'Steered.' })),
   toggleConductor: vi.fn(() => ({ message: 'Conductor stopped.' })),
@@ -226,7 +229,7 @@ describe('dashboard controls', () => {
       expect(sessionAttachTarget).toHaveBeenCalledWith('s-run-1');
       expect(attachTo).toHaveBeenCalledWith({
         label: 'pup-s-run-1',
-        args: ['attach', '-t', '=pup-s-run-1:'],
+        window: { sessionId: 's-run-1' },
       });
       instance.unmount();
     });

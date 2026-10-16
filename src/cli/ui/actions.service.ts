@@ -1,8 +1,12 @@
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sanitizeReason } from '../../adapters/capability.utils.js';
-import { attachArgs, windowLabel } from '../../claude/session-runtime.service.js';
+import {
+  attachWindow,
+  type WindowTarget,
+  windowLabel,
+} from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
@@ -248,37 +252,39 @@ export function toggleConductor(
 export interface AttachTarget {
   /** What the status bar calls it while the operator is away. */
   label: string;
-  /** Arguments to `tmux`, socket included where the window is not on the default one. */
-  args: string[];
+  /** The window, for the runtime to attach to: its socket and pin are the runtime's to spell. */
+  window: WindowTarget;
 }
 
 export function sessionAttachTarget(sessionId: string): AttachTarget {
-  return { label: windowLabel({ sessionId }), args: attachArgs({ sessionId }) };
+  return { label: windowLabel({ sessionId }), window: { sessionId } };
 }
 
 /**
  * The conductor's window is on a tmux server of its own, and the socket that
  * reaches it is the runtime's to spell, as the pin on the target is: this
- * screen names the window and runs the argv it gets back (decision 47).
+ * screen names the window and the runtime attaches to it (decision 47).
  */
 export function conductorAttachTarget(snapshot: DashboardSnapshot): AttachTarget {
-  return {
-    label: snapshot.conductor.name,
-    args: attachArgs({ conductorOf: snapshot.projectId }),
-  };
+  return { label: snapshot.conductor.name, window: { conductorOf: snapshot.projectId } };
 }
 
 /**
  * Hand the terminal to tmux and take it back when the operator detaches. The
  * caller unmounts Ink first: tmux wants the primary screen and the raw input
  * this process is holding, and an attach under a live render loop fights it for
- * both.
+ * both. The spawn is the runtime's, with the environment every tmux call gets
+ * (decisions 47, 87).
  */
 export function attachTo(target: AttachTarget): ActionResult {
-  const result = spawnSync('tmux', target.args, { stdio: 'inherit' });
-  if (result.error) return { message: result.error.message, failed: true };
-  if (result.status !== 0) {
-    return { message: `Attaching to ${target.label} exited ${result.status}.`, failed: true };
+  let status: number | null;
+  try {
+    status = attachWindow(target.window);
+  } catch (error) {
+    return failure(error);
+  }
+  if (status !== 0) {
+    return { message: `Attaching to ${target.label} exited ${status}.`, failed: true };
   }
   return { message: `Detached from ${target.label}.` };
 }

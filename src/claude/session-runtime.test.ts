@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -55,11 +56,12 @@ vi.mock('node:fs', async (importOriginal) => {
 import {
   attachArgs,
   attachCommand,
-  attachConductor,
+  attachWindow,
   conductorName,
   conductorPane,
   deadTurnError,
   hasConductorWindow,
+  hasSessionWindow,
   interruptPane,
   kickoff,
   killConductor,
@@ -471,9 +473,13 @@ describe('windowLabel, attachArgs and attachCommand', () => {
   });
 });
 
-describe('attachConductor', () => {
+describe('attachWindow', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('runs the argv the attach line prints, on the terminal it was called from', () => {
-    expect(attachConductor('proj-1')).toBe(0);
+    expect(attachWindow({ conductorOf: 'proj-1' })).toBe(0);
 
     expect(spawnSync).toHaveBeenCalledWith('tmux', attachArgs({ conductorOf: 'proj-1' }), {
       stdio: 'inherit',
@@ -487,7 +493,7 @@ describe('attachConductor', () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-operator');
     vi.stubEnv('TMUX', '/private/tmp/tmux-501/default,1,0');
 
-    attachConductor('proj-1');
+    attachWindow({ conductorOf: 'proj-1' });
 
     const env = vi.mocked(spawnSync).mock.calls.at(-1)?.[2]?.env ?? {};
     expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
@@ -495,16 +501,31 @@ describe('attachConductor', () => {
     expect(env.PATH).toBe(process.env.PATH);
   });
 
+  // `pup attach <session>` and `pup ui`'s attach: the default server, named by
+  // the pinned window, never a socket (decision 87).
+  it("attaches to a session's window on the default server with the same scrubbed environment", () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-operator');
+    vi.stubEnv('TMUX', '/private/tmp/tmux-501/default,1,0');
+
+    expect(attachWindow({ sessionId: 't-abc' })).toBe(0);
+
+    const [file, args, options] = vi.mocked(spawnSync).mock.calls.at(-1) ?? [];
+    expect([file, args]).toEqual(['tmux', ['attach', '-t', '=pup-t-abc:']]);
+    expect(options?.stdio).toBe('inherit');
+    expect(options?.env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(options?.env).not.toHaveProperty('TMUX');
+  });
+
   it("answers tmux's own exit status", () => {
     vi.mocked(spawnSync).mockReturnValueOnce({ status: 1 } as never);
 
-    expect(attachConductor('proj-1')).toBe(1);
+    expect(attachWindow({ conductorOf: 'proj-1' })).toBe(1);
   });
 
   it('throws when tmux could not be run at all', () => {
     vi.mocked(spawnSync).mockReturnValueOnce({ status: null, error: new Error('ENOENT') } as never);
 
-    expect(() => attachConductor('proj-1')).toThrow('ENOENT');
+    expect(() => attachWindow({ conductorOf: 'proj-1' })).toThrow('ENOENT');
   });
 });
 
@@ -607,10 +628,22 @@ describe('launchWatcher', () => {
  * `FAKE_TMUX_STUCK` is set. Every capture's box line is logged too, so a test
  * can read what the runtime saw before it pressed a key.
  *
+ * Buffers are kept as tmux keeps them: `load-buffer -b <name>` stores one under
+ * that name and `paste-buffer -b <name> -d` pastes and deletes it, refusing a
+ * name the server does not hold; without `-b` both use the top of the stack,
+ * the one most recently loaded. `FAKE_TMUX_RACE` is another client's message,
+ * loaded unnamed right after each load — the steer and the tell that race on
+ * one server (decision 87).
+ *
  * `FAKE_TMUX_TRANSCRIPT` is the line the transcript ends on, rendered where
  * Claude Code puts it: directly above the box. A dead turn's `⏺ API Error:`
  * line is one of those, and it is all a pane says about a turn that ended
  * without a Stop hook.
+ *
+ * `FAKE_TMUX_DIALOG` puts a dialog where the box was, under the echo of the
+ * prompt just submitted; `FAKE_TMUX_DIALOG_AFTER_CLEARS` does so once that
+ * many Ctrl-U presses went in, and `FAKE_TMUX_DIALOG_AFTER_ENTER` once Enter
+ * has been pressed.
  *
  * With `FAKE_TMUX_SUGGESTION` set, an empty box offers that prompt, the way
  * Claude Code does once a turn ends: dim under `-e`, and — as real tmux
@@ -648,8 +681,10 @@ target=''
 styled=''
 prev=''
 all=''
+buf=''
 for arg in "$@"; do
   [ "$prev" = -t ] && target="$arg"
+  [ "$prev" = -b ] && buf="$arg"
   [ "$arg" = -e ] && styled=1
   [ "$arg" = -s ] && all=1
   prev="$arg"
@@ -661,16 +696,22 @@ case "$target" in
 esac
 box="$server/box-$pane"
 typed="$server/typed-$pane"
+buffer="$server/buffer\${buf:+-$buf}"
 case "$1" in
-  load-buffer) cat > "$server/buffer" ;;
-  paste-buffer) cp "$server/buffer" "$box"; cat "$box" >> "$typed"; echo >> "$typed" ;;
+  load-buffer)
+    cat > "$buffer"
+    if [ -n "$FAKE_TMUX_RACE" ]; then printf '%s' "$FAKE_TMUX_RACE" > "$server/buffer"; fi ;;
+  paste-buffer)
+    [ -f "$buffer" ] || { echo "no buffer $buf" >&2; exit 1; }
+    cp "$buffer" "$box"; rm -f "$buffer"; cat "$box" >> "$typed"; echo >> "$typed" ;;
+  delete-buffer) rm -f "$buffer" ;;
   list-panes)
     if [ -n "$all" ] || [ ! -f "$server/window" ]; then sed 's/^/%/' "$server/panes"
     else sed 's/^/%/' "$server/window"; fi ;;
   send-keys)
     echo "$4" >> "$typed"
     [ "$4" = C-u ] && echo $(( $(cat "$server/clears" 2>/dev/null || echo 0) + 1 )) > "$server/clears"
-    [ "$4" = Enter ] && rm -f "$box"
+    if [ "$4" = Enter ]; then rm -f "$box"; touch "$server/entered"; fi
     if [ "$4" = C-u ] && [ -z "$FAKE_TMUX_STUCK" ] && [ -f "$box" ]; then
       rows=$(grep -c '' "$box")
       if [ "$rows" -le 1 ]; then rm -f "$box"
@@ -691,7 +732,7 @@ case "$1" in
     fi
     printf 'capture => %s\\n' "$line" >> "$FAKE_TMUX_LOG"
     clears=$(cat "$server/clears" 2>/dev/null || echo 0)
-    if [ -n "$FAKE_TMUX_DIALOG" ] || { [ -n "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ] && [ "$clears" -ge "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ]; }; then
+    if [ -n "$FAKE_TMUX_DIALOG" ] || { [ -n "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ] && [ "$clears" -ge "$FAKE_TMUX_DIALOG_AFTER_CLEARS" ]; } || { [ -n "$FAKE_TMUX_DIALOG_AFTER_ENTER" ] && [ -f "$server/entered" ]; }; then
       printf '❯ earlier prompt\\n⏺ ok\\n Usage limit reached.\\n ❯ 1. Wait\\n   2. Switch model\\n'
     else
       printf '  ? for shortcuts\\n%s\\n────\\n%s\\n────\\n' "$FAKE_TMUX_TRANSCRIPT" "$line"
@@ -713,6 +754,8 @@ describe('steerPane with a fake tmux on PATH', () => {
   let dialog: boolean;
   let dialogAfterClears: number;
   let down: boolean;
+  let race: string;
+  let dialogAfterEnter: boolean;
   let suggestion: string;
   let transcript: string;
   let stripStyling: boolean;
@@ -734,6 +777,8 @@ describe('steerPane with a fake tmux on PATH', () => {
     dialog = false;
     dialogAfterClears = 0;
     down = false;
+    race = '';
+    dialogAfterEnter = false;
     suggestion = '';
     transcript = '';
     stripStyling = false;
@@ -762,6 +807,8 @@ describe('steerPane with a fake tmux on PATH', () => {
                   ? { FAKE_TMUX_DIALOG_AFTER_CLEARS: String(dialogAfterClears) }
                   : {}),
                 ...(down ? { FAKE_TMUX_DOWN: '1' } : {}),
+                ...(race ? { FAKE_TMUX_RACE: race } : {}),
+                ...(dialogAfterEnter ? { FAKE_TMUX_DIALOG_AFTER_ENTER: '1' } : {}),
               },
             },
           )
@@ -774,10 +821,19 @@ describe('steerPane with a fake tmux on PATH', () => {
     vi.mocked(execFileSync).mockImplementation(original as never);
   });
 
-  function argvLog(): string[] {
+  /** The log as tmux saw it, each paste's buffer name included. */
+  function rawArgvLog(): string[] {
     return readFileSync(log, 'utf8')
       .split('\n')
       .filter((line) => line.length > 0);
+  }
+
+  /**
+   * The log with every paste buffer's name read as `BUF`: the name is minted
+   * per call, and the test that pins it reads `rawArgvLog`.
+   */
+  function argvLog(): string[] {
+    return rawArgvLog().map((line) => line.replace(PASTE_BUFFER, 'BUF'));
   }
 
   /**
@@ -797,6 +853,7 @@ describe('steerPane with a fake tmux on PATH', () => {
   }
 
   const LAUNCH_PANE: SessionPane = { sessionId: 's-1', paneId: '%3' };
+  const PASTE_BUFFER = /pup-paste-[0-9a-f-]{36}/g;
   const STEER_3000 = `FIRSTWORD ${'tok '.repeat(745)}LASTWORDS.`;
   const ENTER = 'send-keys -t %3 Enter';
   const CLEAR = 'send-keys -t %3 C-u';
@@ -813,8 +870,8 @@ describe('steerPane with a fake tmux on PATH', () => {
     expect(lines.slice(0, 4)).toEqual([
       'capture-pane -p -e -t %3',
       'capture => ❯ ',
-      'load-buffer -',
-      'paste-buffer -d -p -t %3',
+      'load-buffer -b BUF -',
+      'paste-buffer -b BUF -d -p -t %3',
     ]);
     const enterAt = lines.indexOf(ENTER);
     expect(enterAt).toBeGreaterThan(0);
@@ -898,9 +955,9 @@ describe('steerPane with a fake tmux on PATH', () => {
       CLEAR,
       'capture-pane -p -e -t %3',
       'capture => ❯ ',
-      'load-buffer -',
+      'load-buffer -b BUF -',
     ]);
-    expect(lines.indexOf('paste-buffer -d -p -t %3')).toBeGreaterThan(lines.indexOf(CLEAR));
+    expect(lines.indexOf('paste-buffer -b BUF -d -p -t %3')).toBeGreaterThan(lines.indexOf(CLEAR));
   });
 
   it('steers a session showing a suggested prompt without pressing Ctrl-U at all', () => {
@@ -919,7 +976,7 @@ describe('steerPane with a fake tmux on PATH', () => {
       'capture-pane -p -e -t %3',
       `capture => \u276f \u001b[2m${suggestion}\u001b[0m`,
     ]);
-    expect(lines.slice(2, 4)).toEqual(['load-buffer -', 'paste-buffer -d -p -t %3']);
+    expect(lines.slice(2, 4)).toEqual(['load-buffer -b BUF -', 'paste-buffer -b BUF -d -p -t %3']);
     expect(typedInto(3)).toBe(`${STEER_3000}\nEnter\n`);
     expect(lines.filter((line) => line === ENTER)).toHaveLength(1);
   });
@@ -952,9 +1009,10 @@ describe('steerPane with a fake tmux on PATH', () => {
 
     const lines = argvLog().slice(0, argvLog().indexOf(CLEAR) + 3);
     expect(lines).not.toContain(ENTER);
-    // ceil(6000 / 1000) settles for the first call, each ending in a look at the box.
+    // ceil(6000 / 1000) settles for the first call, each ending in a look at
+    // the box, then one more look that the box is still there to clear.
     const settles = lines.filter((line) => line === 'capture => ❯ tok tok tok ');
-    expect(settles).toHaveLength(6);
+    expect(settles).toHaveLength(7);
     expect(lines.slice(-3)).toEqual([CLEAR, 'capture-pane -p -e -t %3', 'capture => ❯ ']);
   });
 
@@ -965,7 +1023,8 @@ describe('steerPane with a fake tmux on PATH', () => {
       SteerNotDeliveredError,
     );
 
-    expect(argvLog().filter((line) => line === 'capture => ❯ un the tests')).toHaveLength(5);
+    // Five settles, then the look that the box is still there to clear.
+    expect(argvLog().filter((line) => line === 'capture => ❯ un the tests')).toHaveLength(6);
   });
 
   // The same budget its sibling in `kickoff` carries, for the same reason:
@@ -984,9 +1043,80 @@ describe('steerPane with a fake tmux on PATH', () => {
 
     const lines = argvLog();
     expect(lines.filter((line) => line === CLEAR)).toHaveLength(64);
-    expect(lines).not.toContain('load-buffer -');
+    expect(lines).not.toContain('load-buffer -b BUF -');
     expect(lines).not.toContain(ENTER);
   }, 20_000);
+
+  // The frame rule `pup conductor tell` reads the box by (decision 85): the
+  // echo of the prompt just submitted is still on screen above a dialog, and
+  // read as the box it held text, so the steer pressed Ctrl-U into the dialog
+  // — or, with an empty echo, pasted into it (decision 87).
+  it('refuses a dialog under an echoed prompt before pressing any key into it', () => {
+    dialog = true;
+
+    expect(() => steerPane(LAUNCH_PANE, 'do X instead')).toThrow(
+      'Steer to session s-1 did not land: its input box is not on screen (a dialog or menu ' +
+        'holds the pane), so the 12-char message was not pasted and no key was pressed.',
+    );
+
+    expect(argvLog()).toEqual(['capture-pane -p -e -t %3', 'capture => ❯ ']);
+    expect(typedInto(3)).toBeUndefined();
+  });
+
+  it('stops pressing Enter once a dialog has replaced the box it submitted', () => {
+    landsAfter = 1;
+    dialogAfterEnter = true;
+
+    steerPane(LAUNCH_PANE, 'do X instead');
+
+    expect(argvLog().filter((line) => line === ENTER)).toHaveLength(1);
+    expect(typedInto(3)).toBe('do X instead\nEnter\n');
+  });
+
+  it('loads and pastes a buffer named for each call, and leaves none behind', () => {
+    landsAfter = 1;
+
+    steerPane(LAUNCH_PANE, 'first steer');
+    steerPane(LAUNCH_PANE, 'second steer');
+
+    const named = rawArgvLog()
+      .map((line) => /^(load|paste)-buffer -b (\S+)/.exec(line))
+      .filter((match) => match !== null)
+      .map((match) => [match[1], match[2]]);
+    expect(named.map(([verb]) => verb)).toEqual(['load', 'paste', 'load', 'paste']);
+    const [first, second] = [named[0]?.[1], named[2]?.[1]];
+    expect(first).toMatch(/^pup-paste-[0-9a-f-]{36}$/);
+    expect(named[1]?.[1]).toBe(first);
+    expect(named[3]?.[1]).toBe(second);
+    expect(second).not.toBe(first);
+    expect(readdirSync(state).filter((file) => file.startsWith('buffer'))).toEqual([]);
+  });
+
+  it('pastes its own message when another client loads one between its load and its paste', () => {
+    // Unnamed, the paste took the top of the server's stack: the racing
+    // tell's text went into this session's box and was submitted as the
+    // steer (decision 87).
+    landsAfter = 1;
+    race = 'conductor tell meant for the conductor';
+
+    steerPane(LAUNCH_PANE, 'do X instead');
+
+    expect(typedInto(3)).toBe('do X instead\nEnter\n');
+  });
+
+  it('deletes its buffer when the paste fails, so the message is not left on the server', () => {
+    // The pane went between the load (which names no pane) and the paste.
+    const gone: SessionPane = { sessionId: 's-1', paneId: '%8' };
+
+    expect(() => pasteIntoPane(gone, 'SECRETWORD do X')).toThrow(SessionPaneMissingError);
+
+    expect(argvLog()).toEqual([
+      'load-buffer -b BUF -',
+      'paste-buffer -b BUF -d -p -t %8',
+      'delete-buffer -b BUF',
+    ]);
+    expect(readdirSync(state).filter((file) => file.startsWith('buffer'))).toEqual([]);
+  });
 
   describe('kickoff', () => {
     const CONTEXT = `# Pupitre session s-1\n\n${'## Goal\nline\n'.repeat(400)}## Session protocol`;
@@ -1081,8 +1211,8 @@ describe('steerPane with a fake tmux on PATH', () => {
       expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
 
       expect(argvLog().slice(0, 2)).toEqual([
-        `-L ${socket} load-buffer -`,
-        `-L ${socket} paste-buffer -d -p -t %5`,
+        `-L ${socket} load-buffer -b BUF -`,
+        `-L ${socket} paste-buffer -b BUF -d -p -t %5`,
       ]);
       expect(typedInto(5, socket)).toBe(`${TELL}\n`);
       expect(argvLog().filter((line) => line.includes('SECRETWORD'))).toEqual([]);
@@ -1330,6 +1460,26 @@ describe('launchConductor', () => {
         .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
       [];
     expect(spawn).not.toContain('--mcp-config');
+  });
+});
+
+describe('hasSessionWindow', () => {
+  it("probes the session's pinned window on the default server, and reports none when tmux refuses", () => {
+    expect(hasSessionWindow('t-abc')).toBe(true);
+    expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['has-session', '-t', '=pup-t-abc:'],
+    ]);
+
+    const original = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation((file, args, options) => {
+      if (file === 'tmux' && args?.includes('has-session')) throw new Error("can't find session");
+      return (original as (...callArgs: unknown[]) => unknown)(file, args, options) as string;
+    });
+    try {
+      expect(hasSessionWindow('t-abc')).toBe(false);
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(original as never);
+    }
   });
 });
 
