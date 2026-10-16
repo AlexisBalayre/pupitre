@@ -1,0 +1,110 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T15:00:06.760Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38919878353",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38919878353",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7f456ba0d48e00b3abcc1593cb149ed036966e9c",
+  "source": "pr",
+  "pr_number": 150,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "91-92",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The diff adds `export { COMMIT_SHA } from './merge-gate.constants.js'` only so `land.service.ts` keeps importing it from here.",
+      "body": "This PR moves `COMMIT_SHA` into `merge-gate.constants.ts`, and that move is the replacement. But it also adds a re-export from `merge-gate.service.ts` so that `land.service.ts:17` can keep its old import path, and the comment says \"a later task switches that import and drops this line\". That is the backwards-compat re-export that [`docs/conventions/general.md` §150-151](https://github.com/AlexisBalayre/pupitre/blob/7f456ba0d48e00b3abcc1593cb149ed036966e9c/docs/conventions/general.md#L150-L151) rules out:\n\n> **Delete old code when you replace it.** No compatibility shims, no `// removed` markers, no backwards-compat re-exports. The replacement *is* the change.\n\nNo decision or convention allows deferring this. `land.service.ts` is the only consumer, and it already imports `GATE_COMMAND_TIMEOUT_MS` from `./merge-gate.constants.js`, so the fix is one import line:\n\n1. Import `COMMIT_SHA` from `./merge-gate.constants.js` in `land.service.ts`.\n2. Delete these two lines.\n3. Drop the \"`merge-gate.service.ts` re-exports it for `land.service.ts` only, until a later task…\" sentence from the decision 86 amendment.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7f456ba0d48e00b3abcc1593cb149ed036966e9c/src/core/merge-gate.service.ts#L91-L92",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "41-43",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new exported `RegatePlan` interface, and `PullRequestPlan` (now `export interface` in merge-gate.service.ts:757), are inlined in `*.service.ts` files, against general.md §Type separation (\"Never inline an exported type/interface in a *.service.ts\"). They belong in `src/core/types/merge-gate.types.ts`. Other services already do the same, so this is a nit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4523-4537",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision 86 amendment breaks mid-sentence (\"No behaviour changed: every\" then a short line), so the paragraph needs re-wrapping. It also reads like a changelog: the 133→176→150 decision-point history doesn't add anything the decision needs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "10-25",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "merge-gate.service.ts and regate.service.ts now import each other. To allow that, merge-gate.service.ts newly exports measureBranch, refuseGate, commitSubjectsBetween, fileAcceptedDebt, recordMerge, pullRequestText, debtKind, withLedgerKept and PullRequestPlan. The cycle is safe today, but any future module-level use in either file would break it. A shared helpers module that both depend on would make the dependency one-way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "280-296",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "runMergeGate now keeps two optionals, `pullRequest` and `regate`, where exactly one is set, and the type no longer says so. A single `plan` variable narrowed with `'regate' in plan`, or a discriminated union, would state that once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2827-2862",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `dropReviewBranch` helper sits between `expectRefusedUnwritten` and `plantMerge`, which splits the existing helper block. It's minor ordering churn.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4020595000000002,
+  "duration_ms": 154211,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 9594,
+    "cache_read": 218561,
+    "cache_creation": 38560,
+    "total": 266727
+  }
+}
