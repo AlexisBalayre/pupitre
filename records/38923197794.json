@@ -1,0 +1,66 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T15:23:00.325Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38923197794",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38923197794",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9b2293c1835f935f242b64b4f51101e791a37307",
+  "source": "pr",
+  "pr_number": 150,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "418255241bcc7d20a047ba7365b045a2bce56783",
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "91-92",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `export { COMMIT_SHA } from './merge-gate.constants.js'` is a backwards-compat re-export kept only so `land.service.ts` still compiles. `general.md` line 150-151 says \"Delete old code when you replace it. No compatibility shims, no `// removed` markers, no backwards-compat re-exports.\" The guidance-grade wording (\"Delete old code when you replace it\") caps this at nit, and the author's scope-audit reason for leaving `land.service.ts` alone is an accepted WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "91",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"a later task switches that import and drops this line\" is a temporal, task-tracking note about future work. AGENTS.md allows only a non-obvious WHY (invariant, unit, ordering, gotcha). The first clause, that `land.service.ts` still imports it from here, is a fine WHY. The \"later task\" clause will go stale and is a TODO in disguise. Trim the comment to the first clause.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.38745950000000007,
+  "duration_ms": 61195,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 3704,
+    "cache_read": 229630,
+    "cache_creation": 25246,
+    "total": 258594
+  }
+}
