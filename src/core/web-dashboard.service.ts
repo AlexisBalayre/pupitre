@@ -72,6 +72,9 @@ export async function startWebDashboard(
     if (!hasToken(url.searchParams.get('token'), token)) return refuse(res, 403, 'Forbidden.');
     if (req.method !== 'GET') return refuse(res, 405, 'Read-only.');
     if (url.pathname === '/') {
+      // Rendered before the head goes out, so a store that cannot be read is
+      // still answered with a 500 rather than an empty 200.
+      const body = render();
       const nonce = randomBytes(16).toString('base64');
       res.writeHead(200, {
         ...hardening(
@@ -80,7 +83,7 @@ export async function startWebDashboard(
         ),
         'Content-Type': 'text/html; charset=utf-8',
       });
-      res.end(renderDashboardPage(repoPath, render(), nonce));
+      res.end(renderDashboardPage(repoPath, body, nonce));
       return;
     }
     if (url.pathname === '/events') {

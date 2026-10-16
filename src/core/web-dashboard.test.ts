@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +17,7 @@ import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';
-import { projectId } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -26,6 +26,7 @@ import {
   insertTask,
   transitionSession,
 } from './session.repository.js';
+import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
 import { escapeHtml } from './web-dashboard.template.js';
 
@@ -147,7 +148,17 @@ describe('startWebDashboard', () => {
     });
   }
 
+  /** One hook event on disk, the file's mtime aged by `ageMs` (decision 35). */
+  function seedHookEvent(sessionId: string, event: object, ageMs = 0): void {
+    const paths = projectPaths(repo);
+    mkdirSync(paths.sessionDir(sessionId), { recursive: true });
+    writeFileSync(paths.eventsFile(sessionId), `${JSON.stringify(event)}\n`);
+    const at = new Date(Date.now() - ageMs);
+    utimesSync(paths.eventsFile(sessionId), at, at);
+  }
+
   const address = (): URL => new URL(dashboard.url);
+  const eventsUrl = (): string => `${address().origin}/events${address().search}`;
   const host = (): string => address().host;
 
   describe('who it answers', () => {
@@ -190,6 +201,24 @@ describe('startWebDashboard', () => {
 
     it('takes nothing but a read', async () => {
       expect((await get(dashboard.url, {}, 'POST')).status).toBe(405);
+    });
+
+    it('serves nothing but the page and its stream', async () => {
+      const reply = await get(`${address().origin}/other${address().search}`);
+
+      expect(reply.status).toBe(404);
+    });
+
+    it('answers 500 for a store it cannot read, and ends a stream it could not fill', async () => {
+      db.close();
+
+      const page = await get(dashboard.url);
+      const stream = await get(eventsUrl());
+
+      expect(page.status).toBe(500);
+      expect(page.body).toBe('The store could not be read.');
+      expect(stream.status).toBe(200);
+      expect(stream.body).toBe('');
     });
 
     it('serves the page under a CSP that admits only its own nonce and stream', async () => {
@@ -305,6 +334,38 @@ describe('startWebDashboard', () => {
       expect(page).toContain('&lt;/script&gt;&lt;script&gt;alert(2)&lt;/script&gt;');
     });
 
+    it('says what each running session is doing, as the hook events tell it', async () => {
+      seedSession('s-asks', ['running']);
+      seedHookEvent('s-asks', { hook_event_name: 'Notification', message: 'Allow\u001b Bash?' });
+      seedSession('s-idle', ['running']);
+      seedHookEvent('s-idle', { hook_event_name: 'Stop' });
+      seedSession('s-quiet', ['running']);
+      seedHookEvent('s-quiet', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).toContain('waiting on input (Allow Bash?)');
+      expect(page).toContain('idle (turn ended, no done signal)');
+      expect(page).toContain('stalled — see Needs you');
+    });
+
+    it('prints a placeholder for an id outside the minted shape, and pins no debt on it', async () => {
+      seedSession('s 1', ['running']);
+      insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description: 'Oversize diff (812 lines) merged from session s 1',
+        files: [],
+        reason: 'r',
+        acceptedBy: 'alexis',
+        reviewBy: '2999-01-01',
+      });
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).toContain('<span class="sid">(unminted session id)</span>');
+      expect(page).not.toContain('debt #');
+    });
+
     it('makes a link of a pull request url and of nothing else', async () => {
       seedMerge('s-evil', 'https://evil.example/x" onclick="alert(1)');
       seedMerge('s-js', 'javascript:alert(1)//github.com/o/r/pull/1');
@@ -322,7 +383,7 @@ describe('startWebDashboard', () => {
 
   describe('the event stream', () => {
     it('sends the board on connect, and a store change within one poll', async () => {
-      const stream = await openStream(`${address().origin}/events${address().search}`);
+      const stream = await openStream(eventsUrl());
       try {
         const first = stream.frames[0] ?? (await stream.next());
         expect(first).toContain('Nothing waits on you.');
@@ -340,8 +401,45 @@ describe('startWebDashboard', () => {
       }
     });
 
+    it('sends a stream that opens on an unchanged store the board all the same', async () => {
+      const first = await openStream(eventsUrl());
+      try {
+        if (first.frames.length === 0) await first.next();
+        const second = await openStream(eventsUrl());
+        try {
+          const frame = second.frames[0] ?? (await second.next());
+
+          expect(frame).toBe(first.frames[0]);
+          expect(first.frames).toHaveLength(1);
+        } finally {
+          second.close();
+        }
+      } finally {
+        first.close();
+      }
+    });
+
+    it('reads nothing from the store while no stream is open', async () => {
+      let reads = 0;
+      const counted = new Proxy(db, {
+        get(target, key) {
+          if (key === 'prepare') reads += 1;
+          const value = Reflect.get(target, key);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const idle = await startWebDashboard(counted, repo, { pollMs: POLL_MS / 10 });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+
+        expect(reads).toBe(0);
+      } finally {
+        await idle.close();
+      }
+    });
+
     it('stays quiet while the store does not change', async () => {
-      const stream = await openStream(`${address().origin}/events${address().search}`);
+      const stream = await openStream(eventsUrl());
       try {
         if (stream.frames.length === 0) await stream.next();
         await new Promise((resolve) => setTimeout(resolve, POLL_MS * 3));

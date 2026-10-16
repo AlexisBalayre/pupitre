@@ -96,6 +96,12 @@ vi.mock('../core/merge-gate.service.js', () => ({
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
 // The server and its socket are web-dashboard.test.ts's; here it binds nothing.
 vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
+// The browser opener is `pup dashboard --open`'s one boundary; every other
+// call, the fixtures' git included, runs for real.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
@@ -4319,16 +4325,63 @@ describe('CLI commands', () => {
 
       await buildProgram().parseAsync(['dashboard'], { from: 'user' });
       const stop = addedListener('SIGINT', sigints);
-      addedListener('SIGTERM', sigterms);
 
       expect(firstCall(startWebDashboard)[1]).toBe(repo);
       expect(logs).toEqual([
         `Dashboard on ${URL_WITH_TOKEN}`,
         'Anyone holding this url reads the page; Ctrl-C stops the server.',
       ]);
+      expect(addedListener('SIGTERM', sigterms)).toBe(stop);
       stop();
       expect(close).toHaveBeenCalledOnce();
       expect(process.exitCode).toBeUndefined();
+    });
+
+    const OPENER = process.platform === 'darwin' ? 'open' : 'xdg-open';
+
+    /** `pup dashboard --open`, its signal listeners cleared after the test. */
+    async function runOpen(): Promise<void> {
+      vi.mocked(startWebDashboard).mockResolvedValue({
+        url: URL_WITH_TOKEN,
+        close: () => Promise.resolve(),
+      });
+      const sigints = process.listeners('SIGINT');
+      const sigterms = process.listeners('SIGTERM');
+      await buildProgram().parseAsync(['dashboard', '--open'], { from: 'user' });
+      addedListener('SIGINT', sigints);
+      addedListener('SIGTERM', sigterms);
+    }
+
+    /** The opener opens or fails as `opens` says; every other command still runs for real. */
+    async function stubOpener(opens: boolean): Promise<void> {
+      const actual =
+        await vi.importActual<typeof import('node:child_process')>('node:child_process');
+      vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: unknown[]) => {
+        if (file !== OPENER) {
+          return (actual.execFileSync as (...args: unknown[]) => unknown)(file, ...rest);
+        }
+        if (!opens) throw new Error('no browser');
+        return Buffer.from('');
+      }) as typeof execFileSync);
+    }
+
+    it('hands the url to the browser opener with --open', async () => {
+      useCwd(initRepo());
+      await stubOpener(true);
+
+      await runOpen();
+
+      expect(execFileSync).toHaveBeenCalledWith(OPENER, [URL_WITH_TOKEN]);
+      expect(logs).not.toContain('Could not open a browser; open the url above.');
+    });
+
+    it('says to open the url by hand when no browser opens', async () => {
+      useCwd(initRepo());
+      await stubOpener(false);
+
+      await runOpen();
+
+      expect(logs).toContain('Could not open a browser; open the url above.');
     });
 
     it.each([

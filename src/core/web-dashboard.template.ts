@@ -9,7 +9,7 @@ import type {
 } from './types/dashboard.types.js';
 
 /** One open ledger entry as the page lists it, every field already through `sanitizeReason`. */
-export interface WebDebtEntry {
+interface WebDebtEntry {
   id: string;
   description: string;
   acceptedBy: string;
