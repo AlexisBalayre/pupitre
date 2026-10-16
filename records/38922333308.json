@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T15:17:41.655Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38922333308",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38922333308",
+  "actor": "AlexisBalayre",
+  "commit_sha": "418255241bcc7d20a047ba7365b045a2bce56783",
+  "source": "pr",
+  "pr_number": 150,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "41",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new RegatePlan type keeps the nested `regate: { head, prUrl }` object, which only made sense when it was an optional field on every PullRequestPlan. It is now required and already implied by the type, so callers read the stutter `pullRequest.regate.head`/`.prUrl` (regateMerged lines 160, 177, 205-208, 215-221). `regate.prUrl` also always equals `adoptedUrl`, because planRegate refuses when they differ (line 129). A flat `head` field on RegatePlan, with `adoptedUrl` (or a `prUrl` field in its place), would express the contract directly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4524",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision 86 amendment says the four functions \"moved there unchanged\", but the same paragraph says `planRegate` now returns `RegatePlan` and `regateMerged` takes the plan alone, and the code matches that. Drop \"unchanged\" or qualify it, e.g. \"moved there, with `planRegate` now returning `RegatePlan`\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4533-4535",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The decision 86 amendment's last sentence covers test-helper refactors (`expectRefusedUnwritten`, \"one teardown helper\"). That is test-file bookkeeping, not a decision, so it will go stale when the tests change, and the helper's actual name is `dropReviewBranch`. Drop the sentence and keep \"No behaviour changed\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1886680000000003,
+  "duration_ms": 145250,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 6812,
+    "cache_read": 246601,
+    "cache_creation": 32544,
+    "total": 285971
+  }
+}
