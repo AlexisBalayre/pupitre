@@ -10,10 +10,11 @@ import {
   runGit,
 } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
-import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
+import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertPullRequestOf,
   assertTargetName,
+  COMMIT_SHA,
   deleteBranchAt,
   fastForward,
   isAncestor,
