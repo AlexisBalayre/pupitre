@@ -36,7 +36,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"...` |
 | Backlog | `pup plan` (list), `pup plan drop|edit <task>` |
 | Start a session for a task | `pup launch <task> [--model m]`; `pup new "<goal>" --scope ...` plans and launches |
-| Who needs me | `pup status`, `pup ui` (live), `pup watch` (conflict radar) |
+| Who needs me | `pup status`, `pup ui` (live), `pup dashboard --open` (live page in the browser, read-only, operator-only), `pup watch` (conflict radar) |
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |

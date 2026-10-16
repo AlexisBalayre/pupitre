@@ -128,6 +128,7 @@ import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
+import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
   enclosingProject,
@@ -1298,6 +1299,36 @@ export function buildProgram(): Command {
         process.off('SIGINT', restore);
         process.off('SIGTERM', restore);
       });
+    });
+
+  program
+    .command('dashboard')
+    .description(
+      'Serve the live status page on 127.0.0.1, read-only, behind a token minted for this run',
+    )
+    .option('--open', 'open the page in the browser')
+    .action(async (opts: { open?: boolean }) => {
+      const { repoPath, db } = project();
+      // The page names the conductor's socket as `pup status` does for the
+      // operator alone (decision 47), and a server is not a session's to start.
+      if (!showAttachCommand(db)) {
+        db.close();
+        return refuse('`pup dashboard` is operator-only.');
+      }
+      const dashboard = await startWebDashboard(db, repoPath);
+      console.log(`Dashboard on ${dashboard.url}`);
+      console.log('Anyone holding this url reads the page; Ctrl-C stops the server.');
+      const stop = (): void => {
+        void dashboard.close().then(() => db.close());
+      };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+      if (!opts.open) return;
+      try {
+        execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [dashboard.url]);
+      } catch {
+        console.log('Could not open a browser; open the url above.');
+      }
     });
 
   /** `pup status`'s fleet view, and a piped `pup ui --all`'s (decisions 60, 65). */

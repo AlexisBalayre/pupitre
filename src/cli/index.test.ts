@@ -94,6 +94,8 @@ vi.mock('../core/merge-gate.service.js', () => ({
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+// The server and its socket are web-dashboard.test.ts's; here it binds nothing.
+vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
@@ -196,6 +198,7 @@ import {
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
+import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import type { DashboardReading, ProjectReading } from './ui/use-snapshot.hook.js';
@@ -4289,6 +4292,58 @@ describe('CLI commands', () => {
       expect(respawnSession).not.toHaveBeenCalled();
       expect(errors).toEqual(['`pup respawn` is operator-only; sessions cannot respawn sessions.']);
       expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('dashboard', () => {
+    const URL_WITH_TOKEN = 'http://127.0.0.1:41234/?token=t0k3n';
+
+    /** The one listener the command added for `signal`, removed again so it outlives no test. */
+    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): () => void {
+      const added = process.listeners(signal).filter((listener) => !before.includes(listener));
+      onTestFinished(() => {
+        for (const listener of added) process.off(signal, listener);
+      });
+      expect(added).toHaveLength(1);
+      return added[0] as () => void;
+    }
+
+    it("serves this project's store, prints the url, and stops on Ctrl-C", async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const close = vi.fn(() => Promise.resolve());
+      vi.mocked(startWebDashboard).mockResolvedValue({ url: URL_WITH_TOKEN, close });
+      const sigints = process.listeners('SIGINT');
+      const sigterms = process.listeners('SIGTERM');
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+      const stop = addedListener('SIGINT', sigints);
+      addedListener('SIGTERM', sigterms);
+
+      expect(firstCall(startWebDashboard)[1]).toBe(repo);
+      expect(logs).toEqual([
+        `Dashboard on ${URL_WITH_TOKEN}`,
+        'Anyone holding this url reads the page; Ctrl-C stops the server.',
+      ]);
+      stop();
+      expect(close).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s before binding anything', async (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv(variable, value);
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+
+      expect(startWebDashboard).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain('`pup dashboard` is operator-only.');
       expect(process.exitCode).toBe(1);
     });
   });
