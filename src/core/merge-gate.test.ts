@@ -1173,6 +1173,139 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(steerPane).toHaveBeenCalled();
   });
 
+  // A worker's suite runs at nice 10 and the gate's at pup's own priority, but
+  // a loaded host can still tip a timing-sensitive test over: the test stage
+  // gets one re-run under the same lock before it counts (decision 94).
+  describe('test stage re-run', () => {
+    /** A stage command that fails its first run in this checkout, then `then`. */
+    const failsOnce = (then: string): string =>
+      'if [ -e .ran-once ]; then ' +
+      then +
+      '; fi; touch .ran-once; printf " FAIL  src/a.test.ts > times out under load\\n"; exit 1';
+
+    const adapterWith = (stage: 'build' | 'test' | 'lint', script: string): Adapter => ({
+      ...passingAdapter,
+      gateCommands: () =>
+        passingAdapter
+          .gateCommands(repo)
+          .map((c) =>
+            c.stage === stage ? { stage, command: 'sh', args: ['-c', script, `${stage}-run`] } : c,
+          ),
+    });
+
+    /** How many times the gate spawned the command marked `marker`, sandboxed or bare. */
+    const runsOf = (marker: string): number =>
+      vi.mocked(execFileSync).mock.calls.filter(([, args]) => args?.includes(marker)).length;
+
+    it('passes a test stage that passes on its re-run, named flaky with what failed', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(adapterWith('test', failsOnce('exit 0')));
+
+      expect(outcome.status).toBe('merged');
+      expect(runsOf('test-run')).toBe(2);
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'test',
+        status: 'pass',
+        detail:
+          'flaky — failed, then passed on its one re-run; failing the first time: ' +
+          'src/a.test.ts > times out under load',
+      });
+    });
+
+    it('rejects a test stage that fails its re-run too, naming both runs’ failures', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(
+        adapterWith('test', failsOnce('printf "FAILED tests/b.py::test_other\\n"; exit 1')),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(2);
+      const stage = outcome.report.stages.at(-1);
+      expect(stage).toMatchObject({ stage: 'test', status: 'fail' });
+      expect(stage?.detail).toMatch(
+        /^failed twice — failing the first time: src\/a\.test\.ts > times out under load; on the re-run: tests\/b\.py::test_other\n/,
+      );
+      expect(steerPane).toHaveBeenCalled();
+    });
+
+    // A Ctrl-C reaches the gate's child with pup itself, and a stage timeout
+    // kills it with SIGTERM: a re-run that passed would turn an abort into a
+    // merge, or hold the lock twice as long on a hung suite.
+    it.each([
+      ['killed by SIGINT', 'kill -INT $$'],
+      ['killed by SIGTERM, as a stage timeout is', 'kill -TERM $$'],
+      ['exiting 130 on an interrupt it caught', 'exit 130'],
+      ['exiting 2, as pytest does on an interrupt', 'exit 2'],
+    ])('never re-runs a test stage %s', (_case, end) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(
+        adapterWith('test', `if [ -e .ran-once ]; then exit 0; fi; touch .ran-once; ${end}`),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+    });
+
+    it('never re-runs a test stage that ran out its timeout, even one that trapped the SIGTERM', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      // What node throws when the timeout's SIGTERM is trapped and the runner
+      // exits 1 by itself: an ordinary status, told apart only by its code.
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        if (args.includes('test-run')) {
+          throw Object.assign(new Error('spawnSync sh ETIMEDOUT'), {
+            code: 'ETIMEDOUT',
+            status: 1,
+            signal: null,
+          });
+        }
+        return real?.(file, args, opts as never);
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+
+      const outcome = merge(adapterWith('test', 'exit 0'));
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+    });
+
+    it.each(['build', 'lint'] as const)('never re-runs a failed %s', (stage) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(adapterWith(stage, failsOnce('exit 0')));
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf(`${stage}-run`)).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage, status: 'fail' });
+    });
+
+    it('runs its stages at the priority pup runs at, never under nice', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      expect(merge(adapterWith('test', 'exit 0')).status).toBe('merged');
+
+      const spawn = vi
+        .mocked(execFileSync)
+        .mock.calls.find(([, args]) => args?.includes('test-run'));
+      expect(spawn).toBeDefined();
+      const argv = [spawn?.[0], ...(spawn?.[1] ?? [])].map(String);
+      expect(argv.some((word) => word === 'nice' || word.endsWith('/nice'))).toBe(false);
+    });
+  });
+
   it('steers a stage detail as plain text when the command output carries ANSI escapes', () => {
     // Live on 2026-09-12: vitest coloured its failure, the escapes went into the
     // report whole, and the pane could not show the paste as the bytes that were
