@@ -3000,6 +3000,34 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(prEdits()).toBe(1);
     });
 
+    // The body vouches for the new pin only, as a first gate's does (decision 82).
+    it('refuses a re-gate whose PR head reads back elsewhere after the rewrite', () => {
+      const tip = gateThenFix();
+      const edited = join(dirname(ghLog), 'edited');
+      const elsewhere = 'e'.repeat(40);
+      const viewCheck = 'if [ "$2" = "view" ]; then';
+      expect(fakeGh([openPrOnMain]).split(viewCheck)).toHaveLength(2);
+      const movedAfterEdit = fakeGh([openPrOnMain]).replace(
+        viewCheck,
+        [
+          `[ "$2" = "edit" ] && touch ${edited}`,
+          `if [ "$2" = "view" ] && [ -e ${edited} ]; then`,
+          `  printf '{"headRefOid":"${elsewhere}"}\\n'; exit 0`,
+          'fi',
+          viewCheck,
+        ].join('\n'),
+      );
+      const events = listEvents(db, SESSION_ID).length;
+
+      expect(() => regate([fixChecking], movedAfterEdit)).toThrow(
+        `has its head at ${elsewhere}, not at ${tip}`,
+      );
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(merges().at(-1)?.sha).toBe(pinned);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    });
+
     it('refuses a new head failing a hard stage, keeping the earlier merge event newest', () => {
       gateThenFix();
 
