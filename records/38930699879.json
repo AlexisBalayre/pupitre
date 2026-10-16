@@ -1,0 +1,129 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-16T16:23:36.033Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "38930699879",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/38930699879",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7b0b7b005333d27b845a81fa80ae48c0093e3fe4",
+  "source": "pr",
+  "pr_number": 152,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1247-1254",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`isRerunnable` treats every numeric exit other than 130 as a flake, but pytest exits 2 when interrupted. A single Ctrl-C during a Python repo's test stage therefore re-runs the suite, and a passing re-run merges.",
+      "body": "**A Ctrl-C during a Python repo's test stage still re-runs the suite, and the merge can go ahead.**\n\nThe Python adapter's test command is `[...prefix, 'pytest']` (`src/adapters/python.adapter.ts` L280), either bare or wrapped in `uv run` / `poetry run`. `runGateChild` (`src/core/sandbox.utils.ts` L246-254) spawns it with `execFileSync` and no `detached`, so a terminal Ctrl-C reaches pytest. Pytest catches `KeyboardInterrupt` and exits with `ExitCode.INTERRUPTED`, which is **2**. Node reports that as `status: 2, signal: null`, with no `code`, so this check passes:\n\n```ts\nreturn typeof status === 'number' && status !== 130 && !signal && code !== 'ETIMEDOUT';\n```\n\n`commandStage` then runs the suite again (L1312-1316). `withMergeLock` only installs a no-op listener and never records that a signal arrived. A clean re-run passes, the stage is recorded as `pass` (flaky), and the merge goes ahead. This is the abort-becomes-merge outcome that 2f0951a set out to close, and it is still open on one of the three built-in adapters. Decision 94 accepts a runner that \"exits with an ordinary failure status\" on interrupt. Pytest's interrupt status (2) is distinct from its failure status (1), so this case can be told apart.\n\nThe same predicate also re-runs wrapper exits of 129 and 143, which a shell or package manager reports when SIGHUP or SIGTERM killed its child.\n\n**Fix:** re-run only on the conventional test-failure status, 1. Vitest, jest, pytest and `go test` all exit 1 on failing tests. Interrupt and wrapper statuses, and every spawnSync-level error code, then fail at once. A custom runner with an unusual failure code (cargo's 101) loses the re-run, which fails safe. Every existing flaky test exits 1, so they still pass. Also add an `exit 2` case to the no-re-run `it.each`, and update the `isRerunnable` JSDoc and decision 94, which describe 130 as the excluded case.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7b0b7b005333d27b845a81fa80ae48c0093e3fe4/src/core/merge-gate.service.ts#L1247-L1254",
+      "suggestion": "  return status === 1 && !signal && code === undefined;"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1253",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`code !== 'ETIMEDOUT'` excludes only the timeout. Any other spawnSync-level error that still carries a numeric status passes the check, for example `ENOBUFS` when a wrapper turns the overflow kill into an exit status. That error gets a doomed re-run that holds the merge lock about twice as long. Checking `code === undefined` excludes them all.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1316",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The re-run uses the same writable checkout and scratch TMPDIR as the first run. Files the first run wrote, such as fixtures, generated files or sqlite databases, can turn a reliably state-dependent failure into a pass labelled \"flaky\". Either re-cut the checkout before the re-run, or record in decision 94 that the re-run inherits the first run's writes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "156-166",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`failingTestNames` caps the number of names at 10 but not their length. Ten very long `FAIL …` lines can now reach the stored report and, on a flaky pass, the PR body, where GitHub's 65,536-character limit would make `gh pr create` fail. Slicing each name (for example to 200 characters) bounds it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1287",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`runCommand` returns `unknown` and uses the error itself as the pass/fail signal, so it needs `error ?? new Error('command failed')` to stop a falsy throw from reading as a pass. A discriminated result such as `{ ok: false; error } | undefined` would make that contract explicit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1313-1331",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`commandStage` now has four exits, and each of its pass, flaky-pass and double-fail outcomes repeats an inline `stages.push` literal. The re-run policy (`command.stage !== 'test' || !isRerunnable(first)`) is buried in the closure. A single record-and-return at the end would make the function easier to scan.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1196-1289",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Every case in the new `test stage re-run` describe repeats the same `seedSession` plus `commitIn(... 'src/feature.ts' ...)` setup. A `beforeEach` inside the block would remove the copies.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "439-440",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ClaudeWindowOptions.niceness` is typed as `string`, so the constant has to carry the stringification. `niceness?: number` with `String(opts.niceness)` at the argv would keep the option numeric.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7874925,
+  "duration_ms": 357826,
+  "num_turns": 14,
+  "tokens": {
+    "input": 18,
+    "output": 10132,
+    "cache_read": 328475,
+    "cache_creation": 39916,
+    "total": 378541
+  }
+}
