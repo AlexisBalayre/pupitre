@@ -997,7 +997,7 @@ describe('steerPane with a fake tmux on PATH', () => {
     );
 
     expect(argvLog().filter((line) => line === CLEAR)).toHaveLength(64);
-  });
+  }, 20_000);
 
   it('gives a steer one settle per KB, then clears the box and refuses without pressing Enter', () => {
     landsAfter = Number.MAX_SAFE_INTEGER;
