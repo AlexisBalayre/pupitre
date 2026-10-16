@@ -1235,14 +1235,16 @@ interface BranchMeasurement {
 type FlaggedDebt = { description: string; files: string[] };
 
 /**
- * Whether a failed stage run is the runner's own failing exit, the one failure
- * a re-run can tell from a flake. A child a signal killed is not: a Ctrl-C
- * reaches the gate's child with pup itself (`withMergeLock` keeps pup alive
- * through it), and a re-run that passed would turn the operator's abort into a
- * merge. Nor is a runner that caught the interrupt and exited 130, nor a stage
- * that ran out `GATE_COMMAND_TIMEOUT_MS`, whose re-run would hold the merge lock
- * twice as long on a hung suite: node reports that as `ETIMEDOUT` even when the
- * runner traps the SIGTERM and exits with an ordinary status.
+ * Whether a failed stage run is the runner's own failing-tests exit, status 1
+ * for vitest, jest, pytest and `go test` alike: the one failure a re-run can
+ * tell from a flake. Anything else fails at once. A Ctrl-C reaches the gate's
+ * child with pup itself (`withMergeLock` keeps pup alive through it), and a
+ * re-run that passed would turn the operator's abort into a merge: so a child a
+ * signal killed, a runner that caught the interrupt (130, or pytest's 2), and a
+ * wrapper reporting a killed child (129, 143) are not re-run. Nor is a stage
+ * that ran out `GATE_COMMAND_TIMEOUT_MS`, which node marks with a `code` even
+ * when the runner traps the SIGTERM and exits 1, and whose re-run would hold
+ * the merge lock twice as long on a hung suite.
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -1250,7 +1252,7 @@ function isRerunnable(error: unknown): boolean {
     signal?: string | null;
     code?: string;
   };
-  return typeof status === 'number' && status !== 130 && !signal && code !== 'ETIMEDOUT';
+  return status === 1 && !signal && code === undefined;
 }
 
 /**

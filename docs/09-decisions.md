@@ -4577,22 +4577,24 @@ changes back into those docs is pending.
     a nested package's, runs once more under the same lock before it counts: a pass on the re-run
     passes the stage, its detail naming it flaky with the tests that failed the first time; a
     second failure rejects as before, its detail naming both runs' failing tests ahead of the
-    re-run's output tail. Only the runner's own failing exit is re-run: a child a signal killed
-    (an operator's Ctrl-C reaches it, and a passing re-run would turn the abort into a merge), a
-    runner that exited 130 on the interrupt, and a stage that ran out its timeout (whose re-run
-    would hold the merge lock twice as long on a hung suite) each fail at once. A runner that
-    traps the interrupt and exits with an ordinary failure status cannot be told from a flake; a
-    second Ctrl-C ends its re-run. Build and lint are deterministic and never re-run. Failing tests are
+    re-run's output tail. Only the failing-tests exit is re-run, status 1 for vitest, jest, pytest
+    and `go test` alike: a child a signal killed (an operator's Ctrl-C reaches it, and a passing
+    re-run would turn the abort into a merge), a runner that caught the interrupt (130, pytest's
+    2), a wrapper reporting a killed child (129, 143), and a stage that ran out its timeout (whose
+    re-run would hold the merge lock twice as long on a hung suite) each fail at once. A runner
+    whose failing-tests status is not 1 (cargo's 101) loses the re-run, which fails safe; one that
+    traps the interrupt and exits 1 cannot be told from a flake, and a second Ctrl-C ends its
+    re-run. Build and lint are deterministic and never re-run. Failing tests are
     named from the lines common runners open a failure with (vitest's `FAIL` and `×`, jest's `✕`
     and `●`, pytest's `FAILED`, go's `--- FAIL:`), at most ten, for the operator to read. The
     `index.test.ts` symlink entry-point test, which spawns a whole `pup`, takes a 20 s timeout as
     decision 46's kickoff test does.
     Tests: the session's tmux argv carries `nice -n 10` before the resolved `claude`, and the
     conductor's carries no `nice`; the gate's test spawn carries no `nice`; a test stage killed by
-    SIGINT, one exiting 130 and one timed out each run once and reject; the compiled context carries the
-    related-tests line; with a fake adapter a test stage failing once then passing merges, run
-    twice, marked flaky with the failing name; one failing twice rejects naming both runs'
-    failures; a failing build and a failing lint each run once.
+    SIGINT, one exiting 130, one exiting 2 and one timed out each run once and reject; the compiled
+    context carries the related-tests line; with a fake adapter a test stage failing once then
+    passing merges, run twice, marked flaky with the failing name; one failing twice rejects naming
+    both runs' failures; a failing build and a failing lint each run once.
 
 ## Implementation notes
 

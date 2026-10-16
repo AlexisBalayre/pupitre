@@ -1239,6 +1239,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ['killed by SIGINT', 'kill -INT $$'],
       ['killed by SIGTERM, as a stage timeout is', 'kill -TERM $$'],
       ['exiting 130 on an interrupt it caught', 'exit 130'],
+      ['exiting 2, as pytest does on an interrupt', 'exit 2'],
     ])('never re-runs a test stage %s', (_case, end) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
