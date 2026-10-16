@@ -14,9 +14,9 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Fakes `tmux`/`which` so this suite never spawns a real tmux pane or shells
-// out to resolve `claude` on PATH — spawning a tmux pane is explicitly out of
-// scope for a test process (docs/conventions/testing.md). Every other
-// execFileSync call — git, in particular — still runs for real.
+// out to resolve `claude` and `nice` on PATH — spawning a tmux pane is
+// explicitly out of scope for a test process (docs/conventions/testing.md).
+// Every other execFileSync call — git, in particular — still runs for real.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const fakeExecFileSync = vi.fn((file: string, args?: readonly string[], options?: unknown) => {
@@ -26,7 +26,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     if (file === 'tmux') {
       return (args?.[0] === '-L' ? args[2] : args?.[0]) === 'new-session' ? '%7\n' : '';
     }
-    if (file === 'which') return '/fake/bin/claude\n';
+    if (file === 'which') return `/fake/bin/${args?.[0]}\n`;
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
   });
   // The attach hands this terminal to tmux; here it hands it to nothing.
@@ -229,9 +229,9 @@ describe('launchArgs', () => {
   });
 });
 
-// FAKE_CLAUDE_BIN must match the 'which' branch faked in the node:child_process
-// mock above.
+// Both must match the 'which' branch faked in the node:child_process mock above.
 const FAKE_CLAUDE_BIN = '/fake/bin/claude';
+const FAKE_NICE_BIN = '/fake/bin/nice';
 
 /**
  * The arguments `spawnDetachedSession` opens every window with, before the
@@ -248,7 +248,7 @@ describe('launchSession', () => {
     vi.unstubAllEnvs();
   });
 
-  it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary, and returns the pane it printed', () => {
+  it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary under nice -n 10, and returns the pane it printed', () => {
     const pane = launchSession(OPTS);
 
     // The pane id, not the session name: it is what every later steer,
@@ -274,6 +274,9 @@ describe('launchSession', () => {
       `PUP_SESSION_ID=${OPTS.sessionId}`,
       '-e',
       `PUP_BIN=${process.argv[1] ?? 'pup'}`,
+      FAKE_NICE_BIN,
+      '-n',
+      '10',
       FAKE_CLAUDE_BIN,
       ...launchArgs(OPTS),
     ]);
@@ -1410,7 +1413,14 @@ describe('launchConductor', () => {
     // apart by which variable is set (decision 47).
     expect(spawn).toContain('PUP_CONDUCTOR=proj-1');
     expect(spawn.some((arg) => String(arg).startsWith('PUP_SESSION_ID='))).toBe(false);
-    expect(spawn).toContain(FAKE_CLAUDE_BIN);
+    // Yielding the CPU like a session's, so the gate it runs keeps normal
+    // priority over every worker (decision 94).
+    expect(spawn.slice(spawn.indexOf(FAKE_NICE_BIN), spawn.indexOf(FAKE_NICE_BIN) + 4)).toEqual([
+      FAKE_NICE_BIN,
+      '-n',
+      '10',
+      FAKE_CLAUDE_BIN,
+    ]);
     expect(spawn.slice(spawn.indexOf('--name'), spawn.indexOf('--name') + 2)).toEqual([
       '--name',
       'pup-conductor-proj-1',

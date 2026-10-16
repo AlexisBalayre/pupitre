@@ -110,6 +110,18 @@ describe('compileProfile', () => {
     }
   });
 
+  // Decision 94: a worker's full suite competes with the gate's for the CPU,
+  // and the gate runs the full suite anyway.
+  it('tells the session to run related tests only and leave the full suite to the gate', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+
+    expect(compiled.contextMarkdown).toContain(
+      '- Run only the tests related to what you changed: the test runner’s related-tests form ' +
+        'when it has one (e.g. `vitest related <files>`), else the test files by name. Leave the ' +
+        'full suite to the merge gate, which runs it.',
+    );
+  });
+
   // Decision 74: a selector or a plan approval leaves the pane without an
   // input box, so no steer reaches it. The tools are denied, and the protocol
   // names the one way to ask instead (decision 76).

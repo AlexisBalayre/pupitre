@@ -439,15 +439,25 @@ interface ClaudeWindowOptions {
 }
 
 /**
+ * How far below normal a window's `claude` runs, and so every test, build and
+ * tool it spawns: niceness is inherited. The merge gate's stages run from the
+ * operator's or the conductor's `pup` at normal priority, so on a machine four
+ * sessions load, the gate's test stage still gets the CPU its timing-sensitive
+ * tests assume (decision 94).
+ */
+const WINDOW_NICENESS = '10';
+
+/**
  * Open a detached window running Claude Code on a compiled profile, and return
  * the pane it runs in. The single launch both windows take: trust the checkout
  * (the dialog is keyed on the repo root, so a worktree needs its parent seeded
- * too), resolve `claude` on this PATH rather than the tmux server's, and hand
- * the process the same bypass-permissions, user-setting-sources argv.
+ * too), resolve `claude` and `nice` on this PATH rather than the tmux server's,
+ * and hand the process the same bypass-permissions, user-setting-sources argv
+ * at `WINDOW_NICENESS`.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
   preseedTrust(opts.cwd);
-  const claudeBin = execFileSync('which', ['claude'], { encoding: 'utf8' }).trim();
+  const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
@@ -457,7 +467,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',
     },
-    command: [claudeBin, ...launchArgs(opts)],
+    command: [which('nice'), '-n', WINDOW_NICENESS, which('claude'), ...launchArgs(opts)],
     socket: opts.socket,
   });
   return { sessionId: opts.sessionId, paneId, socket: opts.socket };

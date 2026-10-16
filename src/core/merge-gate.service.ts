@@ -129,15 +129,41 @@ function plainDetail(detail: string): string {
   return detail.replace(CSI_ESCAPE, '').replace(CONTROL_CHARS, ' ').trimEnd();
 }
 
-function commandFailureDetail(error: unknown): string {
+/** A failed command's whole output, plain; its message when it printed nothing. */
+function commandFailureOutput(error: unknown): string {
   const failure = error as { stdout?: string; stderr?: string; message?: string };
   const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
+  return plainDetail(output || (failure.message ?? 'command failed'));
+}
+
+function commandFailureDetail(error: unknown): string {
   // Plain before the tail is taken, never after: the cut would otherwise land
   // mid-escape and leave its parameters as text, and a coloured runner spends
   // much of the budget on bytes nobody reads.
-  return plainDetail(output || (failure.message ?? 'command failed')).slice(
-    -GATE_OUTPUT_TAIL_CHARS,
-  );
+  return commandFailureOutput(error).slice(-GATE_OUTPUT_TAIL_CHARS);
+}
+
+/**
+ * The line each common runner opens a failed test with: vitest's `FAIL` and
+ * `×`, jest's `✕` and `●`, pytest's `FAILED`, go's `--- FAIL:`. A line, not a
+ * parse — the names are for the operator to read, never for anything to act on.
+ */
+const FAILED_TEST_LINE = /^\s*(?:FAIL|FAILED|×|✕|✗|●|--- FAIL:)\s+(.+?)\s*$/;
+/** Enough names to tell one flake from a broken suite, few enough to read. */
+const FAILED_TEST_NAMES_MAX = 10;
+
+/** The failed tests a failed test stage's output names, deduplicated. */
+function failingTestNames(error: unknown): string {
+  const names = [
+    ...new Set(
+      commandFailureOutput(error)
+        .split('\n')
+        .flatMap((line) => FAILED_TEST_LINE.exec(line)?.[1] ?? []),
+    ),
+  ];
+  if (names.length === 0) return 'none named in its output';
+  const more = names.length - FAILED_TEST_NAMES_MAX;
+  return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
 /**
@@ -1224,12 +1250,8 @@ function measureBranch(
   targetSha: string,
   sha: string,
 ): BranchMeasurement | undefined {
-  /** Runs one hard stage; false once it has recorded the failure. */
-  const commandStage = (
-    stage: string,
-    command: { command: string; args: string[] },
-    cwd: string,
-  ): boolean => {
+  /** One run of a stage's command: the error it threw, `undefined` on a pass. */
+  const runCommand = (command: { command: string; args: string[] }, cwd: string): unknown => {
     try {
       // The session wrote what this runs (its own scripts, its own config), so
       // it runs confined: an env allowlist (decision 28) inside a sandbox whose
@@ -1243,12 +1265,50 @@ function measureBranch(
         gateEnv: req.gateEnv,
         timeout: GATE_COMMAND_TIMEOUT_MS,
       });
+      return undefined;
+    } catch (error) {
+      return error ?? new Error('command failed');
+    }
+  };
+
+  /**
+   * Runs one hard stage; false once it has recorded the failure. A failed test
+   * stage runs once more, still under the lock, before it counts: a suite that
+   * passes on the re-run passes, named flaky with what failed the first time,
+   * so a timing-sensitive test the host's load tipped over is no rejection
+   * (decision 94). Build and lint are deterministic and never re-run.
+   */
+  const commandStage = (
+    stage: string,
+    command: { stage: string; command: string; args: string[] },
+    cwd: string,
+  ): boolean => {
+    const first = runCommand(command, cwd);
+    if (first === undefined) {
       stages.push({ stage, status: 'pass' });
       return true;
-    } catch (error) {
-      stages.push({ stage, status: 'fail', detail: commandFailureDetail(error) });
+    }
+    if (command.stage !== 'test') {
+      stages.push({ stage, status: 'fail', detail: commandFailureDetail(first) });
       return false;
     }
+    const rerun = runCommand(command, cwd);
+    if (rerun === undefined) {
+      stages.push({
+        stage,
+        status: 'pass',
+        detail: `flaky — failed, then passed on its one re-run; failing the first time: ${failingTestNames(first)}`,
+      });
+      return true;
+    }
+    stages.push({
+      stage,
+      status: 'fail',
+      detail:
+        `failed twice — failing the first time: ${failingTestNames(first)}; ` +
+        `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
+    });
+    return false;
   };
 
   // One repo has one build, one test and one lint, and the runner that answers
