@@ -129,7 +129,7 @@ import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
-import type { RouteOverride } from '../core/types/session-lifecycle.types.js';
+import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -613,6 +613,30 @@ function launchOrRefuse(
 }
 
 /**
+ * Plan and launch a task this command just minted — `pup new` and `pup audit
+ * --sweep`. The task is new, so nothing can claim it first; what is left for
+ * the operator to answer is the compile, which validates the spec AND reads
+ * the project brief, so an oversized brief refuses in one line rather than
+ * crashing out of a launch (decision 57).
+ */
+function createOrRefuse(
+  db: Database,
+  repoPath: string,
+  task: TaskSpec,
+  fields: Pick<NewSessionRequest, 'model' | 'effort' | 'origin' | 'overlapVia'>,
+): string | undefined {
+  return launchOrRefuse(task.id, [InvalidProfileError], () =>
+    createSession(db, {
+      repoPath,
+      base: DEFAULT_BASE_PROFILE,
+      task,
+      claudeUserDir: join(homedir(), '.claude'),
+      ...fields,
+    }),
+  );
+}
+
+/**
  * A read that refuses, naming the task, when a stored spec it needs is
  * unusable — rather than a stack trace. Scrubbed like a launch refusal: the
  * message quotes the task id and the glob that failed, which are store text.
@@ -853,20 +877,11 @@ export function buildProgram(): Command {
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
       noteAllowOverlap(opts.allowOverlap === true);
-      // The compile validates the spec AND reads the project brief, so an
-      // oversized brief must refuse in one line here rather than crash out of
-      // a launch (decision 57).
-      const sessionId = launchOrRefuse(task.id, [InvalidProfileError], () =>
-        createSession(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          task,
-          claudeUserDir: join(homedir(), '.claude'),
-          model: opts.model as string | undefined,
-          effort: opts.effort as string | undefined,
-          ...conductorAttribution(),
-        }),
-      );
+      const sessionId = createOrRefuse(db, repoPath, task, {
+        model: opts.model as string | undefined,
+        effort: opts.effort as string | undefined,
+        ...conductorAttribution(),
+      });
       if (sessionId === undefined) return;
       reportLaunched(sessionId);
     });
@@ -2266,22 +2281,13 @@ export function buildProgram(): Command {
           return refuse('Baseline regressed — fix the regression before sweeping.');
         }
         const task = buildSweepTask(`sweep-${Date.now().toString(36)}` as TaskId, report.findings);
-        // The task was just minted, so the only refusal left for the operator
-        // to answer is the project brief, which the compile reads and can
-        // refuse for being oversized (decision 57).
-        const sessionId = launchOrRefuse(task.id, [InvalidProfileError], () =>
-          createSession(db, {
-            repoPath,
-            base: DEFAULT_BASE_PROFILE,
-            task,
-            claudeUserDir: join(homedir(), '.claude'),
-            model: opts.model,
-            // A sweep is scoped to the whole repo by construction, so it
-            // overlaps every live session there is: each is introduced to it
-            // and the `scope_overlap` event records them all (decision 99).
-            origin: 'audit',
-          }),
-        );
+        const sessionId = createOrRefuse(db, repoPath, task, {
+          model: opts.model,
+          // A sweep is scoped to the whole repo by construction, so it
+          // overlaps every live session there is: each is introduced to it
+          // and the `scope_overlap` event records them all (decision 99).
+          origin: 'audit',
+        });
         if (sessionId === undefined) return;
         reportLaunched(sessionId, 'sweep session');
         return;
