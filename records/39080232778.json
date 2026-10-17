@@ -1,0 +1,286 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T23:53:59.396Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39080232778",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39080232778",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3bfbe9165faddb1ef3a09fe0cc5427a7507aaf3c",
+  "source": "pr",
+  "pr_number": 156,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "233-243",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`runGateChild` settles only on `'close'`, and Node emits that only after the process has exited *and* every stdio pipe has closed. On a timeout or an overflowing pipe, `stop()` only sends SIGTERM to the child's process group. On an interrupt, the kill timer only sends SIGKILL to that group. Neither closes pup's ends of the pipes. Suppose a process outside the group still holds the stdout/stderr pipe, for example a test that starts a server with `spawn(..., { detached: true, stdio: 'inherit' })` and never stops it (`detached` calls setsid). Then `'close'` never fires. The timeout fires once and nothing settles, so the gate hangs for good while holding the merge lock. Ctrl-C doesn't end it either: the forwarders and `withMergeLock`'s `stayAlive` keep pup alive, and the SIGKILL after the grace can't reach that process. The operator has to `kill -9` pup, which leaves `.git/pup-merge.lock` and the gate checkout behind. The old `execFileSync` (spawnSync) closed its pipe ends when it killed on timeout or overflow, precisely so that a grandchild holding a pipe could not hang it. So `GATE_COMMAND_TIMEOUT_MS` always ended the stage as an ETIMEDOUT failure. This is a silent regression of the gate's only guarantee that it ends.",
+      "body": "**A stage whose pipe outlives its process group now hangs the gate past its timeout, while it holds the merge lock**\n\n`runGateChild` settles only on `'close'`, which Node emits after the process exits *and* all of its stdio pipes close. Nothing listens for `'exit'`. On a timeout or an overflowing pipe, `stop()` only signals the process group:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3bfbe9165faddb1ef3a09fe0cc5427a7507aaf3c/src/core/sandbox.utils.ts#L233-L243\n\nThe interrupt path's SIGKILL escalation (around L426) also only signals the group. A process that left the group (`setsid`, e.g. a test that leaks a helper spawned with `detached: true, stdio: 'inherit'`) but still holds stdout or stderr stops `'close'` from ever firing. The same happens when a same-group process traps SIGTERM, because timeout and overflow never escalate to SIGKILL. When that happens:\n\n- The timeout fires once and changes nothing. The stage never settles, so the merge lock stays held indefinitely.\n- Ctrl-C is forwarded and the 5 s SIGKILL reaches only the group. pup's own listeners keep it alive, so the operator has to `kill -9`, which leaves `.git/pup-merge.lock` and the gate checkout on disk.\n\n`execFileSync` didn't have this problem. spawnSync's `Kill()` always calls `CloseStdioPipes()` on timeout and on maxBuffer overflow, so a timed-out stage always came back as an `ETIMEDOUT`/`ENOBUFS` failure. To restore that, close pup's ends of the pipes whenever it stops a child. Below is the `stop()` change. The `forwardInterrupt` kill timer needs the same two `destroy()` calls after its SIGKILL.",
+      "suggestion": "    const stop = (code: 'ETIMEDOUT' | 'ENOBUFS'): void => {\n      failure ??= code;\n      signalGroup(child, 'SIGTERM');\n      // As execFileSync did: a process outside the group holding a pipe must\n      // not keep the stage open past its timeout.\n      child.stdout?.destroy();\n      child.stderr?.destroy();\n    };"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "400-413",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`coveredTest` decides whether to fold by reading only `ctx.configPath`, which is the trusted main checkout. Before this PR, the gate's test stage was `{ command: pm, args: ['run', 'test'] }` run with `cwd` set to the gate checkout, so the package manager ran the session's own `scripts.test`, `pretest` and `posttest`. The folded run is `npx --no-install vitest run --coverage…`, which never reads the checkout's scripts. So if a session edits its own test script, the gate tests something other than what the script runs. That is exactly the case the code comment says folding must avoid.",
+      "body": "**The folded run checks only the trusted scripts and config, but the old test stage ran the session's own script**\n\nAll three folding checks read `ctx.configPath`, the trusted main checkout:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3bfbe9165faddb1ef3a09fe0cc5427a7507aaf3c/src/adapters/typescript.adapter.ts#L400-L413\n\nOn main, the gate's test stage was `pm run test` with `cwd` set to the gate checkout (`commandStage('test', test, checkout)`). The package manager therefore ran the **session's** `scripts.test`/`pretest`/`posttest`, and the trusted manifest only decided whether the stage existed. Once `merge-gate.service.ts` replaces that with `{ ...test, ...covered }`, the session's script is never read. Decision 95 justifies folding with \"Anything else would make the instrumented run a different run from the one the script makes\". When a session edits its script, it gets exactly that different run:\n\n- **False pass:** the session sets `\"test\": \"vitest run && playwright test\"`. The e2e step never runs in the gate, then becomes main's script on merge.\n- **False fail:** the session adds a `pretest` codegen step, or `coverage.thresholds` to its own vitest config. The step is skipped, or a figure fails a suite whose tests all passed. Decision 94 then re-runs it and reports it as \"failed twice — none named in its output\".\n\nApplying the same checks to `ctx.measurePath` as well can only *reduce* folding, and every decline falls back to the pre-PR two-run path, so a session gains nothing from it. Wrap the read in a `try`: the measured `package.json` is session-controlled, and `coveredTest` is called outside any `try` in `measureBranch`. In init, audit and land, `measurePath === configPath`, so nothing changes there.",
+      "suggestion": "  coveredTest(ctx: CapabilityContext): CoveredTestRun | undefined {\n    // Both checkouts: the trusted one decides whether the gate may fold, and\n    // the measured one is what `pm run test` there would have run, so a session\n    // that edits its own test or pre/post script, or adds a threshold, keeps\n    // the two runs (decision 95).\n    for (const path of new Set([ctx.configPath, ctx.measurePath])) {\n      let scripts: Record<string, string>;\n      try {\n        scripts = readManifest(path)?.scripts ?? {};\n      } catch {\n        return undefined;\n      }\n      if (!PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '')) return undefined;\n      if (scripts.pretest !== undefined || scripts.posttest !== undefined) return undefined;\n      if (declaresCoverageThresholds(path)) return undefined;\n    }\n    const run = instrumentedRun(ctx);\n    return isUnavailable(run) ? undefined : run;\n  },"
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "169",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The change turns a private `interface MeasuredBaseline extends InitReport { gaps: DebtGap[] }` into an exported one so `src/core/audit.service.ts` can import it, which `docs/conventions/general.md` §Type separation forbids in a `*.service.ts` file.",
+      "body": "**Exported interface added to a service file**\n\nThis PR changes `interface MeasuredBaseline extends InitReport { gaps: DebtGap[] }` to `export interface MeasuredBaseline …` so that `src/core/audit.service.ts` can import it:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3bfbe9165faddb1ef3a09fe0cc5427a7507aaf3c/src/core/init.service.ts#L169\n\n`docs/conventions/general.md` §Type separation: \"Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`, `src/adapters/types/`. **Never inline an exported `type`/`interface` in a `*.service.ts` or `*.routes.ts` file**.\"\n\n`InitReport` already lives in `src/core/types/init.types.ts`. Move `MeasuredBaseline` there, next to it, and use `import type` in both `init.service.ts` and `audit.service.ts`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "194-237",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On main, any failure of the instrumented vitest run only degraded coverage to \"not measured\". With folding, two coverage-only failures now fail the test stage. First, coverage overhead can push a suite that passes plain past the shared 10-minute timeout. Second, forced instrumentation of every source file via `--coverage.include` can error on files the plain suite never loads. Decision 95 names only thresholds as a coverage-only cause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "178-187",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`declaresCoverageThresholds` looks only for the literal `thresholds` key. Vitest before 1.0 declared thresholds as `coverage: { lines, functions, branches, statements }`, so a repo pinned to vitest 0.x would fold, and a figure would fail a suite whose tests all passed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "361-374",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `EXEC_MAX_BUFFER_BYTES` comment claims parity with execFileSync (\"a child that floods a pipe fails where it did\"). But execFileSync's `maxBuffer` limits stdout+stderr combined, while `collect()` limits each stream separately. A stage whose output totals 1–2 MiB used to fail with ENOBUFS and now passes. Either fix the comment or count both streams against one total.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "390-394",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup audit`/`pup land` now print `0.0s` for a skipped stage, because `measureStages` stores `durationMs: 0` for a stage with no command. Decision 95 says a stage that ran nothing has no time. Omit the time when `status === 'skipped'`, here and in `printInitReport`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "350, 475-476",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`writeProfile` uses its directory argument both as the profile's location and as its write-deny root. Each child's profile now denies only its own `policyDir/child-XXXX` instead of the whole policy directory, which weakens decision 36's \"stays unwritable whatever a caller passes as writable\" for sibling profiles. No current grant covers `policyDir`, so this is not reachable today.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1295",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The gate's \"before\" complexity child for a custom adapter runs with `cwd` set to the trusted checkout, which is granted writable, and it shares the toolchain cache and TMPDIR that session children can write. A poisoned cache could therefore run with write access to the trusted repo, against decision 36's \"trusted checkout is not writable during a merge\". This already existed; running stages concurrently only overlaps the two in time.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "180-232",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`initProject`, `measureBaseline` and `auditProject` return promises but are deliberately not `async`, and they gain the single-caller `measureStages`/`judgeAudit` splits. Both exist only so that the sync `runOrReportNoAdapter` guard still catches a thrown `NoAdapterError`. Making that guard `async` (`return await fn()`) would let these become plain async functions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1227-1358",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Nested-package results are split across `suiteResults` and `typechecks`, both keyed by a rebuilt `nestedStage(...)` string. They are read back with `as GateStageResult` casts that rely only on a comment's invariant. Keying by the `GateCommand` entry, or keeping one ordered list, would remove the casts. Line 1365 also still builds the label inline instead of using `nestedStage`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/debt.types.ts",
+      "line": "41-46",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`elapsedMs: Record<string, number>` repeats each judge's stage-name literal (`'dead-code'`, `'duplication'`, `'complexity'`, `'coverage'`) as untyped keys far from the judges, so a typo silently drops a timing. Type the key as a union of the stage names, or share the constants.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/capability.utils.ts",
+      "line": "45-48",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`formatDuration` is a report-display helper with no adapter caller (only core and cli use it). It belongs in `src/core/report-data.utils.ts` next to `displayStages`, not in the adapter-layer capability utils.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "391-394",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "All three adapters' `coverage` catches now repeat the same tail: `if (error instanceof GateInterruptedError) throw error; return { unavailable: ... }`. The TS adapter also duplicates its message string from `instrumentedRun`. A shared `unavailableAfter(prefix, error)` helper next to `failureSummary` would make it impossible to forget the interrupt rethrow.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "GateInterruptedError class",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `GateInterruptedError` class lives in a `*.utils.ts` file (\"pure functions only\"). `general.md` places typed `Error` subclasses in a `*.errors.ts` file. `UndeclaredSandboxError` set the precedent, but the drift grows with each new class.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "printGateStage",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`printGateStage` takes the ad-hoc intersection `StoredGateStage & { durationMs?: number }`. Prefer the gate-stage type in `src/core/types/merge-gate.types.ts` that already carries `durationMs`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/actions.service.ts",
+      "line": "314-319",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment \"`runMergeGate` is one synchronous pipeline that clones, installs, builds, tests and audits\" is now stale: this PR made the gate async with concurrent stage children. Reword it to say the gate holds the CLI and prints nothing until it ends.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4831-4837",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 95 says \"46 to 54% less than main's 585 s mean\", but the branch's runs (275.4, 302.3, 313.7 s) against a 585 s mean give 46.4–52.9%. The top of the range is 53%, not 54%.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4803, 4839-4843",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two lines in decision 95 run far past the file's 100-column wrap, likely joined in a hand edit. The long \"Tests:\" paragraph is an inventory of test cases that will go stale and carries no decision rationale; consider trimming it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/custom.adapter.ts",
+      "line": "86-88",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `commandError` comment says \"the operator's instructions are in that message\". That holds only for `UndeclaredSandboxError`: a `GateInterruptedError` message carries no instructions. Split the two cases in the comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "commandStage JSDoc",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edited `commandStage` JSDoc (\"Runs one hard stage to its result. A failed test\\n stage runs once more…\") is now awkwardly wrapped, and \"to its result\" adds nothing beyond the return type. Re-flow it or drop the clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "196-199",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "A line in the `runGateChild` docblock is wrapped at about 120 columns (\"...and throws without it. The invariant is about gate *children*, and\"). This PR edits the same docblock, so re-wrapping it would be in scope.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned: the change touches no CI, HTTP, docker or settings surfaces (src/adapters, src/core, src/cli and docs/09-decisions.md only)."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer reported that piped Bash commands were denied, and it did not audit the test files against docs/conventions/testing.md."
+    }
+  ],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.8638502,
+  "duration_ms": 474483,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 19416,
+    "cache_read": 253685,
+    "cache_creation": 58916,
+    "total": 332029
+  }
+}
