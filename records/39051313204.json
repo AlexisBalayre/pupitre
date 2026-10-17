@@ -1,0 +1,165 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T16:59:48.086Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39051313204",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39051313204",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c2c908eb0bb054a880d03f05986b9dc45bacda1f",
+  "source": "pr",
+  "pr_number": 154,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "8d1ee84cc1beb600120f41a51e4527188dc2319e",
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "555-559",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "303-309",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "248-254",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "976-1016",
+      "status": "resolved"
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "417-423",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "573",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The hardened review diff leaves out `--text`. The session can mark its files `-diff` (or `binary`) and the reviewer then sees only \"Binary files differ\" instead of the real code.",
+      "body": "[`SECURITY_REVIEW_DIFF`](https://github.com/AlexisBalayre/pupitre/blob/c2c908eb0bb054a880d03f05986b9dc45bacda1f/src/core/profile-compiler.service.ts#L568-L574) turns off diff drivers, textconv, the pager and colour, but it does not override the binary attribute. pup's own gate diff does. [`DIFF_SAFE_FLAGS`](https://github.com/AlexisBalayre/pupitre/blob/c2c908eb0bb054a880d03f05986b9dc45bacda1f/src/core/git-diff.client.ts#L95-L100) adds `--text` for exactly this case: \"a `* -diff` attribute or `diff.<driver>.binary` that turns every file into 'Binary files differ'\" (decision 53).\n\nThe command runs with `-C .worktrees/<session-id>`, so git reads attributes from the session's own worktree. A session can hide every hunk in any of these ways:\n- a `.gitattributes` with `* -diff` in its worktree, committed or not;\n- a line in the shared `info/attributes`;\n- `core.attributesFile`, `diff.<driver>.binary` or a small `core.bigFileThreshold` in the shared config.\n\n`assertNoArmedGitDrivers` only runs inside the merge gate, after this review. Decision 53 also records that `core.attributesFile` and `core.bigFileThreshold` are outside what it refuses. When this happens, the xhigh subagent gets file names and no code, and the conductor reports a clean review of the very changes this step exists to inspect.\n\nFix: add `--text` to the final element (`--no-pager diff --no-ext-diff --no-textconv --no-color --text …`). Consider `--ignore-submodules=none` as well, since `diff.ignoreSubmodules=all` hides gitlink changes the same way. Update the pinned string at `src/core/profile-compiler.test.ts:950`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "573",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The session can steer `main` and `HEAD` in `main...HEAD`, so the reviewer can be shown an empty or decoy diff instead of what `pup merge --pr` pushes.",
+      "body": "[`SECURITY_REVIEW_DIFF`](https://github.com/AlexisBalayre/pupitre/blob/c2c908eb0bb054a880d03f05986b9dc45bacda1f/src/core/profile-compiler.service.ts#L568-L574) names both ends of the diff by bare name, inside the session's own worktree. The session controls both:\n- **`main`:** a bare name resolves `refs/tags/main` before `refs/heads/main`. Tags live in the shared `$GIT_COMMON_DIR`, so `git tag main HEAD` makes the merge base equal HEAD, and the reviewer sees an empty diff. Git only prints an \"ambiguous\" warning on stderr.\n- **`HEAD`:** this is the worktree's HEAD, and the session can detach it onto a harmless commit. `pup merge --pr` never reads that HEAD: it pins and pushes `refs/heads/pup/<session-id>` ([`merge-gate.service.ts:859`](https://github.com/AlexisBalayre/pupitre/blob/c2c908eb0bb054a880d03f05986b9dc45bacda1f/src/core/merge-gate.service.ts#L855-L888)). The gate itself already handles \"a session that detached it or switched branch\".\n\nDecision 80 settled this for every other review path: \"a bare name resolves a same-named tag first, and the review must show what the gate merges.\" `review.service.ts:61-67`, `overlap.service.ts:52-56` and `conductor.service.ts:86-96` all name `refs/heads/<target>` and `refs/heads/<branch>`. This PR introduced the bare form, and this round rewrote the line as the trusted command without fixing it.\n\nFix: diff `refs/heads/<target>...refs/heads/pup/<session-id>`. The target is the main checkout's current branch (`merge-gate.service.ts:300`), not always `main`, so either the prompt should name it or the `main` assumption should be stated. Update the pinned string at `src/core/profile-compiler.test.ts:950`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "559",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The prompt cites \"(decision 41)\" for the session arming the shared git config's diff drivers and promisor remotes, but decision 41 is about refusing a launch whose scope collides with a live session; cite decision 83 (promisor/protocol pins) or 50 (drivers), or drop the parenthetical.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.errors.ts",
+      "line": "58-59",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Now that a conductor-named `--model` no longer lifts the top-rung refusal, the `TopRungReachedError` text the conductor receives from `pup launch` still advises \"relaunch it with an explicit `--model` and `--effort`\", which the conductor will be refused again for; the message should hand the case to the operator.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "569",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Seven transports are pinned by name but `protocol.allow` itself is not, so a planted `protocol.allow=always` would still enable ftp/ftps or a `git-remote-<x>` helper for a lazy fetch if `GIT_NO_LAZY_FETCH` were ignored; pinning `-c protocol.allow=never` alongside costs nothing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "566-574",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`SECURITY_REVIEW_DIFF` hand-copies the seven-transport list `NO_TRANSPORT` already holds in `dashboard.service.ts:468` (and the `core.fsmonitor`/`core.hooksPath` pins from `GIT_SAFE_CONFIG`), so a transport added in one place won't reach the other; it also sits in the service file rather than a `*.constants.ts` with JSDoc, unlike its sibling `SECURITY_REVIEW_EFFORT` (general.md §hardcoded values).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "139, 220",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`launchTask` derives `operatorDecides` as `req.overrideVia !== 'conductor'`, so any programmatic caller that omits `overrideVia` gets the top-rung-lifting behaviour by default, the unsafe direction; defaulting to not lifting, or requiring `overrideVia` whenever `model`/`effort` is set, would make the trust explicit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "249-255",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The newest-respawn timestamp lookup repeats the `events.map(...).lastIndexOf(...)` + `Date.parse(toIsoUtc(rows[i]?.created_at ?? ''))` idiom of the killed-event lookup a few lines above in the same function, and the two differ on an unparseable date (`|| 0` here, not there); one local helper would keep them in step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "208-210",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edited `nextWindowRoute` JSDoc line (\"…but never that decision. A task re-tiered since its last window\") runs past the file's wrap width; reflow the paragraph.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.8179172,
+  "duration_ms": 385683,
+  "num_turns": 14,
+  "tokens": {
+    "input": 16,
+    "output": 12470,
+    "cache_read": 322683,
+    "cache_creation": 49735,
+    "total": 384904
+  }
+}
