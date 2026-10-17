@@ -4703,7 +4703,7 @@ changes back into those docs is pending.
     operator, never to a retry. It also orders a security review before `pup merge --pr` on any
     session whose diff touches the gate, git, tmux or the store: a subagent spawned with the Agent
     tool at `effort: "xhigh"` over the worktree's `main...HEAD` diff, run with lazy fetch off, every
-    transport pinned off by name, no pager, no diff driver, `--text` and every submodule shown,
+    transport pinned off by name, no pager, no diff driver, no replace refs, `--text`, `--no-relative` and every submodule shown,
     between `refs/heads/<target>` and `refs/heads/pup/<session-id>` (decision 80), since the
     session writes the shared git config, attributes and tags and can move its worktree HEAD. `runUtility`
     runs `claude-haiku-5-5` at `low`. pup never chooses a Fable model or `--effort max`. Neither
