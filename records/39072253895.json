@@ -1,0 +1,98 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T21:51:42.327Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39072253895",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39072253895",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5b04aad077f89cba3e2a180cf121774fd6fd45d3",
+  "source": "pr",
+  "pr_number": 154,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "c2c908eb0bb054a880d03f05986b9dc45bacda1f",
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "573",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "573",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "571",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The review diff honours `refs/replace/*`, which lives in the shared common dir the session writes. A session can `git replace` its malicious blob or tip commit with a harmless one, so the xhigh reviewer reads harmless code while `pup merge --pr` pushes the real objects. The command needs `--no-replace-objects`.",
+      "body": "[`SECURITY_REVIEW_DIFF`](https://github.com/AlexisBalayre/pupitre/blob/5b04aad077f89cba3e2a180cf121774fd6fd45d3/src/core/profile-compiler.service.ts#L570-L577) now pins both ends to `refs/heads/`. But git still swaps in objects from `refs/replace/*` on every normal read, and this command passes none of `--no-replace-objects`, `GIT_NO_REPLACE_OBJECTS` or `core.useReplaceRefs=false`. Nothing else in the repo does either.\n\n`refs/replace/` sits in the shared `$GIT_COMMON_DIR`. Decisions 41, 54 and 80 already treat that directory as something the session can write. The attack:\n1. The session commits malicious content.\n2. It runs `git replace <blob-or-tip> <benign>`.\n3. `git diff refs/heads/<target>...refs/heads/pup/<id>` prints the benign content.\n\n[`pushBranch`](https://github.com/AlexisBalayre/pupitre/blob/5b04aad077f89cba3e2a180cf121774fd6fd45d3/src/core/merge-gate.service.ts#L1499-L1530) pushes the pinned sha from inside `withScratchGitDir`. That scratch dir has no `refs/replace`, so the PR carries the real objects, which the xhigh subagent never saw. `--text`, `--no-textconv` and the `refs/heads/` pin don't help, because the swap happens below the diff machinery.\n\nOn git 2.19 to 2.42, a `core.useReplaceRefs=true` planted in the shared config can override the command-line flag. So pin the config key as well; a `-c` on the command line beats the repo config on every version. Update the pinned string at `src/core/profile-compiler.test.ts:950` and decision 92's sentence to match.\n\n(Context, not in scope for this line: `cutGateCheckout` reads the tree through `runGit`, which also honours replacements, so a replaced tip would also make build, test and lint run on the benign tree.)",
+      "suggestion": "  'GIT_NO_LAZY_FETCH=1 git --no-replace-objects -C .worktrees/<session-id> -c core.useReplaceRefs=false -c core.fsmonitor= -c core.hooksPath=/dev/null',"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "575",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The session can set `core.worktree` to an ancestor directory and `diff.relative=true` in the shared config. The review diff, run with `-C .worktrees/<session-id>`, then shows only paths under a prefix such as `<session-id>/`, so the real changes disappear. The command needs `--no-relative`.",
+      "body": "`diff.relative=true` (git ≥ 2.28) limits every porcelain `git diff` to paths under the cwd's prefix inside the work tree, tree-to-tree `A...B` diffs included. On its own it does nothing here, because `-C .worktrees/<session-id>` is normally the worktree root and the prefix is empty.\n\nThe session can change the work tree root. Git ignores `core.worktree` in the shared config for a linked worktree. But once `extensions.worktreeConfig` is set in the shared config, git reads `core.worktree` from `.git/worktrees/<id>/config.worktree`. The repo's own tests use that exact path (`src/core/git-diff-client.test.ts:381-390`, `src/core/merge-gate.test.ts:1426-1435`). Decision 92's text treats a planted `core.worktree` as a real threat, and that is why the gate passes `--work-tree` (`merge-gate.service.ts:357, 619`).\n\nThe attack:\n1. Point the worktree's `core.worktree` at `.worktrees/` or at the repo root.\n2. Set `diff.relative=true`.\n3. The cwd is now `<id>/` or `.worktrees/<id>/` inside the work tree, so the [review command](https://github.com/AlexisBalayre/pupitre/blob/5b04aad077f89cba3e2a180cf121774fd6fd45d3/src/core/profile-compiler.service.ts#L575-L576) prints only changes under that prefix.\n\nThe output is empty, or a decoy the session committed at that path. The session can plant both keys after its last commit and remove them before `pup merge`.\n\n`--no-relative` overrides the config. `-c diff.relative=false` would also work on gits older than 2.28. Update the pinned string at `src/core/profile-compiler.test.ts:950` and decision 92 to match.",
+      "suggestion": "  '--no-pager diff --no-ext-diff --no-textconv --no-color --text --ignore-submodules=none --no-relative',"
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4705",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 92 still says the review runs \"over the worktree's `main...HEAD` diff\", while two lines later the same sentence says it runs between `refs/heads/<target>` and `refs/heads/pup/<session-id>`; drop or reword the stale `main...HEAD` clause so the decision matches the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4708",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The line \"session writes the shared git config, attributes and tags and can move its worktree HEAD. `runUtility`\" is about 105 characters, past the ~100-column wrap of the surrounding lines; move `` `runUtility` `` to the next line.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7761070999999997,
+  "duration_ms": 335694,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 8678,
+    "cache_read": 247986,
+    "cache_creation": 55113,
+    "total": 311791
+  }
+}
