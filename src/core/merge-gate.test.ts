@@ -66,7 +66,7 @@ import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
-import { runMergeGate, withMergeLock } from './merge-gate.service.js';
+import { runMergeGate as runGate, withMergeLock } from './merge-gate.service.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
@@ -217,9 +217,27 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     ghLog = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-ghlog-'))), 'calls');
   });
 
-  afterEach(() => {
+  /**
+   * Every gate a test started that has not settled. The stages run
+   * asynchronously (decision 95), so a test that runs out its timeout leaves
+   * its gate running, and without a wait it would run on into the next test's
+   * repo, mocks and environment: one slow test would fail the ones after it.
+   */
+  const unsettled = new Set<Promise<unknown>>();
+  const runMergeGate = (...args: Parameters<typeof runGate>): ReturnType<typeof runGate> => {
+    const gate = runGate(...args);
+    unsettled.add(gate);
+    const forget = (): boolean => unsettled.delete(gate);
+    void gate.then(forget, forget);
+    return gate;
+  };
+
+  // Before the env goes, and before any `onTestFinished` reset, which vitest
+  // runs after this: the gate finishes under the test that started it.
+  afterEach(async () => {
+    await Promise.allSettled(unsettled);
     vi.unstubAllEnvs();
-  });
+  }, 120_000);
 
   const merge = (
     adapters: Adapter | Adapter[] = passingAdapter,
