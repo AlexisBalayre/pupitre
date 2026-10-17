@@ -23,6 +23,31 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
 }
 
 describe('sessionLine', () => {
+  // Decision 92: what the window runs on, and why it climbed there.
+  it("prints the session's model, effort and rung, and why it climbed", () => {
+    const line = sessionLine(
+      sessionFixture({
+        route: {
+          tier: 'standard',
+          model: 'claude-sonnet-5-5',
+          effort: 'high',
+          rung: 2,
+          rungs: 4,
+          reason: 'gate-rejection',
+          override: false,
+        },
+      }),
+    );
+
+    expect(line).toMatch(
+      /pup\/t-mue99umh {2}claude-sonnet-5-5 high, rung 2\/4 after gate-rejection$/,
+    );
+  });
+
+  it('prints no route column for a session launched before routing', () => {
+    expect(sessionLine(sessionFixture())).not.toContain('rung');
+  });
+
   it('prints a placeholder for an id outside the minted shape and builds no command around it', () => {
     const line = sessionLine(
       sessionFixture({ id: 'x → pup merge s-other --pr', isMintedId: false, state: 'blocked' }),

@@ -169,6 +169,7 @@ import {
   listBacklogTasks,
   listEvents,
   MalformedTaskSpecError,
+  recordSessionRoute,
   saveProjectDormantAt,
   transitionSession,
 } from '../core/session.repository.js';
@@ -186,6 +187,7 @@ import {
   LaunchRolledBackError,
   ScopeConflictError,
   TerminalSessionError,
+  TopRungReachedError,
   UnknownSessionError,
   UnknownTaskError,
 } from '../core/session-lifecycle.errors.js';
@@ -591,6 +593,29 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.join('\n')).not.toContain('question');
+    });
+
+    // Decision 92: a rung is chosen for the operator, so the row says which.
+    it("shows a session's model, effort and rung, and why it climbed there", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      recordSessionRoute(db, 's1', {
+        tier: 'standard',
+        rung: 2,
+        model: 'claude-opus-5-5',
+        effort: 'high',
+        reason: 'gate-rejection',
+        override: false,
+      });
+      db.close();
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      const line = logs.find((entry) => entry.includes('pup/s1')) ?? '';
+      expect(line).toContain('claude-opus-5-5 high, rung 3/4 after gate-rejection');
     });
 
     // Decision 83: what waits on the operator leads, with what answers it.
@@ -2331,6 +2356,71 @@ describe('CLI commands', () => {
       });
     });
 
+    // Decision 92: the tier picks the ladder a task launches on, so the
+    // listing the operator launches from shows it, and which ones they set.
+    it('lists the tier each task launches on, marking the one --tier set', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      const plan = (id: string, scopeIn: unknown, tier?: 'critical' | 'standard') =>
+        insertTask(db, {
+          id,
+          projectId: projectId(repoPath),
+          spec: JSON.stringify({ goal: id, scopeIn }),
+          tier,
+        });
+      plan('t-ui', ['src/cli/ui/**']);
+      plan('t-gate', ['src/core/merge-gate.service.ts']);
+      plan('t-set', ['docs/**'], 'critical');
+      plan('t-torn', ['docs/**', 7]);
+
+      buildProgram().parse(['plan'], { from: 'user' });
+
+      const line = (id: string) => logs.find((entry) => entry.startsWith(`${id} `)) ?? '';
+      expect(line('t-ui')).toMatch(/^t-ui +standard +t-ui/);
+      expect(line('t-gate')).toMatch(/^t-gate +critical +t-gate/);
+      expect(line('t-set')).toMatch(/^t-set +critical\* +t-set/);
+      expect(line('t-torn')).toMatch(/^t-torn +standard +t-torn/);
+      expect(logs).toContain('* tier set with --tier, over the one the scope-in implies');
+    });
+
+    it('stores the tier --tier gives an edit, and refuses any other word', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-1',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn: ['docs/**'], acceptance: ['a'] }),
+      });
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--tier', 'max'], { from: 'user' });
+      expect(errors).toContain('--tier takes critical or standard.');
+      expect(getTask(db, 't-1')?.tier).toBeNull();
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--tier', 'critical'], { from: 'user' });
+      expect(logs).toContain('Updated t-1.');
+      expect(getTask(db, 't-1')?.tier).toBe('critical');
+    });
+
+    it('hands the tier --tier gives an add to the planner, and refuses any other word', () => {
+      useCwd(initRepo());
+      vi.mocked(planTask).mockReturnValue('t-abc');
+
+      buildProgram().parse(['plan', 'add', 'goal', '--scope', 'docs/**', '--tier', 'Critical'], {
+        from: 'user',
+      });
+      expect(errors).toContain('--tier takes critical or standard.');
+      expect(planTask).not.toHaveBeenCalled();
+
+      buildProgram().parse(['plan', 'add', 'goal', '--scope', 'docs/**', '--tier', 'critical'], {
+        from: 'user',
+      });
+      expect(firstCall(planTask)[1]).toMatchObject({ tier: 'critical' });
+    });
+
     // The refusal quotes the glob that failed through JSON.stringify, which
     // escapes C0 controls and emits C1 raw; a stored glob is store text, so the
     // line is scrubbed like every other one (decision 68).
@@ -2404,6 +2494,30 @@ describe('CLI commands', () => {
       const [, request] = firstCall(launchTask);
       expect(request).toMatchObject({ taskId: 't-abc', model: 'opus', base: DEFAULT_BASE_PROFILE });
       expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
+    });
+
+    it('hands an --effort to the launch, which records it as an override', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--effort', 'xhigh'], { from: 'user' });
+
+      expect(firstCall(launchTask)[1]).toMatchObject({ model: undefined, effort: 'xhigh' });
+    });
+
+    // Decision 92: nothing is left to climb, so the next window is the operator's call.
+    it('reports a launch refused at the top rung and exits 1 rather than throwing', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new TopRungReachedError({ task: 't-abc' }, 'critical', 'gate-rejection');
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(
+        'Task t-abc hit gate-rejection on the top rung of its critical ladder (claude-opus-5-5 xhigh)',
+      );
+      expect(process.exitCode).toBe(1);
     });
 
     it('reports an unknown task and exits 1 rather than throwing', () => {
@@ -2559,6 +2673,19 @@ describe('CLI commands', () => {
       );
       expect(logs).toHaveLength(2);
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // Without flags the core picks Opus 5.5 at high (src/core/conductor.test.ts).
+    it('hands the conductor an --effort, and leaves both unset without flags', () => {
+      useCwd(initRepo());
+      vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
+
+      buildProgram().parse(['conductor', 'start'], { from: 'user' });
+      buildProgram().parse(['conductor', 'start', '--effort', 'xhigh'], { from: 'user' });
+
+      const calls = vi.mocked(startConductor).mock.calls;
+      expect(calls[0]?.[0]).toMatchObject({ model: undefined, effort: undefined });
+      expect(calls[1]?.[0]).toMatchObject({ model: undefined, effort: 'xhigh' });
     });
 
     // The start brings a radar up with it unless one is already sweeping —
@@ -3976,6 +4103,35 @@ describe('CLI commands', () => {
       expect(logs).toContain('Hard-respawned session s1 (tmux: pup-s1).');
     });
 
+    it('hands a hard respawn the model and effort the operator names', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(
+        ['kill', 's1', '--respawn', '--model', 'claude-opus-5-5', '--effort', 'xhigh'],
+        { from: 'user' },
+      );
+
+      expect(firstCall(hardRespawnSession)[4]).toEqual({
+        model: 'claude-opus-5-5',
+        effort: 'xhigh',
+      });
+    });
+
+    it.each([
+      ['--model', 'claude-opus-5-5'],
+      ['--effort', 'xhigh'],
+    ])('refuses %s on a plain kill, which opens no window', (flag, value) => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['kill', 's1', flag, value], { from: 'user' });
+
+      expect(killSession).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`--model` and `--effort` go with `--respawn`; a plain kill opens no window.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
     it('reports the error and exits 1 when the hard respawn fails', () => {
       useCwd(initRepo());
       vi.mocked(hardRespawnSession).mockImplementation(() => {
@@ -4193,6 +4349,34 @@ describe('CLI commands', () => {
       expect(respawnSession).toHaveBeenCalledTimes(1);
       expect(logs).toContain('Respawned s1 on a fresh context window with its handoff.');
       expect(process.exitCode).toBeUndefined();
+    });
+
+    it('hands the respawn the model and effort the operator names', () => {
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+
+      buildProgram().parse(['respawn', 's1', '--effort', 'xhigh'], { from: 'user' });
+
+      expect(firstCall(respawnSession)[4]).toEqual({ model: undefined, effort: 'xhigh' });
+    });
+
+    // Refused before the old window is touched, so the handoff waits on disk
+    // for the respawn the operator runs with a model and effort of their own.
+    it('reports a respawn refused at the top rung and exits 1 rather than throwing', () => {
+      useCwd(initRepo());
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+      vi.mocked(respawnSession).mockImplementation(() => {
+        throw new TopRungReachedError({ session: 's1' }, 'standard', 'turn-death');
+      });
+
+      buildProgram().parse(['respawn', 's1'], { from: 'user' });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(
+        /^Session s1 hit turn-death on the top rung of its standard ladder \(claude-opus-5-5 xhigh\)/,
+      );
+      expect(process.exitCode).toBe(1);
+      expect(logs.join('\n')).not.toContain('Respawned s1');
     });
 
     it('requests and awaits a handoff before respawning when not yet ready', () => {

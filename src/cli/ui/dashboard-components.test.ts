@@ -1,7 +1,11 @@
 import { cleanup, render } from 'ink-testing-library';
 import { createElement, type ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import type {
+  DashboardRoute,
+  DashboardSession,
+  DashboardSnapshot,
+} from '../../core/types/dashboard.types.js';
 import type { ActionDeps } from './actions.service.js';
 import { App } from './app.component.js';
 import { Backlog } from './backlog.component.js';
@@ -70,6 +74,17 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
     ...overrides,
   };
 }
+
+/** A standard session one rung up after a rejection (decision 92). */
+const ROUTE: DashboardRoute = {
+  tier: 'standard',
+  model: 'claude-sonnet-5-5',
+  effort: 'high',
+  rung: 2,
+  rungs: 4,
+  reason: 'gate-rejection',
+  override: false,
+};
 
 const DOWN = '\u001b[B';
 const UP = '\u001b[A';
@@ -157,6 +172,19 @@ describe('dashboard components', () => {
       expect(frame).toContain('s-mtzmobsi-1');
       expect(frame).toContain('3 rej');
       expect(frame).toContain('a live Ink dashboard');
+    });
+
+    // The climb's reason is the detail pane's: the row truncates at its end.
+    it('renders the model, effort and rung the session runs on (decision 92)', () => {
+      const frame = frameOf(
+        createElement(Sessions, {
+          finishedCount: 0,
+          sessions: [sessionFixture({ route: ROUTE })],
+          selectedIndex: -1,
+        }),
+      );
+
+      expect(frame).toContain('claude-sonnet-5-5 high, rung 2/4');
     });
 
     // Decision 35: staleness wins over the activity kind, whatever the last
@@ -451,6 +479,22 @@ describe('dashboard components', () => {
       expect(frame).toMatch(/2026-09-13T09:58:00.000Z session_done\s+pane is in/);
     });
 
+    it("draws the session's route under its own heading, with its tier", () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: {
+            kind: 'session',
+            session: sessionFixture({ route: { ...ROUTE, override: true } }),
+          },
+        }),
+      );
+
+      expect(frame).toContain('model');
+      expect(frame).toContain(
+        'claude-sonnet-5-5 high, rung 2/4 after gate-rejection (override) (standard)',
+      );
+    });
+
     it('says what a session does not have yet rather than drawing empty sections', () => {
       const frame = frameOf(
         createElement(Detail, {
@@ -458,6 +502,7 @@ describe('dashboard components', () => {
         }),
       );
 
+      expect(frame).toContain('launched before routing');
       expect(frame).toContain('none declared');
       expect(frame).toContain('no gate run yet');
       expect(frame).toContain('no events yet');

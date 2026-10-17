@@ -7,9 +7,14 @@ export interface StartConductorRequest {
   repoPath: string;
   base: ProfileLayer;
   claudeUserDir: string;
-  /** The conductor's own model; the default when unset. */
+  /** The conductor's own model; `CONDUCTOR_ROUTE`'s when unset (decision 92). */
   model?: string;
-  /** The model the conductor is told to launch its sessions on; the default when unset. */
+  /** The conductor's own effort; `CONDUCTOR_ROUTE`'s when unset. */
+  effort?: string;
+  /**
+   * The model the conductor is told to launch every session on, an override of
+   * the routed one each launch records; unset leaves routing to choose.
+   */
   workerModel?: string;
 }
 

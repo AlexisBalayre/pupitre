@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary } from '../adapters/capability.utils.js';
+import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
 import {
   conductorName,
   conductorPane,
@@ -173,7 +174,12 @@ export function startConductor(req: StartConductorRequest): ConductorHandle {
     projectId: pid,
     repoPath: req.repoPath,
     settingsPath: join(outDir, 'settings.json'),
-    model: req.model,
+    // Both named even when the operator named neither: the user settings the
+    // window inherits must not decide the conductor's model or effort (decision 92).
+    route: {
+      model: req.model ?? CONDUCTOR_ROUTE.model,
+      effort: req.effort ?? CONDUCTOR_ROUTE.effort,
+    },
     mcpConfigPath,
   });
   let delivered: boolean;

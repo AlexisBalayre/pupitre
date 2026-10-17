@@ -100,7 +100,7 @@ describe('startConductor', () => {
     vi.mocked(console.error).mockRestore();
   });
 
-  function start(overrides: { model?: string; workerModel?: string } = {}) {
+  function start(overrides: { model?: string; effort?: string; workerModel?: string } = {}) {
     return startConductor({
       db,
       repoPath: REPO,
@@ -111,7 +111,7 @@ describe('startConductor', () => {
   }
 
   it('compiles the profile beside the sessions, opens the window on it, and kicks its context in', () => {
-    const handle = start({ model: 'fable', workerModel: 'opus' });
+    const handle = start({ model: 'claude-sonnet-5-5', workerModel: 'opus' });
 
     const outDir = projectPaths(REPO).conductorCompiledDir;
     expect(handle).toEqual({
@@ -125,7 +125,7 @@ describe('startConductor', () => {
       projectId: projectId(REPO),
       repoPath: REPO,
       settingsPath: join(outDir, 'settings.json'),
-      model: 'fable',
+      route: { model: 'claude-sonnet-5-5', effort: 'high' },
       mcpConfigPath: undefined,
     });
     // The kickoff goes to the pane the launch returned, with the compiled
@@ -140,6 +140,26 @@ describe('startConductor', () => {
     });
     expect(prompt).toBe(readFileSync(join(outDir, 'context.md'), 'utf8'));
     expect(prompt).toContain('pup launch <task> --model opus');
+  });
+
+  // Named in the argv even when the operator named neither, so the user
+  // settings the window inherits never decide them (decision 92).
+  it('opens the window on Opus 5.5 at high effort by default', () => {
+    start();
+
+    expect(vi.mocked(launchConductor).mock.calls[0]?.[0].route).toEqual({
+      model: 'claude-opus-5-5',
+      effort: 'high',
+    });
+  });
+
+  it("opens the window on the operator's effort when one is named", () => {
+    start({ effort: 'xhigh' });
+
+    expect(vi.mocked(launchConductor).mock.calls[0]?.[0].route).toEqual({
+      model: 'claude-opus-5-5',
+      effort: 'xhigh',
+    });
   });
 
   // A window with no context is a bypass-permissions agent in the main

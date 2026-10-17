@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import type { Tier } from '../claude/model-ladder.constants.js';
 import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
@@ -24,7 +25,32 @@ export interface SessionRow {
   profile_hash: string;
   transcript_path: string | null;
   reject_count: number;
+  /** The task's tier when the session launched; null on a session launched before routing (decision 92). */
+  tier: string | null;
+  /** Where on its tier's ladder the session's window runs, counted from 0. */
+  rung: number | null;
+  /** The model and effort its window's argv carries. */
+  model: string | null;
+  effort: string | null;
+  /** Why the rung last climbed: a `ClimbReason`, or null on the first rung. */
+  rung_reason: string | null;
+  /** 1 when an explicit --model/--effort overrode the rung's; the rung still tracks the climb. */
+  route_override: number;
   created_at: string;
+}
+
+/**
+ * What a session's window runs on, as the store records it (decision 92). The
+ * rung is kept under an override too, so a later relaunch without one climbs
+ * from where the task actually stands.
+ */
+export interface SessionRoute {
+  tier: Tier;
+  rung: number;
+  model: string;
+  effort: string;
+  reason?: string;
+  override: boolean;
 }
 
 export class InvalidTransitionError extends Error {
@@ -63,6 +89,7 @@ export interface NewSessionInput {
   tmuxTarget?: string;
   pid?: number;
   transcriptPath?: string;
+  route?: SessionRoute;
 }
 
 export interface TaskRow {
@@ -72,6 +99,8 @@ export interface TaskRow {
   spec: string;
   role: string | null;
   origin: string;
+  /** The tier the operator set with `--tier`; null when the scope-in decides it (decision 92). */
+  tier: string | null;
   created_at: string;
 }
 
@@ -172,14 +201,24 @@ export function countProjectSessions(db: Database, projectId: string): number {
 
 export function insertTask(
   db: Database,
-  input: { id: string; projectId: string; spec: string; role?: string; origin?: string },
+  input: {
+    id: string;
+    projectId: string;
+    spec: string;
+    role?: string;
+    origin?: string;
+    tier?: Tier;
+  },
 ): void {
-  db.prepare('INSERT INTO tasks (id, project_id, spec, role, origin) VALUES (?, ?, ?, ?, ?)').run(
+  db.prepare(
+    'INSERT INTO tasks (id, project_id, spec, role, origin, tier) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(
     input.id,
     input.projectId,
     input.spec,
     input.role ?? null,
     input.origin ?? 'human',
+    input.tier ?? null,
   );
 }
 
@@ -255,24 +294,25 @@ export function deleteTask(db: Database, id: string): boolean {
 }
 
 /**
- * Rewrite a planned task's spec. Refuses once a session has claimed the task:
- * the spec is compiled into that session's `context.md` at launch and is what
- * the merge gate audits scope against, so editing it afterwards would leave the
- * store disagreeing with what the agent was actually told.
+ * Rewrite a planned task's spec, and its tier when one is given. Refuses once
+ * a session has claimed the task: the spec is compiled into that session's
+ * `context.md` at launch and is what the merge gate audits scope against, and
+ * the tier chose the model it runs on, so editing either afterwards would
+ * leave the store disagreeing with what the agent was actually told.
  */
-export function updateTaskSpec(db: Database, id: string, spec: string): boolean {
+export function updateTaskSpec(db: Database, id: string, spec: string, tier?: Tier): boolean {
   const claimed = claimedStates();
   return (
     db
       .prepare(
-        `UPDATE tasks SET spec = ?
+        `UPDATE tasks SET spec = ?, tier = COALESCE(?, tier)
           WHERE id = ?
             AND NOT EXISTS (
               SELECT 1 FROM sessions s
                WHERE s.task_id = tasks.id AND s.state IN (${claimed.map(() => '?').join(', ')})
             )`,
       )
-      .run(spec, id, ...claimed).changes > 0
+      .run(spec, tier ?? null, id, ...claimed).changes > 0
   );
 }
 
@@ -341,14 +381,17 @@ export function taskSpecForDisplay(row: Pick<TaskRow, 'spec'> | undefined): Part
   return row ? parseJsonOr<Partial<TaskSpec>>(row.spec, {}) : {};
 }
 
-type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'acceptance'>>;
+type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'acceptance'>> & {
+  tier?: Tier;
+};
 
 /**
  * `pup plan edit`: merge the given fields over the stored spec, validate the
- * result, write it. The only `UPDATE tasks SET spec` there is, so it runs
- * exactly the validation `plan add` runs — otherwise edit could store a spec
- * add would have refused, and the failure would surface at launch. The stored
- * spec is not validated first: edit is how a row that fails it gets repaired.
+ * result, write it, with the tier when `--tier` set one. The only
+ * `UPDATE tasks SET spec` there is, so it runs exactly the validation
+ * `plan add` runs — otherwise edit could store a spec add would have refused,
+ * and the failure would surface at launch. The stored spec is not validated
+ * first: edit is how a row that fails it gets repaired.
  */
 export function editTaskSpec(
   db: Database,
@@ -366,13 +409,15 @@ export function editTaskSpec(
     acceptance: patch.acceptance ?? spec.acceptance,
   };
   assertPlannableSpec(edited);
-  return updateTaskSpec(db, id, JSON.stringify(edited)) ? 'updated' : 'claimed';
+  return updateTaskSpec(db, id, JSON.stringify(edited), patch.tier) ? 'updated' : 'claimed';
 }
 
 export function insertSession(db: Database, input: NewSessionInput): void {
   db.prepare(
-    `INSERT INTO sessions (id, task_id, worktree_path, branch, profile_hash, tmux_target, pid, transcript_path)
-     VALUES (@id, @taskId, @worktreePath, @branch, @profileHash, @tmuxTarget, @pid, @transcriptPath)`,
+    `INSERT INTO sessions (id, task_id, worktree_path, branch, profile_hash, tmux_target, pid, transcript_path,
+                           tier, rung, model, effort, rung_reason, route_override)
+     VALUES (@id, @taskId, @worktreePath, @branch, @profileHash, @tmuxTarget, @pid, @transcriptPath,
+             @tier, @rung, @model, @effort, @reason, @override)`,
   ).run({
     id: input.id,
     taskId: input.taskId,
@@ -382,7 +427,36 @@ export function insertSession(db: Database, input: NewSessionInput): void {
     tmuxTarget: input.tmuxTarget ?? null,
     pid: input.pid ?? null,
     transcriptPath: input.transcriptPath ?? null,
+    ...routeColumns(input.route),
   });
+}
+
+/** Record what a respawned session's fresh window runs on (decision 92). */
+export function recordSessionRoute(db: Database, id: string, route: SessionRoute): void {
+  db.prepare(
+    `UPDATE sessions
+        SET tier = @tier, rung = @rung, model = @model, effort = @effort,
+            rung_reason = @reason, route_override = @override
+      WHERE id = @id`,
+  ).run({ id, ...routeColumns(route) });
+}
+
+function routeColumns(route: SessionRoute | undefined) {
+  return {
+    tier: route?.tier ?? null,
+    rung: route?.rung ?? null,
+    model: route?.model ?? null,
+    effort: route?.effort ?? null,
+    reason: route?.reason ?? null,
+    override: route?.override ? 1 : 0,
+  };
+}
+
+/** Every session a task has had, oldest first: the newest is where a relaunch climbs from. */
+export function listTaskSessions(db: Database, taskId: string): SessionRow[] {
+  return db
+    .prepare('SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at, rowid')
+    .all(taskId) as SessionRow[];
 }
 
 export function getSession(db: Database, id: string): SessionRow | undefined {

@@ -1,8 +1,10 @@
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { LADDERS, type ModelRoute, type Tier } from '../claude/model-ladder.constants.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
+import type { ClimbReason } from './routing.utils.js';
 import type { ScopeConflict } from './types/overlap.types.js';
 
 export class UnknownTaskError extends Error {
@@ -37,6 +39,29 @@ function namedFiles(files: string[]): string {
   const shown = files.slice(0, CONFLICT_FILES_SHOWN).map(sanitizeReason).join(', ');
   const rest = files.length - CONFLICT_FILES_SHOWN;
   return rest > 0 ? `${shown} +${rest} more` : shown;
+}
+
+/**
+ * A relaunch or a respawn refused because the window before it ran into a
+ * failure on the top rung of its task's ladder: nothing climbs past it, so it
+ * is the operator's to re-plan, or to run again on a model and effort they
+ * name, which is recorded as an override (decision 92).
+ */
+export class TopRungReachedError extends Error {
+  constructor(subject: { task: string } | { session: string }, tier: Tier, failure: ClimbReason) {
+    const top = LADDERS[tier].at(-1) as ModelRoute;
+    const reached =
+      `hit ${failure} on the top rung of its ${tier} ladder (${top.model} ${top.effort}), so ` +
+      'pup does not run it there again.';
+    super(
+      'task' in subject
+        ? `Task ${subject.task} ${reached} Re-plan it, or relaunch it with an explicit ` +
+            '`--model` and `--effort`.'
+        : `Session ${subject.session} ${reached} Kill it and re-plan its task, or respawn it ` +
+            'with an explicit `--model` and `--effort`.',
+    );
+    this.name = 'TopRungReachedError';
+  }
 }
 
 export class TaskAlreadyClaimedError extends Error {

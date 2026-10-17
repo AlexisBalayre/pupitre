@@ -33,21 +33,35 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Want | Command |
 | --- | --- |
 | Onboard a repo (operator only) | `pup init` in the repo; `pup init --gate-env A,B` for gate env vars |
-| Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"...` |
-| Backlog | `pup plan` (list), `pup plan drop|edit <task>` |
-| Start a session for a task | `pup launch <task> [--model m]`; `pup new "<goal>" --scope ...` plans and launches |
+| Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"... [--tier critical|standard]` |
+| Backlog | `pup plan` (list, with each task's tier), `pup plan drop|edit <task>` |
+| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches |
 | Who needs me | `pup status`, `pup ui` (live), `pup dashboard --open` (live page in the browser, read-only, operator-only), `pup watch` (conflict radar) |
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
-| Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn`, `pup unblock` |
+| Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn <session>`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
 | Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |
 | Debt and decisions | `pup debt`, `pup debt close <n>`, `pup log [module]`, `pup audit` |
-| Delegate the whole loop | `pup conductor start [--model m --worker-model m]`, `pup conductor stop` |
+| Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |
 | Reports | `pup report --open`, `pup map [module] --open` |
 
 A goal names files, mechanism and the decision number it records; acceptance criteria are
 checkable sentences. A criterion or goal starting with `--` is parsed as an option: reword it.
+
+## Models (decision 92)
+
+pup picks every window's model and effort; launch with no `--model` or `--effort`. A task whose
+scope-in can touch the gate, git, tmux, the store, the sandbox, hooks or profile compilation is
+critical, anything else standard; `--tier` on `plan add|edit` overrides the rule and `pup plan`
+marks it `*`. Standard climbs Sonnet 5.5 medium → Sonnet 5.5 high → Opus 5.5 high → Opus 5.5
+xhigh, critical Opus 5.5 high → Opus 5.5 xhigh, one rung per relaunch or respawn after a gate
+rejection, a CI fix round, a dead turn or a stall; a blocked task never climbs. `pup status`,
+`pup ui` and the dashboard show each session's model, effort and rung. A failure on the top rung
+refuses the next launch or respawn and lists the task under Needs you as `top-rung`: re-plan it,
+or pass `--model` and `--effort` to `pup launch`, `pup respawn` or `pup kill --respawn`. An
+explicit choice is recorded as an override and kept by later respawns. pup never picks a Fable
+model or `--effort max`.
 
 ## Tiers you must respect
 
