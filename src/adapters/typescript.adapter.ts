@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
-import { runGateChild } from '../core/sandbox.utils.js';
+import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import { nestedPackageDirs } from './git-tree.client.js';
 import type {
@@ -298,7 +298,7 @@ export const typescriptAdapter: Adapter = {
     });
   },
 
-  coverage(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable {
+  async coverage(ctx: CapabilityContext): Promise<CoverageReport | CapabilityUnavailable> {
     const { measurePath, configPath, gateEnv } = ctx;
     // Declared in the trusted manifest, run against the measured checkout: a
     // session cannot switch the stage off by dropping its own devDependency.
@@ -318,7 +318,7 @@ export const typescriptAdapter: Adapter = {
       // confined like a gate stage — and needs its report directory writable,
       // since the sandbox's default-allow does not survive a TMPDIR under HOME
       // (decisions 28, 36).
-      runGateChild(
+      await runGateChild(
         'npx',
         [
           '--no-install',
@@ -347,11 +347,12 @@ export const typescriptAdapter: Adapter = {
       ) as IstanbulCoverageMap;
       return rootCoverageReport(raw, ctx);
     } catch (error) {
+      if (error instanceof GateInterruptedError) throw error;
       // A failed instrumented run (crash, timeout, threshold config) degrades to
       // "not measured" — the plain test stage has already gated correctness.
       return { unavailable: `instrumented vitest run failed: ${failureSummary(error)}` };
     } finally {
-      rmSync(outDir, { recursive: true, force: true });
+      removeGateDir(outDir);
     }
   },
 };

@@ -150,7 +150,7 @@ export function planRegate(
  * repeats: no teardown (the branch is left for `pup land`), no ratchet, no
  * decision draft, and no ledger entry of a kind the session already holds open.
  */
-export function regateMerged(
+export async function regateMerged(
   db: Database,
   req: MergeRequest,
   session: SessionRow,
@@ -158,7 +158,7 @@ export function regateMerged(
   target: string,
   sandbox: string,
   checkoutDir: string,
-): MergeOutcome {
+): Promise<MergeOutcome> {
   const { regate } = pullRequest;
   const stages: GateStageResult[] = [
     {
@@ -186,7 +186,7 @@ export function regateMerged(
   }
   stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
 
-  const measured = measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
+  const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
   if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
   // The stages measure the whole branch again, so the flags the first gate

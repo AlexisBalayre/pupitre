@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { COVERAGE, DEAD_CODE } from './debt.service.js';
-import { measureBaseline, persistBaseline } from './init.service.js';
+import { type MeasuredBaseline, measureBaseline, persistBaseline } from './init.service.js';
 import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
@@ -153,10 +153,21 @@ export function auditProject(
   adapters: Adapter[],
   gateEnv?: string[],
   onRegression: 'refresh' | 'keep' = 'refresh',
-): AuditOutcome {
+): Promise<AuditOutcome> {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
-  const report = measureBaseline(db, repoPath, adapters, gateEnv);
+  // Not async, so measureBaseline's refusals still throw (see there).
+  return measureBaseline(db, repoPath, adapters, gateEnv).then((report) =>
+    judgeAudit(db, previous, report, onRegression),
+  );
+}
+
+function judgeAudit(
+  db: Database,
+  previous: ProjectBaseline | null,
+  report: MeasuredBaseline,
+  onRegression: 'refresh' | 'keep',
+): AuditOutcome {
   const unmeasured = previous
     ? report.gaps
         .filter((gap) => isNewGap(previous, gap))

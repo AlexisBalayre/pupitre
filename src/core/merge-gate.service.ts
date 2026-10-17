@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
-import type { CapabilityContext } from '../adapters/types/adapter.types.js';
+import type { CapabilityContext, FileComplexity } from '../adapters/types/adapter.types.js';
 import {
   killSession as killTmux,
   SteerNotDeliveredError,
@@ -61,7 +61,12 @@ import {
 } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
-import { runGateChild, sandboxLabel } from './sandbox.utils.js';
+import {
+  GateInterruptedError,
+  removeGateDir,
+  runGateChild,
+  sandboxLabel,
+} from './sandbox.utils.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
@@ -198,16 +203,21 @@ export function countChangedLines(
 }
 
 /**
- * Run `fn`, a synchronous body, holding the merge lock, with node kept alive
- * through a signal while it does. A terminal Ctrl-C reaches node and the child
- * git alike: with no listener node's default disposition dies mid-call and the
- * `finally` never removes the lock; with one, only the child dies, its failure
- * unwinds the stack and the lock goes. The listener's body never runs, since a
- * synchronous body never yields to the event loop that dispatches it, so a
- * signal sent to pup alone, which kills no child, is discarded: the locked
- * section runs to its end. Outside the lock node's default applies again.
+ * Run `fn` holding the merge lock, with node kept alive through a signal while
+ * it does. A terminal Ctrl-C reaches node and a child git alike: with no
+ * listener node's default disposition dies mid-call and the `finally` never
+ * removes the lock; with one, only the child dies, its failure unwinds the
+ * stack and the lock goes. A gate stage's child is in a process group of its
+ * own, out of the terminal's reach: `runGateChild` forwards the signal to it
+ * and rejects once it has exited, which unwinds the same way (decision 95). A
+ * signal that arrives while neither runs, during pup's own synchronous work,
+ * is discarded by this listener, and the locked section runs on. Outside the
+ * lock node's default applies again.
  */
-export function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TResult {
+export async function withMergeLock<TResult>(
+  repoPath: string,
+  fn: () => TResult | Promise<TResult>,
+): Promise<TResult> {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
   try {
     mkdirSync(lockPath);
@@ -218,7 +228,7 @@ export function withMergeLock<TResult>(repoPath: string, fn: () => TResult): TRe
   process.on('SIGINT', stayAlive);
   process.on('SIGTERM', stayAlive);
   try {
-    return fn();
+    return await fn();
   } finally {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
@@ -263,7 +273,7 @@ function formatGateReport(report: GateReport): string {
  * merge lock. A merged session whose open PR's head moved past the pin is gated
  * again on that head with `--pr` (decision 86).
  */
-export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
+export async function runMergeGate(db: Database, req: MergeRequest): Promise<MergeOutcome> {
   const session = getSession(db, req.sessionId);
   if (!session) throw new Error(`No session ${req.sessionId}.`);
   const merged =
@@ -321,7 +331,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
     else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return withMergeLock(req.repoPath, () => {
+  return withMergeLock(req.repoPath, async () => {
     // Not under the project's state dir beside the conductor's checkout: the
     // sandbox denies every gate child reads and writes under `~/.pupitre`,
     // which holds the store (decision 36). `mkdtemp` is private and unguessable;
@@ -329,9 +339,9 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
     try {
       const checkoutDir = join(checkoutRoot, 'checkout');
-      return regate
+      return await (regate
         ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
-        : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest);
+        : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
     } finally {
       // Still under the lock, on a pass, a failed stage and a throw alike.
       // Swallowed: a cleanup failure must not replace the gate's outcome or
@@ -463,12 +473,13 @@ function linkEnvironment(repoPath: string, checkout: string, rel: string): void 
 }
 
 /**
- * Remove the gate's checkout and its registration. `rmSync` rather than
+ * Remove the gate's checkout and its registration. A plain removal rather than
  * `worktree remove`, which refuses a checkout that was never cut; the prune
  * then drops the registration, and only registrations whose directory is gone.
+ * A directory that cannot go is reported, not thrown (decision 95).
  */
 function dropGateCheckout(repoPath: string, root: string): void {
-  rmSync(root, { recursive: true, force: true });
+  removeGateDir(root);
   runGit(repoPath, ['worktree', 'prune']);
 }
 
@@ -825,7 +836,7 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
   }
 }
 
-function gateAndMerge(
+async function gateAndMerge(
   db: Database,
   req: MergeRequest,
   session: SessionRow,
@@ -833,7 +844,7 @@ function gateAndMerge(
   sandbox: string,
   checkoutDir: string,
   pullRequest?: PullRequestPlan,
-): MergeOutcome {
+): Promise<MergeOutcome> {
   const worktree = session.worktree_path;
   const stages: GateStageResult[] = [];
   const failed = (): MergeOutcome =>
@@ -899,7 +910,7 @@ function gateAndMerge(
     return failed();
   }
 
-  const measured = measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
+  const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
   if (!measured) return failed();
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 
@@ -1038,14 +1049,16 @@ type FlaggedDebt = { description: string; files: string[] };
 /**
  * Whether a failed stage run is the runner's own failing-tests exit, status 1
  * for vitest, jest, pytest and `go test` alike: the one failure a re-run can
- * tell from a flake. Anything else fails at once. A Ctrl-C reaches the gate's
- * child with pup itself (`withMergeLock` keeps pup alive through it), and a
- * re-run that passed would turn the operator's abort into a merge: so a child a
- * signal killed, a runner that caught the interrupt (130, or pytest's 2), and a
- * wrapper reporting a killed child (129, 143) are not re-run. Nor is a stage
- * that ran out `GATE_COMMAND_TIMEOUT_MS`, which node marks with a `code` even
- * when the runner traps the SIGTERM and exits 1, and whose re-run would hold
- * the merge lock twice as long on a hung suite.
+ * tell from a flake. Anything else fails at once. The operator's Ctrl-C never
+ * gets here: pup forwards it to the stage child and the run rejects with
+ * `GateInterruptedError`, which no stage catches (decision 95). An interrupt
+ * from anywhere else is still not re-run, since a re-run that passed would turn
+ * the abort into a merge: so a child a signal killed, a runner that caught the
+ * interrupt (130, or pytest's 2), and a wrapper reporting a killed child (129,
+ * 143) fail at once. So does a stage that ran out `GATE_COMMAND_TIMEOUT_MS`,
+ * which `runGateChild` marks with a `code` even when the runner traps the
+ * SIGTERM and exits 1, and whose re-run would hold the merge lock twice as long
+ * on a hung suite.
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -1063,7 +1076,7 @@ function isRerunnable(error: unknown): boolean {
  * hard stage has recorded its failure in `stages`; the caller decides what a
  * failure does to the session.
  */
-export function measureBranch(
+export async function measureBranch(
   db: Database,
   req: MergeRequest,
   session: SessionRow,
@@ -1071,9 +1084,12 @@ export function measureBranch(
   checkoutDir: string,
   targetSha: string,
   sha: string,
-): BranchMeasurement | undefined {
+): Promise<BranchMeasurement | undefined> {
   /** One run of a stage's command: the error it threw, `undefined` on a pass. */
-  const runCommand = (command: { command: string; args: string[] }, cwd: string): unknown => {
+  const runCommand = async (
+    command: { command: string; args: string[] },
+    cwd: string,
+  ): Promise<unknown> => {
     try {
       // The session wrote what this runs (its own scripts, its own config), so
       // it runs confined: an env allowlist (decision 28) inside a sandbox whose
@@ -1081,7 +1097,7 @@ export function measureBranch(
       // checkout; `repoPath` is passed to scope the toolchain cache, and stays
       // read-only, which is what keeps decision 29's trusted checkout trusted
       // while the session's own code is running.
-      runGateChild(command.command, command.args, {
+      await runGateChild(command.command, command.args, {
         cwd,
         repoPath: req.repoPath,
         gateEnv: req.gateEnv,
@@ -1089,6 +1105,8 @@ export function measureBranch(
       });
       return undefined;
     } catch (error) {
+      // No stage result: pup was interrupted, and the gate unwinds on it.
+      if (error instanceof GateInterruptedError) throw error;
       return error ?? new Error('command failed');
     }
   };
@@ -1102,12 +1120,12 @@ export function measureBranch(
    * neither is a test run that ended other than by the runner's own failing
    * exit (`isRerunnable`).
    */
-  const commandStage = (
+  const commandStage = async (
     stage: string,
     command: { stage: string; command: string; args: string[] },
     cwd: string,
-  ): boolean => {
-    const first = runCommand(command, cwd);
+  ): Promise<boolean> => {
+    const first = await runCommand(command, cwd);
     if (first === undefined) {
       stages.push({ stage, status: 'pass' });
       return true;
@@ -1116,7 +1134,7 @@ export function measureBranch(
       stages.push({ stage, status: 'fail', detail: commandFailureDetail(first) });
       return false;
     }
-    const rerun = runCommand(command, cwd);
+    const rerun = await runCommand(command, cwd);
     if (rerun === undefined) {
       stages.push({
         stage,
@@ -1169,7 +1187,7 @@ export function measureBranch(
       stages.push({ stage, status: 'skipped', detail: 'not measured — no command available' });
       continue;
     }
-    if (!commandStage(stage, command, checkout)) return undefined;
+    if (!(await commandStage(stage, command, checkout))) return undefined;
   }
 
   const flaggedDebt: { description: string; files: string[] }[] = [];
@@ -1191,7 +1209,7 @@ export function measureBranch(
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
     for (const command of pkg.commands) {
-      if (!commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir))) {
+      if (!(await commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir)))) {
         return undefined;
       }
     }
@@ -1293,8 +1311,15 @@ export function measureBranch(
     stages.push({ stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` });
   }
 
-  const measurement = measureDebt(req.adapters, capabilityContext);
+  const measurement = await measureDebt(req.adapters, capabilityContext);
   const complexityAdapters = req.adapters.filter((a) => a.complexity);
+  const complexityOf = async (ctx: CapabilityContext): Promise<FileComplexity[]> => {
+    const files: FileComplexity[] = [];
+    for (const adapter of complexityAdapters) {
+      files.push(...((await adapter.complexity?.(ctx, changedPaths)) ?? []));
+    }
+    return files;
+  };
   const judged = judgeDebt(
     {
       ...measurement,
@@ -1303,12 +1328,8 @@ export function measureBranch(
             complexity: {
               // "Before" reads the main checkout, which the merge lock holds at
               // the target branch — no historical checkout needed.
-              before: complexityAdapters.flatMap(
-                (a) => a.complexity?.(localContext(req.repoPath, req.gateEnv), changedPaths) ?? [],
-              ),
-              after: complexityAdapters.flatMap(
-                (a) => a.complexity?.(capabilityContext, changedPaths) ?? [],
-              ),
+              before: await complexityOf(localContext(req.repoPath, req.gateEnv)),
+              after: await complexityOf(capabilityContext),
             },
           }
         : {}),

@@ -49,13 +49,16 @@ export const COVERAGE = 'coverage';
  * ratios are not one number, and the gate's patch-coverage bar has to come
  * from the same report `coverableFiles` is answered against.
  */
-export function measureDebt(adapters: Adapter[], ctx: CapabilityContext): DebtMeasurement {
+export async function measureDebt(
+  adapters: Adapter[],
+  ctx: CapabilityContext,
+): Promise<DebtMeasurement> {
   const debt: DebtBaseline = {};
   const gaps: DebtGap[] = [];
 
   const deadExports: DeadExport[][] = [];
   for (const adapter of adapters) {
-    const result = adapter.deadCode?.(ctx);
+    const result = await adapter.deadCode?.(ctx);
     if (result === undefined) continue;
     if (isUnavailable(result)) {
       gaps.push({ adapterId: adapter.id, capability: DEAD_CODE, reason: result.unavailable });
@@ -68,9 +71,11 @@ export function measureDebt(adapters: Adapter[], ctx: CapabilityContext): DebtMe
   // and flag every later finding), while one that found nothing still stores [].
   if (deadExports.length > 0) debt.deadExports = deadExports.flat();
 
-  const duplicationReports = adapters
-    .map((a) => a.duplication?.(ctx))
-    .filter((r): r is DuplicationReport => r !== undefined);
+  const duplicationReports: DuplicationReport[] = [];
+  for (const adapter of adapters) {
+    const report = await adapter.duplication?.(ctx);
+    if (report !== undefined) duplicationReports.push(report);
+  }
   let duplication: DuplicationReport | undefined;
   if (duplicationReports.length > 0) {
     duplication = mergeDuplication(duplicationReports);
@@ -83,7 +88,7 @@ export function measureDebt(adapters: Adapter[], ctx: CapabilityContext): DebtMe
   const coverageAdapter = adapters.find((a) => a.coverage);
   let coverage: CoverageReport | undefined;
   if (coverageAdapter) {
-    const result = coverageAdapter.coverage?.(ctx);
+    const result = await coverageAdapter.coverage?.(ctx);
     if (isUnavailable(result)) {
       gaps.push({
         adapterId: coverageAdapter.id,

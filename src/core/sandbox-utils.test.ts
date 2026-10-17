@@ -11,9 +11,19 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest';
+
+// The real rmSync, wrapped so one test can make a removal fail as a busy
+// directory does.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+});
+
 import { projectId } from './paths.utils.js';
 import {
+  GateInterruptedError,
   isSandboxSupported,
+  removeGateDir,
   runGateChild,
   sandboxLabel,
   UndeclaredSandboxError,
@@ -177,16 +187,16 @@ describe('runGateChild', () => {
     }
   }
 
-  it('passes through the names the operator allowed, and only those', () => {
+  it('passes through the names the operator allowed, and only those', async () => {
     vi.stubEnv('PUP_TEST_TOKEN', 'shh');
     const cwd = fakeCheckout();
 
-    const withFlag = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], {
+    const withFlag = await runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], {
       cwd,
       repoPath: cwd,
       gateEnv: ['PUP_TEST_TOKEN'],
     });
-    const without = runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], {
+    const without = await runGateChild('sh', ['-c', 'printf %s "$PUP_TEST_TOKEN"'], {
       cwd,
       repoPath: cwd,
     });
@@ -196,7 +206,119 @@ describe('runGateChild', () => {
     vi.unstubAllEnvs();
   });
 
-  it('moves aside a corepack install with an empty bin/ before the child runs', () => {
+  it('rejects a failed child as execFileSync did: status, output and the message', async () => {
+    const cwd = fakeCheckout();
+
+    const failure = await runGateChild('sh', ['-c', 'printf out; printf err >&2; exit 3'], {
+      cwd,
+      repoPath: cwd,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ status: 3, signal: null, stdout: 'out', stderr: 'err' });
+    expect((failure as Error).message).toMatch(/^Command failed: .*\nerr$/s);
+  });
+
+  it('feeds the child its input, and stops one that floods a pipe with ENOBUFS', async () => {
+    const cwd = fakeCheckout();
+
+    expect(await runGateChild('cat', [], { cwd, repoPath: cwd, input: 'piped' })).toBe('piped');
+    await expect(
+      runGateChild('sh', ['-c', 'head -c 4096 /dev/zero'], { cwd, repoPath: cwd, maxBuffer: 1024 }),
+    ).rejects.toMatchObject({ code: 'ENOBUFS' });
+  });
+
+  // A stage child is in a process group of its own, out of reach of the
+  // terminal's Ctrl-C, so pup forwards what it receives (decision 95).
+  describe('an interrupt of pup itself', () => {
+    /** What node does with a signal: call every listener added since `before`. */
+    function deliver(signal: NodeJS.Signals, before: readonly unknown[]): void {
+      for (const listener of process.listeners(signal) as NodeJS.SignalsListener[]) {
+        if (!before.includes(listener)) listener(signal);
+      }
+    }
+
+    /** The pid a child wrote to `file` in `cwd`, once it has. */
+    function pidIn(cwd: string, file: string): Promise<number> {
+      return vi.waitFor(
+        () => {
+          const pid = Number(readFileSync(join(cwd, file), 'utf8'));
+          if (!pid) throw new Error(`no pid in ${file} yet`);
+          return pid;
+        },
+        { timeout: 10_000 },
+      );
+    }
+
+    function alive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    it('stops the child and everything it started, then rejects and stops listening', async () => {
+      const cwd = fakeCheckout();
+      const before = process.listeners('SIGTERM');
+      const run = runGateChild('sh', ['-c', 'sleep 47.7 & echo $! > bg.pid; wait'], {
+        cwd,
+        repoPath: cwd,
+      });
+      const grandchild = await pidIn(cwd, 'bg.pid');
+
+      deliver('SIGTERM', before);
+      const failure = await run.catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(GateInterruptedError);
+      expect((failure as GateInterruptedError).signal).toBe('SIGTERM');
+      await vi.waitFor(() => expect(alive(grandchild)).toBe(false));
+      expect(process.listeners('SIGTERM')).toEqual(before);
+    });
+
+    it('forwards to every child still running, the concurrent ones included', async () => {
+      const cwd = fakeCheckout();
+      const before = process.listeners('SIGINT');
+      const runs = ['one', 'two'].map((name) =>
+        runGateChild('sh', ['-c', `echo $$ > ${name}.pid; sleep 47.8`], { cwd, repoPath: cwd }),
+      );
+      await Promise.all([pidIn(cwd, 'one.pid'), pidIn(cwd, 'two.pid')]);
+
+      expect(process.listeners('SIGINT')).toHaveLength(before.length + 1);
+      deliver('SIGINT', before);
+      const failures = await Promise.all(runs.map((run) => run.catch((error: unknown) => error)));
+
+      expect(failures.map((failure) => (failure as GateInterruptedError).signal)).toEqual([
+        'SIGINT',
+        'SIGINT',
+      ]);
+      expect(process.listeners('SIGINT')).toEqual(before);
+    });
+
+    it('kills a child that ignores the interrupt once its grace runs out', async () => {
+      const cwd = fakeCheckout();
+      const before = process.listeners('SIGINT');
+      const run = runGateChild('sh', ['-c', "trap '' INT; echo $$ > sh.pid; sleep 47.9"], {
+        cwd,
+        repoPath: cwd,
+      });
+      const child = await pidIn(cwd, 'sh.pid');
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        deliver('SIGINT', before);
+        expect(alive(child)).toBe(true);
+        vi.runOnlyPendingTimers();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(await run.catch((error: unknown) => error)).toBeInstanceOf(GateInterruptedError);
+      expect(alive(child)).toBe(false);
+    });
+  });
+
+  it('moves aside a corepack install with an empty bin/ before the child runs', async () => {
     // The shape a half-extracted download left twice: corepack reuses the
     // directory, every stage dies on MODULE_NOT_FOUND for pnpm.cjs, and the
     // audit stored that as the baseline. A fresh TMPDIR is a fresh cache root.
@@ -210,7 +332,7 @@ describe('runGateChild', () => {
     writeFileSync(join(pnpmDir, '9.15.0', 'bin', 'pnpm.cjs'), '');
 
     // Checked from inside the child: the repair has to land before it runs.
-    const seen = runGateChild('ls', [pnpmDir], { cwd, repoPath: cwd });
+    const seen = await runGateChild('ls', [pnpmDir], { cwd, repoPath: cwd });
     vi.unstubAllEnvs();
 
     const entries = readdirSync(pnpmDir).sort();
@@ -222,7 +344,7 @@ describe('runGateChild', () => {
   });
 
   describe('off darwin (decision 78)', () => {
-    it('runs nothing without the declaration', () => {
+    it('runs nothing without the declaration', async () => {
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', undefined);
       onTestFinished(() => {
@@ -230,13 +352,13 @@ describe('runGateChild', () => {
       });
       const cwd = fakeCheckout();
 
-      expect(() => runGateChild('sh', ['-c', 'printf x > ran'], { cwd, repoPath: cwd })).toThrow(
-        UndeclaredSandboxError,
-      );
+      await expect(
+        runGateChild('sh', ['-c', 'printf x > ran'], { cwd, repoPath: cwd }),
+      ).rejects.toThrow(UndeclaredSandboxError);
       expect(existsSync(join(cwd, 'ran'))).toBe(false);
     });
 
-    it('runs the child bare under the declaration', () => {
+    it('runs the child bare under the declaration', async () => {
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'vm');
       onTestFinished(() => {
@@ -244,11 +366,11 @@ describe('runGateChild', () => {
       });
       const cwd = fakeCheckout();
 
-      expect(runGateChild('sh', ['-c', 'printf ok'], { cwd, repoPath: cwd })).toBe('ok');
+      expect(await runGateChild('sh', ['-c', 'printf ok'], { cwd, repoPath: cwd })).toBe('ok');
     });
 
     // Self-gating: the test stage is a child that reaches sandboxLabel() itself.
-    it('hands the declaration to the child, which is in the same VM', () => {
+    it('hands the declaration to the child, which is in the same VM', async () => {
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'vm');
       onTestFinished(() => {
@@ -256,18 +378,18 @@ describe('runGateChild', () => {
       });
       const cwd = fakeCheckout();
 
-      expect(runGateChild('sh', ['-c', 'printf %s "$PUP_SANDBOX"'], { cwd, repoPath: cwd })).toBe(
-        'vm',
-      );
+      expect(
+        await runGateChild('sh', ['-c', 'printf %s "$PUP_SANDBOX"'], { cwd, repoPath: cwd }),
+      ).toBe('vm');
     });
   });
 
-  it('hands the child a var pup computed, which the operator never exported', () => {
+  it('hands the child a var pup computed, which the operator never exported', async () => {
     // COVERAGE_FILE because it is the settable list: any other name throws
     // before a child is spawned, which gate-env's own tests pin.
     const cwd = fakeCheckout();
 
-    const output = runGateChild('sh', ['-c', 'printf %s "$COVERAGE_FILE"'], {
+    const output = await runGateChild('sh', ['-c', 'printf %s "$COVERAGE_FILE"'], {
       cwd,
       repoPath: cwd,
       env: { COVERAGE_FILE: '/reports/.coverage' },
@@ -277,7 +399,7 @@ describe('runGateChild', () => {
   });
 
   describe.runIf(isSandboxSupported())('on darwin', () => {
-    it('cannot read the curated secret paths that exist on this machine', () => {
+    it('cannot read the curated secret paths that exist on this machine', async () => {
       const cwd = fakeCheckout();
       writeFileSync(join(cwd, 'ordinary'), 'aws-key');
       // `~/.pupitre` carries the assertion on any machine: it is on the deny
@@ -293,22 +415,24 @@ describe('runGateChild', () => {
       for (const secret of secrets) {
         // On the denial, not on a bare non-zero exit: without the rule this
         // same read answers "Is a directory", which also fails the command.
-        expect(() => runGateChild('cat', [secret], { cwd, repoPath: cwd })).toThrow(
+        await expect(runGateChild('cat', [secret], { cwd, repoPath: cwd })).rejects.toThrow(
           /Operation not permitted/,
         );
       }
       // The control: the identical command reads a file elsewhere, so the
       // failures above are the policy and not a broken invocation.
-      expect(runGateChild('cat', [join(cwd, 'ordinary')], { cwd, repoPath: cwd })).toBe('aws-key');
+      expect(await runGateChild('cat', [join(cwd, 'ordinary')], { cwd, repoPath: cwd })).toBe(
+        'aws-key',
+      );
     });
 
-    it('cannot write under HOME, and leaves nothing behind when it tries', () => {
+    it('cannot write under HOME, and leaves nothing behind when it tries', async () => {
       const cwd = fakeCheckout();
       const target = join(homedir(), '.pup-sandbox-write-canary');
 
-      expect(() =>
+      await expect(
         runGateChild('sh', ['-c', `printf x > ${target}`], { cwd, repoPath: cwd }),
-      ).toThrow();
+      ).rejects.toThrow();
       expect(existsSync(target)).toBe(false);
     });
 
@@ -318,7 +442,7 @@ describe('runGateChild', () => {
      * which is a real guarantee but not this one.
      */
     describe.runIf(sandboxLabel() === APPLIED_LABEL)('with pup own profile applied', () => {
-      it('cannot write outside every granted path', () => {
+      it('cannot write outside every granted path', async () => {
         const cwd = fakeCheckout();
         // The real TMPDIR root, which is nobody's grant — the child's own
         // TMPDIR is a subdirectory of it that pup does grant.
@@ -326,28 +450,28 @@ describe('runGateChild', () => {
         // A canary left by an earlier failing run must not decide this one.
         rmSync(target, { force: true });
 
-        expect(() =>
+        await expect(
           runGateChild('sh', ['-c', `printf x > ${target}`], { cwd, repoPath: cwd }),
-        ).toThrow();
+        ).rejects.toThrow();
         expect(existsSync(target)).toBe(false);
       });
 
-      it('cannot write the git directory of the checkout it measures', () => {
+      it('cannot write the git directory of the checkout it measures', async () => {
         // `core.fsmonitor` in .git/config is executed by pup's own later git
         // calls, which are unsandboxed and carry the operator's environment.
         const cwd = fakeCheckout();
         mkdirSync(join(cwd, '.git'));
 
-        expect(() =>
+        await expect(
           runGateChild('sh', ['-c', 'printf x > .git/config'], { cwd, repoPath: cwd }),
-        ).toThrow();
+        ).rejects.toThrow();
         expect(existsSync(join(cwd, '.git', 'config'))).toBe(false);
         // The control: an ordinary file in the same checkout still writes.
-        runGateChild('sh', ['-c', 'printf ok > ordinary.txt'], { cwd, repoPath: cwd });
+        await runGateChild('sh', ['-c', 'printf ok > ordinary.txt'], { cwd, repoPath: cwd });
         expect(readFileSync(join(cwd, 'ordinary.txt'), 'utf8')).toBe('ok');
       });
 
-      it('cannot write the git directory of a checkout nested inside the grant', () => {
+      it('cannot write the git directory of a checkout nested inside the grant', async () => {
         // `protectedPaths` is derived one level deep — granting P denies
         // P/.git and nothing deeper — so this .git sits inside the grant with
         // no per-path deny of its own. That is the exact shape of #49's
@@ -357,23 +481,23 @@ describe('runGateChild', () => {
         const nestedGit = join(cwd, '.worktrees', 's1', '.git');
         mkdirSync(nestedGit, { recursive: true });
 
-        expect(() =>
+        await expect(
           runGateChild('sh', ['-c', 'printf x > .worktrees/s1/.git/config'], {
             cwd,
             repoPath: cwd,
           }),
-        ).toThrow(/Operation not permitted/);
+        ).rejects.toThrow(/Operation not permitted/);
         expect(existsSync(join(nestedGit, 'config'))).toBe(false);
         // The control: an ordinary file in the same nested checkout still
         // writes, so the denial above is the .git rule and not a lost grant.
-        runGateChild('sh', ['-c', 'printf ok > .worktrees/s1/ordinary.txt'], {
+        await runGateChild('sh', ['-c', 'printf ok > .worktrees/s1/ordinary.txt'], {
           cwd,
           repoPath: cwd,
         });
         expect(readFileSync(join(cwd, '.worktrees', 's1', 'ordinary.txt'), 'utf8')).toBe('ok');
       });
 
-      it('creates a git repo in its own scratch space, where nothing is being measured', () => {
+      it('creates a git repo in its own scratch space, where nothing is being measured', async () => {
         // The .git deny is scoped to checkout grants on purpose: a brand-new
         // repo a child creates in its own TMPDIR is not the repository being
         // measured, which is what decision 36 protects. Unscoped, the deny
@@ -381,7 +505,7 @@ describe('runGateChild', () => {
         // exactly that, so pup's gate would have refused every future merge.
         const cwd = fakeCheckout();
 
-        const output = runGateChild(
+        const output = await runGateChild(
           'sh',
           [
             '-c',
@@ -393,7 +517,7 @@ describe('runGateChild', () => {
         expect(output).toBe('x');
       });
 
-      it('cannot write the trusted checkout it is measured against', () => {
+      it('cannot write the trusted checkout it is measured against', async () => {
         // The trusted checkout is decision 29's whole basis: writable, a build
         // stage drops `@vitest/coverage-v8` from the manifest the *next* stage
         // reads and the coverage stage stops measuring with nobody the wiser.
@@ -403,17 +527,17 @@ describe('runGateChild', () => {
         const cwd = fakeCheckout();
         writeFileSync(join(repoPath, 'package.json'), '{"devDependencies":{}}');
 
-        expect(() =>
+        await expect(
           runGateChild('sh', ['-c', `printf {} > ${repoPath}/package.json`], { cwd, repoPath }),
-        ).toThrow();
+        ).rejects.toThrow();
         expect(readFileSync(join(repoPath, 'package.json'), 'utf8')).toBe('{"devDependencies":{}}');
       });
     });
 
-    it('writes in the checkout it measures and in the scratch dir the caches point at', () => {
+    it('writes in the checkout it measures and in the scratch dir the caches point at', async () => {
       const cwd = fakeCheckout();
 
-      runGateChild(
+      await runGateChild(
         'sh',
         ['-c', 'printf built > out.txt && printf cached > "$TMPDIR/blob" && cat "$TMPDIR/blob"'],
         { cwd, repoPath: cwd },
@@ -422,9 +546,43 @@ describe('runGateChild', () => {
       expect(readFileSync(join(cwd, 'out.txt'), 'utf8')).toBe('built');
       // TMPDIR is the redirect every denied HOME cache lands in, so a child
       // that cannot write there fails on tooling, not on the code it measures.
-      expect(runGateChild('sh', ['-c', 'cat "$TMPDIR/blob"'], { cwd, repoPath: cwd })).toBe(
+      expect(await runGateChild('sh', ['-c', 'cat "$TMPDIR/blob"'], { cwd, repoPath: cwd })).toBe(
         'cached',
       );
     });
+  });
+});
+
+// The crash an interrupted gate ended on: a worker still writing into the
+// scratch dir made the exit handler's removal throw ENOTEMPTY (decision 95).
+describe('removeGateDir', () => {
+  it('reports a directory it could not remove instead of throwing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pup-remove-test-'));
+    onTestFinished(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+    vi.mocked(rmSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('ENOTEMPTY: directory not empty, rmdir'), {
+        code: 'ENOTEMPTY',
+      });
+    });
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => {
+      warn.mockRestore();
+    });
+
+    expect(() => removeGateDir(dir)).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(`Could not remove ${dir} (ENOTEMPTY); it is left behind.`);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('removes a directory and everything in it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pup-remove-test-'));
+    mkdirSync(join(dir, 'nested'));
+    writeFileSync(join(dir, 'nested', 'file'), 'x');
+
+    removeGateDir(dir);
+
+    expect(existsSync(dir)).toBe(false);
   });
 });

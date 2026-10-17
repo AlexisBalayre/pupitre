@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -26,10 +26,29 @@ vi.mock('../claude/utility.service.js', () => ({
 }));
 
 // Wraps the real execFileSync (every git call in this suite still runs for
-// real) so a test can inspect the stdio options a specific call was made with.
+// real) so a test can inspect the stdio options a specific call was made with,
+// and the real spawn every gate stage runs through, so a test can count them.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
+});
+
+// The real rmSync, wrapped so a test can make the gate checkout's removal fail.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+});
+
+// Shortened by the one test that runs a stage out of its timeout.
+const gateTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('./merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+  return {
+    ...actual,
+    get GATE_COMMAND_TIMEOUT_MS() {
+      return gateTimeout.ms ?? actual.GATE_COMMAND_TIMEOUT_MS;
+    },
+  };
 });
 
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
@@ -48,7 +67,7 @@ import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate, withMergeLock } from './merge-gate.service.js';
-import { UndeclaredSandboxError } from './sandbox.utils.js';
+import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -207,11 +226,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       acceptDebt: acceptDebt && { acceptedBy: 'human', ...acceptDebt },
     });
 
-  it('merges a clean in-scope branch ff-only and cleans everything up', () => {
+  it('merges a clean in-scope branch ff-only and cleans everything up', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('merged');
     expect(sh(repo, 'git', 'log', '--oneline', 'main')).toContain('edit src/feature.ts');
@@ -229,7 +248,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // A session can write any merge option into the target's `mergeOptions` in the
   // shared config; the gate's merge must still be the fast-forward it asked for,
   // and must not sign or verify through a planted program (decision 79).
-  it('fast-forwards past a planted branch.<target>.mergeOptions, running no gpg', () => {
+  it('fast-forwards past a planted branch.<target>.mergeOptions, running no gpg', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const fired = join(repo, '.git', 'fired');
@@ -239,7 +258,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     sh(repo, 'git', 'config', 'branch.main.mergeOptions', '-s ours -S');
     const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('merged');
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
@@ -249,7 +268,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // The target is read before the lock and the session outlives the stages, so
   // the merge must run against the branch the gate was asked to move, or not at
   // all; and what it recorded must be what the ref says (decision 79).
-  it('refuses when the main checkout changed branch during the stages, recording nothing', () => {
+  it('refuses when the main checkout changed branch during the stages, recording nothing', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     sh(repo, 'git', 'branch', 'elsewhere');
@@ -264,7 +283,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     };
 
-    expect(() => merge(movingAdapter)).toThrow(/moved from main to elsewhere/);
+    await expect(merge(movingAdapter)).rejects.toThrow(/moved from main to elsewhere/);
 
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).not.toBe(
@@ -273,7 +292,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(worktree)).toBe(true);
   });
 
-  it('fast-forwards past a planted pull.twohead, the strategy git takes when argv names none', () => {
+  it('fast-forwards past a planted pull.twohead, the strategy git takes when argv names none', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     // A default strategy that keeps the target's tree: without the pin and the
@@ -281,18 +300,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     sh(repo, 'git', 'config', 'pull.twohead', 'ours');
     const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('merged');
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
   });
 
-  it('refuses a target branch whose name contains =, before any stage runs', () => {
+  it('refuses a target branch whose name contains =, before any stage runs', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     sh(repo, 'git', 'branch', '-m', 'main', 'x=y');
 
-    expect(() => merge()).toThrow(/'=' in its name/);
+    await expect(merge()).rejects.toThrow(/'=' in its name/);
 
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
@@ -301,7 +320,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // with plumbing against it (decision 80); each test below is one way a live
   // session used to change what porcelain `git merge <name>` landed.
   describe('the pinned fast-forward', () => {
-    it('refuses a target branch whose name starts with -, before any stage runs', () => {
+    it('refuses a target branch whose name starts with -, before any stage runs', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       // git will not create such a branch, but the files are the session's to write.
@@ -309,13 +328,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(repo, 'git', 'symbolic-ref', 'HEAD', 'refs/heads/-evil');
       const gateCommands = vi.fn(passingAdapter.gateCommands);
 
-      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(/starts with '-'/);
+      await expect(merge({ ...passingAdapter, gateCommands })).rejects.toThrow(/starts with '-'/);
 
       expect(gateCommands).not.toHaveBeenCalled();
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('measures and merges the branch, not a lightweight tag named like it', () => {
+    it('measures and merges the branch, not a lightweight tag named like it', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
@@ -324,14 +343,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(worktree, 'git', 'tag', BRANCH);
       sh(worktree, 'git', 'reset', '-q', '--hard', tip);
 
-      const outcome = merge();
+      const outcome = await merge();
 
       expect(outcome.status).toBe('merged');
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(tip);
       expect(existsSync(join(repo, 'notes.txt'))).toBe(false);
     });
 
-    it('refuses a target name check-ref-format rejects, though it has no - or =', () => {
+    it('refuses a target name check-ref-format rejects, though it has no - or =', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       // A valid refname but no branch name; the HEAD file is the session's to write.
@@ -339,7 +358,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/HEAD\n');
       const gateCommands = vi.fn(passingAdapter.gateCommands);
 
-      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(
+      await expect(merge({ ...passingAdapter, gateCommands })).rejects.toThrow(
         /HEAD is not a name git accepts for a branch/,
       );
 
@@ -351,14 +370,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     it.each([
       ['a bidi override', 'ma‮in'],
       ['a C1 control', 'ma\u009bin'],
-    ])('refuses a target name carrying %s, before any stage runs', (_label, name) => {
+    ])('refuses a target name carrying %s, before any stage runs', async (_label, name) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       sh(repo, 'git', 'update-ref', `refs/heads/${name}`, 'main');
       sh(repo, 'git', 'symbolic-ref', 'HEAD', `refs/heads/${name}`);
       const gateCommands = vi.fn(passingAdapter.gateCommands);
 
-      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(
+      await expect(merge({ ...passingAdapter, gateCommands })).rejects.toThrow(
         /has a control or format character in its name/,
       );
 
@@ -370,7 +389,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // leaves the branch where it was, and the pin is then no fast-forward.
     it.each([false, true])(
       'fails fresh-base for a pinned branch the target is not an ancestor of (openPr: %s)',
-      (openPr) => {
+      async (openPr) => {
         const worktree = seedSession(db, repo);
         commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
         commitIn(repo, 'README.md', '# hello\n');
@@ -382,7 +401,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }
         const gateCommands = vi.fn(passingAdapter.gateCommands);
 
-        const outcome = withFakeGh(fakeGh([]), () =>
+        const outcome = await withFakeGh(fakeGh([]), () =>
           runMergeGate(db, {
             repoPath: repo,
             sessionId: SESSION_ID,
@@ -401,25 +420,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     );
 
-    it('checks out the full tree past a planted sparse-checkout, deleting no trusted file', () => {
+    it('checks out the full tree past a planted sparse-checkout, deleting no trusted file', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       sh(repo, 'git', 'config', 'core.sparseCheckout', 'true');
       writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), 'src/feature.ts\n');
 
-      expect(merge().status).toBe('merged');
+      expect((await merge()).status).toBe('merged');
 
       expect(existsSync(join(repo, 'src', 'app.ts'))).toBe(true);
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(true);
     });
 
-    it('refuses when the checkout would overwrite a local change, moving nothing', () => {
+    it('refuses when the checkout would overwrite a local change, moving nothing', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
       writeFileSync(join(repo, 'src', 'app.ts'), 'export const app = 3;\n');
 
-      expect(() => merge()).toThrow(/refused by the checkout; the ref was not moved/);
+      await expect(merge()).rejects.toThrow(/refused by the checkout; the ref was not moved/);
 
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(readFileSync(join(repo, 'src', 'app.ts'), 'utf8')).toBe('export const app = 3;\n');
@@ -428,17 +447,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // Pinned through the symref, the branch would be main itself: an empty
     // diff passing every stage, then a delete through it that took main along.
-    it('refuses a session branch turned into a symref to the target, and main survives', () => {
+    it('refuses a session branch turned into a symref to the target, and main survives', async () => {
       seedSession(db, repo);
       sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
 
-      expect(() => merge()).toThrow(/is a symbolic ref to refs\/heads\/main/);
+      await expect(merge()).rejects.toThrow(/is a symbolic ref to refs\/heads\/main/);
 
       expect(sh(repo, 'git', 'rev-parse', '--verify', 'refs/heads/main').trim()).not.toBe('');
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('does not merge a commit added to the branch after the stages, and records the pinned sha', () => {
+    it('does not merge a commit added to the branch after the stages, and records the pinned sha', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
@@ -452,7 +471,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      const outcome = merge(lateAdapter);
+      const outcome = await merge(lateAdapter);
 
       expect(outcome.status).toBe('merged');
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
@@ -466,7 +485,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The ratchet and the decision draft can throw, and the draft waits on
     // `claude -p`: the merge event must already exist by then, since main
     // holds the sha and `pup status` already reads merged.
-    it('records the merge event before the decision draft, so a draft that throws loses nothing', () => {
+    it('records the merge event before the decision draft, so a draft that throws loses nothing', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
@@ -474,7 +493,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         throw new Error('claude -p crashed');
       });
 
-      expect(() => merge()).toThrow('claude -p crashed');
+      await expect(merge()).rejects.toThrow('claude -p crashed');
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
@@ -484,7 +503,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ).toThrow();
     });
 
-    it('names the commits a branch gained after the pin and records them as leftBehind', () => {
+    it('names the commits a branch gained after the pin and records them as leftBehind', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
@@ -499,7 +518,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
       onTestFinished(() => warn.mockRestore());
 
-      expect(merge(lateAdapter).status).toBe('merged');
+      expect((await merge(lateAdapter)).status).toBe('merged');
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       const lines = warn.mock.calls.map((call) => String(call[0]));
@@ -513,14 +532,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       });
     });
 
-    it('prints nothing extra and records no leftBehind when the branch did not move', () => {
+    it('prints nothing extra and records no leftBehind when the branch did not move', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
       onTestFinished(() => warn.mockRestore());
 
-      expect(merge().status).toBe('merged');
+      expect((await merge()).status).toBe('merged');
 
       expect(warn.mock.calls.some((call) => String(call[0]).includes('left behind'))).toBe(false);
       const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
@@ -529,7 +548,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(payload).not.toHaveProperty('leftBehind');
     });
 
-    it('keeps the branch and completes a merge whose branch delete an interrupt killed', () => {
+    it('keeps the branch and completes a merge whose branch delete an interrupt killed', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
@@ -546,7 +565,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         process.env.PATH = originalPath;
       });
 
-      expect(merge().status).toBe('merged');
+      expect((await merge()).status).toBe('merged');
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).toBe(pinned);
@@ -554,7 +573,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(JSON.parse(mergeEvent?.payload ?? '{}')).not.toHaveProperty('leftBehind');
     });
 
-    it('prints nothing and records no leftBehind when the branch is gone after the pin', () => {
+    it('prints nothing and records no leftBehind when the branch is gone after the pin', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
@@ -568,7 +587,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
       onTestFinished(() => warn.mockRestore());
 
-      expect(merge(deletingAdapter).status).toBe('merged');
+      expect((await merge(deletingAdapter)).status).toBe('merged');
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       expect(warn.mock.calls.some((call) => String(call[0]).includes('left behind'))).toBe(false);
@@ -581,7 +600,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // Refused before the checkout is touched: the target is re-read right
     // before read-tree, so a moved target never leaves the main checkout on the
     // new tree with a restore line for a live session to arm against.
-    it('refuses a target moved during the stages before touching the checkout', () => {
+    it('refuses a target moved during the stages before touching the checkout', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
@@ -603,9 +622,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      const refusal = (() => {
+      const refusal = await (async () => {
         try {
-          merge(movingAdapter);
+          await merge(movingAdapter);
         } catch (error) {
           return (error as Error).message;
         }
@@ -621,7 +640,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(existsSync(worktree)).toBe(true);
     });
 
-    it('refuses attributes armed during the stages before the checkout runs a smudge', () => {
+    it('refuses attributes armed during the stages before the checkout runs a smudge', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const fired = join(repo, '.git', 'fired');
@@ -635,7 +654,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       };
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
 
-      expect(() => merge(armingAdapter)).toThrow(ArmedGitDriverError);
+      await expect(merge(armingAdapter)).rejects.toThrow(ArmedGitDriverError);
 
       expect(existsSync(fired)).toBe(false);
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
@@ -648,9 +667,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // after that must not leave them reading as merged from this session without
   // saying so (decision 82).
   describe('accepted debt and the refusals under the lock', () => {
-    const refusalOf = (fn: () => unknown): string => {
+    const refusalOf = async (fn: () => Promise<unknown>): Promise<string> => {
       try {
-        fn();
+        await fn();
       } catch (error) {
         return (error as Error).message;
       }
@@ -658,7 +677,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     };
     const accept = { reason: 'deadline', reviewBy: 'before v2' };
 
-    it('refuses a target moved during the stages before filing any ledger entry', () => {
+    it('refuses a target moved during the stages before filing any ledger entry', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
@@ -680,7 +699,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      const refusal = refusalOf(() => merge(movingAdapter, accept));
+      const refusal = await refusalOf(() => merge(movingAdapter, accept));
 
       expect(refusal).toContain(`main moved from ${before} to ${moved} while the gate ran`);
       expect(refusal).not.toContain('ledger');
@@ -691,7 +710,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // `assertTargetAt` runs before the HEAD re-read, so a target deleted or
     // turned into a symref is refused there, ahead of the "main worktree
     // moved" check, with nothing to arrange.
-    it('refuses a target deleted during the stages as moved to nowhere, filing nothing', () => {
+    it('refuses a target deleted during the stages as moved to nowhere, filing nothing', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
       const before = sh(repo, 'git', 'rev-parse', 'main').trim();
@@ -703,14 +722,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      const refusal = refusalOf(() => merge(deletingAdapter, accept));
+      const refusal = await refusalOf(() => merge(deletingAdapter, accept));
 
       expect(refusal).toContain(`main moved from ${before} to nowhere while the gate ran`);
       expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('refuses a target turned into a symref during the stages with the symref refusal', () => {
+    it('refuses a target turned into a symref during the stages with the symref refusal', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
       sh(repo, 'git', 'branch', 'other');
@@ -722,7 +741,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      const refusal = refusalOf(() => merge(symrefAdapter, accept));
+      const refusal = await refusalOf(() => merge(symrefAdapter, accept));
 
       expect(refusal).toContain('refs/heads/main is a symbolic ref to refs/heads/other');
       expect(refusal).not.toContain('moved from');
@@ -730,7 +749,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('says the ledger entries were kept when a refusal that must stay last fires', () => {
+    it('says the ledger entries were kept when a refusal that must stay last fires', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
       const armingAdapter: Adapter = {
@@ -743,7 +762,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       let thrown: unknown;
       try {
-        merge(armingAdapter, accept);
+        await merge(armingAdapter, accept);
       } catch (error) {
         thrown = error;
       }
@@ -757,7 +776,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('says nothing about the ledger on a late refusal when no debt was accepted', () => {
+    it('says nothing about the ledger on a late refusal when no debt was accepted', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       sh(repo, 'git', 'branch', 'elsewhere');
@@ -769,7 +788,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      const refusal = refusalOf(() => merge(movingAdapter, accept));
+      const refusal = await refusalOf(() => merge(movingAdapter, accept));
 
       expect(refusal).toMatch(/moved from main to elsewhere/);
       expect(refusal).not.toContain('ledger');
@@ -816,7 +835,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       };
     };
 
-    it('measures the pinned files when the worktree is edited after the pin', () => {
+    it('measures the pinned files when the worktree is edited after the pin', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -825,7 +844,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       let measured: string | undefined;
 
-      const outcome = merge(
+      const outcome = await merge(
         debtAdapter({
           ...adapter,
           deadCode: ({ measurePath }) => {
@@ -841,27 +860,27 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expectDropped(checkout());
     });
 
-    it('drops the checkout after a pass', () => {
+    it('drops the checkout after a pass', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const { adapter, checkout } = adapterAfterCut('test -f src/feature.ts');
 
-      expect(merge(adapter).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe('merged');
 
       expectDropped(checkout());
     });
 
-    it('drops the checkout after a failed stage', () => {
+    it('drops the checkout after a failed stage', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const { adapter, checkout } = adapterAfterCut('exit 1');
 
-      expect(merge(adapter).status).toBe('rejected');
+      expect((await merge(adapter)).status).toBe('rejected');
 
       expectDropped(checkout());
     });
 
-    it('drops the checkout after a thrown gate', () => {
+    it('drops the checkout after a thrown gate', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const moved = sh(repo, 'git', 'commit-tree', '-p', 'main', '-m', 'moved', 'main^{tree}');
@@ -869,7 +888,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         sh(repoPath, 'git', 'update-ref', 'refs/heads/main', moved.trim()),
       );
 
-      expect(() => merge(adapter)).toThrow(/moved from/);
+      await expect(merge(adapter)).rejects.toThrow(/moved from/);
 
       expectDropped(checkout());
     });
@@ -883,7 +902,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // Writable where the stage writes: vite's temp files go beside the
     // packages, and the caches start empty.
-    it("links the main checkout's packages into a node_modules of its own", () => {
+    it("links the main checkout's packages into a node_modules of its own", async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       installDeps(repo, 'main\n');
@@ -892,7 +911,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           'test ! -e node_modules/.vite && mkdir node_modules/.vite-temp',
       );
 
-      expect(merge(adapter).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe('merged');
 
       // The links went with the checkout, not through it.
       expect(readFileSync(join(repo, 'node_modules', 'marker'), 'utf8')).toBe('main\n');
@@ -901,26 +920,28 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
 
     // The session can rewrite its own `.bin` while the stages run.
-    it("links the main checkout's packages even when the worktree has its own", () => {
+    it("links the main checkout's packages even when the worktree has its own", async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       installDeps(repo, 'main\n');
       installDeps(worktree, 'session\n');
       const { adapter } = adapterAfterCut('grep -q main node_modules/marker');
 
-      expect(merge(adapter).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe('merged');
     });
 
-    it('checks out every committed file past a planted core.sparseCheckout', () => {
+    it('checks out every committed file past a planted core.sparseCheckout', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       sh(repo, 'git', 'config', 'core.sparseCheckout', 'true');
       writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), '/src/app.ts\n');
 
-      expect(merge(adapterAfterCut('test -f src/feature.ts').adapter).status).toBe('merged');
+      expect((await merge(adapterAfterCut('test -f src/feature.ts').adapter)).status).toBe(
+        'merged',
+      );
     });
 
-    it('refuses filter drivers armed after the check before the lock, running no smudge', () => {
+    it('refuses filter drivers armed after the check before the lock, running no smudge', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       // The target moves, so the gate rebases: the session arms the drivers
@@ -941,7 +962,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       });
       const gateCommands = vi.fn(passingAdapter.gateCommands);
 
-      expect(() => merge({ ...passingAdapter, gateCommands })).toThrow(ArmedGitDriverError);
+      await expect(merge({ ...passingAdapter, gateCommands })).rejects.toThrow(ArmedGitDriverError);
 
       expect(existsSync(fired)).toBe(false);
       expect(gateCommands).not.toHaveBeenCalled();
@@ -950,7 +971,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // A stage can leave a directory nobody can remove; the gate's own outcome
     // still stands.
-    it('keeps the outcome when the checkout cannot be dropped', () => {
+    it('keeps the outcome when the checkout cannot be dropped', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const { adapter, checkout } = adapterAfterCut('mkdir -p locked/inner && chmod 000 locked');
@@ -960,13 +981,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         rmSync(dirname(checkout() as string), { recursive: true, force: true });
       });
 
-      expect(merge(adapter).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe('merged');
 
       expect(existsSync(join(checkout() as string, 'locked'))).toBe(true);
     });
 
     // A vendored node_modules is a committed file like any other (decision 81).
-    it('keeps a node_modules the branch commits, when nothing in it links outside', () => {
+    it('keeps a node_modules the branch commits, when nothing in it links outside', async () => {
       const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'node_modules/**'] });
       const marker = sh(
         worktree,
@@ -993,7 +1014,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         ],
       };
 
-      expect(merge(adapter).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe('merged');
     });
 
     /** Commits a symlink at `path` pointing at `target` and mirrors it in the worktree. */
@@ -1016,12 +1037,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ['under node_modules', 'node_modules/out'],
       ['anywhere in the tree', 'src/out'],
       ['with a tab in its path, beside a decoy', 'lib\tx'],
-    ])('refuses a committed link that reaches outside the checkout, %s', (_where, path) => {
+    ])('refuses a committed link that reaches outside the checkout, %s', async (_where, path) => {
       const worktree = seedSession(db, repo, { scopeIn: ['**'] });
       if (path.includes('\t')) commitIn(worktree, 'lib', 'decoy\n');
       commitLink(worktree, path, worktree);
 
-      expect(() => merge()).toThrow(/is a committed link that reaches outside the gate checkout/);
+      await expect(merge()).rejects.toThrow(
+        /is a committed link that reaches outside the gate checkout/,
+      );
 
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
@@ -1037,86 +1060,92 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ['through a committed link to the checkout itself', 'b/b/../../../../../../../tmp/real.ts'],
     ])(
       'refuses a dangling committed link whose .. climbs past a named segment, %s',
-      (_how, target) => {
+      async (_how, target) => {
         const worktree = seedSession(db, repo);
         commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
         if (target.startsWith('b/')) commitLink(worktree, 'b', '.');
         commitLink(worktree, 'src/x.ts', target);
 
-        expect(() => merge()).toThrow(/src\/x\.ts is a committed link that reaches outside/);
+        await expect(merge()).rejects.toThrow(
+          /src\/x\.ts is a committed link that reaches outside/,
+        );
       },
     );
 
-    it('refuses a dangling committed link that points outside the checkout', () => {
+    it('refuses a dangling committed link that points outside the checkout', async () => {
       const worktree = seedSession(db, repo);
       commitLink(worktree, 'src/dangling', '/nowhere/at/all');
 
-      expect(() => merge()).toThrow(/src\/dangling is a committed link that reaches outside/);
+      await expect(merge()).rejects.toThrow(
+        /src\/dangling is a committed link that reaches outside/,
+      );
     });
 
     // A dangling link whose target stays inside adds no reach: build output,
     // a gitignored file, as the target branch may already carry.
-    it('keeps a dangling committed link whose target stays inside the checkout', () => {
+    it('keeps a dangling committed link whose target stays inside the checkout', async () => {
       const worktree = seedSession(db, repo);
       commitLink(worktree, 'src/types.d.ts', '../dist/types.d.ts');
 
-      expect(merge().status).toBe('merged');
+      expect((await merge()).status).toBe('merged');
     });
   });
 
   describe('off darwin (decision 78)', () => {
-    it('refuses before running any child unless the operator declared the VM', () => {
+    it('refuses before running any child unless the operator declared the VM', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', undefined);
       vi.mocked(execFileSync).mockClear();
+      vi.mocked(spawn).mockClear();
 
-      expect(() => merge()).toThrow(UndeclaredSandboxError);
-      expect(() => merge()).toThrow(/PUP_SANDBOX=vm/);
+      await expect(merge()).rejects.toThrow(UndeclaredSandboxError);
+      await expect(merge()).rejects.toThrow(/PUP_SANDBOX=vm/);
       // Not a git call, not a stage: nothing was spawned at all.
       expect(execFileSync).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('runs the gate under the declaration and names it in the report', () => {
+    it('runs the gate under the declaration and names it in the report', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'vm');
 
-      const outcome = merge();
+      const outcome = await merge();
 
       expect(outcome.status).toBe('merged');
       expect(outcome.report.sandbox).toBe('vm (declared by operator)');
     });
 
-    it('treats any value but vm as no declaration', () => {
+    it('treats any value but vm as no declaration', async () => {
       seedSession(db, repo);
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'yes');
 
-      expect(() => merge()).toThrow(UndeclaredSandboxError);
+      await expect(merge()).rejects.toThrow(UndeclaredSandboxError);
     });
   });
 
-  it.runIf(process.platform === 'darwin')('ignores the declaration on darwin', () => {
+  it.runIf(process.platform === 'darwin')('ignores the declaration on darwin', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     vi.stubEnv('PUP_SANDBOX', 'vm');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.report.sandbox).toMatch(
       /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/,
     );
   });
 
-  it('writes a decision record for the merged files even when the draft utility fails', () => {
+  it('writes a decision record for the merged files even when the draft utility fails', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('merged');
     const [record] = listDecisionRecords(db, 'src/feature.ts');
@@ -1127,12 +1156,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.decisionRecordId).toBe(record?.id);
   });
 
-  it('auto-rebases a stale branch and merges with linear history', () => {
+  it('auto-rebases a stale branch and merges with linear history', async () => {
     const worktree = seedSession(db, repo);
     commitIn(repo, 'README.md', '# hello\n');
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('merged');
     expect(outcome.report.stages).toContainEqual(
@@ -1143,12 +1172,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(log).toContain('edit src/feature.ts');
   });
 
-  it('re-steers the session with the report when the auto-rebase conflicts', () => {
+  it('re-steers the session with the report when the auto-rebase conflicts', async () => {
     const worktree = seedSession(db, repo);
     commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
     commitIn(worktree, 'src/app.ts', 'export const app = 3;\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.rejectCount).toBe(1);
@@ -1161,16 +1190,82 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('rebase');
   });
 
-  it('rejects on a build failure and stops the pipeline there', () => {
+  it('rejects on a build failure and stops the pipeline there', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-    const outcome = merge(failingBuildAdapter);
+    const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
     expect(outcome.report.stages.map((s) => s.stage)).not.toContain('scope-audit');
     expect(steerPane).toHaveBeenCalled();
+  });
+
+  describe('an interrupted gate (decision 95)', () => {
+    const sleeping: Adapter = {
+      ...passingAdapter,
+      gateCommands: () => [{ stage: 'test', command: 'sh', args: ['-c', 'sleep 47.5'] }],
+    };
+
+    it('ends a sleeping stage child on Ctrl-C and unwinds without waiting for it', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const before = process.listeners('SIGINT');
+      const started = Date.now();
+
+      const gate = merge(sleeping).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
+      const child = vi.mocked(spawn).mock.results[0]?.value as ChildProcess;
+      const checkout = (vi.mocked(spawn).mock.calls[0]?.[2] as { cwd?: string } | undefined)?.cwd;
+      // What node does with a terminal's Ctrl-C: the lock's listener and the
+      // seam's forwarder both run.
+      for (const listener of process.listeners('SIGINT') as NodeJS.SignalsListener[]) {
+        if (!before.includes(listener)) listener('SIGINT');
+      }
+      const failure = await gate;
+
+      expect(failure).toBeInstanceOf(GateInterruptedError);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(() => process.kill(child.pid as number, 0)).toThrow();
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+      expect(checkout).toMatch(GATE_CHECKOUT);
+      expect(existsSync(checkout as string)).toBe(false);
+      expect(process.listeners('SIGINT')).toEqual(before);
+    });
+
+    // The crash the interrupt used to end on: a removal that threw over the
+    // gate's own result.
+    it('reports a gate checkout it could not remove and still returns the stage results', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const { rmSync: removeForReal } = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const left: string[] = [];
+      vi.mocked(rmSync).mockImplementation((path, options) => {
+        if (!/\/pup-gate-checkout-[^/]+$/.test(String(path))) return removeForReal(path, options);
+        left.push(String(path));
+        throw Object.assign(new Error('ENOTEMPTY: directory not empty, rmdir'), {
+          code: 'ENOTEMPTY',
+        });
+      });
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => {
+        vi.mocked(rmSync).mockImplementation(removeForReal);
+        warn.mockRestore();
+        for (const path of left) removeForReal(path, { recursive: true, force: true });
+      });
+
+      const outcome = await merge(failingBuildAdapter);
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
+      expect(left).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        `Could not remove ${left[0]} (ENOTEMPTY); it is left behind.`,
+      );
+    });
   });
 
   // A worker's suite runs at nice 10 and the gate's at pup's own priority, but
@@ -1195,13 +1290,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     /** How many times the gate spawned the command marked `marker`, sandboxed or bare. */
     const runsOf = (marker: string): number =>
-      vi.mocked(execFileSync).mock.calls.filter(([, args]) => args?.includes(marker)).length;
+      vi.mocked(spawn).mock.calls.filter(([, args]) => args?.includes(marker)).length;
 
-    it('passes a test stage that passes on its re-run, named flaky with what failed', () => {
+    it('passes a test stage that passes on its re-run, named flaky with what failed', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      const outcome = merge(adapterWith('test', failsOnce('exit 0')));
+      const outcome = await merge(adapterWith('test', failsOnce('exit 0')));
 
       expect(outcome.status).toBe('merged');
       expect(runsOf('test-run')).toBe(2);
@@ -1214,11 +1309,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       });
     });
 
-    it('rejects a test stage that fails its re-run too, naming both runs’ failures', () => {
+    it('rejects a test stage that fails its re-run too, naming both runs’ failures', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      const outcome = merge(
+      const outcome = await merge(
         adapterWith('test', failsOnce('printf "FAILED tests/b.py::test_other\\n"; exit 1')),
       );
 
@@ -1240,11 +1335,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ['killed by SIGTERM, as a stage timeout is', 'kill -TERM $$'],
       ['exiting 130 on an interrupt it caught', 'exit 130'],
       ['exiting 2, as pytest does on an interrupt', 'exit 2'],
-    ])('never re-runs a test stage %s', (_case, end) => {
+    ])('never re-runs a test stage %s', async (_case, end) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      const outcome = merge(
+      const outcome = await merge(
         adapterWith('test', `if [ -e .ran-once ]; then exit 0; fi; touch .ran-once; ${end}`),
       );
 
@@ -1253,60 +1348,48 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
     });
 
-    it('never re-runs a test stage that ran out its timeout, even one that trapped the SIGTERM', () => {
+    it('never re-runs a test stage that ran out its timeout, even one that trapped the SIGTERM', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      const real = vi.mocked(execFileSync).getMockImplementation();
-      // What node throws when the timeout's SIGTERM is trapped and the runner
-      // exits 1 by itself: an ordinary status, told apart only by its code.
-      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
-        if (args.includes('test-run')) {
-          throw Object.assign(new Error('spawnSync sh ETIMEDOUT'), {
-            code: 'ETIMEDOUT',
-            status: 1,
-            signal: null,
-          });
-        }
-        return real?.(file, args, opts as never);
-      }) as never);
+      gateTimeout.ms = 2_000;
       onTestFinished(() => {
-        vi.mocked(execFileSync).mockImplementation(real as never);
+        gateTimeout.ms = undefined;
       });
 
-      const outcome = merge(adapterWith('test', 'exit 0'));
+      // The runner traps the timeout's SIGTERM and exits 1 by itself: an
+      // ordinary status, told apart only by the code the timeout leaves.
+      const outcome = await merge(adapterWith('test', "trap 'exit 1' TERM; sleep 10 & wait"));
 
       expect(outcome.status).toBe('rejected');
       expect(runsOf('test-run')).toBe(1);
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
     });
 
-    it.each(['build', 'lint'] as const)('never re-runs a failed %s', (stage) => {
+    it.each(['build', 'lint'] as const)('never re-runs a failed %s', async (stage) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      const outcome = merge(adapterWith(stage, failsOnce('exit 0')));
+      const outcome = await merge(adapterWith(stage, failsOnce('exit 0')));
 
       expect(outcome.status).toBe('rejected');
       expect(runsOf(`${stage}-run`)).toBe(1);
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage, status: 'fail' });
     });
 
-    it('runs its stages at the priority pup runs at, never under nice', () => {
+    it('runs its stages at the priority pup runs at, never under nice', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      expect(merge(adapterWith('test', 'exit 0')).status).toBe('merged');
+      expect((await merge(adapterWith('test', 'exit 0'))).status).toBe('merged');
 
-      const spawn = vi
-        .mocked(execFileSync)
-        .mock.calls.find(([, args]) => args?.includes('test-run'));
-      expect(spawn).toBeDefined();
-      const argv = [spawn?.[0], ...(spawn?.[1] ?? [])].map(String);
+      const call = vi.mocked(spawn).mock.calls.find(([, args]) => args?.includes('test-run'));
+      expect(call).toBeDefined();
+      const argv = [call?.[0], ...(call?.[1] ?? [])].map(String);
       expect(argv.some((word) => word === 'nice' || word.endsWith('/nice'))).toBe(false);
     });
   });
 
-  it('steers a stage detail as plain text when the command output carries ANSI escapes', () => {
+  it('steers a stage detail as plain text when the command output carries ANSI escapes', async () => {
     // Live on 2026-09-12: vitest coloured its failure, the escapes went into the
     // report whole, and the pane could not show the paste as the bytes that were
     // sent — so `pasteLanded` refused a steer to a session that was right there.
@@ -1327,7 +1410,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ],
     };
 
-    const outcome = merge(colouredAdapter);
+    const outcome = await merge(colouredAdapter);
 
     expect(outcome.status).toBe('rejected');
     const steered = vi.mocked(steerPane).mock.calls[0]?.[1] as string;
@@ -1338,7 +1421,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages.at(-1)?.detail).toBe('FAIL expected 1 to be 2');
   });
 
-  it('runs gate commands without the operator secrets in pup’s own environment', () => {
+  it('runs gate commands without the operator secrets in pup’s own environment', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     vi.stubEnv('PUP_TEST_SECRET', 'sk-do-not-leak');
@@ -1355,7 +1438,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ],
     };
 
-    const outcome = merge(envProbeAdapter);
+    const outcome = await merge(envProbeAdapter);
 
     expect(outcome.status).toBe('merged');
     expect(outcome.report.stages).toContainEqual(
@@ -1363,7 +1446,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
-  it('does not run repo git hooks, which a session can plant unseen by the scope audit', () => {
+  it('does not run repo git hooks, which a session can plant unseen by the scope audit', async () => {
     const worktree = seedSession(db, repo);
     commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1375,7 +1458,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       writeFileSync(join(hooks, hook), `#!/bin/sh\necho ${hook} >> ${fired}\n`, { mode: 0o755 });
     }
 
-    const outcome = merge();
+    const outcome = await merge();
 
     // The stale branch forces the rebase path, so pre-rebase would have fired.
     expect(outcome.status).toBe('merged');
@@ -1401,33 +1484,33 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(repo, 'git', 'config', 'merge.pwn.driver', `sh -c 'echo pwned >> ${fired}' %A %O %B`);
     }
 
-    it('refuses before the auto-rebase, and the smudge script never runs', () => {
+    it('refuses before the auto-rebase, and the smudge script never runs', async () => {
       const worktree = seedSession(db, repo);
       // A stale branch, so the gate would take the rebase path.
       commitIn(repo, 'README.md', '# hello\n');
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       arm();
 
-      expect(() => merge()).toThrow(ArmedGitDriverError);
+      await expect(merge()).rejects.toThrow(ArmedGitDriverError);
       expect(existsSync(fired)).toBe(false);
       // Refused, not rejected: nothing here is the session's to fix by re-steer.
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
       expect(steerPane).not.toHaveBeenCalled();
     });
 
-    it('names both surfaces so the operator knows what to clear', () => {
+    it('names both surfaces so the operator knows what to clear', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       arm();
 
-      expect(() => merge()).toThrow(/info\/attributes.*filter\.pwn\.smudge/);
+      await expect(merge()).rejects.toThrow(/info\/attributes.*filter\.pwn\.smudge/);
     });
 
     // `extensions.worktreeConfig` lives in the shared config, so a session can
     // turn it on and then write a driver into its own worktree's config, which
     // a read of the main checkout alone would never see — and the rebase runs
     // in that worktree.
-    it("refuses a driver set in the session worktree's own config", () => {
+    it("refuses a driver set in the session worktree's own config", async () => {
       const worktree = seedSession(db, repo);
       commitIn(repo, 'README.md', '# hello\n');
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1442,25 +1525,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         `sh -c 'echo pwned >> ${fired}; cat'`,
       );
 
-      expect(() => merge()).toThrow(ArmedGitDriverError);
+      await expect(merge()).rejects.toThrow(ArmedGitDriverError);
       expect(existsSync(fired)).toBe(false);
     });
 
-    it('merges normally once the drivers are cleared', () => {
+    it('merges normally once the drivers are cleared', async () => {
       const worktree = seedSession(db, repo);
       commitIn(repo, 'README.md', '# hello\n');
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      expect(merge().status).toBe('merged');
+      expect((await merge()).status).toBe('merged');
       expect(existsSync(fired)).toBe(false);
     });
   });
 
-  it('hard-fails changes outside the task scope', () => {
+  it('hard-fails changes outside the task scope', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'notes.txt', 'off-scope\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
@@ -1469,39 +1552,39 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // The store is session-writable: a spec that is not JSON is a refusal naming
   // the task, with the lock released and the session left reviewable.
-  it('refuses a task whose stored spec is not JSON with a typed error', () => {
+  it('refuses a task whose stored spec is not JSON with a typed error', async () => {
     seedSession(db, repo);
     db.prepare("UPDATE tasks SET spec = 'not json {' WHERE id = ?").run(`task-${SESSION_ID}`);
 
-    expect(() => merge()).toThrow(MalformedTaskSpecError);
-    expect(() => merge()).toThrow(`Task task-${SESSION_ID} has an unusable spec`);
+    await expect(merge()).rejects.toThrow(MalformedTaskSpecError);
+    await expect(merge()).rejects.toThrow(`Task task-${SESSION_ID} has an unusable spec`);
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  it('hard-fails a session that edits the adapter escape-hatch config', () => {
+  it('hard-fails a session that edits the adapter escape-hatch config', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.pupitre/adapter.yml', 'test: echo ok\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
     expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
   });
 
-  it('hard-fails a protected .claude path even when git would C-quote its name', () => {
+  it('hard-fails a protected .claude path even when git would C-quote its name', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.claude/café.md', 'smuggled hook config\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
     expect(outcome.report.stages.at(-1)?.detail).toContain('café.md (protected path)');
   });
 
-  it('resolves gate commands from the trusted main checkout, not the session worktree', () => {
+  it('resolves gate commands from the trusted main checkout, not the session worktree', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const resolvedFrom: string[] = [];
@@ -1514,22 +1597,22 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     };
 
-    merge(recordingAdapter);
+    await merge(recordingAdapter);
 
     expect(resolvedFrom).toEqual([repo]);
   });
 
-  it('fails preflight when the worktree is dirty', () => {
+  it('fails preflight when the worktree is dirty', async () => {
     const worktree = seedSession(db, repo);
     writeFileSync(join(worktree, 'src/uncommitted.ts'), 'export const x = 1;\n');
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'worktree-clean', status: 'fail' });
   });
 
-  it('flags open debt entries whose files the merged diff touched, but never its own', () => {
+  it('flags open debt entries whose files the merged diff touched, but never its own', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
@@ -1550,17 +1633,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       reviewBy: 'c',
     });
 
-    const outcome = merge(passingAdapter, { reason: 'deadline', reviewBy: 'before v2' });
+    const outcome = await merge(passingAdapter, { reason: 'deadline', reviewBy: 'before v2' });
 
     expect(outcome.status).toBe('merged');
     expect(outcome.debtCandidates).toEqual([{ id: openId, description: 'shortcut in feature.ts' }]);
   });
 
-  it('refuses an oversize diff without --accept-debt and leaves the session reviewable', () => {
+  it('refuses an oversize diff without --accept-debt and leaves the session reviewable', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('refused');
     expect(outcome.report.stages).toContainEqual(
@@ -1571,11 +1654,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(steerPane).not.toHaveBeenCalled();
   });
 
-  it('merges an oversize diff with --accept-debt and writes a ledger entry', () => {
+  it('merges an oversize diff with --accept-debt and writes a ledger entry', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
 
-    const outcome = merge(passingAdapter, { reason: 'deadline', reviewBy: 'before v2' });
+    const outcome = await merge(passingAdapter, { reason: 'deadline', reviewBy: 'before v2' });
 
     expect(outcome.status).toBe('merged');
     const [entry] = listLedgerEntries(db, 'proj-1');
@@ -1583,11 +1666,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(JSON.parse(entry?.files ?? '[]')).toContain('src/big.ts');
   });
 
-  it('records the acceptor the request names, not a hardcoded human', () => {
+  it('records the acceptor the request names, not a hardcoded human', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
 
-    const outcome = runMergeGate(db, {
+    const outcome = await runMergeGate(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
       adapters: [passingAdapter],
@@ -1600,11 +1683,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // The approver is a relay's word (`--approved-by`, decision 75); the store
   // keeps it scrubbed, whichever caller built the request.
-  it('scrubs control characters out of the acceptor before the ledger keeps it', () => {
+  it('scrubs control characters out of the acceptor before the ledger keeps it', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
 
-    const outcome = runMergeGate(db, {
+    const outcome = await runMergeGate(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
       adapters: [passingAdapter],
@@ -1619,11 +1702,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe('tg: [2Jalexis');
   });
 
-  it('counts a lockfile-named file outside the repo root toward the diff size', () => {
+  it('counts a lockfile-named file outside the repo root toward the diff size', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/pnpm-lock.yaml', 'generated: line\n'.repeat(700));
 
-    const outcome = merge();
+    const outcome = await merge();
 
     expect(outcome.status).toBe('refused');
     expect(outcome.report.stages).toContainEqual(
@@ -1641,12 +1724,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(repo, 'git', 'config', 'core.attributesFile', attributes);
     }
 
-    it('recounts an oversize diff and flags it instead of passing', () => {
+    it('recounts an oversize diff and flags it instead of passing', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
       forgeBinary();
 
-      const outcome = merge();
+      const outcome = await merge();
 
       expect(outcome.status).toBe('refused');
       const stage = outcome.report.stages.find((s) => s.stage === 'diff-size');
@@ -1655,12 +1738,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(stage?.detail).toContain('src/big.ts');
     });
 
-    it('flags a forged binary even when the recounted diff is small', () => {
+    it('flags a forged binary even when the recounted diff is small', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       forgeBinary();
 
-      const outcome = merge();
+      const outcome = await merge();
 
       expect(outcome.status).toBe('refused');
       expect(outcome.report.stages).toContainEqual(
@@ -1668,12 +1751,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
-    it('still counts a real binary as free', () => {
+    it('still counts a real binary as free', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/image.bin', 'x\0y\n'.repeat(700));
       forgeBinary();
 
-      const outcome = merge();
+      const outcome = await merge();
 
       expect(outcome.status).toBe('merged');
       expect(outcome.report.stages).toContainEqual({
@@ -1684,13 +1767,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('parks the session as blocked once the reject cap is reached', () => {
+  it('parks the session as blocked once the reject cap is reached', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     incrementRejectCount(db, SESSION_ID);
     incrementRejectCount(db, SESSION_ID);
 
-    const outcome = merge(failingBuildAdapter);
+    const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe('blocked');
     expect(outcome.rejectCount).toBe(3);
@@ -1698,14 +1781,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(steerPane).not.toHaveBeenCalled();
   });
 
-  it('blocks instead of rejecting when the re-steer cannot be delivered', () => {
+  it('blocks instead of rejecting when the re-steer cannot be delivered', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     vi.mocked(steerPane).mockImplementationOnce(() => {
       throw new Error('no tmux session');
     });
 
-    const outcome = merge(failingBuildAdapter);
+    const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe('blocked');
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
@@ -1713,7 +1796,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(blockedReason(db)).toBe('re-steer failed — session unreachable');
   });
 
-  it('blocks with the refusal itself as the reason when the re-steer is not delivered', () => {
+  it('blocks with the refusal itself as the reason when the re-steer is not delivered', async () => {
     // A refused paste leaves a reachable session with an empty box, which
     // `session unreachable` sends the human to the wrong place (decision 45).
     const worktree = seedSession(db, repo);
@@ -1722,7 +1805,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       throw new SteerNotDeliveredError(SESSION_ID, 1234, 'box-not-cleared');
     });
 
-    const outcome = merge(failingBuildAdapter);
+    const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe('blocked');
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
@@ -1733,7 +1816,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(reason).not.toContain('unreachable');
   });
 
-  it('blocks, and types nothing, when the session has no pane recorded to re-steer into', () => {
+  it('blocks, and types nothing, when the session has no pane recorded to re-steer into', async () => {
     // A session target would resolve to whichever pane is active, which the
     // agent can move; with no pane pinned there is nothing to address, and the
     // gate parks the session rather than paste its report anywhere (decision 46).
@@ -1744,36 +1827,36 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       throw new Error('steerPane must not be reached without a pane');
     });
 
-    const outcome = merge(failingBuildAdapter);
+    const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe('blocked');
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
     expect(steerPane).not.toHaveBeenCalled();
   });
 
-  it('refuses to run while another merge holds the lock', () => {
+  it('refuses to run while another merge holds the lock', async () => {
     seedSession(db, repo);
     mkdirSync(join(repo, '.git', 'pup-merge.lock'));
 
-    expect(() => merge()).toThrow(MergeLockHeldError);
+    await expect(merge()).rejects.toThrow(MergeLockHeldError);
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  it('throws for a session that is not awaiting review', () => {
+  it('throws for a session that is not awaiting review', async () => {
     seedSession(db, repo);
     transitionSession(db, SESSION_ID, 'running');
 
-    expect(() => merge()).toThrow(SessionNotReviewableError);
+    await expect(merge()).rejects.toThrow(SessionNotReviewableError);
   });
 
   // Not "every stage skipped and merged anyway": with no adapter the hard
   // stages report "no command available" and every debt stage "adapter cannot
   // measure", so a full-looking report would sit on top of nothing measured.
-  it('refuses a request that carries no adapter at all, before taking the lock', () => {
+  it('refuses a request that carries no adapter at all, before taking the lock', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-    expect(() => merge([])).toThrow(/No adapter for/);
+    await expect(merge([])).rejects.toThrow(/No adapter for/);
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
   });
@@ -1792,7 +1875,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     );
 
-  it('refuses a branch that introduces a new unused export', () => {
+  it('refuses a branch that introduces a new unused export', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -1800,7 +1883,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       deadCode: () => [{ file: 'src/feature.ts', exportName: 'feature' }],
     });
 
-    const outcome = merge(adapter);
+    const outcome = await merge(adapter);
 
     expect(outcome.status).toBe('refused');
     expect(outcome.report.stages).toContainEqual(
@@ -1825,12 +1908,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ...overrides,
     });
 
-    it("flags a dead export the second adapter's files introduce", () => {
+    it("flags a dead export the second adapter's files introduce", async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.py', 'def feature():\n    pass\n');
       seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
 
-      const outcome = merge([
+      const outcome = await merge([
         debtAdapter(),
         secondAdapter({ deadCode: () => [{ file: 'src/feature.py', exportName: 'feature' }] }),
       ]);
@@ -1845,7 +1928,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
-    it('ratchets the duplication bar to the sum over both adapters', () => {
+    it('ratchets the duplication bar to the sum over both adapters', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       seedDebtBaseline({ deadExports: [], duplicatedLines: 60 });
@@ -1854,7 +1937,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         secondAdapter({ duplication: () => ({ duplicatedLines: 30, blocks: [] }) }),
       ];
 
-      const outcome = merge(adapters);
+      const outcome = await merge(adapters);
 
       expect(outcome.status).toBe('merged');
       expect(outcome.report.stages).toContainEqual(
@@ -1868,14 +1951,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(stored.debt?.duplicatedLines).toBe(42);
       // The same number `pup init` would have recorded over the same adapters —
       // the bar the gate ratchets and the bar init captures are one measurement.
-      expect(initProject(db, repo, adapters).baseline.debt?.duplicatedLines).toBe(42);
+      expect((await initProject(db, repo, adapters)).baseline.debt?.duplicatedLines).toBe(42);
     });
 
-    it('flags a complexity rise in either adapter, over its own files', () => {
+    it('flags a complexity rise in either adapter, over its own files', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.py', 'def feature():\n    pass\n');
 
-      const outcome = merge([
+      const outcome = await merge([
         debtAdapter(),
         secondAdapter({
           complexity: ({ measurePath }) => [
@@ -1894,7 +1977,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
-    it('runs the hard stages and the nested-package check from the first adapter only', () => {
+    it('runs the hard stages and the nested-package check from the first adapter only', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const secondGateCommands = vi.fn(() => [
@@ -1902,7 +1985,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ]);
       const secondNested = vi.fn(() => []);
 
-      const outcome = merge([
+      const outcome = await merge([
         passingAdapter,
         secondAdapter({
           gateCommands: secondGateCommands,
@@ -1918,7 +2001,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('measures the gate checkout but reads tool config from the main checkout', () => {
+  it('measures the gate checkout but reads tool config from the main checkout', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -1930,7 +2013,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     });
 
-    merge(adapter);
+    await merge(adapter);
 
     // Split on purpose: a session that edits its own manifest must not be able
     // to un-declare the tool that measures it (decision 29).
@@ -1940,13 +2023,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // The trap this closes end to end: a compare the gate skipped must not write
   // the number it could not compare in as the floor, where no later merge or
   // audit ever sees it. `judgeDebt` withholds it; this is the store agreeing.
-  it('leaves the stored duplication bar alone when the rule no longer matches', () => {
+  it('leaves the stored duplication bar alone when the rule no longer matches', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 220, duplicationRule: 'imports-counted' });
     const adapter = debtAdapter({ duplication: () => ({ duplicatedLines: 62, blocks: [] }) });
 
-    const outcome = merge(adapter);
+    const outcome = await merge(adapter);
 
     expect(outcome.report.stages).toContainEqual(
       expect.objectContaining({
@@ -1976,7 +2059,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // A standalone package resolves from its own directory, so it gets its own
     // environment from the main checkout, not the root's (decision 81).
-    it("gives the package the main checkout's own node_modules, before any stage runs", () => {
+    it("gives the package the main checkout's own node_modules, before any stage runs", async () => {
       commitNestedPackage({ test: 'test -e node_modules/marker', typecheck: 'true' });
       mkdirSync(join(repo, 'tools', 'review', 'node_modules'), { recursive: true });
       writeFileSync(join(repo, 'tools', 'review', 'node_modules', 'marker'), '');
@@ -1991,15 +2074,15 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         ],
       });
 
-      expect(merge(adapter).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe('merged');
     });
 
-    it("refuses the merge when the package's own test script fails", () => {
+    it("refuses the merge when the package's own test script fails", async () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('rejected');
       expect(outcome.report.stages.at(-1)).toMatchObject({
@@ -2010,12 +2093,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'log', '--oneline', 'main')).not.toContain('tools/review/src/r.ts');
     });
 
-    it('runs test then typecheck in the package directory, and merges when both pass', () => {
+    it('runs test then typecheck in the package directory, and merges when both pass', async () => {
       commitNestedPackage({ test: 'true', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('merged');
       const stageNames = outcome.report.stages.map((s) => s.stage);
@@ -2024,12 +2107,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ).toEqual(['test (tools/review)', 'typecheck (tools/review)']);
     });
 
-    it('runs the script with the package as its working directory', () => {
+    it('runs the script with the package as its working directory', async () => {
       commitNestedPackage({ test: 'true', typecheck: 'pwd; exit 1' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/README.md', 'docs only\n');
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('rejected');
       expect(outcome.report.stages.at(-1)).toMatchObject({
@@ -2038,7 +2121,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       });
     });
 
-    it('runs the script inside the gate sandbox, without the operator secrets', () => {
+    it('runs the script inside the gate sandbox, without the operator secrets', async () => {
       vi.stubEnv('PUP_TEST_SECRET', 'sk-do-not-leak');
       commitNestedPackage({
         test: 'test -z "$PUP_TEST_SECRET" && test -n "$PATH"',
@@ -2047,7 +2130,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('merged');
       expect(outcome.report.stages).toContainEqual({
@@ -2056,7 +2139,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       });
     });
 
-    it("resolves the scripts from the trusted checkout, not the session's manifest", () => {
+    it("resolves the scripts from the trusted checkout, not the session's manifest", async () => {
       commitNestedPackage({ test: 'true', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       // Deleting the script in the worktree fails the stage, never skips it.
@@ -2066,7 +2149,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         JSON.stringify({ scripts: { typecheck: 'true' } }),
       );
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('rejected');
       expect(outcome.report.stages.at(-1)).toMatchObject({
@@ -2075,18 +2158,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       });
     });
 
-    it('runs nothing for a diff that stays outside every nested package', () => {
+    it('runs nothing for a diff that stays outside every nested package', async () => {
       commitNestedPackage({ test: 'exit 1', typecheck: 'exit 1' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('merged');
       expect(outcome.report.stages.map((s) => s.stage)).not.toContain('test (tools/review)');
     });
 
-    it('flags a package whose trusted manifest declares no test script', () => {
+    it('flags a package whose trusted manifest declares no test script', async () => {
       commitNestedPackage({ typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       // The session's own manifest adding the script buys nothing.
@@ -2096,7 +2179,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         JSON.stringify({ scripts: { test: 'true', typecheck: 'true' } }),
       );
 
-      const outcome = merge(nestedAdapter());
+      const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('refused');
       expect(outcome.report.stages).toContainEqual({
@@ -2113,12 +2196,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
-    it('records the missing script as debt when the merge accepts it', () => {
+    it('records the missing script as debt when the merge accepts it', async () => {
       commitNestedPackage({});
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      const outcome = merge(nestedAdapter(), { reason: 'tooling', reviewBy: 'next sprint' });
+      const outcome = await merge(nestedAdapter(), { reason: 'tooling', reviewBy: 'next sprint' });
 
       expect(outcome.status).toBe('merged');
       expect(
@@ -2135,7 +2218,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ]);
     });
 
-    it('names the changed files a nested package kept from the debt stages', () => {
+    it('names the changed files a nested package kept from the debt stages', async () => {
       commitNestedPackage({ test: 'true', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
@@ -2150,7 +2233,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         coverableFiles: typescriptAdapter.coverableFiles,
       });
 
-      const outcome = merge(adapter);
+      const outcome = await merge(adapter);
 
       expect(outcome.status).toBe('merged');
       const note = '; 2 changed file(s) in a nested package not measured here (tools/review)';
@@ -2167,7 +2250,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
-    it('puts the note ahead of the accept hint on a flagged stage, and elides past three', () => {
+    it('puts the note ahead of the accept hint on a flagged stage, and elides past three', async () => {
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -2186,7 +2269,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         ],
       });
 
-      const outcome = merge(adapter);
+      const outcome = await merge(adapter);
 
       expect(outcome.status).toBe('refused');
       expect(outcome.report.stages).toContainEqual(
@@ -2202,7 +2285,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('flags a touched file whose complexity rises past the threshold', () => {
+  it('flags a touched file whose complexity rises past the threshold', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const adapter = debtAdapter({
@@ -2211,7 +2294,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ],
     });
 
-    const outcome = merge(adapter);
+    const outcome = await merge(adapter);
 
     expect(outcome.status).toBe('refused');
     expect(outcome.report.stages).toContainEqual(
@@ -2223,7 +2306,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
-  it('merges flagged debt with --accept-debt, writing one ledger entry per flag', () => {
+  it('merges flagged debt with --accept-debt, writing one ledger entry per flag', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
@@ -2235,7 +2318,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     });
 
-    const outcome = merge(adapter, { reason: 'deadline', reviewBy: 'before v2' });
+    const outcome = await merge(adapter, { reason: 'deadline', reviewBy: 'before v2' });
 
     expect(outcome.status).toBe('merged');
     const entries = listLedgerEntries(db, 'proj-1');
@@ -2246,7 +2329,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     ]);
   });
 
-  it('ratchets the stored debt baseline to the merged state', () => {
+  it('ratchets the stored debt baseline to the merged state', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({
@@ -2261,7 +2344,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       duplication: () => ({ duplicatedLines: 5, blocks: [] }),
     });
 
-    const outcome = merge(adapter);
+    const outcome = await merge(adapter);
 
     expect(outcome.status).toBe('merged');
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
@@ -2272,7 +2355,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('passes a fully covered patch and ratchets the stored coverage ratio', () => {
+  it('passes a fully covered patch and ratchets the stored coverage ratio', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ coverageRatio: 0.8 });
@@ -2285,7 +2368,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     });
 
-    const outcome = merge(adapter);
+    const outcome = await merge(adapter);
 
     expect(outcome.status).toBe('merged');
     expect(outcome.report.stages).toContainEqual(
@@ -2299,7 +2382,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   const coverableFiles = (_ctx: CapabilityContext, files: string[]): string[] =>
     files.filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
 
-  it('refuses a changed source file that never reached the coverage report', () => {
+  it('refuses a changed source file that never reached the coverage report', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ coverageRatio: 0.8 });
@@ -2310,7 +2393,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       coverage: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1] } } }),
     });
 
-    const outcome = merge(adapter);
+    const outcome = await merge(adapter);
 
     expect(outcome.status).toBe('refused');
     expect(outcome.report.stages).toContainEqual(
@@ -2342,13 +2425,16 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     return bare;
   };
 
-  const withFakeGh = <TResult>(script: string, fn: () => TResult): TResult => {
+  const withFakeGh = async <TResult>(
+    script: string,
+    fn: () => TResult | Promise<TResult>,
+  ): Promise<TResult> => {
     const ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-gh-')));
     writeFileSync(join(ghDir, 'gh'), script, { mode: 0o755 });
     const originalPath = process.env.PATH;
     process.env.PATH = `${ghDir}:${originalPath}`;
     try {
-      return fn();
+      return await fn();
     } finally {
       process.env.PATH = originalPath;
     }
@@ -2387,14 +2473,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     isCrossRepository: false,
   };
 
-  it('with openPr pushes the branch and opens a PR instead of merging locally', () => {
+  it('with openPr pushes the branch and opens a PR instead of merging locally', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({ deadExports: [{ file: 'src/legacy.ts', exportName: 'old' }] });
     const bare = addOrigin();
     const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
 
-    const outcome = withFakeGh(fakeGh([]), () =>
+    const outcome = await withFakeGh(fakeGh([]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2419,7 +2505,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
   });
 
-  it('with openPr pushes to the configured origin URL past a rewrite in the shared config', () => {
+  it('with openPr pushes to the configured origin URL past a rewrite in the shared config', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const bare = addOrigin();
@@ -2431,7 +2517,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     sh(worktree, 'git', 'config', `url.${elsewhere}.insteadOf`, ORIGIN_URL);
     sh(worktree, 'git', 'config', `url.${elsewhere}.pushInsteadOf`, ORIGIN_URL);
 
-    const outcome = withFakeGh(fakeGh([]), () =>
+    const outcome = await withFakeGh(fakeGh([]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2460,7 +2546,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     return path;
   };
 
-  it('with openPr refuses when origin no longer matches the recorded push target', () => {
+  it('with openPr refuses when origin no longer matches the recorded push target', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const bare = addOrigin();
@@ -2470,7 +2556,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // defend against because it had nothing to compare it to.
     sh(worktree, 'git', 'config', 'remote.origin.url', 'git@github.com:attacker/repo.git');
 
-    expect(() =>
+    await expect(
       withFakeGh(fakeGh([]), () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2479,7 +2565,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow(
+    ).rejects.toThrow(
       /recorded: +git@github\.com:owner\/repo\.git[\s\S]*configured: +git@github\.com:attacker\/repo\.git/,
     );
     expect(sh(rogue, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
@@ -2490,14 +2576,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  it('with openPr refuses when the project has no recorded push target at all', () => {
+  it('with openPr refuses when the project has no recorded push target at all', async () => {
     seedSession(db, repo);
     // Origin still resolves to the local bare repo: with the guard removed this
     // test must push somewhere offline, not at the real github.com/owner/repo.
     addOrigin();
     db.prepare('UPDATE projects SET origin_url = NULL WHERE id = ?').run('proj-1');
 
-    expect(() =>
+    await expect(
       withFakeGh(fakeGh([]), () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2506,11 +2592,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('No push target is recorded');
+    ).rejects.toThrow('No push target is recorded');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  it('with openPr pushes to a moved origin once the operator has re-recorded it', () => {
+  it('with openPr pushes to a moved origin once the operator has re-recorded it', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const bare = addOrigin();
@@ -2520,7 +2606,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // What `pup init --origin-moved` writes from the trusted checkout.
     saveProjectOriginUrl(db, 'proj-1', movedUrl);
 
-    const outcome = withFakeGh(fakeGh([]), () =>
+    const outcome = await withFakeGh(fakeGh([]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2535,14 +2621,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
   });
 
-  it("pipes the remote-tracking probe's stderr instead of leaking it, while the push stays inherited", () => {
+  it("pipes the remote-tracking probe's stderr instead of leaking it, while the push stays inherited", async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     seedDebtBaseline({});
     addOrigin();
     const execFileSyncMock = vi.mocked(execFileSync);
 
-    const outcome = withFakeGh(fakeGh([]), () =>
+    const outcome = await withFakeGh(fakeGh([]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2574,7 +2660,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect((pushCall?.[2] as { stdio?: unknown } | undefined)?.stdio).toBeUndefined();
   });
 
-  it('with openPr retries cleanly after gh dies post-push, without duplicate ledger entries', () => {
+  it('with openPr retries cleanly after gh dies post-push, without duplicate ledger entries', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
     addOrigin();
@@ -2588,11 +2674,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     // First attempt: the probe finds no PR, the push lands, `pr create` dies.
     const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
-    expect(() => withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).toThrow();
+    await expect(withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).rejects.toThrow();
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
 
-    const outcome = withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
+    const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
 
     expect(outcome.status).toBe('merged');
     expect(outcome.prUrl).toBe(openPrOnMain.url);
@@ -2601,16 +2687,16 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // The body vouches for the commit the gate pushed; a head anything else put
   // there is refused loudly, naming both (decision 82).
-  it('with openPr refuses a PR whose head is not the pushed sha, naming both', () => {
+  it('with openPr refuses a PR whose head is not the pushed sha, naming both', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
     addOrigin();
     const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
     const elsewhere = 'f'.repeat(40);
 
-    const refusal = (() => {
+    const refusal = await (async () => {
       try {
-        withFakeGh(fakeGh([], elsewhere), () =>
+        await withFakeGh(fakeGh([], elsewhere), () =>
           runMergeGate(db, {
             repoPath: repo,
             sessionId: SESSION_ID,
@@ -2631,13 +2717,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
   });
 
-  it('with openPr passes a PR whose head reads back as the pushed sha', () => {
+  it('with openPr passes a PR whose head reads back as the pushed sha', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     addOrigin();
     const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
 
-    const outcome = withFakeGh(fakeGh([openPrOnMain], pinned), () =>
+    const outcome = await withFakeGh(fakeGh([openPrOnMain], pinned), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2654,13 +2740,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // The approver can differ between the conductor's attempt and the operator's
   // retry (decision 75); the debt is the same debt, and the first approver stands.
-  it('with openPr retries under another approver without filing the debt twice', () => {
+  it('with openPr retries under another approver without filing the debt twice', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
     addOrigin();
     const debt = { reason: 'deadline', reviewBy: 'before v2' };
     const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
-    expect(() =>
+    await expect(
       withFakeGh(ghDyingOnCreate, () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2670,9 +2756,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow();
+    ).rejects.toThrow();
 
-    const outcome = withFakeGh(fakeGh([openPrOnMain]), () =>
+    const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2686,7 +2772,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1').map((e) => e.accepted_by)).toEqual(['tg:alexis']);
   });
 
-  it('with openPr retries after the target moved, when the rebase rewrote the pushed branch', () => {
+  it('with openPr retries after the target moved, when the rebase rewrote the pushed branch', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     addOrigin();
@@ -2697,22 +2783,22 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       openPr: true,
     };
     const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
-    expect(() => withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).toThrow();
+    await expect(withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).rejects.toThrow();
 
     // main moves, so the retry's auto-rebase rewrites the already-pushed branch.
     commitIn(repo, 'README.md', '# moved on\n');
-    const outcome = withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
+    const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
 
     expect(outcome.status).toBe('merged');
     expect(outcome.prUrl).toBe(openPrOnMain.url);
   });
 
-  it('with openPr refuses an open PR that has auto-merge armed', () => {
+  it('with openPr refuses an open PR that has auto-merge armed', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const bare = addOrigin();
 
-    expect(() =>
+    await expect(
       withFakeGh(fakeGh([{ ...openPrOnMain, autoMergeRequest: { enabledAt: 'now' } }]), () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2721,16 +2807,16 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('auto-merge');
+    ).rejects.toThrow('auto-merge');
     expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
   });
 
-  it('with openPr settles adoption before the gate runs, writing no ledger entry', () => {
+  it('with openPr settles adoption before the gate runs, writing no ledger entry', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));
     addOrigin();
 
-    expect(() =>
+    await expect(
       withFakeGh(fakeGh([{ ...openPrOnMain, baseRefName: 'release' }]), () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2740,18 +2826,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('release');
+    ).rejects.toThrow('release');
     // Ten minutes of stages and a debt entry for a merge that cannot happen.
     expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
     expect(ghCalls().filter((call) => call.startsWith('pr'))).toHaveLength(1);
   });
 
-  it('with openPr adopts an open PR onto the same base and rewrites its description', () => {
+  it('with openPr adopts an open PR onto the same base and rewrites its description', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     addOrigin();
 
-    const outcome = withFakeGh(fakeGh([openPrOnMain]), () =>
+    const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
       runMergeGate(db, {
         repoPath: repo,
         sessionId: SESSION_ID,
@@ -2768,12 +2854,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(ghCalls()).not.toContainEqual(expect.stringContaining('pr create'));
   });
 
-  it('with openPr refuses a same-named PR from a fork, before pushing', () => {
+  it('with openPr refuses a same-named PR from a fork, before pushing', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const bare = addOrigin();
 
-    expect(() =>
+    await expect(
       withFakeGh(fakeGh([{ ...openPrOnMain, isCrossRepository: true }]), () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2782,17 +2868,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('fork');
+    ).rejects.toThrow('fork');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
   });
 
-  it('with openPr refuses an open PR that targets a different base', () => {
+  it('with openPr refuses an open PR that targets a different base', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     addOrigin();
 
-    expect(() =>
+    await expect(
       withFakeGh(fakeGh([{ ...openPrOnMain, baseRefName: 'release' }]), () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2801,16 +2887,16 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('release');
+    ).rejects.toThrow('release');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  it('with openPr refuses to guess when several open PRs share the head branch', () => {
+  it('with openPr refuses to guess when several open PRs share the head branch', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     addOrigin();
 
-    expect(() =>
+    await expect(
       withFakeGh(
         fakeGh([openPrOnMain, { ...openPrOnMain, url: 'https://github.com/owner/repo/pull/8' }]),
         () =>
@@ -2821,14 +2907,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
             openPr: true,
           }),
       ),
-    ).toThrow('Several open pull requests');
+    ).rejects.toThrow('Several open pull requests');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  it('with openPr fails fast when gh is unavailable, before any gate stage', () => {
+  it('with openPr fails fast when gh is unavailable, before any gate stage', async () => {
     seedSession(db, repo);
 
-    expect(() =>
+    await expect(
       withFakeGh('#!/bin/sh\nexit 1\n', () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -2837,7 +2923,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('gh');
+    ).rejects.toThrow('gh');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
@@ -2859,18 +2945,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
      * CI fix round as LOOP.md runs it: the branch back in a review worktree, a
      * commit, a push to the PR. Returns the branch tip.
      */
-    function gateThenFix(
+    async function gateThenFix(
       {
         fixRound = true,
         firstFile = 'src/feature.ts',
         firstContent = 'export const a = 1;\n',
       } = {},
       acceptDebt?: { reason: string; reviewBy: string; acceptedBy: string },
-    ): string {
+    ): Promise<string> {
       const worktree = seedSession(db, repo);
       commitIn(worktree, firstFile, firstContent);
       bare = addOrigin();
-      const first = withFakeGh(fakeGh([openPrOnMain]), () =>
+      const first = await withFakeGh(fakeGh([openPrOnMain]), () =>
         runMergeGate(db, {
           repoPath: repo,
           sessionId: SESSION_ID,
@@ -2914,11 +3000,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ],
     };
 
-    it('runs every stage on the new head and appends a merge event with its sha and the same PR', () => {
-      const tip = gateThenFix();
+    it('runs every stage on the new head and appends a merge event with its sha and the same PR', async () => {
+      const tip = await gateThenFix();
       const drafts = vi.mocked(runUtility).mock.calls.length;
 
-      const outcome = regate([fixChecking]);
+      const outcome = await regate([fixChecking]);
 
       expect(outcome.status).toBe('merged');
       expect(outcome.prUrl).toBe(PR_URL);
@@ -2958,12 +3044,15 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
 
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
-    function expectRefusedUnwritten(refusal: RegExp, gh = fakeGh([openPrOnMain])): void {
+    async function expectRefusedUnwritten(
+      refusal: RegExp,
+      gh = fakeGh([openPrOnMain]),
+    ): Promise<void> {
       const events = listEvents(db, SESSION_ID).length;
       const ledger = listLedgerEntries(db, 'proj-1').length;
       const edits = prEdits();
 
-      expect(() => regate([fixChecking], gh)).toThrow(refusal);
+      await expect(regate([fixChecking], gh)).rejects.toThrow(refusal);
 
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(listLedgerEntries(db, 'proj-1')).toHaveLength(ledger);
@@ -2984,14 +3073,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(repo, 'git', 'branch', '-D', BRANCH);
     }
 
-    it.each<[string, () => void, string, RegExp]>([
+    it.each<[string, () => Promise<unknown>, string, RegExp]>([
       ['closed', () => gateThenFix(), 'CLOSED', /is CLOSED on GitHub, not OPEN: a closed PR/],
       ['merged', () => gateThenFix(), 'MERGED', /is MERGED on GitHub, not OPEN: .*pup land s1/],
       ['still at the pin', () => gateThenFix({ fixRound: false }), 'OPEN', /still has its head at/],
-    ])('refuses a PR %s, writing nothing', (_label, setup, state, refusal) => {
-      setup();
+    ])('refuses a PR %s, writing nothing', async (_label, setup, state, refusal) => {
+      await setup();
 
-      expectRefusedUnwritten(refusal, fakeGh([openPrOnMain], undefined, state));
+      await expectRefusedUnwritten(refusal, fakeGh([openPrOnMain], undefined, state));
     });
 
     /** A merge event as the store can hold it: session-writable, so any shape. */
@@ -3006,55 +3095,55 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ['no pinned sha', () => ({ target: 'main' })],
       ['a sha outside the pinned shape', () => ({ sha: '--upload-pack=x', target: 'main' })],
       ['no target', (pin) => ({ sha: pin })],
-    ])('refuses a merge event with %s, asking gh nothing', (_label, fields) => {
-      gateThenFix();
+    ])('refuses a merge event with %s, asking gh nothing', async (_label, fields) => {
+      await gateThenFix();
       plantMerge({ prUrl: PR_URL, ...fields(pinned) });
       const calls = ghCalls().length;
 
-      expectRefusedUnwritten(/merge event names no pinned sha and target/);
+      await expectRefusedUnwritten(/merge event names no pinned sha and target/);
 
       expect(ghCalls()).toHaveLength(calls);
     });
 
-    it("refuses a recorded PR url outside origin's repo, asking gh nothing", () => {
-      gateThenFix();
+    it("refuses a recorded PR url outside origin's repo, asking gh nothing", async () => {
+      await gateThenFix();
       plantMerge({ prUrl: 'https://github.com/other/repo/pull/7', sha: pinned, target: 'main' });
       const calls = ghCalls().length;
 
-      expectRefusedUnwritten(/is not a pull request of github\.com\/owner\/repo/);
+      await expectRefusedUnwritten(/is not a pull request of github\.com\/owner\/repo/);
 
       // The availability probe only: no PR was asked about.
       expect(ghCalls().slice(calls)).toEqual(['--version']);
     });
 
-    it('refuses when the main checkout is on another branch than the merge targeted', () => {
-      gateThenFix();
+    it('refuses when the main checkout is on another branch than the merge targeted', async () => {
+      await gateThenFix();
       sh(repo, 'git', 'switch', '-q', '-c', 'release');
 
-      expectRefusedUnwritten(/was gated onto main, but the main checkout is on release/);
+      await expectRefusedUnwritten(/was gated onto main, but the main checkout is on release/);
     });
 
-    it('refuses a PR GitHub reports in a state it cannot read', () => {
-      gateThenFix();
+    it('refuses a PR GitHub reports in a state it cannot read', async () => {
+      await gateThenFix();
 
-      expectRefusedUnwritten(
+      await expectRefusedUnwritten(
         /is UNKNOWN on GitHub, not OPEN: only an open PR is re-gated/,
         fakeGh([openPrOnMain], undefined, 'UNKNOWN'),
       );
     });
 
-    it('refuses a PR whose state gh leaves out', () => {
-      gateThenFix();
+    it('refuses a PR whose state gh leaves out', async () => {
+      await gateThenFix();
       const stateless = fakeGh([openPrOnMain]).replace('"state":"OPEN",', '');
       expect(stateless).not.toContain('"state"');
 
-      expectRefusedUnwritten(/is in an unreadable state on GitHub, not OPEN/, stateless);
+      await expectRefusedUnwritten(/is in an unreadable state on GitHub, not OPEN/, stateless);
     });
 
-    it('refuses a PR GitHub reports with an unreadable head', () => {
-      gateThenFix();
+    it('refuses a PR GitHub reports with an unreadable head', async () => {
+      await gateThenFix();
 
-      expectRefusedUnwritten(/with an unreadable head/, fakeGh([openPrOnMain], 'not-a-sha'));
+      await expectRefusedUnwritten(/with an unreadable head/, fakeGh([openPrOnMain], 'not-a-sha'));
     });
 
     it.each<[string, unknown[], RegExp]>([
@@ -3064,61 +3153,61 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         /open pull request for pup\/s1 is https:\/\/github\.com\/owner\/repo\/pull\/8, not .*pull\/7/,
       ],
       ['no open PR', [], /open pull request for pup\/s1 is none, not .*pull\/7/],
-    ])('refuses when adoption finds %s for the branch', (_label, listed, refusal) => {
-      gateThenFix();
+    ])('refuses when adoption finds %s for the branch', async (_label, listed, refusal) => {
+      await gateThenFix();
 
-      expectRefusedUnwritten(refusal, fakeGh(listed));
+      await expectRefusedUnwritten(refusal, fakeGh(listed));
     });
 
-    it('refuses a local branch turned into a symref, with the symref refusal', () => {
-      gateThenFix();
+    it('refuses a local branch turned into a symref, with the symref refusal', async () => {
+      await gateThenFix();
       dropReviewBranch();
       sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
 
-      expectRefusedUnwritten(/is a symbolic ref to refs\/heads\/main/);
+      await expectRefusedUnwritten(/is a symbolic ref to refs\/heads\/main/);
     });
 
-    it('refuses when the local branch is missing, before any stage', () => {
-      gateThenFix();
+    it('refuses when the local branch is missing, before any stage', async () => {
+      await gateThenFix();
       dropReviewBranch();
 
-      expectRefusedUnwritten(/pup\/s1 is missing in this repo, but .* has its head at/);
+      await expectRefusedUnwritten(/pup\/s1 is missing in this repo, but .* has its head at/);
     });
 
-    it('refuses a merged session that opened no PR, asking gh nothing', () => {
+    it('refuses a merged session that opened no PR, asking gh nothing', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      expect(merge().status).toBe('merged');
+      expect((await merge()).status).toBe('merged');
       addOrigin();
 
-      expectRefusedUnwritten(/merged with no pull request: .*local fast-forward/);
+      await expectRefusedUnwritten(/merged with no pull request: .*local fast-forward/);
 
       expect(ghCalls()).toEqual([]);
     });
 
-    it('refuses a session that already landed', () => {
-      gateThenFix();
+    it('refuses a session that already landed', async () => {
+      await gateThenFix();
       appendEvent(db, SESSION_ID, 'landed', { sha: pinned, target: 'main', prUrl: PR_URL });
 
-      expectRefusedUnwritten(/has already landed/);
+      await expectRefusedUnwritten(/has already landed/);
     });
 
-    it('still refuses a merged session without --pr', () => {
-      gateThenFix();
+    it('still refuses a merged session without --pr', async () => {
+      await gateThenFix();
 
-      expect(() => merge()).toThrow(SessionNotReviewableError);
+      await expect(merge()).rejects.toThrow(SessionNotReviewableError);
     });
 
-    it('refuses when the local branch is not at the PR head, before any stage', () => {
-      gateThenFix();
+    it('refuses when the local branch is not at the PR head, before any stage', async () => {
+      await gateThenFix();
       commitIn(join(repo, '.worktrees', `${SESSION_ID}-review`), 'src/local.ts', 'x;\n');
 
-      expectRefusedUnwritten(/is at [0-9a-f]+ in this repo, but .* has its head at/);
+      await expectRefusedUnwritten(/is at [0-9a-f]+ in this repo, but .* has its head at/);
     });
 
     // The body vouches for the new pin only, as a first gate's does (decision 82).
-    it('refuses a re-gate whose PR head reads back elsewhere after the rewrite', () => {
-      const tip = gateThenFix();
+    it('refuses a re-gate whose PR head reads back elsewhere after the rewrite', async () => {
+      const tip = await gateThenFix();
       const edited = join(dirname(ghLog), 'edited');
       const elsewhere = 'e'.repeat(40);
       const viewCheck = 'if [ "$2" = "view" ]; then';
@@ -3135,7 +3224,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       const events = listEvents(db, SESSION_ID).length;
 
-      expect(() => regate([fixChecking], movedAfterEdit)).toThrow(
+      await expect(regate([fixChecking], movedAfterEdit)).rejects.toThrow(
         `has its head at ${elsewhere}, not at ${tip}`,
       );
 
@@ -3144,10 +3233,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
     });
 
-    it('refuses a new head failing a hard stage, keeping the earlier merge event newest', () => {
-      gateThenFix();
+    it('refuses a new head failing a hard stage, keeping the earlier merge event newest', async () => {
+      await gateThenFix();
 
-      const outcome = regate([failingBuildAdapter]);
+      const outcome = await regate([failingBuildAdapter]);
 
       expect(outcome.status).toBe('refused');
       expect(outcome.report.stages.find((stage) => stage.stage === 'build')?.status).toBe('fail');
@@ -3158,20 +3247,23 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(prEdits()).toBe(1);
     });
 
-    it('refuses a new head not based on the target instead of rebasing it', () => {
-      gateThenFix();
+    it('refuses a new head not based on the target instead of rebasing it', async () => {
+      await gateThenFix();
       commitIn(repo, 'src/main-moved.ts', 'export const moved = 1;\n');
 
-      const outcome = regate();
+      const outcome = await regate();
 
       expect(outcome.status).toBe('refused');
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'fresh-base', status: 'fail' });
       expect(merges()).toHaveLength(1);
     });
 
-    it('files no second ledger entry for a flag the first gate already filed', () => {
+    it('files no second ledger entry for a flag the first gate already filed', async () => {
       const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
-      gateThenFix({ firstFile: 'src/big.ts', firstContent: 'const line = 1;\n'.repeat(700) }, debt);
+      await gateThenFix(
+        { firstFile: 'src/big.ts', firstContent: 'const line = 1;\n'.repeat(700) },
+        debt,
+      );
       expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
       // Another session's debt over the same file holds no kind for this one,
       // and stays a candidate to close.
@@ -3184,7 +3276,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         reviewBy: 'later',
       });
 
-      const outcome = regate([passingAdapter], fakeGh([openPrOnMain]), debt);
+      const outcome = await regate([passingAdapter], fakeGh([openPrOnMain]), debt);
 
       expect(outcome.status).toBe('merged');
       expect(outcome.report.stages.find((stage) => stage.stage === 'diff-size')?.status).toBe(
@@ -3209,9 +3301,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ],
     ])(
       'files no second ledger entry for a held %s flag whose figures moved',
-      (_label, held, adapter) => {
+      async (_label, held, adapter) => {
         const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
-        gateThenFix();
+        await gateThenFix();
         seedDebtBaseline({ duplicatedLines: 0 });
         insertLedgerEntry(db, {
           projectId: 'proj-1',
@@ -3222,7 +3314,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           reviewBy: 'later',
         });
 
-        const outcome = regate([adapter], fakeGh([openPrOnMain]), debt);
+        const outcome = await regate([adapter], fakeGh([openPrOnMain]), debt);
 
         expect(outcome).toMatchObject({ status: 'merged', regated: true });
         expect(outcome.report.stages.filter((stage) => stage.status === 'flagged')).toHaveLength(1);
@@ -3246,9 +3338,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ],
     };
 
-    it('files a new ledger entry for a flag differing from a held one only by a digit in a name', () => {
+    it('files a new ledger entry for a flag differing from a held one only by a digit in a name', async () => {
       const debt = { reason: 'deadline', reviewBy: 'before v2', acceptedBy: 'human' };
-      gateThenFix();
+      await gateThenFix();
       insertLedgerEntry(db, {
         projectId: 'proj-1',
         description: `Nested package src/app1 changed with no test script, merged from session ${SESSION_ID}`,
@@ -3258,7 +3350,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         reviewBy: 'later',
       });
 
-      const outcome = regate([untestedApp2], fakeGh([openPrOnMain]), debt);
+      const outcome = await regate([untestedApp2], fakeGh([openPrOnMain]), debt);
 
       expect(outcome).toMatchObject({ status: 'merged', regated: true });
       expect(listLedgerEntries(db, 'proj-1').map((entry) => entry.description)).toEqual(
@@ -3270,11 +3362,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(listLedgerEntries(db, 'proj-1')).toHaveLength(2);
     });
 
-    it('refuses a flag without --accept-debt, writing nothing and suggesting no steer', () => {
-      gateThenFix();
+    it('refuses a flag without --accept-debt, writing nothing and suggesting no steer', async () => {
+      await gateThenFix();
       const ledger = listLedgerEntries(db, 'proj-1').length;
 
-      const outcome = regate([untestedApp2]);
+      const outcome = await regate([untestedApp2]);
 
       expect(outcome).toMatchObject({ status: 'refused', regated: true });
       expect(outcome.report.stages.some((stage) => stage.status === 'fail')).toBe(false);
@@ -3290,10 +3382,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('with openPr requires an origin remote', () => {
+  it('with openPr requires an origin remote', async () => {
     seedSession(db, repo);
 
-    expect(() =>
+    await expect(
       withFakeGh('#!/bin/sh\nexit 0\n', () =>
         runMergeGate(db, {
           repoPath: repo,
@@ -3302,19 +3394,19 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           openPr: true,
         }),
       ),
-    ).toThrow('origin');
+    ).rejects.toThrow('origin');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 });
 
 describe('withMergeLock', () => {
-  it('keeps node listening for SIGINT and SIGTERM while the lock is held, and only then', () => {
+  it('keeps node listening for SIGINT and SIGTERM while the lock is held, and only then', async () => {
     const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-lock-')));
     mkdirSync(join(repo, '.git'));
     const before = { int: process.listeners('SIGINT'), term: process.listeners('SIGTERM') };
     let during: { int: number; term: number } | undefined;
 
-    expect(() =>
+    await expect(
       withMergeLock(repo, () => {
         during = {
           int: process.listeners('SIGINT').length,
@@ -3322,7 +3414,7 @@ describe('withMergeLock', () => {
         };
         throw new Error('interrupted');
       }),
-    ).toThrow('interrupted');
+    ).rejects.toThrow('interrupted');
 
     expect(during).toEqual({ int: before.int.length + 1, term: before.term.length + 1 });
     expect(process.listeners('SIGINT')).toEqual(before.int);

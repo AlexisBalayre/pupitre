@@ -1,15 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir, constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
@@ -62,7 +54,7 @@ import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
 import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
-import { MAX_REJECTS_BEFORE_BLOCKED, MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
+import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
@@ -73,7 +65,11 @@ import { getProfileLayer, listProfileLayers } from '../core/profile-store.servic
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
-import { sandboxLabel, UndeclaredSandboxError } from '../core/sandbox.utils.js';
+import {
+  GateInterruptedError,
+  sandboxLabel,
+  UndeclaredSandboxError,
+} from '../core/sandbox.utils.js';
 import {
   deleteTask,
   editTaskSpec,
@@ -354,9 +350,13 @@ function printPushTargetLine(db: Database, id: string): void {
  * that reports it from dying with the capture, where a first record would land
  * with no output at all.
  */
-function withPushTargetLine<TResult>(db: Database, repoPath: string, run: () => TResult): TResult {
+async function withPushTargetLine<TResult>(
+  db: Database,
+  repoPath: string,
+  run: () => TResult | Promise<TResult>,
+): Promise<TResult> {
   try {
-    return run();
+    return await run();
   } catch (error) {
     printPushTargetLine(db, projectId(repoPath));
     throw error;
@@ -769,7 +769,7 @@ export function buildProgram(): Command {
     .description('Onboard a repo: detect stack, baseline, conventions')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .option('--origin-moved', ORIGIN_MOVED_DESCRIPTION)
-    .action((opts: { gateEnv?: string; originMoved?: boolean }) => {
+    .action(async (opts: { gateEnv?: string; originMoved?: boolean }) => {
       const { repoPath, db } = project();
       // `pup init` stamps the debt baseline through the same `initProject` the
       // audit does, and records the push target the gate holds a session's
@@ -782,7 +782,7 @@ export function buildProgram(): Command {
       }
       if (refusedUnsandboxed()) return;
       const recording = opts.originMoved ? 're-record' : 'record';
-      const report = withPushTargetLine(db, repoPath, () =>
+      const report = await withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
           initProject(
             db,
@@ -1797,7 +1797,7 @@ export function buildProgram(): Command {
     )
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .action(
-      (
+      async (
         session: string,
         opts: {
           acceptDebt?: string;
@@ -1862,23 +1862,11 @@ export function buildProgram(): Command {
           );
         }
         let outcome: MergeOutcome;
-        // The gate holds a lock directory it removes in a `finally`, which a
-        // process killed by a signal never reaches — and the next merge then
-        // refuses against a lock nobody holds. Ctrl-C at the terminal and the
-        // SIGTERM `pup ui`'s `q` sends to this child are both that case, so the
-        // lock goes on the way out. Only if this run took it: a lock that was
-        // already there when the command started belongs to another merge, and
-        // is not this one's to remove.
-        const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
-        const heldOnEntry = existsSync(lockPath);
-        const releaseLock = (signal: NodeJS.Signals): void => {
-          if (!heldOnEntry) rmSync(lockPath, { recursive: true, force: true });
-          process.exit(signal === 'SIGTERM' ? 143 : 130);
-        };
-        process.once('SIGINT', releaseLock);
-        process.once('SIGTERM', releaseLock);
+        // No signal handler here: under its lock the gate outlives a Ctrl-C
+        // and the SIGTERM `pup ui`'s `q` sends this child, stops every stage
+        // child and removes the lock in its own `finally` (decision 95).
         try {
-          outcome = runMergeGate(db, {
+          outcome = await runMergeGate(db, {
             repoPath,
             sessionId: session,
             adapters,
@@ -1894,14 +1882,10 @@ export function buildProgram(): Command {
             gateEnv: parseGateEnv(opts.gateEnv),
           });
         } catch (error) {
+          if (error instanceof GateInterruptedError) throw error;
           // Refusals here are expected outcomes with operator instructions in the
           // message (held lock, adoptable-PR checks) — a stack trace buries them.
           return refuseScrubbed(error);
-        } finally {
-          // The gate has released its own lock by now, so a later signal must
-          // not reach a handler that would delete the next run's.
-          process.off('SIGINT', releaseLock);
-          process.off('SIGTERM', releaseLock);
         }
         printGateReport(outcome.report);
         switch (outcome.status) {
@@ -1974,7 +1958,7 @@ export function buildProgram(): Command {
       'After the PR merged on GitHub: fast-forward main, clean up the session and run the audit',
     )
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
-    .action((session: string, opts: { gateEnv?: string }) => {
+    .action(async (session: string, opts: { gateEnv?: string }) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
       // what origin holds and re-stamps the baseline, so the conductor may run
@@ -1985,13 +1969,14 @@ export function buildProgram(): Command {
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
       try {
-        outcome = landSession(db, {
+        outcome = await landSession(db, {
           repoPath,
           sessionId: session,
           adapters: detectAdapters(repoPath),
           gateEnv: parseGateEnv(opts.gateEnv),
         });
       } catch (error) {
+        if (error instanceof GateInterruptedError) throw error;
         return refuseScrubbed(error);
       }
       const target = sanitizeReason(outcome.target);
@@ -2181,7 +2166,7 @@ export function buildProgram(): Command {
     .option('--sweep', 'spawn a deletion-only session from the audit findings')
     .option('--model <model>', 'claude model for the sweep session (with --sweep)')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
-    .action((opts: { sweep?: boolean; model?: string; gateEnv?: string }) => {
+    .action(async (opts: { sweep?: boolean; model?: string; gateEnv?: string }) => {
       const { repoPath, db } = project();
       // Outside a merge the audit is the only thing that re-stamps the debt
       // baseline, and on a `--pr` repo it is the only thing at all (decisions
@@ -2192,7 +2177,7 @@ export function buildProgram(): Command {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
       if (refusedUnsandboxed()) return;
-      const report = withPushTargetLine(db, repoPath, () =>
+      const report = await withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
           auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
         ),
@@ -2298,13 +2283,19 @@ function isMainModule(): boolean {
 /**
  * The exit code for an error that escaped `parse`: commander's own (help,
  * version, usage) already wrote their message; a project that cannot be
- * resolved gets its one line here. Anything else is a bug and stays a crash.
+ * resolved gets its one line here, and so does a gate, init, audit or land
+ * that was interrupted, exiting as the signal would have once its children
+ * are gone (decision 95). Anything else is a bug and stays a crash.
  */
 export function fatalExitCode(error: unknown): number {
   if (error instanceof CommanderError) return error.exitCode;
   if (error instanceof ProjectResolutionError) {
     console.error(error.message);
     return 1;
+  }
+  if (error instanceof GateInterruptedError) {
+    console.error(error.message);
+    return 128 + osConstants.signals[error.signal];
   }
   throw error;
 }

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
 import { resolvePath, writeProfile } from './sandbox-profile.utils.js';
@@ -202,10 +203,119 @@ function sandboxMode(): SandboxMode {
  * is `inherited`, which does not break the invariant: the child is still inside
  * the sandbox pup is inside.
  *
- * Returns the child's stdout. A non-zero exit throws execFileSync's error, with
- * `stdout`/`stderr` attached, exactly as the direct calls this replaced did.
+ * Resolves to the child's stdout. Spawned before this returns, so work the
+ * caller starts next runs alongside it, which is how the gate's read-only
+ * stages run with its test run (decision 95). A non-zero exit, a timeout or a
+ * flooded pipe rejects with the error execFileSync threw for the same run —
+ * `status`, `signal`, `code`, `stdout` and `stderr` — so every reader of a
+ * failure reads it as it did. A child stopped by an interrupt of pup's own
+ * rejects with `GateInterruptedError` instead.
  */
-export function runGateChild(command: string, args: string[], options: GateChildOptions): string {
+export async function runGateChild(
+  command: string,
+  args: string[],
+  options: GateChildOptions,
+): Promise<string> {
+  const invocation = gateInvocation(command, args, options);
+  return new Promise((resolve, reject) => {
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: options.cwd,
+      env: invocation.env,
+      // Its own process group, so an interrupt or a timeout stops the whole
+      // stage — the package manager, the runner it starts and the runner's
+      // workers — and not only the process pup spawned.
+      detached: true,
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    });
+    const live: LiveChild = { child };
+    track(live);
+    let failure: 'ETIMEDOUT' | 'ENOBUFS' | undefined;
+    const stop = (code: 'ETIMEDOUT' | 'ENOBUFS'): void => {
+      failure ??= code;
+      signalGroup(child, 'SIGTERM');
+    };
+    const timer =
+      options.timeout === undefined
+        ? undefined
+        : setTimeout(() => stop('ETIMEDOUT'), options.timeout);
+    const maxBuffer = options.maxBuffer ?? EXEC_MAX_BUFFER_BYTES;
+    const stdout = collect(child.stdout, maxBuffer, () => stop('ENOBUFS'));
+    const stderr = collect(child.stderr, maxBuffer, () => stop('ENOBUFS'));
+    if (options.input !== undefined) {
+      // A child that exits without reading its stdin is not a failure.
+      child.stdin?.on('error', () => undefined);
+      child.stdin?.end(options.input);
+    }
+    let settled = false;
+    const settle = (): boolean => {
+      clearTimeout(timer);
+      untrack(live);
+      if (settled) return false;
+      settled = true;
+      return true;
+    };
+    child.on('error', (error) => {
+      // Only a spawn that failed (ENOENT, EACCES) settles here: no process ran,
+      // so there is no exit to wait for.
+      if (child.pid !== undefined || !settle()) return;
+      reject(Object.assign(error, { status: null, signal: null, stdout: '', stderr: '' }));
+    });
+    child.on('close', (status, signal) => {
+      if (!settle()) return;
+      if (live.interruptedBy) {
+        reject(new GateInterruptedError(live.interruptedBy));
+        return;
+      }
+      const out = Buffer.concat(stdout).toString('utf8');
+      const err = Buffer.concat(stderr).toString('utf8');
+      if (status === 0 && failure === undefined) {
+        resolve(out);
+        return;
+      }
+      const message = failure
+        ? `spawn ${invocation.command} ${failure}`
+        : `Command failed: ${[invocation.command, ...invocation.args].join(' ')}${err ? `\n${err}` : ''}`;
+      reject(
+        Object.assign(new Error(message), {
+          status,
+          signal,
+          stdout: out,
+          stderr: err,
+          ...(failure ? { code: failure } : {}),
+        }),
+      );
+    });
+  });
+}
+
+/**
+ * `runGateChild` for the one caller that cannot wait: the custom adapter's
+ * `depGraph`, which `pup map` reads synchronously. Same sandbox, same
+ * environment, and execFileSync's own error on a failure.
+ */
+export function runGateChildSync(
+  command: string,
+  args: string[],
+  options: GateChildOptions,
+): string {
+  const invocation = gateInvocation(command, args, options);
+  return execFileSync(invocation.command, invocation.args, {
+    cwd: options.cwd,
+    encoding: 'utf8',
+    env: invocation.env,
+    stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+    ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
+    ...(options.input !== undefined ? { input: options.input } : {}),
+  });
+}
+
+/** What both runners spawn: the command wrapped in its sandbox, and the env it gets. */
+function gateInvocation(
+  command: string,
+  args: string[],
+  options: GateChildOptions,
+): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
   const mode = sandboxMode();
   const applied = mode === 'applied';
   const { scratchDir, policyDir } = sandboxRun();
@@ -220,38 +330,136 @@ export function runGateChild(command: string, args: string[], options: GateChild
     cacheDir,
     ...(options.env ? { set: options.env } : {}),
   });
-  const invocation = applied
-    ? {
-        command: SANDBOX_EXEC,
-        args: [
-          '-f',
-          // `repoPath` is deliberately absent: it keys the toolchain cache, it
-          // is not writable. Granting it made the trusted checkout — the whole
-          // basis of decision 29 — session-writable during its own merge, and
-          // reached every *sibling* worktree's `.git` pointer file, which is
-          // one level deeper than the `.git` deny below.
-          // Caller-supplied grants land in the first, protected set — .git
-          // denied at any depth under each. Only the two directories this
-          // seam itself created for the child are exempt from that deny.
-          writeProfile(
-            policyDir,
-            [options.cwd, ...(options.writablePaths ?? [])],
-            [scratchDir, cacheDir],
-          ),
-          command,
-          ...args,
-        ],
-      }
-    : { command, args };
-  return execFileSync(invocation.command, invocation.args, {
-    cwd: options.cwd,
-    encoding: 'utf8',
+  if (!applied) return { command, args, env };
+  return {
+    command: SANDBOX_EXEC,
+    args: [
+      '-f',
+      // `repoPath` is deliberately absent: it keys the toolchain cache, it
+      // is not writable. Granting it made the trusted checkout — the whole
+      // basis of decision 29 — session-writable during its own merge, and
+      // reached every *sibling* worktree's `.git` pointer file, which is
+      // one level deeper than the `.git` deny below.
+      // Caller-supplied grants land in the first, protected set — .git
+      // denied at any depth under each. Only the two directories this
+      // seam itself created for the child are exempt from that deny.
+      writeProfile(
+        policyDir,
+        [options.cwd, ...(options.writablePaths ?? [])],
+        [scratchDir, cacheDir],
+      ),
+      command,
+      ...args,
+    ],
     env,
-    stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-    ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
-    ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
-    ...(options.input !== undefined ? { input: options.input } : {}),
+  };
+}
+
+/** execFileSync's default, so a child that floods a pipe fails where it did. */
+const EXEC_MAX_BUFFER_BYTES = 1024 * 1024;
+
+/** A stream's chunks, up to `limit` bytes; past it, `overflow` stops the child. */
+function collect(stream: Readable | null, limit: number, overflow: () => void): Buffer[] {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  stream?.on('data', (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > limit) overflow();
+    else chunks.push(chunk);
   });
+  return chunks;
+}
+
+type InterruptSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
+
+/**
+ * How long a child pup forwarded an interrupt to has to exit before its group
+ * is killed: long enough for a runner to stop its workers, short enough that
+ * the operator's Ctrl-C still ends the gate when a child ignores it.
+ */
+const INTERRUPT_GRACE_MS = 5_000;
+
+/**
+ * A gate child pup stopped because pup itself was interrupted: no stage
+ * result, so no caller reports it as one. The gate, `pup init` and `pup audit`
+ * unwind on it, record nothing, and the CLI exits as the signal would have
+ * (decision 95).
+ */
+export class GateInterruptedError extends Error {
+  constructor(readonly signal: InterruptSignal) {
+    super(`Interrupted by ${signal}; every stage child was stopped.`);
+    this.name = 'GateInterruptedError';
+  }
+}
+
+interface LiveChild {
+  child: ChildProcess;
+  /** Set when pup forwarded an interrupt to it, so its exit is not read as a stage result. */
+  interruptedBy?: InterruptSignal;
+  /** Kills the group once the grace after the first interrupt runs out. */
+  killTimer?: NodeJS.Timeout;
+}
+
+/** Every gate child still running, the concurrent ones included. */
+const liveChildren = new Set<LiveChild>();
+
+/**
+ * Listening only while a child runs, so outside one node's default disposition
+ * applies as it did. Each child is in its own process group (see
+ * `runGateChild`), out of reach of a terminal's Ctrl-C and of the hang-up a
+ * closed terminal sends, so this forwarding is what stops it; pup then waits
+ * for every child to exit before anything unwinds, which is what lets the
+ * scratch directory be removed whole.
+ */
+const forwarders: Record<InterruptSignal, () => void> = {
+  SIGINT: () => forwardInterrupt('SIGINT'),
+  SIGTERM: () => forwardInterrupt('SIGTERM'),
+  SIGHUP: () => forwardInterrupt('SIGHUP'),
+};
+
+function forwardInterrupt(signal: InterruptSignal): void {
+  for (const live of liveChildren) {
+    live.interruptedBy ??= signal;
+    live.killTimer ??= setTimeout(() => signalGroup(live.child, 'SIGKILL'), INTERRUPT_GRACE_MS);
+    signalGroup(live.child, signal);
+  }
+}
+
+function track(live: LiveChild): void {
+  if (liveChildren.size === 0) {
+    for (const [signal, forward] of Object.entries(forwarders)) process.on(signal, forward);
+  }
+  liveChildren.add(live);
+}
+
+function untrack(live: LiveChild): void {
+  clearTimeout(live.killTimer);
+  if (!liveChildren.delete(live) || liveChildren.size > 0) return;
+  for (const [signal, forward] of Object.entries(forwarders)) process.off(signal, forward);
+}
+
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    // The group is gone: every process in it has exited already.
+  }
+}
+
+/**
+ * Remove a directory a gate run made, reporting rather than throwing when it
+ * cannot be removed: a cleanup failure must never replace the stage results
+ * or the error the run ended on (decision 95). A process still writing into it
+ * — a runner's worker outliving the stage — is what left `ENOTEMPTY` behind.
+ */
+export function removeGateDir(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+  } catch (error) {
+    const reason = (error as NodeJS.ErrnoException).code ?? String(error);
+    console.error(`Could not remove ${path} (${reason}); it is left behind.`);
+  }
 }
 
 /** Cache reused across runs; a run's scratch and profile go with the process. */
@@ -278,8 +486,8 @@ function sandboxRun(): SandboxRun {
     policyDir: mkdtempSync(join(base, 'pup-sandbox-')),
   };
   process.on('exit', () => {
-    rmSync(created.scratchDir, { recursive: true, force: true });
-    rmSync(created.policyDir, { recursive: true, force: true });
+    removeGateDir(created.scratchDir);
+    removeGateDir(created.policyDir);
   });
   run = created;
   return created;

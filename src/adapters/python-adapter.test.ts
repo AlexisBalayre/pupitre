@@ -87,18 +87,18 @@ describe('pythonAdapter', () => {
     expect(stages).toEqual(['build', 'test', 'lint']);
   });
 
-  it('reports dead code as unmeasured, naming the tool, when no config declares vulture', () => {
+  it('reports dead code as unmeasured, naming the tool, when no config declares vulture', async () => {
     const repo = makeRepo({ 'requirements.txt': 'requests\n' });
 
-    expect(pythonAdapter.deadCode?.(localContext(repo))).toEqual({
+    expect(await pythonAdapter.deadCode?.(localContext(repo))).toEqual({
       unavailable: expect.stringContaining('vulture'),
     });
   });
 
-  it('reports coverage as unmeasured, naming the tool, when no config declares pytest-cov', () => {
+  it('reports coverage as unmeasured, naming the tool, when no config declares pytest-cov', async () => {
     const repo = makeRepo({ 'pyproject.toml': '[project]\ndependencies = ["pytest"]\n' });
 
-    expect(pythonAdapter.coverage?.(localContext(repo))).toEqual({
+    expect(await pythonAdapter.coverage?.(localContext(repo))).toEqual({
       unavailable: expect.stringContaining('pytest-cov'),
     });
   });
@@ -317,7 +317,7 @@ describe('pythonAdapter', () => {
     expect(coverable).toEqual([]);
   });
 
-  it('refuses to measure when the worktree rewrites the vulture config it would run under', () => {
+  it('refuses to measure when the worktree rewrites the vulture config it would run under', async () => {
     // vulture reads [tool.vulture] from its working directory, so a worktree
     // section could aim the scan at an empty path — a PASS on a fake empty
     // measurement, which would then ratchet the baseline to nothing.
@@ -330,7 +330,7 @@ describe('pythonAdapter', () => {
         '[project]\ndependencies = ["vulture"]\n\n[tool.vulture]\npaths = ["docs"]\n',
     });
 
-    const result = pythonAdapter.deadCode?.({
+    const result = await pythonAdapter.deadCode?.({
       measurePath: measureRepo,
       configPath: configRepo,
     });
@@ -338,12 +338,12 @@ describe('pythonAdapter', () => {
     expect(result).toEqual({ unavailable: expect.stringContaining('[tool.vulture]') });
   });
 
-  it('measures when both checkouts carry the same vulture config', () => {
+  it('measures when both checkouts carry the same vulture config', async () => {
     const section = '[project]\ndependencies = ["vulture"]\n\n[tool.vulture]\npaths = ["src"]\n';
     const configRepo = makeRepo({ 'pyproject.toml': section });
     const measureRepo = makeRepo({ 'pyproject.toml': section });
 
-    const result = pythonAdapter.deadCode?.({
+    const result = await pythonAdapter.deadCode?.({
       measurePath: measureRepo,
       configPath: configRepo,
     });
@@ -352,7 +352,7 @@ describe('pythonAdapter', () => {
     expect(result).toEqual({ unavailable: expect.stringContaining('vulture failed') });
   });
 
-  it('leaves the measured checkout as it found it: no .coverage, no .pytest_cache', () => {
+  it('leaves the measured checkout as it found it: no .coverage, no .pytest_cache', async () => {
     // The fake pytest reproduces the two artifact rules of the real one:
     // coverage.py writes its data file to COVERAGE_FILE, defaulting to
     // `.coverage` in the CWD — the checkout being measured — and the cache
@@ -385,7 +385,7 @@ printf %s data > "\${COVERAGE_FILE:-.coverage}"
     vi.stubEnv('PATH', `${binDir}:${process.env.PATH}`);
 
     try {
-      const report = pythonAdapter.coverage?.(localContext(repo));
+      const report = await pythonAdapter.coverage?.(localContext(repo));
 
       // The fake ran and its report came back parsed — an `unavailable`
       // result would pass the clean-checkout assertion vacuously.
@@ -397,13 +397,13 @@ printf %s data > "\${COVERAGE_FILE:-.coverage}"
     }
   });
 
-  it('reads tool declarations from the config checkout, not the one being measured', () => {
+  it('reads tool declarations from the config checkout, not the one being measured', async () => {
     // The session's own manifest must not be able to silence a debt stage: it
     // drops vulture from its copy, the trusted checkout still declares it.
     const configRepo = makeRepo({ 'requirements.txt': 'vulture\n' });
     const measureRepo = makeRepo({ 'requirements.txt': 'requests\n' });
 
-    const result = pythonAdapter.deadCode?.({
+    const result = await pythonAdapter.deadCode?.({
       measurePath: measureRepo,
       configPath: configRepo,
     });
