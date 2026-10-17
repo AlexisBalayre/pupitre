@@ -73,6 +73,7 @@ import { getProfileLayer, listProfileLayers } from '../core/profile-store.servic
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
+import { asTier, taskTier } from '../core/routing.utils.js';
 import { sandboxLabel, UndeclaredSandboxError } from '../core/sandbox.utils.js';
 import {
   deleteTask,
@@ -105,6 +106,7 @@ import {
   ScopeConflictError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
+  TopRungReachedError,
   UnknownSessionError,
   UnknownTaskError,
 } from '../core/session-lifecycle.errors.js';
@@ -128,6 +130,7 @@ import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
+import type { RouteOverride } from '../core/types/session-lifecycle.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -442,6 +445,11 @@ const GATE_ENV_DESCRIPTION =
 const ALLOW_OVERLAP_DESCRIPTION =
   'launch even though a live session already holds files in this scope';
 
+// A window's model and effort are routed by its task's tier and rung (decision
+// 92); either flag is the operator's override, recorded on the session.
+const MODEL_OVERRIDE_DESCRIPTION = 'claude model for the window, over the routed one';
+const EFFORT_OVERRIDE_DESCRIPTION = 'effort for the window, over the routed one';
+
 /**
  * The only way to move a recorded push target, and it exists because origin
  * does legitimately move — a repo renamed, a fork promoted. Operator-only, and
@@ -709,6 +717,7 @@ function operatorOnlyProject(): ProjectResolutionError {
 
 interface ConductorOptions {
   model?: string;
+  effort?: string;
   workerModel?: string;
 }
 
@@ -717,6 +726,16 @@ interface PlanOptions {
   scopeOut?: string[];
   accept?: string[];
   goal?: string;
+  tier?: string;
+}
+
+/**
+ * The tier a planned task launches on (decision 92), marked when `--tier` set
+ * it over the one its scope-in implies.
+ */
+function tierColumn(row: { tier: string | null }, scopeIn: readonly unknown[]): string {
+  const marker = asTier(row.tier) ? '*' : '';
+  return `${taskTier(row.tier, scopeIn)}${marker}`.padEnd(10);
 }
 
 export function buildProgram(): Command {
@@ -806,7 +825,8 @@ export function buildProgram(): Command {
     .requiredOption('--scope <glob...>', 'scope-in globs the session may edit')
     .option('--scope-out <glob...>', 'globs the session must not edit')
     .option('--accept <criterion...>', 'acceptance criteria')
-    .option('--model <model>', 'claude model for the session')
+    .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
+    .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .action((goal: string, opts: Record<string, string[] | string | boolean | undefined>) => {
       const { repoPath, db } = project();
@@ -834,6 +854,7 @@ export function buildProgram(): Command {
           task,
           claudeUserDir: join(homedir(), '.claude'),
           model: opts.model as string | undefined,
+          effort: opts.effort as string | undefined,
           allowOverlap: opts.allowOverlap === true,
           ...conductorAttribution(),
         }),
@@ -849,6 +870,7 @@ export function buildProgram(): Command {
     .option('--scope-out <glob...>', 'globs the task must not edit')
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--goal <goal>', 'replacement goal (edit)')
+    .option('--tier <tier>', 'critical|standard, over the tier the scope-in implies (add, edit)')
     .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'list';
@@ -858,6 +880,10 @@ export function buildProgram(): Command {
       // with the operator's attribution on it (decision 26's rule, decision 40).
       if (verb !== 'list' && callingSession(db)) {
         return refuse(`\`pup plan ${verb}\` is operator-only; sessions cannot author task specs.`);
+      }
+      const tier = asTier(opts.tier);
+      if (opts.tier !== undefined && !tier) {
+        return refuse('--tier takes critical or standard.');
       }
       switch (verb) {
         case 'list': {
@@ -870,8 +896,11 @@ export function buildProgram(): Command {
             const spec = taskSpecForDisplay(row);
             const scope = sanitizeReason((spec.scopeIn ?? []).join(' '));
             console.log(
-              `${sanitizeReason(row.id).padEnd(14)}${goalColumn(goalHeadline(spec.goal))}  ${scope}${originMarker(row.origin)}`,
+              `${sanitizeReason(row.id).padEnd(14)}${tierColumn(row, spec.scopeIn ?? [])}${goalColumn(goalHeadline(spec.goal))}  ${scope}${originMarker(row.origin)}`,
             );
+          }
+          if (backlog.some((row) => asTier(row.tier))) {
+            console.log('* tier set with --tier, over the one the scope-in implies');
           }
           return;
         }
@@ -891,6 +920,7 @@ export function buildProgram(): Command {
                 acceptance: opts.accept ?? ['goal met and committed'],
               },
               origin: conductorAttribution().origin,
+              tier,
             });
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
@@ -922,6 +952,7 @@ export function buildProgram(): Command {
               scopeIn: opts.scope,
               scopeOut: opts.scopeOut,
               acceptance: opts.accept,
+              tier,
             });
           } catch (error) {
             if (!(error instanceof InvalidProfileError)) throw error;
@@ -945,9 +976,10 @@ export function buildProgram(): Command {
   program
     .command('launch <task>')
     .description('Start a session for a task already in the backlog')
-    .option('--model <model>', 'claude model for the session')
+    .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
+    .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
-    .action((taskId: string, opts: { model?: string; allowOverlap?: boolean }) => {
+    .action((taskId: string, opts: RouteOverride & { allowOverlap?: boolean }) => {
       const { repoPath, db } = project();
       // Admitting work belongs to whoever answers for the collision it may
       // cause. Guarding only `--allow-overlap` left the command itself open, so
@@ -965,7 +997,13 @@ export function buildProgram(): Command {
       }
       const sessionId = launchOrRefuse(
         taskId,
-        [UnknownTaskError, TaskAlreadyClaimedError, ScopeConflictError, InvalidProfileError],
+        [
+          UnknownTaskError,
+          TaskAlreadyClaimedError,
+          ScopeConflictError,
+          InvalidProfileError,
+          TopRungReachedError,
+        ],
         () =>
           launchTask(db, {
             repoPath,
@@ -973,8 +1011,10 @@ export function buildProgram(): Command {
             taskId,
             claudeUserDir: join(homedir(), '.claude'),
             model: opts.model,
+            effort: opts.effort,
             allowOverlap: opts.allowOverlap,
             overlapVia: conductorAttribution().overlapVia,
+            overrideVia: callingConductor() ? 'conductor' : 'operator',
           }),
       );
       if (sessionId === undefined) return;
@@ -986,8 +1026,12 @@ export function buildProgram(): Command {
     .description(
       'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>)',
     )
-    .option('--model <model>', 'claude model for the conductor itself')
-    .option('--worker-model <model>', 'claude model the conductor launches sessions on')
+    .option('--model <model>', 'claude model for the conductor itself (default claude-opus-5-5)')
+    .option('--effort <effort>', 'effort for the conductor itself (default high)')
+    .option(
+      '--worker-model <model>',
+      'claude model the conductor launches every session on, over the routed one',
+    )
     .action((action: string | undefined, message: string | undefined, opts: ConductorOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'start';
@@ -1019,6 +1063,7 @@ export function buildProgram(): Command {
           base: DEFAULT_BASE_PROFILE,
           claudeUserDir: join(homedir(), '.claude'),
           model: opts.model,
+          effort: opts.effort,
           workerModel: opts.workerModel,
         });
       } catch (error) {
@@ -1584,7 +1629,9 @@ export function buildProgram(): Command {
       'Stop a session; --respawn relaunches it fresh instead (wedged-window escape hatch)',
     )
     .option('--respawn', 'kill the window but relaunch the session fresh, no handoff')
-    .action((session: string, opts: { respawn?: boolean }) => {
+    .option('--model <model>', `with --respawn: ${MODEL_OVERRIDE_DESCRIPTION}`)
+    .option('--effort <effort>', `with --respawn: ${EFFORT_OVERRIDE_DESCRIPTION}`)
+    .action((session: string, opts: RouteOverride & { respawn?: boolean }) => {
       const { repoPath, db } = project();
       // `killed` releases the session's scope and returns its task to the
       // backlog (decision 40), so a session that could kill could clear the
@@ -1602,9 +1649,17 @@ export function buildProgram(): Command {
           '`pup kill --respawn` is operator-only; the conductor kills, the operator respawns.',
         );
       }
+      if (!opts.respawn && (opts.model !== undefined || opts.effort !== undefined)) {
+        return refuse(
+          '`--model` and `--effort` go with `--respawn`; a plain kill opens no window.',
+        );
+      }
       if (opts.respawn) {
         try {
-          hardRespawnSession(db, repoPath, session);
+          hardRespawnSession(db, repoPath, session, undefined, {
+            model: opts.model,
+            effort: opts.effort,
+          });
         } catch (error) {
           return refuse((error as Error).message);
         }
@@ -1677,7 +1732,9 @@ export function buildProgram(): Command {
       'how long to wait for the handoff',
       String(HANDOFF_WAIT_DEFAULT_MS / 1000),
     )
-    .action((session: string, opts: { wait: string }) => {
+    .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
+    .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
+    .action((session: string, opts: RouteOverride & { wait: string }) => {
       const { repoPath, db } = project();
       // A respawn replaces another session's window with a kickoff that quotes
       // its handoff file — context a session could author for it (decision 44).
@@ -1704,8 +1761,12 @@ export function buildProgram(): Command {
             );
           }
         }
-        respawnSession(db, repoPath, session);
+        respawnSession(db, repoPath, session, undefined, {
+          model: opts.model,
+          effort: opts.effort,
+        });
       } catch (error) {
+        if (error instanceof TopRungReachedError) return refuse(error.message);
         if (!isRefusedSteer(error)) throw error;
         console.error(error.message);
         // A paste that never landed is worth asking again; a pane that is not

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { runGit } from '../core/git-diff.client.js';
+import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
   type InputBoxState,
@@ -21,7 +22,8 @@ export interface LaunchOptions {
   worktreePath: string;
   /** Compiled settings.json path, passed to `claude --settings`. */
   settingsPath: string;
-  model?: string;
+  /** The model and effort the window runs on: its rung, or the operator's override (decision 92). */
+  route: ModelRoute;
   /**
    * Compiled mcp.json path, passed to `claude --mcp-config`. Absent when the
    * session gets no code graph — either the operator has no codegraph binary,
@@ -35,7 +37,7 @@ export interface ConductorLaunchOptions {
   /** The main checkout: the conductor reads the repo, edits nothing, and launches from here. */
   repoPath: string;
   settingsPath: string;
-  model?: string;
+  route: ModelRoute;
   /**
    * Compiled mcp.json path, passed to `claude --mcp-config`. Absent when the
    * conductor gets no code graph — either the operator has no codegraph binary,
@@ -404,12 +406,21 @@ function mainRepoRoot(worktreePath: string): string[] {
  * would drop the operator's own MCP servers, and sessions inherit user config
  * (decision 9). The flag is only passed when there is a graph to serve
  * (decision 51).
+ *
+ * `--model` and `--effort` are always passed, the window's route: the user
+ * settings the window inherits name a model and an effort too, and must never
+ * be what decides a worker's (decision 92).
  */
 export function launchArgs(
-  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'model' | 'mcpConfigPath'>,
+  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'route' | 'mcpConfigPath'>,
 ): string[] {
+  const { model, effort, fallbackModel } = opts.route;
   return [
-    ...(opts.model ? ['--model', opts.model] : []),
+    '--model',
+    model,
+    '--effort',
+    effort,
+    ...(fallbackModel ? ['--fallback-model', fallbackModel] : []),
     '--name',
     tmuxName(opts.sessionId),
     '--dangerously-skip-permissions',
@@ -426,7 +437,7 @@ interface ClaudeWindowOptions {
   /** Where the window opens: a session's worktree, the conductor's main checkout. */
   cwd: string;
   settingsPath: string;
-  model?: string;
+  route: ModelRoute;
   mcpConfigPath?: string;
   /**
    * The one variable that names the caller — `PUP_SESSION_ID` or
@@ -487,7 +498,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     sessionId: opts.sessionId,
     cwd: opts.worktreePath,
     settingsPath: opts.settingsPath,
-    model: opts.model,
+    route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_SESSION_ID: opts.sessionId },
     niceness: SESSION_NICENESS,
@@ -612,7 +623,7 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
     settingsPath: opts.settingsPath,
-    model: opts.model,
+    route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_CONDUCTOR: opts.projectId },
     socket: conductorSocket(opts.projectId),

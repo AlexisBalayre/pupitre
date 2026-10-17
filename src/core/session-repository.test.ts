@@ -20,9 +20,11 @@ import {
   listBacklogTasks,
   listEvents,
   listSessions,
+  listTaskSessions,
   listTasks,
   MalformedTaskSpecError,
   readTaskSpec,
+  recordSessionRoute,
   saveProjectDormantAt,
   taskSpecForDisplay,
   transitionSession,
@@ -276,6 +278,130 @@ describe('the backlog', () => {
     expect(deleteTask(db, 't-1')).toBe(false);
     expect(updateTaskSpec(db, 't-1', '{}')).toBe(false);
     expect(getTask(db, 't-1')?.spec).toBe(JSON.stringify({ goal: 't-1' }));
+  });
+});
+
+describe('task tier and session route (decision 92)', () => {
+  let db: Database;
+  const SPEC = {
+    goal: 'g',
+    scopeIn: ['src/cli/ui/**'],
+    scopeOut: [],
+    acceptance: ['a'],
+  };
+  const routeOf = (id: string) =>
+    db
+      .prepare(
+        'SELECT tier, rung, model, effort, rung_reason, route_override FROM sessions WHERE id = ?',
+      )
+      .get(id);
+  const session = (id: string, route?: Parameters<typeof insertSession>[1]['route']) =>
+    insertSession(db, {
+      id,
+      taskId: 't-1',
+      worktreePath: `/repo/.worktrees/${id}`,
+      branch: `pup/${id}`,
+      profileHash: 'hash',
+      route,
+    });
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    ensureProject(db, 'proj-1', '/repo');
+  });
+
+  it('stores the tier a task is planned with, and none when the scope decides it', () => {
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}', tier: 'critical' });
+    insertTask(db, { id: 't-2', projectId: 'proj-1', spec: '{}' });
+
+    expect(getTask(db, 't-1')?.tier).toBe('critical');
+    expect(getTask(db, 't-2')?.tier).toBeNull();
+  });
+
+  it('sets the tier on edit, and keeps it when an edit does not name one', () => {
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
+
+    expect(editTaskSpec(db, 't-1', { tier: 'critical' })).toBe('updated');
+    expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
+
+    expect(getTask(db, 't-1')?.tier).toBe('critical');
+    expect(readTaskSpec(db, 't-1').goal).toBe('sharper');
+  });
+
+  it('refuses to re-tier a task a session has claimed', () => {
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
+    session('s1');
+    transitionSession(db, 's1', 'running');
+
+    expect(editTaskSpec(db, 't-1', { tier: 'critical' })).toBe('claimed');
+    expect(getTask(db, 't-1')?.tier).toBeNull();
+  });
+
+  it('records the route a session launched on, and a respawn rewrites it', () => {
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}' });
+    session('s1', {
+      tier: 'standard',
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      override: false,
+    });
+    expect(routeOf('s1')).toEqual({
+      tier: 'standard',
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      rung_reason: null,
+      route_override: 0,
+    });
+
+    recordSessionRoute(db, 's1', {
+      tier: 'standard',
+      rung: 1,
+      model: 'claude-opus-5-5',
+      effort: 'xhigh',
+      reason: 'stall',
+      override: true,
+    });
+
+    expect(routeOf('s1')).toEqual({
+      tier: 'standard',
+      rung: 1,
+      model: 'claude-opus-5-5',
+      effort: 'xhigh',
+      rung_reason: 'stall',
+      route_override: 1,
+    });
+  });
+
+  it('leaves a session inserted without a route unrouted', () => {
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}' });
+    session('s1');
+
+    expect(routeOf('s1')).toEqual({
+      tier: null,
+      rung: null,
+      model: null,
+      effort: null,
+      rung_reason: null,
+      route_override: 0,
+    });
+  });
+
+  it("lists a task's sessions oldest first, and only that task's", () => {
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}' });
+    insertTask(db, { id: 't-2', projectId: 'proj-1', spec: '{}' });
+    session('t-1');
+    session('t-1-1');
+    insertSession(db, {
+      id: 't-2',
+      taskId: 't-2',
+      worktreePath: '/repo/.worktrees/t-2',
+      branch: 'pup/t-2',
+      profileHash: 'hash',
+    });
+
+    expect(listTaskSessions(db, 't-1').map((row) => row.id)).toEqual(['t-1', 't-1-1']);
   });
 });
 

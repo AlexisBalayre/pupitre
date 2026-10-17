@@ -29,6 +29,7 @@ import {
   goalHeadline,
   needsYou,
   prFixRounds,
+  routeLabel,
 } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -42,6 +43,8 @@ import {
   incrementRejectCount,
   insertSession,
   insertTask,
+  recordSessionRoute,
+  type SessionRoute,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
@@ -50,6 +53,14 @@ import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
+/** The top rung of the critical ladder, which every task here is on: `src/**` touches it all. */
+const CRITICAL_TOP: SessionRoute = {
+  tier: 'critical',
+  rung: 1,
+  model: 'claude-opus-5-5',
+  effort: 'xhigh',
+  override: false,
+};
 const API_ERROR = '⏺ API Error: Connection lost while your computer was asleep';
 
 // The developer's git config and any surrounding hook's GIT_DIR stay out of the temp repo.
@@ -713,6 +724,61 @@ describe('buildDashboardSnapshot', () => {
       });
     });
 
+    describe('route', () => {
+      it('carries the model, effort and rung the row records, the rung counted from 1', () => {
+        seedSession(db, repo, 's-routed');
+        recordSessionRoute(db, 's-routed', {
+          tier: 'standard',
+          rung: 1,
+          model: 'claude-sonnet-5-5',
+          effort: 'high',
+          reason: 'gate-rejection',
+          override: false,
+        });
+
+        const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+        expect(session?.route).toEqual({
+          tier: 'standard',
+          model: 'claude-sonnet-5-5',
+          effort: 'high',
+          rung: 2,
+          rungs: 4,
+          reason: 'gate-rejection',
+          override: false,
+        });
+        expect(session && routeLabel(session)).toBe(
+          'claude-sonnet-5-5 high, rung 2/4 after gate-rejection',
+        );
+      });
+
+      it('marks an override and strips what a terminal would obey', () => {
+        seedSession(db, repo, 's-override');
+        recordSessionRoute(db, 's-override', {
+          ...CRITICAL_TOP,
+          rung: 0,
+          model: 'claude-\u001b[31mopus',
+          override: true,
+        });
+
+        const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+        expect(session && routeLabel(session)).toBe('claude- [31mopus xhigh, rung 1/2 (override)');
+      });
+
+      it('is absent on a session launched before routing, or whose columns do not read back', () => {
+        seedSession(db, repo, 's-old');
+        seedSession(db, repo, 's-torn');
+        recordSessionRoute(db, 's-torn', CRITICAL_TOP);
+        db.prepare("UPDATE sessions SET tier = 'max' WHERE id = 's-torn'").run();
+
+        const sessions = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+        expect(sessions.map((session) => session.route)).toEqual([undefined, undefined]);
+        expect(sessions.map(routeLabel)).toEqual(['', '']);
+      });
+    });
+
     it('flags a blocked session as needing a human', () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');
@@ -997,7 +1063,76 @@ describe('needsYou', () => {
 
   const inbox = () => needsYou(buildDashboardSnapshot(db, repo, NOW));
 
-  it('lists questions, blocks, stalls, reviews and open PRs in that order, each with its answer', () => {
+  /** A critical task's session on its top rung, rejected by the gate, then killed. */
+  function seedTopRungKill(sessionId: string, route: Partial<SessionRoute> = {}): void {
+    seedIn(sessionId, ['running']);
+    recordSessionRoute(db, sessionId, { ...CRITICAL_TOP, ...route });
+    for (const state of ['awaiting-review', 'rejected', 'killed'] as const) {
+      transitionSession(db, sessionId, state);
+    }
+  }
+
+  // Decision 92: the task's relaunch would be refused, so it waits on the
+  // operator rather than on a conductor that cannot launch it.
+  describe('top rung', () => {
+    it('leaves out a killed session that can still climb, or ran into nothing', () => {
+      seedTopRungKill('s-low', { rung: 0, effort: 'high' });
+      seedIn('s-quiet', ['running']);
+      recordSessionRoute(db, 's-quiet', CRITICAL_TOP);
+      transitionSession(db, 's-quiet', 'killed');
+
+      expect(inbox()).toEqual([]);
+    });
+
+    it('leaves out a top-rung failure a newer session of the task has since replaced', () => {
+      seedTopRungKill('s-old');
+      insertSession(db, {
+        id: 's-new',
+        taskId: 't-s-old',
+        worktreePath: join(repo, '.worktrees', 's-new'),
+        branch: 'pup/s-new',
+        profileHash: 'hash',
+      });
+      transitionSession(db, 's-new', 'running');
+
+      expect(inbox().map((need) => need.sessionId)).toEqual([]);
+    });
+
+    it('counts a stall the window was in when it was killed', () => {
+      seedIn('s-wedged', ['running']);
+      recordSessionRoute(db, 's-wedged', CRITICAL_TOP);
+      seedEventsFile(repo, 's-wedged', { hook_event_name: 'PostToolUse' });
+      const quietSince = new Date(Date.now() - STALLED_AFTER_MS - 60_000);
+      utimesSync(projectPaths(repo).eventsFile('s-wedged'), quietSince, quietSince);
+      transitionSession(db, 's-wedged', 'killed');
+
+      expect(inbox()).toMatchObject([
+        { kind: 'top-rung', reason: 'top rung: stall on claude-opus-5-5 xhigh' },
+      ]);
+    });
+
+    // The task id is a command argument here, and the store is session-writable.
+    it('builds no command around a task id outside the minted shape', () => {
+      seedTask(db, repo, 't odd; rm', 'goal');
+      insertSession(db, {
+        id: 's-odd',
+        taskId: 't odd; rm',
+        worktreePath: join(repo, '.worktrees', 's-odd'),
+        branch: 'pup/s-odd',
+        profileHash: 'hash',
+        route: CRITICAL_TOP,
+      });
+      for (const state of ['running', 'awaiting-review', 'rejected', 'killed'] as const) {
+        transitionSession(db, 's-odd', state);
+      }
+
+      expect(inbox()).toMatchObject([
+        { kind: 'top-rung', answer: '(task id outside the minted shape; inspect the store)' },
+      ]);
+    });
+  });
+
+  it('lists questions, blocks, top rungs, stalls, reviews and open PRs in that order, each with its answer', () => {
     // Seeded against the order, so the inbox's own order is what puts them right.
     seedMerge('s-pr', 'https://github.com/o/r/pull/7');
     seedIn('s-review', ['running', 'awaiting-review']);
@@ -1008,6 +1143,7 @@ describe('needsYou', () => {
       { hook_event_name: 'PostToolUse' },
       STALLED_AFTER_MS + 60_000,
     );
+    seedTopRungKill('s-top');
     seedIn('s-blocked', ['running', 'blocked']);
     incrementRejectCount(db, 's-blocked');
     seedIn('s-asking', ['running']);
@@ -1028,6 +1164,13 @@ describe('needsYou', () => {
         label: 's-blocked',
         reason: 'blocked (1 rejections)',
         answer: 'pup unblock s-blocked',
+      },
+      {
+        kind: 'top-rung',
+        sessionId: 's-top',
+        label: 's-top',
+        reason: 'top rung: gate-rejection on claude-opus-5-5 xhigh',
+        answer: 're-plan t-s-top, or pup launch t-s-top --model <model> --effort <effort>',
       },
       {
         kind: 'stalled',

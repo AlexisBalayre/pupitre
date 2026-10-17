@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,9 +38,11 @@ import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
-import { projectId } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
+  appendEvent,
+  editTaskSpec,
   ensureProject,
   getSession,
   getTask,
@@ -55,6 +58,7 @@ import {
   ScopeConflictError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
+  TopRungReachedError,
   UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
@@ -713,6 +717,231 @@ describe('launchTask rollback', () => {
     expect(launch).toThrow(TypeError);
     expect(killTmux).not.toHaveBeenCalled();
     expect(getSession(db, 't-1')?.state).toBe('running');
+  });
+});
+
+describe('launchTask model routing (decision 92)', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-route-home-'))));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-route-')));
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/cli/ui/app.component.tsx', 'export const app = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const launch = (
+    override: { model?: string; effort?: string; overrideVia?: 'operator' | 'conductor' } = {},
+  ) =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+      ...override,
+    });
+  const launchedRoute = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0].route;
+  const routeColumns = (sessionId: string) =>
+    db
+      .prepare(
+        'SELECT tier, rung, model, effort, rung_reason, route_override FROM sessions WHERE id = ?',
+      )
+      .get(sessionId);
+  /** The session's window ran into a gate rejection, and the operator killed it. */
+  const rejectAndKill = (sessionId: string) => {
+    transitionSession(db, sessionId, 'awaiting-review');
+    transitionSession(db, sessionId, 'rejected');
+    killSession(db, sessionId);
+  };
+  const UI_SCOPE = { scopeIn: ['src/cli/ui/**'] };
+
+  it('starts a UI task on the first standard rung, recorded on the session', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+
+    const sessionId = launch();
+
+    expect(launchedRoute()).toEqual({
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      fallbackModel: 'claude-opus-5-5',
+    });
+    expect(routeColumns(sessionId)).toEqual({
+      tier: 'standard',
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      rung_reason: null,
+      route_override: 0,
+    });
+  });
+
+  it('starts a task whose scope touches the store on the first critical rung', () => {
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/core/session.repository.ts'] }) });
+
+    launch();
+
+    expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'high' });
+  });
+
+  it('takes the tier the operator stored over the one the scope implies', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    editTaskSpec(db, 't-1', { tier: 'critical' });
+
+    const sessionId = launch();
+
+    expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'high' });
+    expect(routeColumns(sessionId)).toMatchObject({ tier: 'critical', rung: 0 });
+  });
+
+  it('climbs exactly one rung on the relaunch after a gate rejection, recording why', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    rejectAndKill(launch());
+
+    const relaunched = launch();
+
+    expect(relaunched).toBe('t-1-1');
+    expect(launchedRoute()).toEqual({
+      model: 'claude-sonnet-5-5',
+      effort: 'high',
+      fallbackModel: 'claude-opus-5-5',
+    });
+    expect(routeColumns(relaunched)).toMatchObject({ rung: 1, rung_reason: 'gate-rejection' });
+  });
+
+  it('climbs on the relaunch after a dead turn the watcher recorded', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const first = launch();
+    appendEvent(db, first, 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
+    killSession(db, first);
+
+    const relaunched = launch();
+
+    expect(routeColumns(relaunched)).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+  });
+
+  /** The session's hook events file, last written `ageMs` before now. */
+  const quietFor = (sessionId: string, ageMs: number) => {
+    const eventsFile = projectPaths(repo).eventsFile(sessionId);
+    mkdirSync(dirname(eventsFile), { recursive: true });
+    writeFileSync(eventsFile, '{}\n');
+    const at = new Date(Date.now() - ageMs);
+    utimesSync(eventsFile, at, at);
+  };
+  const STALLED = 11 * 60 * 1000;
+
+  // No event records a stall: the window was quiet past the bar (decision 35)
+  // when the operator killed it, which the kill's time and the events file say.
+  it('climbs on the relaunch after a window killed while stalled', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const first = launch();
+    quietFor(first, STALLED);
+    killSession(db, first);
+
+    expect(routeColumns(launch())).toMatchObject({ rung: 1, rung_reason: 'stall' });
+  });
+
+  it('does not climb after a window that was busy, or only done, when it was killed', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const busy = launch();
+    quietFor(busy, 60_000);
+    killSession(db, busy);
+    const done = launch();
+    quietFor(done, STALLED);
+    transitionSession(db, done, 'awaiting-review');
+    killSession(db, done);
+
+    expect(routeColumns(launch())).toMatchObject({ rung: 0, rung_reason: null });
+  });
+
+  it("records the operator's explicit effort as an override, on the rung's model", () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+
+    const sessionId = launch({ effort: 'low' });
+
+    expect(launchedRoute()).toEqual({
+      model: 'claude-sonnet-5-5',
+      effort: 'low',
+      fallbackModel: 'claude-opus-5-5',
+    });
+    expect(routeColumns(sessionId)).toMatchObject({
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'low',
+      route_override: 1,
+    });
+  });
+
+  it('stays on its rung, and keeps why it got there, when the last window ran into nothing', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    rejectAndKill(launch());
+    killSession(db, launch());
+
+    const third = launch();
+
+    expect(routeColumns(third)).toMatchObject({ rung: 1, rung_reason: 'gate-rejection' });
+  });
+
+  it('never climbs a task the gate parked as blocked', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const first = launch();
+    transitionSession(db, first, 'awaiting-review');
+    transitionSession(db, first, 'rejected');
+    transitionSession(db, first, 'blocked');
+    killSession(db, first);
+
+    expect(routeColumns(launch())).toMatchObject({ rung: 0, rung_reason: null });
+  });
+
+  it('refuses the relaunch after a failure on the top rung, launching nothing', () => {
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/claude/**'] }) });
+    rejectAndKill(launch());
+    rejectAndKill(launch());
+    vi.mocked(launchSession).mockClear();
+
+    expect(launch).toThrow(TopRungReachedError);
+    expect(launch).toThrow(/gate-rejection on the top rung of its critical ladder/);
+    expect(launchSession).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 2,
+    });
+  });
+
+  it("refuses the conductor's model at the top rung: only the operator lifts it", () => {
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/claude/**'] }) });
+    rejectAndKill(launch());
+    rejectAndKill(launch());
+
+    expect(() => launch({ model: 'claude-opus-5-5', overrideVia: 'conductor' })).toThrow(
+      TopRungReachedError,
+    );
+  });
+
+  it("relaunches past the top on the operator's explicit model, recorded as an override", () => {
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/claude/**'] }) });
+    rejectAndKill(launch());
+    rejectAndKill(launch());
+
+    const sessionId = launch({ model: 'claude-sonnet-5-5' });
+
+    expect(launchedRoute()).toEqual({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
+    expect(routeColumns(sessionId)).toMatchObject({
+      tier: 'critical',
+      rung: 1,
+      model: 'claude-sonnet-5-5',
+      effort: 'xhigh',
+      route_override: 1,
+    });
   });
 });
 

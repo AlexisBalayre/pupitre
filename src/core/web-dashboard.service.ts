@@ -4,7 +4,13 @@ import type { AddressInfo } from 'node:net';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { buildDashboardSnapshot, needsYou, PR_URL, prFixRounds } from './dashboard.service.js';
+import {
+  buildDashboardSnapshot,
+  needsYou,
+  PR_URL,
+  prFixRounds,
+  routeLabel,
+} from './dashboard.service.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
@@ -296,6 +302,7 @@ function sessionRow(session: DashboardSession, openDebt: WebDebtEntry[]): string
   const facts = [
     session.question === undefined ? '' : `question: ${session.question}`,
     activityText(session),
+    routeLabel(session),
     session.rejectCount > 0 ? `${session.rejectCount} rejections` : '',
     session.contextTokens === undefined ? '' : `ctx ~${Math.round(session.contextTokens / 1000)}k`,
     steerText(session),

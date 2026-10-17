@@ -76,6 +76,44 @@ describe('openStore', () => {
     expect(row).toEqual({ repo_path: '/repo', dormant_at: null });
   });
 
+  it('adds the routing columns to a store created before decision 92, its rows unrouted', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const old = openStore(dbPath);
+    old.exec(`
+      ALTER TABLE tasks DROP COLUMN tier;
+      ALTER TABLE sessions DROP COLUMN tier;
+      ALTER TABLE sessions DROP COLUMN rung;
+      ALTER TABLE sessions DROP COLUMN model;
+      ALTER TABLE sessions DROP COLUMN effort;
+      ALTER TABLE sessions DROP COLUMN rung_reason;
+      ALTER TABLE sessions DROP COLUMN route_override;
+      INSERT INTO projects (id, repo_path) VALUES ('p1', '/repo');
+      INSERT INTO tasks (id, project_id, spec) VALUES ('t-1', 'p1', '{}');
+      INSERT INTO sessions (id, task_id, worktree_path, branch, profile_hash)
+        VALUES ('s1', 't-1', '/tmp/w', 'b', 'h');
+    `);
+    old.close();
+
+    const reopened = openStore(dbPath);
+    const task = reopened.prepare("SELECT tier FROM tasks WHERE id = 't-1'").get();
+    const session = reopened
+      .prepare(
+        "SELECT tier, rung, model, effort, rung_reason, route_override FROM sessions WHERE id = 's1'",
+      )
+      .get();
+    reopened.close();
+
+    expect(task).toEqual({ tier: null });
+    expect(session).toEqual({
+      tier: null,
+      rung: null,
+      model: null,
+      effort: null,
+      rung_reason: null,
+      route_override: 0,
+    });
+  });
+
   it('drops a column a pre-existing store still has, keeping its rows', () => {
     // Unlike the additive entries, this migration runs while the column is
     // still present. `tasks.status` duplicated session state and was never

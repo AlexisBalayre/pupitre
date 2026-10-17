@@ -85,6 +85,30 @@ export interface DashboardDeadTurn {
   refusal?: string;
 }
 
+/**
+ * What a session's window runs on and how it got there (decision 92), as its
+ * row records it, each string scrubbed like the rest of the row.
+ */
+export interface DashboardRoute {
+  /** `standard` or `critical`. */
+  tier: string;
+  model: string;
+  effort: string;
+  /** The rung counted from 1, out of `rungs`, the length of the tier's ladder. */
+  rung: number;
+  rungs: number;
+  /** Why the rung last climbed: `gate-rejection`, `ci-fix-round`, `turn-death` or `stall`. */
+  reason?: string;
+  /** An explicit `--model`/`--effort` chose the model or effort over the rung's. */
+  override: boolean;
+  /**
+   * What the window ran into on the top rung, for a killed session that is the
+   * newest of a task back in the backlog: nothing is left to climb, so the
+   * task's relaunch is refused and waits on the operator.
+   */
+  topReached?: string;
+}
+
 export interface DashboardSession {
   id: string;
   /**
@@ -136,6 +160,8 @@ export interface DashboardSession {
    */
   openPr?: { url?: string };
   lastGate?: DashboardGate;
+  /** Absent on a session launched before routing, or a row whose route does not read back. */
+  route?: DashboardRoute;
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];
   /**
@@ -152,8 +178,8 @@ export interface DashboardSession {
  * the operator, and the one command — or the PR url — that answers it.
  */
 export interface DashboardNeed {
-  /** The inbox's own order: question, blocked, stalled, awaiting-review, pr-open. */
-  kind: 'question' | 'blocked' | 'stalled' | 'awaiting-review' | 'pr-open';
+  /** The inbox's own order: question, blocked, top-rung, stalled, awaiting-review, pr-open. */
+  kind: 'question' | 'blocked' | 'top-rung' | 'stalled' | 'awaiting-review' | 'pr-open';
   sessionId: string;
   /** What prints for the session: its id, or a placeholder for one outside the minted shape. */
   label: string;
