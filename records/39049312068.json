@@ -1,0 +1,365 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T16:34:02.211Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39049312068",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39049312068",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8d1ee84cc1beb600120f41a51e4527188dc2319e",
+  "source": "pr",
+  "pr_number": 154,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "555-559",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new security-review instruction has the conductor's subagent run `git -C .worktrees/<session-id> diff main...HEAD` with no `--no-ext-diff --no-textconv`. A session can set `diff.external` or a textconv driver in the shared `$GIT_COMMON_DIR/config`, and the command it names then runs in the conductor's unsandboxed, bypass-permissions context with the operator's full environment.",
+      "body": "The new Models section of the conductor kickoff tells a subagent to security-review the output of a bare porcelain `git diff` in the session's worktree:\n\n```ts\n`Agent tool at \\`effort: \"${SECURITY_REVIEW_EFFORT}\"\\` to security-review ` +\n'`git -C .worktrees/<session-id> diff main...HEAD`. A finding that holds is a steer to ' +\n```\n\nDecision 41 records that a session can write the shared, untracked `$GIT_COMMON_DIR/config` from its worktree with a plain `git config`. It names `diff.external` and `diff.<driver>.textconv` as keys that make git run a command, and says they are \"disarmed per call with `--no-ext-diff --no-textconv`\". Decision 73 routes every pup git call through `runGit` for this reason, and `DIFF_SAFE_FLAGS` in `src/core/git-diff.client.ts:100` applies the disarm. Porcelain `git diff` honours both keys by default.\n\nThe conductor launches with `--dangerously-skip-permissions`, runs outside any sandbox, and carries the operator's environment (`GH_TOKEN`, `SSH_AUTH_SOCK`). Its hooks don't cover git config or diff. So a worker that runs `git config diff.external /tmp/x` and commits to any critical file gets `/tmp/x` executed by the conductor's subagent, and this happens exactly on the critical-area sessions the review is meant to protect against.\n\nNo test pins this command text (`profile-compiler.test.ts` L944-948 only checks the prefix and the effort).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d1ee84cc1beb600120f41a51e4527188dc2319e/src/core/profile-compiler.service.ts#L555-L559",
+      "suggestion": "    '`git -C .worktrees/<session-id> -c core.fsmonitor= -c core.hooksPath=/dev/null diff --no-ext-diff --no-textconv --no-color main...HEAD`. A finding that holds is a steer to ' +"
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "303-309",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`relaunchWindow` saves the climbed route before calling `kickoff`, but only writes the `respawn` event after it. `kickoff` can throw `SteerNotDeliveredError` (from `steerPane`). When it does, the session row is already on rung+1, but no `respawn` event exists to reset `windowFailure`. A retry then counts the same failure again and climbs a second time.",
+      "body": "`relaunchWindow` saves the climbed route, then calls `kickoff`, and only after that writes the `respawn` event:\n\n```ts\nrecordSessionRoute(db, sessionId, route);\n...\ndb.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);\nconst delivered = kickoff(pane, contextMarkdown + extras.promptSuffix);\nappendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });\n```\n\n`kickoff` (`src/claude/session-runtime.service.ts` L886-890) calls `steerPane` without catching. `steerPane` throws `SteerNotDeliveredError` when the input box is absent, can't be cleared, or the paste never lands. When that happens, the row already holds rung+1 and no `respawn` event exists. `windowFailure` (`routing.utils.ts` L172-183) only clears a failure at a `respawn` event, so the failure that caused this climb is still counted.\n\nThe CLI's error message says \"Re-run `pup respawn <session>`\" (`src/cli/index.ts` L1773-1776). `isHandoffReady` is still true, so the retry goes straight to `respawnRoute`, starts from the stored rung+1, sees the same failure, and climbs to rung+2. On the two-rung critical ladder, one rejection plus one failed paste ends in `TopRungReachedError`. `pup kill --respawn` shares `relaunchWindow` and has the same problem. Decision 92 says one failure climbs one rung once.\n\nThe new window is open either way, so the `respawn` event should be written whether or not the paste lands.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d1ee84cc1beb600120f41a51e4527188dc2319e/src/core/session-handoff.service.ts#L303-L309",
+      "suggestion": "  let delivered = false;\n  try {\n    delivered = kickoff(pane, contextMarkdown + extras.promptSuffix);\n  } finally {\n    appendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });\n  }"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "248-254",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The stall check counts quiet time from the events file's mtime and ignores the newest `respawn` event. One stall can therefore climb two or more rungs.",
+      "body": "`windowFailureOf` measures the stall from the session's `events.jsonl` mtime:\n\n```ts\nconst stalled =\n  running &&\n  eventsFile !== undefined &&\n  existsSync(eventsFile) &&\n  isSessionStalled(endedAt - statSync(eventsFile).mtimeMs);\nreturn windowFailure(events, stalled);\n```\n\n`windowFailure` (`routing.utils.ts` L172-183) resets `failure` at the newest `respawn` event, but then returns `failure ?? (stalledAtEnd ? 'stall' : undefined)`. The stall is never limited to the current window.\n\nThe events file is per session, not per window. Only the `PostToolUse`, `Stop` and `Notification` hooks write it (`profile-compiler.service.ts` L481-489); `relaunchWindow`'s `appendEvent` writes only to SQLite. After a stall-driven respawn, the mtime stays at the stalled window's last hook, 10 or more minutes old, until the new window fires its first hook.\n\nIn that gap, a second `pup kill --respawn`, or a kill-and-relaunch, counts the same stall again and climbs again. That gap is exactly when it is likely: after a kickoff that returned `delivered: false` and left an idle pane, `findStalledSessions` keeps showing STALLED. On the critical ladder, the second count reaches the top rung and sends the task to Needs-you after one real stall. Decision 92 says a window's failures count only from its newest `respawn` event.\n\nFix: measure from the later of the mtime and the newest `respawn` event's `created_at`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d1ee84cc1beb600120f41a51e4527188dc2319e/src/core/dashboard.service.ts#L248-L254",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "976-1016",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The conductor can lift the top-rung refusal, and does so on every launch with `--worker-model`: `nextWindowRoute` lifts `TopRungReachedError` whenever `--model`/`--effort` is present, and `pup launch` refuses sessions but not the conductor.",
+      "body": "Decision 92 says an explicit `--model`/`--effort` \"lifts the top-rung refusal, since the operator has decided\". The code can't tell an operator override from a conductor override. `pup launch` only refuses `callingSession(db)`, never `callingConductor()`:\n\n```ts\nif (callingSession(db)) {\n  return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');\n}\n```\n\nIn `session-lifecycle.service.ts` L220-222, `isOverride` is true whenever either flag is set, regardless of who passed it, and `if (climb.topReached && !isOverride) throw new TopRungReachedError(...)`.\n\nWith `pup conductor start --worker-model X`, the kickoff tells the conductor to run `` `pup launch <task> --model X` `` for every launch (`profile-compiler.service.ts` L571, L591, L609). So every conductor relaunch is an override, the top-rung refusal never fires, and the Models section's \"A launch refused at the top rung… report it, never retry it\" can't trigger. A task that keeps stalling or dying on Opus xhigh is relaunched on the top rung instead of reaching the operator, and the new session replaces the killed one, so the `top-rung` need disappears from Needs you. Gate rejections still end in `blocked`, so the loop is limited to stall and dead-turn climbs.\n\nThe `--worker-model` → `--model` pass-through predates this PR. The top-rung refusal it now bypasses is new. Decision 92 doesn't address conductor-issued overrides. Consider refusing an override that lifts a top-rung refusal when `callingConductor()` is true, or passing `--worker-model` through a channel that doesn't count as an override at the top rung.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d1ee84cc1beb600120f41a51e4527188dc2319e/src/cli/index.ts#L976-L1016",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "417-423",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`--fallback-model` goes into the argv of interactive tmux windows, but Claude Code documents the flag as print-mode only. On every Sonnet rung the overload fallback to Opus is likely a silent no-op.",
+      "body": "`launchArgs` builds the argv for an interactive `claude` window inside tmux (`spawnClaudeWindow`, L484). There is no `-p`/`--print`:\n\n```ts\n'--model',\nmodel,\n'--effort',\neffort,\n...(fallbackModel ? ['--fallback-model', fallbackModel] : []),\n```\n\nClaude Code's CLI help describes `--fallback-model` as \"Enable automatic fallback to specified model when default model is overloaded (only works with --print)\". The `model-ladder.constants.ts` JSDoc (\"an overloaded Sonnet hands the turn to Opus\") and decision 92 both say the fallback protects worker windows. If the help text holds, either:\n\n- the flag is silently ignored, so standard-tier Sonnet rungs get no overload protection, or\n- a CLI that rejects it outside print mode stops every standard-tier window from starting.\n\nThe tests only assert the argv shape, so neither case would be caught. This rests on the pinned CLI's help text, which isn't in the repo. Check with `claude --help` or a real interactive launch, then either drop `fallbackModel` from the Sonnet rungs (and correct the JSDoc and decision 92) or document the limitation.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d1ee84cc1beb600120f41a51e4527188dc2319e/src/claude/session-runtime.service.ts#L417-L423",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "9-22",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`CRITICAL_AREAS` matches the list in the task spec, but it leaves out gate, sandbox, hook and git files: `scope-audit.utils.ts`, `gate-env.utils.ts`, `glob.utils.ts` (writes the scope-hook patterns), `session-state.utils.ts` and `src/adapters/git-tree.client.ts`. Tasks scoped only to those files route as standard. `src/core/migrations/**` names a directory that doesn't exist.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "241-255",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Respawning an override session with only one of `--model`/`--effort` discards the other kept value instead of merging. For example, a session launched with `--model claude-opus-5-5` and respawned with `--effort xhigh` silently drops back to the rung's Sonnet model. `{ ...kept, ...override }` would keep the operator's model.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "179-180",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`'blocked'` stays set until the next `respawn` event. After `pup unblock` returns the session to `running`, a later `turn_died` or stall in that same window is ignored, so a respawn or relaunch does not climb even though the operator already cleared the block.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "308",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`tier = COALESCE(?, tier)` means `pup plan edit` can set or switch a stored `--tier`, but can never clear it back to NULL so the scope-in decides again. Once set, the only way back is deleting and re-adding the task.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1753-1766",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup respawn` steers the session to write its handoff and stop, then waits, and only after that does `respawnRoute` throw `TopRungReachedError`. A top-rung session respawned for context is halted for nothing; checking `respawnRoute` before `requestHandoff` would refuse up front.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/sessions.component.tsx",
+      "line": "106-111",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The 34-65 character route label is inserted before ctx, steer and goal in a `truncate-end` row, so on 80-120 column terminals the ctx/respawn hint and the goal are now cut off; moving the route after the goal would keep the old layout.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "454",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The highlight rule `.need.need-question, .need.need-blocked, .need.need-stalled` doesn't include `.need-top-rung`. That need ranks between `blocked` and `stalled` but renders without their highlight.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "555-559",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The xhigh review subagent reads the session-written diff while holding Bash with bypass permissions in the main checkout, a new prompt-injection channel. Tell it the diff is untrusted data and it must not run anything the diff suggests.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "59-62",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`globTokens` copies `globToRegExpSource`'s normalization (trim, strip `./`, trailing `/` → `**`, `**/` before `**`) from `glob.utils.ts` with nothing tying the two together, so a change there silently desyncs tier classification. A shared `normalizeGlob`, with `globsIntersect` and the automaton moved into `glob.utils.ts`, would keep one definition.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "230-272",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Climb logic lives in the dashboard read model. `session-lifecycle.service.ts` imports `windowFailureOf` from it, and `topRungFailure` re-derives the top-rung refusal that `nextWindowRoute` enforces. The \"stored tier else scope-in tier\" derivation is also written out at lifecycle L135/L249, dashboard L270 and `tierColumn`. Move `windowFailureOf` beside `windowFailure`, and share one task-tier helper and one relaunch-climb helper, so the inbox can't drift from what `pup launch` refuses.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "322",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`nextWindowRoute` drops `fallbackModel`, so both launch sites rebuild it with `routeFor(route.tier, route.rung, route)`. That relies on `routeFor` comparing the model to the routed one. Returning the resolved `ModelRoute` alongside the record would remove the trick.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "197, 243",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rung clamp `Math.min(Math.max(rung, 0), top)` appears in `nextRung`, `routeFor` and `dashboard.service.ts:292` (there with a cast), and `override.model !== undefined || override.effort !== undefined` appears twice in session-lifecycle. A `clampRung` helper and an `isRouteOverride` predicate would replace them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "393-404",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The top-rung need guards the task id with an inline `SESSION_ID_PATTERN` test and an inline placeholder literal, while every other branch uses `command()`/`UNMINTED_ID`; hoist an `UNMINTED_TASK_ID` constant next to `UNMINTED_ID`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1658, 1763",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`hardRespawnSession`/`respawnSession` are called with a positional `undefined` for `pathsBase` because `override` was appended after it; fold the trailing optional params into one options object.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "152",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`export type ClimbReason` is declared in a utils file and imported by three modules; `general.md` says exported types live in `*.types.ts` under the area's `types/` folder.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/model-ladder.constants.ts",
+      "line": "13-27",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The constants file also exports `interface ModelRoute` and `type Tier`, which `src/core` uses widely. `naming.md` defines a constants file as constant values, and `general.md` puts exported types in `*.types.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "9-22",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`CRITICAL_AREAS`, an exported list of path globs, lives in a utils file; `general.md` §hardcoded values puts path fragments in the area's `*.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1028-1029",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `conductor start` help strings hardcode `(default claude-opus-5-5)` and `(default high)`, duplicating `CONDUCTOR_ROUTE`; build them from `CONDUCTOR_ROUTE.model`/`.effort` so they can't drift.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "177-178",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment \"Both named even when the operator named neither…\" repeats the `launchArgs` JSDoc that already explains why `--model`/`--effort` are always passed (AGENTS.md §Comments: delete call-site copies of seam docs).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "129-132",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `launchTask` comment restates the `nextWindowRoute` JSDoc (tier source, climb from the newest session). Only \"refused as cheaply as a scope conflict\" adds a WHY and is worth keeping.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/utility.service.ts",
+      "line": "4-7",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The header comment's Haiku/low rationale duplicates the `model-ladder.constants.ts` header and the `UTILITY_ROUTE` JSDoc; reduce it to the decision-92 pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "555-557",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The kickoff limits the security review to diffs touching \"the gate, git, tmux or the store\", then adds \"(any critical area above)\". `CRITICAL_AREAS` also covers the sandbox, hooks, profile compilation and `.github`, so the trigger is ambiguous; make the two lists agree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "conductorModelsSection JSDoc",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `conductorModelsSection` JSDoc says the section is \"written without the flags' names\", but the text names `--tier` and `pup plan add|edit --tier`. The claim only holds for `--model`/`--effort`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "decision 92, Tests paragraph",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 92's ~15-line \"Tests:\" paragraph restates the test suite case by case and will rot as tests change; a decision record should keep the why, so cut it to a sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "347-348",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `MODEL_OVERRIDE_DESCRIPTION` restates the constant's text and the `RouteOverride` JSDoc; it can be dropped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "630-632",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The conductor's protocol step runs `git -C .worktrees/<session-id> log --oneline main..HEAD` without `-c log.showSignature=false`. A session can set `log.showSignature` plus `gpg.program` to run code in the conductor, the vector decision 79 closed for pup's own `git log`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 5,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.5637894000000045,
+  "duration_ms": 484249,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 21497,
+    "cache_read": 314214,
+    "cache_creation": 79338,
+    "total": 415063
+  }
+}
