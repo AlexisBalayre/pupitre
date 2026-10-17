@@ -1014,6 +1014,7 @@ export function buildProgram(): Command {
             effort: opts.effort,
             allowOverlap: opts.allowOverlap,
             overlapVia: conductorAttribution().overlapVia,
+            overrideVia: callingConductor() ? 'conductor' : 'operator',
           }),
       );
       if (sessionId === undefined) return;

@@ -946,6 +946,10 @@ describe('compileConductorProfile', () => {
         'tmux or the store',
     );
     expect(context).toContain('Agent tool at `effort: "xhigh"`');
+    expect(context).toContain(
+      '`GIT_NO_LAZY_FETCH=1 git -C .worktrees/<session-id> -c core.fsmonitor= -c core.hooksPath=/dev/null -c protocol.ext.allow=never -c protocol.fd.allow=never -c protocol.file.allow=never -c protocol.git.allow=never -c protocol.http.allow=never -c protocol.https.allow=never -c protocol.ssh.allow=never --no-pager diff --no-ext-diff --no-textconv --no-color main...HEAD`',
+    );
+    expect(context).toContain('which never lifts the top-rung refusal');
     expect(context).toContain("The operator fixed every session's model to opus");
     expect(context).not.toMatch(/fable/i);
   });

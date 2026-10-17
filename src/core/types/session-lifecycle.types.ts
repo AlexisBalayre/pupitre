@@ -37,6 +37,8 @@ export interface LaunchTaskRequest {
    * orphan the row.
    */
   overlapVia?: 'operator' | 'conductor' | 'raced';
+  /** Who named `model`/`effort`; only the operator's lifts the top-rung refusal. */
+  overrideVia?: 'operator' | 'conductor';
 }
 
 export interface NewSessionRequest extends PlanTaskRequest {

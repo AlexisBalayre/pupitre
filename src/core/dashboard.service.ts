@@ -246,11 +246,18 @@ export function windowFailureOf(
     running = kill?.type === 'gate_result' && kill.from === 'running';
   }
   const eventsFile = eventsFileOf(paths, session.id);
+  // The events file is per session, not per window: until the new window's
+  // first hook, its mtime is the last window's, so the newest respawn bounds it.
+  const respawnAt = events
+    .map((event) => event.type === 'other' && event.eventType)
+    .lastIndexOf('respawn');
+  const windowStart =
+    respawnAt < 0 ? 0 : Date.parse(toIsoUtc(rows[respawnAt]?.created_at ?? '')) || 0;
   const stalled =
     running &&
     eventsFile !== undefined &&
     existsSync(eventsFile) &&
-    isSessionStalled(endedAt - statSync(eventsFile).mtimeMs);
+    isSessionStalled(endedAt - Math.max(statSync(eventsFile).mtimeMs, windowStart));
   return windowFailure(events, stalled);
 }
 

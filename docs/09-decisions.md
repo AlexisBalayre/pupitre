@@ -4702,7 +4702,9 @@ changes back into those docs is pending.
     climbs, says to launch with plain `pup launch <task>`, and hands a top-rung refusal to the
     operator, never to a retry. It also orders a security review before `pup merge --pr` on any
     session whose diff touches the gate, git, tmux or the store: a subagent spawned with the Agent
-    tool at `effort: "xhigh"` over `git -C .worktrees/<session-id> diff main...HEAD`. `runUtility`
+    tool at `effort: "xhigh"` over the worktree's `main...HEAD` diff, run with lazy fetch off, every
+    transport pinned off by name, no pager and no diff driver, since the session writes the shared
+    git config and can plant a promisor remote or a driver there. `runUtility`
     runs `claude-haiku-5-5` at `low`. pup never chooses a Fable model or `--effort max`. Neither
     is on a ladder, the conductor's route or the utility's, and an operator who names one gets it
     as a recorded override.
@@ -4715,7 +4717,8 @@ changes back into those docs is pending.
     at the kill each climb once and record the reason. A busy kill, a kill from awaiting-review
     and a block do not climb. A respawn climbs after a rejection, once only after a dead turn, and
     after a stall on a hard respawn. A top-rung respawn is refused with the window untouched, and
-    an override passes the top and is kept by the next respawn. A pre-routing session respawns on
+    an override named now passes the top; a kept one, or the conductor's `--worker-model`, never
+    does, because only the operator decides a top-rung case. A pre-routing session respawns on
     the first standard rung. The inbox orders `top-rung` after `blocked` and builds no command
     around a task id outside the minted shape. The three surfaces show model, effort, rung and
     reason. The conductor defaults to Opus 5.5 at high and takes `--effort`. The kickoff names the

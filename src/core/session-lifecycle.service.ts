@@ -136,6 +136,7 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
     listTaskSessions(db, row.id).at(-1),
     (previous) => windowFailureOf(db, projectPaths(req.repoPath), previous, Date.now()),
     { model: req.model, effort: req.effort },
+    req.overrideVia !== 'conductor',
   );
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
   const sessionId = startSession(db, { ...req, task }, route);
@@ -204,8 +205,9 @@ function knowledgeSliceFor(
  * respawn's: the first rung of its tier's ladder with no window before it, the
  * rung that window stood on, or one higher when it ran into a failure, with the
  * reason it climbed. A failure on the top rung climbs nowhere: the window is
- * refused for the operator to decide, and an explicit model or effort is that
- * decision, recorded as an override. A task re-tiered since its last window
+ * refused for the operator to decide, and an explicit model or effort the
+ * operator names is that decision, recorded as an override; the conductor's
+ * `--worker-model` is an override too, but never that decision. A task re-tiered since its last window
  * starts its new ladder from the bottom. `failureOf` is asked only of a window
  * there is.
  */
@@ -215,10 +217,11 @@ function nextWindowRoute(
   previous: SessionRow | undefined,
   failureOf: (previous: SessionRow) => ClimbReason | 'blocked' | undefined,
   override: RouteOverride,
+  operatorDecides = true,
 ): SessionRoute {
   const climb = climbFrom(tier, previous, previous && failureOf(previous));
   const isOverride = override.model !== undefined || override.effort !== undefined;
-  if (climb.topReached && !isOverride) {
+  if (climb.topReached && !(isOverride && operatorDecides)) {
     throw new TopRungReachedError(subject, tier, climb.topReached);
   }
   const { model, effort } = routeFor(tier, climb.rung, override);
@@ -253,6 +256,7 @@ export function respawnRoute(
     session,
     () => windowFailureOf(db, paths, session, Date.now()),
     named ? override : kept,
+    named,
   );
 }
 

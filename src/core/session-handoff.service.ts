@@ -305,6 +305,12 @@ function relaunchWindow(
   // so a steer that races the respawn is refused or lands here, never in the
   // old pane's successor.
   db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);
-  const delivered = kickoff(pane, contextMarkdown + extras.promptSuffix);
-  appendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });
+  // The new window is open whether or not the paste lands, and the climb is
+  // already stored: without the event, a retry would count the same failure again.
+  let delivered = false;
+  try {
+    delivered = kickoff(pane, contextMarkdown + extras.promptSuffix);
+  } finally {
+    appendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });
+  }
 }

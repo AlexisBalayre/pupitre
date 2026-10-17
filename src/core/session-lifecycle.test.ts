@@ -741,7 +741,9 @@ describe('launchTask model routing (decision 92)', () => {
     vi.unstubAllEnvs();
   });
 
-  const launch = (override: { model?: string; effort?: string } = {}) =>
+  const launch = (
+    override: { model?: string; effort?: string; overrideVia?: 'operator' | 'conductor' } = {},
+  ) =>
     launchTask(db, {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
@@ -913,6 +915,16 @@ describe('launchTask model routing (decision 92)', () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
       n: 2,
     });
+  });
+
+  it("refuses the conductor's model at the top rung: only the operator lifts it", () => {
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/claude/**'] }) });
+    rejectAndKill(launch());
+    rejectAndKill(launch());
+
+    expect(() => launch({ model: 'claude-opus-5-5', overrideVia: 'conductor' })).toThrow(
+      TopRungReachedError,
+    );
   });
 
   it("relaunches past the top on the operator's explicit model, recorded as an override", () => {

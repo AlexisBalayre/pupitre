@@ -469,6 +469,35 @@ describe('session handoff', () => {
       expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
     });
 
+    it('counts a stall once, though the new window has not fired a hook yet', () => {
+      recordSessionRoute(db, 's1', STANDARD_FIRST);
+      const eventsFile = paths().eventsFile('s1');
+      mkdirSync(dirname(eventsFile), { recursive: true });
+      writeFileSync(eventsFile, '{}\n');
+      const quietSince = new Date(Date.now() - 11 * 60 * 1000);
+      utimesSync(eventsFile, quietSince, quietSince);
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
+    });
+
+    it('records the respawn when the kickoff paste fails, so a retry does not climb again', () => {
+      recordSessionRoute(db, 's1', STANDARD_FIRST);
+      appendEvent(db, 's1', 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
+      vi.mocked(kickoff).mockImplementationOnce(() => {
+        throw new Error('paste never landed');
+      });
+
+      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow('paste never landed');
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+      const events = db.prepare("SELECT payload FROM events WHERE type = 'respawn'").all();
+      expect(events[0]).toEqual({ payload: expect.stringContaining('"delivered":false') });
+    });
+
     it('never climbs a session the gate parked, even once unblocked', () => {
       recordSessionRoute(db, 's1', STANDARD_FIRST);
       transitionSession(db, 's1', 'blocked');
@@ -508,6 +537,13 @@ describe('session handoff', () => {
         effort: 'high',
         route_override: 1,
       });
+    });
+
+    it('refuses a top-rung respawn on a kept override: only a model named now lifts it', () => {
+      recordSessionRoute(db, 's1', { ...CRITICAL_TOP, override: true });
+      rejectOnce();
+
+      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(TopRungReachedError);
     });
 
     it('keeps the override the session was launched with, the rung still climbing under it', () => {
