@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   spec TEXT NOT NULL,
   role TEXT,
   origin TEXT NOT NULL DEFAULT 'human' CHECK (origin IN ('human', 'audit', 'rejection', 'conductor')),
+  tier TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -58,6 +59,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   profile_hash TEXT NOT NULL,
   transcript_path TEXT,
   reject_count INTEGER NOT NULL DEFAULT 0,
+  tier TEXT,
+  rung INTEGER,
+  model TEXT,
+  effort TEXT,
+  rung_reason TEXT,
+  route_override INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -143,6 +150,34 @@ const MIGRATIONS: { table: string; column: string; kind: 'add' | 'drop'; ddl: st
     kind: 'add',
     ddl: 'ALTER TABLE projects ADD COLUMN dormant_at TEXT',
   },
+  {
+    // The tier the operator set with `pup plan add|edit --tier`, or null when
+    // the task's scope-in decides it (decision 92).
+    table: 'tasks',
+    column: 'tier',
+    kind: 'add',
+    ddl: 'ALTER TABLE tasks ADD COLUMN tier TEXT',
+  },
+  // What a session's window runs on and how it got there (decision 92): its
+  // task's tier at launch, the rung of that tier's ladder, the model and
+  // effort its argv carries, why the rung last climbed, and whether an
+  // explicit --model/--effort overrode the rung's. Null, and no override, on
+  // a session launched before routing.
+  ...(
+    [
+      ['tier', 'TEXT'],
+      ['rung', 'INTEGER'],
+      ['model', 'TEXT'],
+      ['effort', 'TEXT'],
+      ['rung_reason', 'TEXT'],
+      ['route_override', 'INTEGER NOT NULL DEFAULT 0'],
+    ] as const
+  ).map(([column, type]) => ({
+    table: 'sessions',
+    column,
+    kind: 'add' as const,
+    ddl: `ALTER TABLE sessions ADD COLUMN ${column} ${type}`,
+  })),
   {
     // Written on every insert and on merge, read by nothing. The backlog asks
     // the sessions table instead, so a second copy of session state could only

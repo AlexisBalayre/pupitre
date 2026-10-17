@@ -53,6 +53,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
 });
 
+import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
   attachArgs,
   attachCommand,
@@ -176,6 +177,7 @@ const OPTS = {
   sessionId: 's-1',
   worktreePath: '/tmp/repo/.worktrees/s-1',
   settingsPath: '/tmp/compiled/settings.json',
+  route: LADDERS.standard[0] as ModelRoute,
 };
 
 describe('launchArgs', () => {
@@ -195,9 +197,38 @@ describe('launchArgs', () => {
     expect(args[flag + 1]).toBe(OPTS.settingsPath);
   });
 
-  it('passes the model flag only when a model is set', () => {
-    expect(launchArgs(OPTS)).not.toContain('--model');
-    expect(launchArgs({ ...OPTS, model: 'opus' })).toContain('--model');
+  // Every rung names both, so the user settings the window inherits never
+  // decide a worker's model or effort; only the Sonnet rungs fall back, to
+  // Opus (decision 92).
+  it.each([
+    [
+      'standard',
+      0,
+      ['--model', 'claude-sonnet-5-5', '--effort', 'medium', '--fallback-model', 'claude-opus-5-5'],
+    ],
+    [
+      'standard',
+      1,
+      ['--model', 'claude-sonnet-5-5', '--effort', 'high', '--fallback-model', 'claude-opus-5-5'],
+    ],
+    ['standard', 2, ['--model', 'claude-opus-5-5', '--effort', 'high']],
+    ['standard', 3, ['--model', 'claude-opus-5-5', '--effort', 'xhigh']],
+    ['critical', 0, ['--model', 'claude-opus-5-5', '--effort', 'high']],
+    ['critical', 1, ['--model', 'claude-opus-5-5', '--effort', 'xhigh']],
+  ] as const)('opens a %s rung %i window on exactly its model and effort', (tier, rung, flags) => {
+    const args = launchArgs({ ...OPTS, route: LADDERS[tier][rung] as ModelRoute });
+
+    expect(args.slice(0, flags.length)).toEqual(flags);
+    expect(args.slice(flags.length)).not.toContain('--model');
+    expect(args.slice(flags.length)).not.toContain('--effort');
+    expect(args.slice(flags.length)).not.toContain('--fallback-model');
+  });
+
+  it("passes an operator's override as given, with no fallback", () => {
+    const args = launchArgs({ ...OPTS, route: { model: 'claude-opus-5-5', effort: 'low' } });
+
+    expect(args.slice(0, 4)).toEqual(['--model', 'claude-opus-5-5', '--effort', 'low']);
+    expect(args).not.toContain('--fallback-model');
   });
 
   it('passes --mcp-config only when the session has a code graph (decision 51)', () => {
@@ -1373,6 +1404,7 @@ describe('launchConductor', () => {
     projectId: 'proj-1',
     repoPath: '/tmp/repo',
     settingsPath: '/tmp/conductor/settings.json',
+    route: CONDUCTOR_ROUTE,
   };
   const SOCKET = 'pup-conductor-proj-1';
 
@@ -1425,15 +1457,19 @@ describe('launchConductor', () => {
     expect(spawn).toContain(CONDUCTOR.settingsPath);
   });
 
-  it('passes the conductor its own model', () => {
-    launchConductor({ ...CONDUCTOR, model: 'fable' });
+  it('passes the conductor its own model and effort', () => {
+    launchConductor({ ...CONDUCTOR, route: { model: 'claude-sonnet-5-5', effort: 'xhigh' } });
 
-    const spawn = vi
-      .mocked(execFileSync)
-      .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1];
-    expect(spawn?.slice(spawn.indexOf('--model'), spawn.indexOf('--model') + 2)).toEqual([
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    expect(spawn.slice(spawn.indexOf('--model'), spawn.indexOf('--model') + 4)).toEqual([
       '--model',
-      'fable',
+      'claude-sonnet-5-5',
+      '--effort',
+      'xhigh',
     ]);
   });
 

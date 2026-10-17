@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
+import type { Tier } from '../claude/model-ladder.constants.js';
 import {
   interruptPane,
   kickoff,
@@ -14,14 +15,17 @@ import {
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
+import { windowFailureOf } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, runGit } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
-import { projectId, projectPaths } from './paths.utils.js';
+import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import {
   compileProfile,
   snapshotUserConfigHash,
   writeCompiledProfile,
 } from './profile-compiler.service.js';
+import { asStringArray } from './report-data.utils.js';
+import { asTier, type ClimbReason, climbFrom, routeFor, taskTier } from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
@@ -30,8 +34,11 @@ import {
   getTask,
   insertSession,
   insertTask,
+  listTaskSessions,
   readTaskSpec,
+  type SessionRoute,
   type SessionRow,
+  taskSpecForDisplay,
   transitionSession,
 } from './session.repository.js';
 import {
@@ -40,6 +47,7 @@ import {
   ScopeConflictError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
+  TopRungReachedError,
   UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
@@ -50,6 +58,7 @@ import type {
   LaunchTaskRequest,
   NewSessionRequest,
   PlanTaskRequest,
+  RouteOverride,
 } from './types/session-lifecycle.types.js';
 
 /** A short, filesystem- and tmux-safe id derived from the task id and a counter. */
@@ -76,6 +85,7 @@ export function planTask(db: Database, req: PlanTaskRequest): string {
     spec: JSON.stringify(req.task),
     role: req.role?.name,
     origin: req.origin,
+    tier: req.tier,
   });
   return req.task.id;
 }
@@ -116,8 +126,19 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   if (conflicts.length > 0 && !req.allowOverlap) {
     throw new ScopeConflictError(row.id, conflicts);
   }
+  // Before anything is built: a task past the top of its ladder is refused
+  // as cheaply as a scope conflict. The tier is the one `--tier` stored, else
+  // the one the scope-in implies, and the climb is from the task's newest
+  // session, which a relaunch replaces.
+  const route = nextWindowRoute(
+    { task: row.id },
+    taskTier(row.tier, task.scopeIn),
+    listTaskSessions(db, row.id).at(-1),
+    (previous) => windowFailureOf(db, projectPaths(req.repoPath), previous, Date.now()),
+    { model: req.model, effort: req.effort },
+  );
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
-  const sessionId = startSession(db, { ...req, task });
+  const sessionId = startSession(db, { ...req, task }, route);
   if (conflicts.length > 0) {
     appendEvent(db, sessionId, 'scope_overlap', {
       via: req.overlapVia ?? 'operator',
@@ -178,7 +199,68 @@ function knowledgeSliceFor(
   }
 }
 
-function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec }): string {
+/**
+ * The route a task's next window runs on (decision 92), a relaunch's or a
+ * respawn's: the first rung of its tier's ladder with no window before it, the
+ * rung that window stood on, or one higher when it ran into a failure, with the
+ * reason it climbed. A failure on the top rung climbs nowhere: the window is
+ * refused for the operator to decide, and an explicit model or effort is that
+ * decision, recorded as an override. A task re-tiered since its last window
+ * starts its new ladder from the bottom. `failureOf` is asked only of a window
+ * there is.
+ */
+function nextWindowRoute(
+  subject: { task: string } | { session: string },
+  tier: Tier,
+  previous: SessionRow | undefined,
+  failureOf: (previous: SessionRow) => ClimbReason | 'blocked' | undefined,
+  override: RouteOverride,
+): SessionRoute {
+  const climb = climbFrom(tier, previous, previous && failureOf(previous));
+  const isOverride = override.model !== undefined || override.effort !== undefined;
+  if (climb.topReached && !isOverride) {
+    throw new TopRungReachedError(subject, tier, climb.topReached);
+  }
+  const { model, effort } = routeFor(tier, climb.rung, override);
+  return { tier, rung: climb.rung, model, effort, reason: climb.reason, override: isOverride };
+}
+
+/**
+ * The route a respawned session's fresh window runs on (decision 92), climbed
+ * from the window it replaces, as a relaunch is from the session before it. An
+ * override the session was launched or respawned with stays its model and
+ * effort, the rung still climbing under it, unless the operator names new
+ * ones. Asked before the old window is killed, so a refusal leaves it running.
+ */
+export function respawnRoute(
+  db: Database,
+  paths: ProjectPaths,
+  session: SessionRow,
+  override: RouteOverride = {},
+): SessionRoute {
+  const named = override.model !== undefined || override.effort !== undefined;
+  const kept =
+    session.route_override === 1
+      ? { model: session.model ?? undefined, effort: session.effort ?? undefined }
+      : {};
+  const task = getTask(db, session.task_id);
+  const tier =
+    asTier(session.tier) ??
+    taskTier(task?.tier ?? null, asStringArray(taskSpecForDisplay(task).scopeIn));
+  return nextWindowRoute(
+    { session: session.id },
+    tier,
+    session,
+    () => windowFailureOf(db, paths, session, Date.now()),
+    named ? override : kept,
+  );
+}
+
+function startSession(
+  db: Database,
+  req: LaunchTaskRequest & { task: TaskSpec },
+  route: SessionRoute,
+): string {
   const paths = projectPaths(req.repoPath);
 
   const count = (
@@ -230,13 +312,14 @@ function startSession(db: Database, req: LaunchTaskRequest & { task: TaskSpec })
     branch,
     profileHash: compiled.hash,
     transcriptPath: transcriptDir(worktreePath),
+    route,
   });
 
   const pane = launchSession({
     sessionId,
     worktreePath,
     settingsPath: join(compiledDir, 'settings.json'),
-    model: req.model,
+    route: routeFor(route.tier, route.rung, route),
     mcpConfigPath,
   });
   // The pane id, not the session name: every later steer is addressed to it

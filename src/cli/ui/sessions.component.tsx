@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink';
+import { routeLabel } from '../../core/dashboard.service.js';
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
 import {
   ID_COLUMN_CHARS,
@@ -103,6 +104,7 @@ function SessionRow({
         {trailing(gateLabel(session))}
       </Text>
       <Text dimColor>
+        {trailing(routeLabel(session))}
         {trailing(contextLabel(session))}
         {trailing(steerLabel(session))}
         {'  '}

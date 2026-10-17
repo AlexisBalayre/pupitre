@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
+import { routeLabel } from '../../core/dashboard.service.js';
 import type { DashboardSession } from '../../core/types/dashboard.types.js';
 import { STATE_COLOURS } from './dashboard.constants.js';
 import { originMarker } from './dashboard-text.utils.js';
@@ -54,6 +55,16 @@ export function Detail({ row }: { row: DetailRow }) {
       </Section>
       {row.kind === 'session' ? (
         <>
+          <Section title="model">
+            {row.session.route ? (
+              <Text>
+                {routeLabel(row.session)}
+                <Text dimColor> ({row.session.route.tier})</Text>
+              </Text>
+            ) : (
+              <Text dimColor>launched before routing (decision 92)</Text>
+            )}
+          </Section>
           {row.session.question === undefined ? null : (
             <Section title="question">
               <Text color="yellow">{row.session.question}</Text>

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { LADDERS } from '../claude/model-ladder.constants.js';
 import { attachCommand, conductorName, transcriptDir } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
@@ -15,6 +16,7 @@ import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { asTier, type ClimbReason, climbFrom, taskTier, windowFailure } from './routing.utils.js';
 import {
   decodeEvent,
   type EventRow,
@@ -38,6 +40,7 @@ import type {
   DashboardEvent,
   DashboardGate,
   DashboardNeed,
+  DashboardRoute,
   DashboardSession,
   DashboardSnapshot,
   DashboardSteer,
@@ -66,16 +69,22 @@ export function buildDashboardSnapshot(
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
   const isLanded = landedShaLookup(repoPath);
-  const sessions = listSessions(db).map((row) =>
-    dashboardSession(
+  const rows = listSessions(db);
+  // Oldest first, so each task maps to its newest session: the one a relaunch climbs from.
+  const newestOfTask = new Map(rows.map((row) => [row.task_id, row.id]));
+  const sessions = rows.map((row) => {
+    const task = tasks.get(row.task_id);
+    const newest = newestOfTask.get(row.task_id) === row.id;
+    return dashboardSession(
       db,
       row,
-      tasks.get(row.task_id),
+      task,
       eventsFileOf(paths, row.id),
       stalls.get(row.id),
       isLanded,
-    ),
-  );
+      newest ? topRungFailure(db, paths, row, task, now) : undefined,
+    );
+  });
   const beat = getWatcherBeat(db, pid);
   const baseline = baselineOf(db, pid);
   return {
@@ -211,6 +220,97 @@ export function findStalledSessions(db: Database, repoPath: string, now: number)
 }
 
 /**
+ * What a session's newest window ran into, which decides the climb at its next
+ * relaunch or respawn (decision 92): the failures its events record since the
+ * window opened, or a stall when its events file had been quiet past the stall
+ * bar (decision 35) by the time the window ended, at its kill or, for one still
+ * up, `now`. Like the stall rule, only a window that was running then can have
+ * stalled; one killed while awaiting review had only finished.
+ */
+export function windowFailureOf(
+  db: Database,
+  paths: ProjectPaths,
+  session: SessionRow,
+  now: number,
+): ClimbReason | 'blocked' | undefined {
+  const rows = listEvents(db, session.id);
+  const events = rows.map(decodeEvent);
+  let endedAt = now;
+  let running = session.state === 'running';
+  if (session.state === 'killed') {
+    const at = events
+      .map((event) => event.type === 'gate_result' && event.to)
+      .lastIndexOf('killed');
+    const kill = events[at];
+    endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
+    running = kill?.type === 'gate_result' && kill.from === 'running';
+  }
+  const eventsFile = eventsFileOf(paths, session.id);
+  const stalled =
+    running &&
+    eventsFile !== undefined &&
+    existsSync(eventsFile) &&
+    isSessionStalled(endedAt - statSync(eventsFile).mtimeMs);
+  return windowFailure(events, stalled);
+}
+
+/**
+ * What a killed session's window ran into on the top rung of its task's
+ * ladder, when the session is the newest of a task still in the store: the
+ * task's relaunch would be refused (decision 92), so it waits on the operator.
+ */
+function topRungFailure(
+  db: Database,
+  paths: ProjectPaths,
+  row: SessionRow,
+  task: TaskRow | undefined,
+  now: number,
+): ClimbReason | undefined {
+  if (row.state !== 'killed' || !task) return undefined;
+  const tier = taskTier(task.tier, asStringArray(taskSpecForDisplay(task).scopeIn));
+  return climbFrom(tier, row, windowFailureOf(db, paths, row, now)).topReached;
+}
+
+/**
+ * The route a session row records, scrubbed for the screen, or nothing when
+ * the session launched before routing or its columns do not read back as a
+ * tier and a rung.
+ */
+function dashboardRoute(
+  row: SessionRow,
+  topReached: string | undefined,
+): DashboardRoute | undefined {
+  const tier = asTier(row.tier);
+  if (!tier || !Number.isSafeInteger(row.rung) || row.model === null || row.effort === null) {
+    return undefined;
+  }
+  const rungs = LADDERS[tier].length;
+  return {
+    tier,
+    model: sanitizeReason(row.model),
+    effort: sanitizeReason(row.effort),
+    rung: Math.min(Math.max(row.rung as number, 0), rungs - 1) + 1,
+    rungs,
+    ...(row.rung_reason === null ? {} : { reason: sanitizeReason(row.rung_reason) }),
+    override: row.route_override === 1,
+    ...(topReached === undefined ? {} : { topReached }),
+  };
+}
+
+/**
+ * A session's route in one line, for `pup status`, `pup ui` and the web
+ * dashboard alike: model and effort, the rung out of the ladder's, and why it
+ * last climbed (decision 92).
+ */
+export function routeLabel(session: DashboardSession): string {
+  const route = session.route;
+  if (!route) return '';
+  const climbed = route.reason ? ` after ${route.reason}` : '';
+  const override = route.override ? ' (override)' : '';
+  return `${route.model} ${route.effort}, rung ${route.rung}/${route.rungs}${climbed}${override}`;
+}
+
+/**
  * One terminal-safe line of a task's goal. Goals are multi-line prose an agent
  * or the operator wrote, so only the first line is a headline, and only after
  * decision 29's sanitizing. Fitting it to a column is the reader's job: the
@@ -239,6 +339,7 @@ function sortsFirst(session: DashboardSession): boolean {
 const NEED_ORDER: DashboardNeed['kind'][] = [
   'question',
   'blocked',
+  'top-rung',
   'stalled',
   'awaiting-review',
   'pr-open',
@@ -287,6 +388,18 @@ function needOf(session: DashboardSession): DashboardNeed | undefined {
       'blocked',
       `blocked (${session.rejectCount} rejections)`,
       command(`pup unblock ${id}`),
+    );
+  }
+  const topReached = session.route?.topReached;
+  if (topReached !== undefined && session.route) {
+    // The task id is session-writable too, and the answer is a command.
+    const task = SESSION_ID_PATTERN.test(session.taskId) ? session.taskId : undefined;
+    return need(
+      'top-rung',
+      `top rung: ${topReached} on ${session.route.model} ${session.route.effort}`,
+      task
+        ? command(`re-plan ${task}, or pup launch ${task} --model <model> --effort <effort>`)
+        : '(task id outside the minted shape; inspect the store)',
     );
   }
   if (session.stalledAgeMs !== undefined) {
@@ -459,6 +572,7 @@ function dashboardSession(
   eventsFile: string | undefined,
   stall: StalledSession | undefined,
   isLanded: (target: string | undefined, sha: string | undefined) => boolean,
+  topReached: string | undefined,
 ): DashboardSession {
   const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
@@ -485,6 +599,7 @@ function dashboardSession(
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
+  const route = dashboardRoute(row, topReached);
   return {
     // The store is session-writable and, since the fleet view (decision 60),
     // not always the caller's own: all three print as stored, and no CHECK
@@ -510,6 +625,7 @@ function dashboardSession(
     ...(question === undefined ? {} : { question }),
     ...(openPr === undefined ? {} : { openPr }),
     ...(lastGate ? { lastGate } : {}),
+    ...(route ? { route } : {}),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     needsHuman:
       row.state === 'blocked' || stalledAgeMs !== undefined || activity?.kind === 'awaiting-input',

@@ -918,6 +918,36 @@ describe('compileConductorProfile', () => {
 
     expect(compiled.contextMarkdown).toContain('`pup launch <task>`');
     expect(compiled.contextMarkdown).not.toContain('--model');
+    expect(compiled.contextMarkdown).toContain(
+      'Launch with plain `pup launch <task>`, naming no model or effort',
+    );
+  });
+
+  // Decision 92: the conductor launches into the routing rather than around
+  // it, and owes a critical branch a security review before it gates it.
+  it('names the tier rule, both ladders and the xhigh security-review subagent', () => {
+    const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
+
+    expect(context).toContain('## Models');
+    expect(context).toContain(
+      'A task is critical when a scope-in glob touches any of `src/core/merge-gate*`, ',
+    );
+    for (const area of ['src/claude/**', '.claude/hooks/**', '.github/**', 'src/core/git*']) {
+      expect(context).toContain(`\`${area}\``);
+    }
+    expect(context).toContain(
+      'standard: claude-sonnet-5-5 medium → claude-sonnet-5-5 high → claude-opus-5-5 high → ' +
+        'claude-opus-5-5 xhigh; critical: claude-opus-5-5 high → claude-opus-5-5 xhigh',
+    );
+    expect(context).toContain('`pup plan add|edit --tier critical|standard`');
+    expect(context).toContain('A launch refused at the top rung of its ladder');
+    expect(context).toContain(
+      'before `pup merge <session-id> --pr` on a session whose diff touches the gate, git, ' +
+        'tmux or the store',
+    );
+    expect(context).toContain('Agent tool at `effort: "xhigh"`');
+    expect(context).toContain("The operator fixed every session's model to opus");
+    expect(context).not.toMatch(/fable/i);
   });
 
   it('wires an edit block and the bash guard, and no scope or event hooks', () => {

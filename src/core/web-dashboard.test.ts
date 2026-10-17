@@ -24,6 +24,7 @@ import {
   incrementRejectCount,
   insertSession,
   insertTask,
+  recordSessionRoute,
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
@@ -346,6 +347,27 @@ describe('startWebDashboard', () => {
       expect(page).toContain('waiting on input (Allow Bash?)');
       expect(page).toContain('idle (turn ended, no done signal)');
       expect(page).toContain('stalled — see Needs you');
+    });
+
+    // Decision 92: the same words `pup status` prints for the route.
+    it('says what each session runs on, its rung, and why it climbed there', async () => {
+      seedSession('s-climbed', ['running']);
+      recordSessionRoute(db, 's-climbed', {
+        tier: 'critical',
+        rung: 1,
+        model: 'claude-opus-5-5',
+        effort: 'xhigh',
+        reason: 'turn-death',
+        override: false,
+      });
+      seedSession('s-old', ['running']);
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).toContain(
+        '<div class="fact">claude-opus-5-5 xhigh, rung 2/2 after turn-death</div>',
+      );
+      expect(page.match(/rung \d\/\d/g)).toEqual(['rung 2/2']);
     });
 
     it('prints a placeholder for an id outside the minted shape, and pins no debt on it', async () => {

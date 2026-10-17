@@ -6,10 +6,11 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,6 +37,8 @@ import {
   getSession,
   insertSession,
   insertTask,
+  recordSessionRoute,
+  type SessionRoute,
   transitionSession,
 } from './session.repository.js';
 import {
@@ -46,6 +49,7 @@ import {
   requestHandoff,
   respawnSession,
 } from './session-handoff.service.js';
+import { TopRungReachedError } from './session-lifecycle.errors.js';
 
 describe('session handoff', () => {
   let db: Database;
@@ -381,6 +385,163 @@ describe('session handoff', () => {
       respawnSessionWithTestPaths();
 
       expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
+    });
+  });
+
+  // Decision 92: a respawn is the same session on a fresh window, so it climbs
+  // from the window it replaces as a relaunch climbs from the session before.
+  describe('model routing', () => {
+    const STANDARD_FIRST: SessionRoute = {
+      tier: 'standard',
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      override: false,
+    };
+    const CRITICAL_TOP: SessionRoute = {
+      tier: 'critical',
+      rung: 1,
+      model: 'claude-opus-5-5',
+      effort: 'xhigh',
+      override: false,
+    };
+    const launchedRoute = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0].route;
+    const routeColumns = () =>
+      db
+        .prepare(
+          "SELECT tier, rung, model, effort, rung_reason, route_override FROM sessions WHERE id = 's1'",
+        )
+        .get();
+    const rejectOnce = () => {
+      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', 'rejected');
+      transitionSession(db, 's1', 'running');
+    };
+
+    beforeEach(() => {
+      writeCompiled();
+    });
+
+    it('climbs one rung after a gate rejection in the window it replaces, recorded on the session', () => {
+      recordSessionRoute(db, 's1', STANDARD_FIRST);
+      rejectOnce();
+      handoffRound();
+
+      respawnSessionWithTestPaths();
+
+      expect(launchedRoute()).toEqual({
+        model: 'claude-sonnet-5-5',
+        effort: 'high',
+        fallbackModel: 'claude-opus-5-5',
+      });
+      expect(routeColumns()).toEqual({
+        tier: 'standard',
+        rung: 1,
+        model: 'claude-sonnet-5-5',
+        effort: 'high',
+        rung_reason: 'gate-rejection',
+        route_override: 0,
+      });
+    });
+
+    it('climbs after a dead turn the watcher recorded, and only once for it', () => {
+      recordSessionRoute(db, 's1', STANDARD_FIRST);
+      appendEvent(db, 's1', 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+
+      // The death was answered by that respawn; the next window ran into nothing.
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+    });
+
+    it('climbs on a hard respawn of a window stalled past the bar', () => {
+      recordSessionRoute(db, 's1', STANDARD_FIRST);
+      const eventsFile = paths().eventsFile('s1');
+      mkdirSync(dirname(eventsFile), { recursive: true });
+      writeFileSync(eventsFile, '{}\n');
+      const quietSince = new Date(Date.now() - 11 * 60 * 1000);
+      utimesSync(eventsFile, quietSince, quietSince);
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
+    });
+
+    it('never climbs a session the gate parked, even once unblocked', () => {
+      recordSessionRoute(db, 's1', STANDARD_FIRST);
+      transitionSession(db, 's1', 'blocked');
+      transitionSession(db, 's1', 'running', { kind: 'operator-unblock' });
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(routeColumns()).toMatchObject({ rung: 0, rung_reason: null });
+    });
+
+    it('refuses a respawn after a failure on the top rung, leaving the window running', () => {
+      recordSessionRoute(db, 's1', CRITICAL_TOP);
+      rejectOnce();
+
+      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(TopRungReachedError);
+      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
+        /Session s1 hit gate-rejection on the top rung of its critical ladder/,
+      );
+      expect(killSession).not.toHaveBeenCalled();
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(getSession(db, 's1')?.tmux_target).toBe('%3');
+    });
+
+    it("respawns past the top on the operator's explicit model and effort, recorded as an override", () => {
+      recordSessionRoute(db, 's1', CRITICAL_TOP);
+      rejectOnce();
+
+      hardRespawnSession(db, repoPath, 's1', stateBase, {
+        model: 'claude-opus-5-5',
+        effort: 'high',
+      });
+
+      expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'high' });
+      expect(routeColumns()).toMatchObject({
+        tier: 'critical',
+        rung: 1,
+        effort: 'high',
+        route_override: 1,
+      });
+    });
+
+    it('keeps the override the session was launched with, the rung still climbing under it', () => {
+      recordSessionRoute(db, 's1', {
+        ...STANDARD_FIRST,
+        model: 'claude-opus-5-5',
+        effort: 'low',
+        override: true,
+      });
+      rejectOnce();
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'low' });
+      expect(routeColumns()).toMatchObject({
+        rung: 1,
+        model: 'claude-opus-5-5',
+        effort: 'low',
+        rung_reason: 'gate-rejection',
+        route_override: 1,
+      });
+    });
+
+    it('routes a session launched before routing from its task, on the first rung', () => {
+      handoffRound();
+
+      respawnSessionWithTestPaths();
+
+      expect(launchedRoute()).toEqual({
+        model: 'claude-sonnet-5-5',
+        effort: 'medium',
+        fallbackModel: 'claude-opus-5-5',
+      });
+      expect(routeColumns()).toMatchObject({ tier: 'standard', rung: 0 });
     });
   });
 

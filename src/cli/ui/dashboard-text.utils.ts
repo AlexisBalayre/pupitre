@@ -1,4 +1,5 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
+import { routeLabel } from '../../core/dashboard.service.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
@@ -145,7 +146,8 @@ export function sessionLine(session: DashboardSession): string {
       : '';
   return (
     `${session.state.padEnd(16)} ${shownId.padEnd(28)} ${session.branch}${marker}` +
-    `${trailing(activityLabel(session))}${trailing(contextLabel(session))}`
+    `${trailing(activityLabel(session))}${trailing(routeLabel(session))}` +
+    `${trailing(contextLabel(session))}`
   );
 }
 

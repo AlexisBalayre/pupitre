@@ -9,15 +9,18 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { projectPaths } from './paths.utils.js';
+import { type ProjectPaths, projectPaths } from './paths.utils.js';
+import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
   decodeEvent,
   getSession,
   listEvents,
+  recordSessionRoute,
   type SessionRow,
 } from './session.repository.js';
-import { sessionPane } from './session-lifecycle.service.js';
+import { respawnRoute, sessionPane } from './session-lifecycle.service.js';
+import type { RouteOverride } from './types/session-lifecycle.types.js';
 
 const HANDOFF_POLL_MS = 5_000;
 export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
@@ -169,14 +172,18 @@ export function awaitHandoffReady(
 /**
  * Replace the session's tmux pane with a fresh `claude` in the same worktree,
  * branch, and session id, kicked off with the original compiled context plus
- * the handoff. The session row is untouched: this is the same session on a
- * fresh context window, not a new one — profile hash and history carry over.
+ * the handoff. The session row keeps its profile hash and history: this is
+ * the same session on a fresh context window, not a new one. Only its route
+ * moves, one rung up when the window it replaces ran into a failure, and a
+ * failure on the top rung refuses the respawn before anything is killed
+ * (decision 92).
  */
 export function respawnSession(
   db: Database,
   repoPath: string,
   sessionId: string,
   pathsBase?: string,
+  override?: RouteOverride,
 ): void {
   const session = requireRunning(db, sessionId);
   const paths = projectPaths(repoPath, pathsBase);
@@ -200,7 +207,7 @@ export function respawnSession(
         `something replaced it since. Re-run \`pup respawn ${sessionId}\` to ask again.`,
     );
   }
-  relaunchWindow(db, repoPath, sessionId, session, paths.compiledDir(sessionId), {
+  relaunchWindow(db, repoPath, session, paths, override, {
     promptSuffix: `\n\n## Handoff from your previous run\n${handoff}`,
     eventPayload: { handoffBytes: handoff.length },
   });
@@ -210,17 +217,19 @@ export function respawnSession(
  * `pup kill --respawn`: the escape hatch for a wedged or crashed window that
  * cannot answer a handoff steer. Same session, fresh window, no handoff — the
  * kickoff tells the fresh run its predecessor was killed so it inspects the
- * worktree instead of assuming a clean start.
+ * worktree instead of assuming a clean start. It climbs as `respawnSession`
+ * does: a wedged window is the stall a hard respawn is most often for.
  */
 export function hardRespawnSession(
   db: Database,
   repoPath: string,
   sessionId: string,
   pathsBase?: string,
+  override?: RouteOverride,
 ): void {
   const session = requireRunning(db, sessionId);
   const paths = projectPaths(repoPath, pathsBase);
-  relaunchWindow(db, repoPath, sessionId, session, paths.compiledDir(sessionId), {
+  relaunchWindow(db, repoPath, session, paths, override, {
     promptSuffix:
       '\n\n## Fresh start after a kill\n' +
       'The previous run of this session was killed without writing a handoff (it was ' +
@@ -257,12 +266,17 @@ function graphForRespawn(
 function relaunchWindow(
   db: Database,
   repoPath: string,
-  sessionId: string,
   session: SessionRow,
-  compiledDir: string,
+  paths: ProjectPaths,
+  override: RouteOverride | undefined,
   extras: { promptSuffix: string; eventPayload: Record<string, unknown> },
 ): void {
+  const sessionId = session.id;
+  const compiledDir = paths.compiledDir(sessionId);
   const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
+  // Before the kill, so a respawn refused at the top rung leaves the window
+  // it would have replaced running.
+  const route = respawnRoute(db, paths, session, override);
   killTmux(sessionId, session.tmux_target);
   // After the kill: the previous run writes to this worktree until it dies, and
   // an index taken while it is still editing is an index of a tree nothing will
@@ -272,11 +286,13 @@ function relaunchWindow(
     sessionId,
     worktreePath: session.worktree_path,
     settingsPath: join(compiledDir, 'settings.json'),
+    route: routeFor(route.tier, route.rung, route),
     // The context carries the `## Code graph` section whenever the launch
     // compiled one, so a respawn without this flag tells the session to use a
     // tool that is not connected — the gap decision 51's addendum named.
     mcpConfigPath,
   });
+  recordSessionRoute(db, sessionId, route);
   // A fresh window is a fresh pane: stored before the kickoff types into it,
   // so a steer that races the respawn is refused or lands here, never in the
   // old pane's successor.
