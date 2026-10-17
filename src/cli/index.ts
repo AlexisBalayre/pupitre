@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -1324,11 +1324,17 @@ export function buildProgram(): Command {
       process.once('SIGINT', stop);
       process.once('SIGTERM', stop);
       if (!opts.open) return;
-      try {
-        execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [dashboard.url]);
-      } catch {
-        console.log('Could not open a browser; open the url above.');
-      }
+      // Detached and unwaited: a browser xdg-open starts in the foreground
+      // would hold a synchronous call, and with it the server, until it quits.
+      spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [dashboard.url], {
+        detached: true,
+        stdio: 'ignore',
+      })
+        .on('error', () => console.log('Could not open a browser; open the url above.'))
+        .on('exit', (code) => {
+          if (code) console.log('Could not open a browser; open the url above.');
+        })
+        .unref();
     });
 
   /** `pup status`'s fleet view, and a piped `pup ui --all`'s (decisions 60, 65). */
@@ -2305,7 +2311,8 @@ export function fatalExitCode(error: unknown): number {
 
 if (isMainModule()) {
   try {
-    buildProgram().parse();
+    // parseAsync, so an async action's rejection lands in this catch too.
+    await buildProgram().parseAsync();
   } catch (error) {
     // exitCode, not exit(): when stderr is a pipe the write is asynchronous
     // and exit() would drop the one line that explains the failure.

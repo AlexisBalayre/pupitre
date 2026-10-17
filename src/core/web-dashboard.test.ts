@@ -27,8 +27,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
-import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
-import { escapeHtml } from './web-dashboard.template.js';
+import { escapeHtml, startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
 
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';

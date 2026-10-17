@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -100,7 +101,7 @@ vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() 
 // call, the fixtures' git included, runs for real.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
@@ -4352,34 +4353,51 @@ describe('CLI commands', () => {
       addedListener('SIGTERM', sigterms);
     }
 
-    /** The opener opens or fails as `opens` says; every other command still runs for real. */
-    async function stubOpener(opens: boolean): Promise<void> {
-      const actual =
-        await vi.importActual<typeof import('node:child_process')>('node:child_process');
-      vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: unknown[]) => {
-        if (file !== OPENER) {
-          return (actual.execFileSync as (...args: unknown[]) => unknown)(file, ...rest);
-        }
-        if (!opens) throw new Error('no browser');
-        return Buffer.from('');
-      }) as typeof execFileSync);
+    /**
+     * The opener as a fake child: `outcome` is how it ends, raised after the
+     * action returns, as a real child's events are.
+     */
+    function stubOpener(outcome: 'opens' | 'missing' | 'fails'): { unref: () => void } {
+      const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
+      vi.mocked(spawn).mockImplementation((() => {
+        setImmediate(() => {
+          if (outcome === 'missing') child.emit('error', new Error('spawn xdg-open ENOENT'));
+          else child.emit('exit', outcome === 'fails' ? 3 : 0);
+        });
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof spawn);
+      return child;
     }
 
-    it('hands the url to the browser opener with --open', async () => {
+    /** One macrotask: the fake opener's exit or error has fired. */
+    function openerSettled(): Promise<void> {
+      return new Promise((resolve) => setImmediate(resolve));
+    }
+
+    it('hands the url to a detached opener it does not wait on, with --open', async () => {
       useCwd(initRepo());
-      await stubOpener(true);
+      const child = stubOpener('opens');
 
       await runOpen();
+      await openerSettled();
 
-      expect(execFileSync).toHaveBeenCalledWith(OPENER, [URL_WITH_TOKEN]);
+      expect(spawn).toHaveBeenCalledWith(OPENER, [URL_WITH_TOKEN], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      expect(child.unref).toHaveBeenCalledOnce();
       expect(logs).not.toContain('Could not open a browser; open the url above.');
     });
 
-    it('says to open the url by hand when no browser opens', async () => {
+    it.each([
+      ['is missing', 'missing'],
+      ['exits non-zero', 'fails'],
+    ] as const)('says to open the url by hand when the opener %s', async (_how, outcome) => {
       useCwd(initRepo());
-      await stubOpener(false);
+      stubOpener(outcome);
 
       await runOpen();
+      await openerSettled();
 
       expect(logs).toContain('Could not open a browser; open the url above.');
     });
@@ -6010,6 +6028,34 @@ describe('executable entry point', () => {
     });
 
     expect(out).toContain('Usage:');
+  });
+
+  // The binary path, not parseAsync from a test: an async action's rejection
+  // must reach the entry point's catch, not escape as an unhandled one.
+  it("prints a failed async action's refusal on one line, as every other command does", {
+    timeout: 20_000,
+  }, () => {
+    const home = tempDir('pup-home-');
+    const env: NodeJS.ProcessEnv = { ...GIT_ENV, HOME: home };
+    delete env.PUP_SESSION_ID;
+    delete env.PUP_CONDUCTOR;
+
+    const run = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(process.cwd(), 'src', 'cli', 'index.ts'),
+        'dashboard',
+        '--project',
+        'ghost',
+      ],
+      { encoding: 'utf8', env, cwd: process.cwd() },
+    );
+
+    expect(run.status).toBe(1);
+    expect(run.stderr.trim().split('\n')).toHaveLength(1);
+    expect(run.stderr).not.toContain('    at ');
   });
 });
 
