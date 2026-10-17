@@ -21,6 +21,7 @@ import {
   recordMerge,
   refuseGate,
   resolveCommit,
+  timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
 import { appendEvent, type SessionRow } from './session.repository.js';
@@ -171,20 +172,29 @@ export async function regateMerged(
     ...refuseGate(db, session, sandbox, stages),
     regated: true,
   });
+  const started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // Pinned first, and once: no rebase will move the branch.
   const sha = pinRegatedHead(req.repoPath, session.branch, regate.head, regate.prUrl);
   if (!isAncestor(req.repoPath, targetSha, sha)) {
-    stages.push({
-      stage: 'fresh-base',
-      status: 'fail',
-      detail:
-        `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ` +
-        `${targetSha}. Rebase it onto ${sanitizeReason(target)}, push it to the PR, then re-gate.`,
-    });
+    stages.push(
+      timedSince(started, {
+        stage: 'fresh-base',
+        status: 'fail',
+        detail:
+          `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ` +
+          `${targetSha}. Rebase it onto ${sanitizeReason(target)}, push it to the PR, then re-gate.`,
+      }),
+    );
     return refused();
   }
-  stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
+  stages.push(
+    timedSince(started, {
+      stage: 'fresh-base',
+      status: 'pass',
+      detail: `already based on ${target}`,
+    }),
+  );
 
   const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
   if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();

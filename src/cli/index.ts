@@ -10,7 +10,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
-import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
+import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capability.utils.js';
 import {
   attachCommand,
   attachWindow,
@@ -210,10 +210,13 @@ function printDecisionRecordBody(record: DecisionRecordRow): void {
  * one line with nothing to say the rest was dropped. A single line still over
  * 300 characters is still cut, as every other scrubbed string is.
  */
-function printGateStage(stage: StoredGateStage): void {
+function printGateStage(stage: StoredGateStage & { durationMs?: number }): void {
   const [head = '', ...rest] = (stage.detail ?? '').split('\n');
+  // A number pup timed, not text a store holds; the stored copy `pup review`
+  // prints has none (decision 95).
+  const took = stage.durationMs === undefined ? '' : ` ${formatDuration(stage.durationMs)}`;
   console.log(
-    `  ${sanitizeReason(stage.stage).padEnd(16)} ${sanitizeReason(stage.status).toUpperCase()}${stage.detail ? `  ${sanitizeReason(head)}` : ''}`,
+    `  ${sanitizeReason(stage.stage).padEnd(16)} ${sanitizeReason(stage.status).toUpperCase()}${took}${stage.detail ? `  ${sanitizeReason(head)}` : ''}`,
   );
   for (const detail of rest) console.log(`    ${sanitizeReason(detail)}`);
 }
@@ -283,7 +286,7 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
   console.log(`adapters: ${sanitizeReason(report.baseline.adapters.join(', '))}`);
   for (const s of report.baseline.stages) {
     console.log(
-      `  ${sanitizeReason(s.stage).padEnd(8)} ${sanitizeReason(s.status).toUpperCase().padEnd(8)} ${s.durationMs}ms`,
+      `  ${sanitizeReason(s.stage).padEnd(8)} ${sanitizeReason(s.status).toUpperCase().padEnd(8)} ${formatDuration(s.durationMs)}`,
     );
     if (s.status === 'fail' && s.detail)
       console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
@@ -381,8 +384,10 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
         ? t.after.toUpperCase()
         : `${t.before.toUpperCase()} -> ${t.after.toUpperCase()}`;
     const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
+    const took = fresh.get(t.stage)?.durationMs;
+    const timing = took === undefined ? '' : ` ${formatDuration(took)}`;
     console.log(
-      `  ${sanitizeReason(t.stage).padEnd(8)} ${sanitizeReason(move).padEnd(16)}${marker}`,
+      `  ${sanitizeReason(t.stage).padEnd(8)} ${sanitizeReason(move).padEnd(16)}${timing}${marker}`,
     );
     const detail = fresh.get(t.stage)?.detail;
     if (t.delta === 'regressed' && detail)

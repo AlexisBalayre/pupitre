@@ -42,6 +42,11 @@ export function sanitizeReason(reason: string): string {
   return [...oneLine].slice(0, FAILURE_SUMMARY_CHARS).join('');
 }
 
+/** A stage's wall time as the gate, init and audit reports print it (decision 95). */
+export function formatDuration(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 /**
  * One-line reason from a failed shell-out, for a capability's `unavailable`
  * channel. Prefers stderr — a tool that dies says why there.

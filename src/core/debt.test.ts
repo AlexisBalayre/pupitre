@@ -17,7 +17,11 @@ const NOTHING: DebtMeasurement = { debt: {}, gaps: [] };
 
 describe('measureStaticDebt', () => {
   it('reports no debt at all for adapters that declare no capability', async () => {
-    expect(await measureStaticDebt([adapter('ts')], CTX)).toEqual({ debt: {}, gaps: [] });
+    expect(await measureStaticDebt([adapter('ts')], CTX)).toEqual({
+      debt: {},
+      gaps: [],
+      elapsedMs: {},
+    });
   });
 
   it('unions dead exports over every adapter that measured', async () => {
@@ -99,6 +103,16 @@ describe('measureStaticDebt', () => {
 
     expect(measured.duplication).toEqual({ duplicatedLines: 8, blocks: [] });
   });
+
+  // The gate prints each on its stage (decision 95).
+  it('times each capability an adapter declares, and no other', async () => {
+    const slowDeadCode = () => new Promise<[]>((resolve) => setTimeout(() => resolve([]), 60));
+
+    const measured = await measureStaticDebt([adapter('ts', { deadCode: slowDeadCode })], CTX);
+
+    expect(Object.keys(measured.elapsedMs ?? {})).toEqual(['dead-code']);
+    expect(measured.elapsedMs?.['dead-code']).toBeGreaterThanOrEqual(50);
+  });
 });
 
 describe('measureCoverage', () => {
@@ -159,6 +173,16 @@ describe('measureCoverage', () => {
     expect(measured.coverageAdapter).toBe(ts);
   });
 
+  it('times the coverage it took, keeping the times already measured', async () => {
+    const measured = await measureCoverage(
+      { debt: {}, gaps: [], elapsedMs: { 'dead-code': 12 } },
+      [adapter('ts', { coverage: () => ({ files: {} }) })],
+      CTX,
+    );
+
+    expect(measured.elapsedMs).toEqual({ 'dead-code': 12, coverage: expect.any(Number) });
+  });
+
   it('leaves the measurement as it was when no adapter measures coverage', async () => {
     const measured = { debt: { duplicatedLines: 3 }, gaps: [] };
 
@@ -201,6 +225,17 @@ describe('judgeDebt', () => {
       'duplication',
       'complexity',
       'coverage',
+    ]);
+  });
+
+  it('puts each capability’s time on the stage it answers, and none on one that ran nothing', () => {
+    const verdict = judge({ elapsedMs: { 'dead-code': 120, complexity: 40 } });
+
+    expect(verdict.stages.map((s) => [s.stage, s.durationMs])).toEqual([
+      ['dead-code', 120],
+      ['duplication', undefined],
+      ['complexity', 40],
+      ['coverage', undefined],
     ]);
   });
 

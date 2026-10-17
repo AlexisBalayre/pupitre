@@ -13,7 +13,12 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
+import {
+  failureSummary,
+  formatDuration,
+  localContext,
+  sanitizeReason,
+} from '../adapters/capability.utils.js';
 import type {
   CapabilityContext,
   CapabilityUnavailable,
@@ -248,9 +253,17 @@ export async function withMergeLock<TResult>(
   }
 }
 
+/** `result` with the wall time since `started`, which the report prints (decision 95). */
+export function timedSince(started: number, result: GateStageResult): GateStageResult {
+  return { ...result, durationMs: Date.now() - started };
+}
+
 function formatGateReport(report: GateReport): string {
   const lines = report.stages.map(
-    (s) => `- ${s.stage}: ${s.status.toUpperCase()}${s.detail ? ` — ${s.detail}` : ''}`,
+    (s) =>
+      `- ${s.stage}: ${s.status.toUpperCase()}` +
+      `${s.durationMs !== undefined ? ` (${formatDuration(s.durationMs)})` : ''}` +
+      `${s.detail ? ` — ${s.detail}` : ''}`,
   );
   const header = `Merge gate ${report.passed ? 'passed' : 'FAILED'} for session ${report.sessionId}.`;
   // The containment line sits with the stages, not in a footnote: this text is
@@ -857,16 +870,19 @@ async function gateAndMerge(
   const failed = (): MergeOutcome =>
     rejectOrBlock(db, { sessionId: session.id, passed: false, sandbox, stages });
 
+  let started = Date.now();
   const dirty = runGit(worktree, ['status', '--porcelain']).trim();
   if (dirty) {
-    stages.push({
-      stage: 'worktree-clean',
-      status: 'fail',
-      detail: `Uncommitted changes in the worktree:\n${dirty}`,
-    });
+    stages.push(
+      timedSince(started, {
+        stage: 'worktree-clean',
+        status: 'fail',
+        detail: `Uncommitted changes in the worktree:\n${dirty}`,
+      }),
+    );
     return failed();
   }
-  stages.push({ stage: 'worktree-clean', status: 'pass' });
+  stages.push(timedSince(started, { stage: 'worktree-clean', status: 'pass' }));
 
   // Both ends pinned under the lock, and every later git call names a sha
   // (decision 80): the target here, so the rebase, the diffs and the
@@ -875,27 +891,42 @@ async function gateAndMerge(
   // live session commits or tags meanwhile. The stages read that sha's files
   // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
+  started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
-    stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
+    stages.push(
+      timedSince(started, {
+        stage: 'fresh-base',
+        status: 'pass',
+        detail: `already based on ${target}`,
+      }),
+    );
   } else {
     try {
       runGit(worktree, ['rebase', targetSha]);
-      stages.push({ stage: 'fresh-base', status: 'pass', detail: `auto-rebased onto ${target}` });
+      stages.push(
+        timedSince(started, {
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: `auto-rebased onto ${target}`,
+        }),
+      );
     } catch (error) {
       try {
         runGit(worktree, ['rebase', '--abort']);
       } catch {
         // nothing to abort — the rebase never started
       }
-      stages.push({
-        stage: 'fresh-base',
-        status: 'fail',
-        detail:
-          `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
-          `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
-          `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
-      });
+      stages.push(
+        timedSince(started, {
+          stage: 'fresh-base',
+          status: 'fail',
+          detail:
+            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
+            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
+            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
+        }),
+      );
       return failed();
     }
   }
@@ -906,14 +937,16 @@ async function gateAndMerge(
   if (!isAncestor(req.repoPath, targetSha, sha)) {
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
-    stages.push({
-      stage: 'fresh-base',
-      status: 'fail',
-      detail:
-        `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
-        `after the auto-rebase. Check out ${session.branch} in this worktree and rebase it onto ` +
-        `refs/heads/${sanitizeReason(target)}.`,
-    });
+    stages.push(
+      timedSince(started, {
+        stage: 'fresh-base',
+        status: 'fail',
+        detail:
+          `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
+          `after the auto-rebase. Check out ${session.branch} in this worktree and rebase it onto ` +
+          `refs/heads/${sanitizeReason(target)}.`,
+      }),
+    );
     return failed();
   }
 
@@ -1133,26 +1166,28 @@ export async function measureBranch(
     command: { stage: string; command: string; args: string[]; writablePaths?: string[] },
     cwd: string,
   ): Promise<GateStageResult> => {
+    // A re-run's time counts: the stage held the lock for both.
+    const started = Date.now();
     const first = await runCommand(command, cwd);
-    if (first === undefined) return { stage, status: 'pass' };
+    if (first === undefined) return timedSince(started, { stage, status: 'pass' });
     if (command.stage !== 'test' || !isRerunnable(first)) {
-      return { stage, status: 'fail', detail: commandFailureDetail(first) };
+      return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
     const rerun = await runCommand(command, cwd);
     if (rerun === undefined) {
-      return {
+      return timedSince(started, {
         stage,
         status: 'pass',
         detail: `flaky — failed, then passed on its one re-run; failing the first time: ${failingTestNames(first)}`,
-      };
+      });
     }
-    return {
+    return timedSince(started, {
       stage,
       status: 'fail',
       detail:
         `failed twice — failing the first time: ${failingTestNames(first)}; ` +
         `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
-    };
+    });
   };
 
   // One repo has one build, one test and one lint, and the runner that answers
@@ -1251,6 +1286,7 @@ export async function measureBranch(
     }
     return files;
   };
+  const complexityStarted = Date.now();
   const complexity =
     complexityAdapters.length > 0
       ? {
@@ -1260,6 +1296,10 @@ export async function measureBranch(
           after: complexityOf(capabilityContext),
         }
       : undefined;
+  // Once both sides have settled, however either did; it never rejects.
+  const complexityElapsed = Promise.allSettled([complexity?.before, complexity?.after]).then(
+    () => Date.now() - complexityStarted,
+  );
   // Every one settles before any is read, so none outlives the checkout this
   // gate removes, and an interrupt is the outcome whatever else failed. A debt
   // capability's own error waits for the debt stages, where it surfaced before.
@@ -1345,23 +1385,28 @@ export async function measureBranch(
   const specRow = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(session.task_id) as {
     project_id: string;
   };
+  let started = Date.now();
   const spec = readTaskSpec(db, session.task_id);
   const violations = auditScope(changedPaths, spec.scopeIn, spec.scopeOut);
   if (violations.length > 0) {
-    stages.push({
-      stage: 'scope-audit',
-      status: 'fail',
-      detail: `Out-of-scope changes:\n${violations
-        .map((v) => `  ${quotePath(v.path)} (${v.reason})`)
-        .join('\n')}`,
-    });
+    stages.push(
+      timedSince(started, {
+        stage: 'scope-audit',
+        status: 'fail',
+        detail: `Out-of-scope changes:\n${violations
+          .map((v) => `  ${quotePath(v.path)} (${v.reason})`)
+          .join('\n')}`,
+      }),
+    );
     return undefined;
   }
-  stages.push({
-    stage: 'scope-audit',
-    status: 'pass',
-    detail: `${changedPaths.length} files in scope`,
-  });
+  stages.push(
+    timedSince(started, {
+      stage: 'scope-audit',
+      status: 'pass',
+      detail: `${changedPaths.length} files in scope`,
+    }),
+  );
 
   // Snapshot before any --accept-debt entry from THIS merge is written, so a
   // merge never flags its own fresh debt as closeable, nor, on a re-gate or a
@@ -1380,6 +1425,7 @@ export async function measureBranch(
     ? (JSON.parse(project.baseline) as ProjectBaseline)
     : undefined;
 
+  started = Date.now();
   const changed = countChangedLines(req.repoPath, targetSha, sha);
   const sizeFindings: string[] = [];
   if (changed.lines > DIFF_SIZE_FLAG_LINES) {
@@ -1404,15 +1450,18 @@ export async function measureBranch(
         `${quoted}${ellipsis}`,
     );
   }
-  if (sizeFindings.length > 0) {
-    stages.push({
-      stage: 'diff-size',
-      status: 'flagged',
-      detail: flagDetail(`${changed.lines} changed lines ${sizeFindings.join('; ')}`),
-    });
-  } else {
-    stages.push({ stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` });
-  }
+  stages.push(
+    timedSince(
+      started,
+      sizeFindings.length > 0
+        ? {
+            stage: 'diff-size',
+            status: 'flagged',
+            detail: flagDetail(`${changed.lines} changed lines ${sizeFindings.join('; ')}`),
+          }
+        : { stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` },
+    ),
+  );
 
   const measurement = await measureCoverage(
     await staticDebt,
@@ -1424,7 +1473,10 @@ export async function measureBranch(
     {
       ...measurement,
       ...(complexity
-        ? { complexity: { before: await complexity.before, after: await complexity.after } }
+        ? {
+            complexity: { before: await complexity.before, after: await complexity.after },
+            elapsedMs: { ...measurement.elapsedMs, complexity: await complexityElapsed },
+          }
         : {}),
       coverableFiles:
         measurement.coverageAdapter?.coverableFiles?.(capabilityContext, changedPaths) ?? [],

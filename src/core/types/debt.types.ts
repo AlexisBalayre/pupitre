@@ -38,6 +38,12 @@ export interface DebtMeasurement {
    * count as missing from a TypeScript report. Absent when none declares it.
    */
   coverageAdapter?: Adapter;
+  /**
+   * How long each capability ran, in ms, keyed by the gate stage it answers:
+   * `judgeDebt` puts it on that stage (decision 95). A capability no adapter
+   * declares ran nothing and has no entry.
+   */
+  elapsedMs?: Record<string, number>;
 }
 
 /**

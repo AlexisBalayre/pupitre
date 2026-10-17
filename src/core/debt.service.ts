@@ -53,7 +53,9 @@ export async function measureStaticDebt(
 ): Promise<DebtMeasurement> {
   const debt: DebtBaseline = {};
   const gaps: DebtGap[] = [];
+  const elapsedMs: Record<string, number> = {};
 
+  let started = Date.now();
   const deadExports: DeadExport[][] = [];
   for (const adapter of adapters) {
     const result = await adapter.deadCode?.(ctx);
@@ -68,12 +70,15 @@ export async function measureStaticDebt(
   // must leave the bar unset (a baseline of [] would read as "0 dead exports"
   // and flag every later finding), while one that found nothing still stores [].
   if (deadExports.length > 0) debt.deadExports = deadExports.flat();
+  if (adapters.some((a) => a.deadCode)) elapsedMs['dead-code'] = Date.now() - started;
 
+  started = Date.now();
   const duplicationReports: DuplicationReport[] = [];
   for (const adapter of adapters) {
     const report = await adapter.duplication?.(ctx);
     if (report !== undefined) duplicationReports.push(report);
   }
+  if (adapters.some((a) => a.duplication)) elapsedMs.duplication = Date.now() - started;
   let duplication: DuplicationReport | undefined;
   if (duplicationReports.length > 0) {
     duplication = mergeDuplication(duplicationReports);
@@ -83,7 +88,7 @@ export async function measureStaticDebt(
     debt.duplicationRule = DUPLICATION_RULE_ID;
   }
 
-  return { debt, gaps, ...(duplication ? { duplication } : {}) };
+  return { debt, gaps, ...(duplication ? { duplication } : {}), elapsedMs };
 }
 
 /**
@@ -94,7 +99,9 @@ export async function measureStaticDebt(
  *
  * `folded` is that adapter's report from the test run, when the test stage ran
  * its `coveredTest` (decision 95). Without it the adapter runs the suite again,
- * so a caller runs this once its test runs are over, never alongside them.
+ * so a caller runs this once its test runs are over, never alongside them. The
+ * coverage stage's time is this call's: a folded report's run is the test
+ * stage's, and counted there.
  */
 export async function measureCoverage(
   measured: DebtMeasurement,
@@ -104,7 +111,9 @@ export async function measureCoverage(
 ): Promise<DebtMeasurement> {
   const coverageAdapter = adapters.find((a) => a.coverage);
   if (!coverageAdapter) return measured;
+  const started = Date.now();
   const result = folded ?? (await coverageAdapter.coverage?.(ctx));
+  const elapsedMs = { ...measured.elapsedMs, coverage: Date.now() - started };
   if (isUnavailable(result)) {
     return {
       ...measured,
@@ -113,6 +122,7 @@ export async function measureCoverage(
         { adapterId: coverageAdapter.id, capability: COVERAGE, reason: result.unavailable },
       ],
       coverageAdapter,
+      elapsedMs,
     };
   }
   const ratio = result ? repoCoverageRatio(result) : undefined;
@@ -121,6 +131,7 @@ export async function measureCoverage(
     debt: { ...measured.debt, ...(ratio !== undefined ? { coverageRatio: ratio } : {}) },
     ...(result ? { coverage: result } : {}),
     coverageAdapter,
+    elapsedMs,
   };
 }
 
@@ -168,7 +179,10 @@ export function judgeDebt(
     judgeCoverage(measured, baseline, sessionId),
   ];
   return {
-    stages: verdicts.map((v) => v.stage),
+    stages: verdicts.map(({ stage }) => {
+      const durationMs = measured.elapsedMs?.[stage.stage];
+      return durationMs === undefined ? stage : { ...stage, durationMs };
+    }),
     flags: verdicts.flatMap((v) => (v.flag ? [v.flag] : [])),
     ratchet: Object.assign({}, ...verdicts.map((v) => v.ratchet)) as DebtBaseline,
   };

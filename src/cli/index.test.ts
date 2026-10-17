@@ -1779,6 +1779,19 @@ describe('CLI commands', () => {
       expect(logs).toContain('codegraph: not installed');
     });
 
+    it('prints each stage’s wall time (decision 95)', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(join(repo, '.pupitre', 'adapter.yml'), 'id: probe\nbuild: sleep 0.2\n');
+
+      await buildProgram().parseAsync(['init'], { from: 'user' });
+
+      expect(logs).toContainEqual(
+        expect.stringMatching(/^ {2}build {4}PASS {5}(0\.[2-9]|[1-9]\d*\.\d)s$/),
+      );
+    });
+
     const ORIGIN_URL = 'git@github.com:owner/repo.git';
 
     /** What a real project has: an adapter to detect and an origin to push to. */
@@ -2066,6 +2079,8 @@ describe('CLI commands', () => {
       expect(errors).toHaveLength(2);
       expect(errors[1]).toMatch(/^Baseline kept: a debt metric was not measured/);
       expect(logs.join('\n')).toContain('build    PASS');
+      // With its wall time, as `pup init` prints it (decision 95).
+      expect(logs).toContainEqual(expect.stringMatching(/^ {2}build {4}PASS {13}\d+\.\ds$/));
       // The drift of what did measure still prints, above the refusal.
       expect(logs).toContainEqual(expect.stringMatching(/^ {2}dead-code 0 -> 0\s*$/));
       expect(logs.join('\n')).not.toContain('debt baseline:');
@@ -5405,6 +5420,30 @@ describe('CLI commands', () => {
       await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain(`  ${'sandbox'.padEnd(16)} vm (declared by operator)`);
+    });
+
+    it('prints each stage’s wall time beside its status, and none for a stage untimed', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockResolvedValue(
+        mergedOutcome({
+          report: {
+            sessionId: 's1',
+            passed: true,
+            sandbox: 'none',
+            stages: [
+              { stage: 'build', status: 'pass', durationMs: 1234 },
+              { stage: 'test', status: 'pass', detail: '12 files', durationMs: 41_000 },
+              { stage: 'coverage', status: 'skipped', detail: 'not measured' },
+            ],
+          },
+        }),
+      );
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(`  ${'build'.padEnd(16)} PASS 1.2s`);
+      expect(logs).toContain(`  ${'test'.padEnd(16)} PASS 41.0s  12 files`);
+      expect(logs).toContain(`  ${'coverage'.padEnd(16)} SKIPPED  not measured`);
     });
 
     it('rejects --accept-debt without --review-by', async () => {
