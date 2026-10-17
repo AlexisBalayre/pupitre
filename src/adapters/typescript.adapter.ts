@@ -167,6 +167,25 @@ export function rootCoverageReport(
 /** The `test` scripts the instrumented run reproduces exactly. */
 const PLAIN_VITEST_SCRIPT = /^vitest(?: run)?$/;
 
+/** The config files vitest reads at a package root. */
+const VITEST_CONFIG_FILE = /^vite(?:st)?\.(?:config|workspace)\.[cm]?[jt]s$/;
+
+/**
+ * Whether a vitest or vite config at `repoPath` mentions coverage thresholds.
+ * Read as text, since it only decides whether to fold, and a config it cannot
+ * read counts as declaring them, which keeps the two runs.
+ */
+function declaresCoverageThresholds(repoPath: string): boolean {
+  return readdirSync(repoPath).some((name) => {
+    if (!VITEST_CONFIG_FILE.test(name)) return false;
+    try {
+      return readFileSync(join(repoPath, name), 'utf8').includes('thresholds');
+    } catch {
+      return true;
+    }
+  });
+}
+
 /**
  * The instrumented vitest run behind `coverage` and `coveredTest`, or why the
  * trusted manifest allows none. Its report directory exists from here on, and
@@ -386,6 +405,10 @@ export const typescriptAdapter: Adapter = {
     const scripts = readManifest(ctx.configPath)?.scripts ?? {};
     if (!PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '')) return undefined;
     if (scripts.pretest !== undefined || scripts.posttest !== undefined) return undefined;
+    // A threshold fails an instrumented run whose every test passed, and the
+    // test stage would then fail on a figure: such a repo keeps the two runs,
+    // its coverage run alone failing on the threshold, as before.
+    if (declaresCoverageThresholds(ctx.configPath)) return undefined;
     const run = instrumentedRun(ctx);
     return isUnavailable(run) ? undefined : run;
   },

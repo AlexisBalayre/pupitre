@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -58,6 +58,68 @@ describe('typescriptAdapter', () => {
       'tsconfig.json': '{}',
     });
     expect(typescriptAdapter.gateCommands(repo)).toEqual([]);
+  });
+});
+
+// One run answers for the test stage and for coverage only when it is the run
+// the test script makes (decision 95).
+describe('typescriptAdapter.coveredTest', () => {
+  const manifest = (scripts: Record<string, string>): string =>
+    JSON.stringify({ scripts, devDependencies: { vitest: '^4', '@vitest/coverage-v8': '^4' } });
+  const coveredTestIn = (files: Record<string, string>) => {
+    const run = typescriptAdapter.coveredTest?.(localContext(makeRepo(files)));
+    run?.dispose();
+    return run;
+  };
+
+  it.each(['vitest', 'vitest run', ' vitest run '])('folds a %j test script', (test) => {
+    const run = coveredTestIn({ 'package.json': manifest({ test }) });
+
+    expect(run?.command).toBe('npx');
+    expect(run?.args.slice(0, 4)).toEqual(['--no-install', 'vitest', 'run', '--coverage.enabled']);
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['a test script with flags', { 'package.json': manifest({ test: 'vitest run --bail=1' }) }],
+    ['another runner', { 'package.json': manifest({ test: 'jest' }) }],
+    ['a pretest script', { 'package.json': manifest({ test: 'vitest run', pretest: 'tsc' }) }],
+    ['a posttest script', { 'package.json': manifest({ test: 'vitest', posttest: 'echo' }) }],
+    [
+      'no coverage provider',
+      {
+        'package.json': JSON.stringify({
+          scripts: { test: 'vitest run' },
+          devDependencies: { vitest: '^4' },
+        }),
+      },
+    ],
+    [
+      'coverage thresholds in the vitest config',
+      {
+        'package.json': manifest({ test: 'vitest run' }),
+        'vitest.config.ts': 'export default { test: { coverage: { thresholds: { lines: 80 } } } };',
+      },
+    ],
+  ])('keeps the two runs apart for %s', (_, files) => {
+    expect(coveredTestIn(files)).toBeUndefined();
+  });
+
+  it('writes its report outside the checkout, in a directory dispose removes', () => {
+    const repo = makeRepo({
+      'package.json': manifest({ test: 'vitest run' }),
+      'vitest.config.ts': "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const run = typescriptAdapter.coveredTest?.(localContext(repo));
+    const [outDir = ''] = run?.writablePaths ?? [];
+
+    expect(existsSync(outDir)).toBe(true);
+    expect(outDir.startsWith(repo)).toBe(false);
+    // Before any run there is no report to read.
+    expect(run?.report()).toEqual({
+      unavailable: expect.stringContaining('instrumented vitest run failed'),
+    });
+    run?.dispose();
+    expect(existsSync(outDir)).toBe(false);
   });
 });
 
