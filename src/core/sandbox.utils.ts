@@ -344,7 +344,10 @@ function gateInvocation(
       // denied at any depth under each. Only the two directories this
       // seam itself created for the child are exempt from that deny.
       writeProfile(
-        policyDir,
+        // A profile of its own: children start together (decision 95), and a
+        // shared file was rewritten for the next child before `sandbox-exec`
+        // read this one's, so it ran under that child's grants.
+        mkdtempSync(join(policyDir, 'child-')),
         [options.cwd, ...(options.writablePaths ?? [])],
         [scratchDir, cacheDir],
       ),
@@ -468,7 +471,10 @@ const TOOLCHAIN_CACHE_DIRNAME = 'pup-toolchain-cache';
 interface SandboxRun {
   /** The child's TMPDIR, and everything a run leaves behind. Per run. */
   scratchDir: string;
-  /** Holds the generated profile. Write-denied to every child. */
+  /**
+   * Holds the generated profiles, each child's in a directory of its own that
+   * its profile denies; no grant reaches the rest, so no child writes any.
+   */
   policyDir: string;
 }
 

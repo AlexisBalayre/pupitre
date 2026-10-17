@@ -456,6 +456,30 @@ describe('runGateChild', () => {
         expect(existsSync(target)).toBe(false);
       });
 
+      // Started together, as the gate starts its read-only stages beside the
+      // test run (decision 95): each keeps the grants it was spawned with.
+      it('gives children started together each its own grants', async () => {
+        const cwd = fakeCheckout();
+        const granted = Array.from({ length: 6 }, () =>
+          realpathSync(mkdtempSync(join(tmpdir(), 'pup-grant-'))),
+        );
+        onTestFinished(() => {
+          for (const dir of granted) rmSync(dir, { recursive: true, force: true });
+        });
+
+        await Promise.all(
+          granted.map((dir) =>
+            runGateChild('sh', ['-c', `printf ok > "${dir}/mine"`], {
+              cwd,
+              repoPath: cwd,
+              writablePaths: [dir],
+            }),
+          ),
+        );
+
+        for (const dir of granted) expect(readFileSync(join(dir, 'mine'), 'utf8')).toBe('ok');
+      });
+
       it('cannot write the git directory of the checkout it measures', async () => {
         // `core.fsmonitor` in .git/config is executed by pup's own later git
         // calls, which are unsandboxed and carry the operator's environment.
