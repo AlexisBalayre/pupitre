@@ -1146,10 +1146,10 @@ changes back into those docs is pending.
     backlog membership from session state.
 
 41. **A launch is refused when its scope collides with a live session; the backlog is
-    visible where work is chosen (2026-09-04).** Decision 40 left three ceilings and this
-    closes them: no admission control, `pup status` showing the backlog nowhere, and the
-    report's live/queued section having nothing to hold. All three are the same gap — intent
-    existed in the store and nothing consulted it.
+    visible where work is chosen (2026-09-04; the refusal is superseded by decision 99).**
+    Decision 40 left three ceilings and this closes them: no admission control, `pup status`
+    showing the backlog nowhere, and the report's live/queued section having nothing to hold.
+    All three are the same gap — intent existed in the store and nothing consulted it.
     *The radar was the wrong instrument for the question.* `scanOverlaps` diffs live branches
     every 15 seconds and reports two sessions in one file, which is a fact about work already
     done: by the time it fires both agents have edited the file and one of them is going to

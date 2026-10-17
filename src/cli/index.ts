@@ -441,13 +441,12 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
-// Overlap is always allowed now (decision 99): the flag is accepted for one
-// release so a script that passes it keeps working, and says so.
+// Decision 99.
 const ALLOW_OVERLAP_DESCRIPTION = 'no effect: overlap is always allowed (removed next release)';
 
 function noteAllowOverlap(passed: boolean | undefined): void {
   if (passed) {
-    console.log(
+    console.error(
       '--allow-overlap has no effect: overlap with a live session is always allowed, and the flag goes in the next release.',
     );
   }
@@ -583,8 +582,7 @@ type ExpectedLaunchError = new (...args: never[]) => Error;
  * back in the backlog (decision 40) — so the retry is always
  * `pup launch <task>`, for a sweep too: `createSession` had already planned the
  * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
- * An error the caller could not have avoided — the scope it collides with, a
- * task already claimed — is printed as a refusal; anything else is a bug and
+ * An error the caller could not have avoided — a task already claimed — is printed as a refusal; anything else is a bug and
  * is rethrown, so widening one caller's `expected` never widens another's.
  * Returns the session id, or undefined once a refusal has been printed.
  */

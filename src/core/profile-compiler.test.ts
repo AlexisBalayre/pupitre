@@ -168,6 +168,20 @@ describe('compileProfile', () => {
       expect(context.indexOf('## Peers')).toBeLessThan(context.indexOf('## Session protocol'));
     });
 
+    // A broad task such as the audit sweep overlaps every live session, and an
+    // overlapping launch is never refused, so the list must fit the budget.
+    it('lists at most eight peers and counts the rest, so many broad peers still fit the budget', () => {
+      const peers = Array.from({ length: 40 }, (_, i) => ({ name: `pup-s-${i}`, files }));
+
+      const compiled = ProfileCompiler.compileProfile({ ...makeInput(), peers });
+
+      expect(compiled.contextMarkdown).toContain('- `pup-s-7` shares:');
+      expect(compiled.contextMarkdown).not.toContain('`pup-s-8`');
+      expect(compiled.contextMarkdown).toContain(
+        '- +32 more sessions share your files; ListAgents names them.',
+      );
+    });
+
     it('is part of the hash, like every other compiled fact', () => {
       const alone = ProfileCompiler.compileProfile(makeInput());
       const shared = ProfileCompiler.compileProfile({

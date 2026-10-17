@@ -2575,9 +2575,7 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
 
-      expect(logs[0]).toBe(
-        '--allow-overlap has no effect: overlap with a live session is always allowed, and the flag goes in the next release.',
-      );
+      expect(errors[0]).toMatch(/^--allow-overlap has no effect/);
       expect(firstCall(launchTask)[1]).not.toHaveProperty('allowOverlap');
       expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
       expect(process.exitCode).toBeUndefined();
@@ -2589,7 +2587,7 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
-      expect(logs.join('\n')).not.toContain('--allow-overlap');
+      expect([...logs, ...errors].join('\n')).not.toContain('--allow-overlap');
     });
 
     // Launching is operator- and conductor-only: a session launching one would
@@ -3785,7 +3783,7 @@ describe('CLI commands', () => {
         from: 'user',
       });
 
-      expect(logs[0]).toMatch(/^--allow-overlap has no effect/);
+      expect(errors[0]).toMatch(/^--allow-overlap has no effect/);
       expect(firstCall(createSession)[1]).not.toHaveProperty('allowOverlap');
     });
 

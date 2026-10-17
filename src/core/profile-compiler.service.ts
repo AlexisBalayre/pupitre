@@ -183,6 +183,13 @@ const BRIEF_FRAMING =
 const PEER_FILES_SHOWN = 20;
 
 /**
+ * Peers are listed at most this many before a count takes over: the section
+ * counts toward the context budget, and an overlapping launch is never refused
+ * (decision 99), so a broad task among many sessions must still fit.
+ */
+const PEERS_SHOWN = 8;
+
+/**
  * The files a peer shares, for a kickoff or a steer typed into a pane. Paths
  * come from `git ls-files` and a peer name from the store, so either can carry
  * control characters into the paste; each is scrubbed where it is written.
@@ -206,8 +213,12 @@ function peersSection(peers: SessionPeer[]): string | undefined {
     'under its peer name (it appears in ListAgents); follow the collaboration rules in the ' +
     'session protocol below.\n' +
     peers
+      .slice(0, PEERS_SHOWN)
       .map((peer) => `- \`${sanitizeReason(peer.name)}\` shares: ${namedPeerFiles(peer.files)}`)
-      .join('\n')
+      .join('\n') +
+    (peers.length > PEERS_SHOWN
+      ? `\n- +${peers.length - PEERS_SHOWN} more sessions share your files; ListAgents names them.`
+      : '')
   );
 }
 

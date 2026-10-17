@@ -188,7 +188,7 @@ export function createSession(db: Database, req: NewSessionRequest): string {
   // costs an operator nothing on `pup launch`, where the task already existed,
   // but here it would leave the spec they just abandoned sitting in the
   // backlog — unclaimed, attributed to them, and listed as planned work until
-  // someone notices and drops it (decision 41).
+  // someone notices and drops it (decision 50).
   assertNoArmedGitDrivers(req.repoPath);
   planTask(db, req);
   return launchTask(db, { ...req, taskId: req.task.id });
