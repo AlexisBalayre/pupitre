@@ -185,31 +185,31 @@ export function respawnSession(
   pathsBase?: string,
   override?: RouteOverride,
 ): void {
-  const session = requireRunning(db, sessionId);
-  const paths = projectPaths(repoPath, pathsBase);
-  const handoffPath = paths.handoffFile(sessionId);
-  const handoff = readHandoff(handoffPath);
-  if (handoff === undefined) {
-    throw new Error(
-      `No handoff at ${handoffPath}. Run \`pup respawn ${sessionId}\` to request one first.`,
-    );
-  }
-  // The file is writable by anything running as this user, and the wait above
-  // polls every 5 s, so the document read here need not be the one the session
-  // signalled for. Hashing the read itself leaves no second read to substitute
-  // for: either these are the bytes handoff-done named, or nothing is kicked
-  // off on them (decision 49).
-  const signalled = signalledHash(db, sessionId);
-  if (hashHandoff(handoff) !== signalled) {
-    throw new Error(
-      `Handoff for ${sessionId} at ${handoffPath} is not the document it signalled ` +
-        `(handoff-done recorded ${signalled ?? 'no hash'}, on disk ${hashHandoff(handoff)}); ` +
-        `something replaced it since. Re-run \`pup respawn ${sessionId}\` to ask again.`,
-    );
-  }
-  relaunchWindow(db, repoPath, session, paths, override, {
-    promptSuffix: `\n\n## Handoff from your previous run\n${handoff}`,
-    eventPayload: { handoffBytes: handoff.length },
+  relaunchWindow(db, repoPath, sessionId, pathsBase, override, (paths) => {
+    const handoffPath = paths.handoffFile(sessionId);
+    const handoff = readHandoff(handoffPath);
+    if (handoff === undefined) {
+      throw new Error(
+        `No handoff at ${handoffPath}. Run \`pup respawn ${sessionId}\` to request one first.`,
+      );
+    }
+    // The file is writable by anything running as this user, and the wait above
+    // polls every 5 s, so the document read here need not be the one the session
+    // signalled for. Hashing the read itself leaves no second read to substitute
+    // for: either these are the bytes handoff-done named, or nothing is kicked
+    // off on them (decision 49).
+    const signalled = signalledHash(db, sessionId);
+    if (hashHandoff(handoff) !== signalled) {
+      throw new Error(
+        `Handoff for ${sessionId} at ${handoffPath} is not the document it signalled ` +
+          `(handoff-done recorded ${signalled ?? 'no hash'}, on disk ${hashHandoff(handoff)}); ` +
+          `something replaced it since. Re-run \`pup respawn ${sessionId}\` to ask again.`,
+      );
+    }
+    return {
+      promptSuffix: `\n\n## Handoff from your previous run\n${handoff}`,
+      eventPayload: { handoffBytes: handoff.length },
+    };
   });
 }
 
@@ -227,16 +227,14 @@ export function hardRespawnSession(
   pathsBase?: string,
   override?: RouteOverride,
 ): void {
-  const session = requireRunning(db, sessionId);
-  const paths = projectPaths(repoPath, pathsBase);
-  relaunchWindow(db, repoPath, session, paths, override, {
+  relaunchWindow(db, repoPath, sessionId, pathsBase, override, () => ({
     promptSuffix:
       '\n\n## Fresh start after a kill\n' +
       'The previous run of this session was killed without writing a handoff (it was ' +
       'likely wedged or crashed). The worktree may hold partial work: check `git status` ' +
       'and `git log` before doing anything, keep what is sound, and continue the task.',
     eventPayload: { hard: true },
-  });
+  }));
 }
 
 /**
@@ -263,15 +261,25 @@ function graphForRespawn(
     : undefined;
 }
 
+/**
+ * What both respawns share. The session must be running; `extrasFor` is then
+ * handed the project's paths to build what the kickoff adds, and may refuse,
+ * before anything is read for the launch or killed.
+ */
 function relaunchWindow(
   db: Database,
   repoPath: string,
-  session: SessionRow,
-  paths: ProjectPaths,
+  sessionId: string,
+  pathsBase: string | undefined,
   override: RouteOverride | undefined,
-  extras: { promptSuffix: string; eventPayload: Record<string, unknown> },
+  extrasFor: (paths: ProjectPaths) => {
+    promptSuffix: string;
+    eventPayload: Record<string, unknown>;
+  },
 ): void {
-  const sessionId = session.id;
+  const session = requireRunning(db, sessionId);
+  const paths = projectPaths(repoPath, pathsBase);
+  const extras = extrasFor(paths);
   const compiledDir = paths.compiledDir(sessionId);
   const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
   // Before the kill, so a respawn refused at the top rung leaves the window

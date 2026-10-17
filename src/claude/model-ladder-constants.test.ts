@@ -78,13 +78,7 @@ describe('runUtility', () => {
       'low',
     ]);
     // Still read-only: the write and exec tools stay denied after the flags.
-    expect(argv.slice(argv.indexOf('--disallowedTools'))).toEqual([
-      '--disallowedTools',
-      'Bash',
-      'Edit',
-      'Write',
-      'NotebookEdit',
-      'WebFetch',
-    ]);
+    const denied = ['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'];
+    expect(argv.slice(argv.indexOf('--disallowedTools') + 1)).toEqual(denied);
   });
 });

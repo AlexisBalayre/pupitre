@@ -200,7 +200,7 @@ export function nextRung(
 }
 
 /** Where a task's next window stands on its ladder, as `climbFrom` reads it. */
-export interface Climb {
+interface Climb {
   rung: number;
   /** Why the rung last climbed, kept from the window before when this one does not climb. */
   reason?: string;

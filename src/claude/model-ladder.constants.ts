@@ -6,9 +6,9 @@
 // explicit `--model`/`--effort` is honoured and recorded as an override, which
 // is the only way any other value reaches a window.
 
-export const OPUS_MODEL = 'claude-opus-5-5';
-export const SONNET_MODEL = 'claude-sonnet-5-5';
-export const HAIKU_MODEL = 'claude-haiku-5-5';
+const OPUS_MODEL = 'claude-opus-5-5';
+const SONNET_MODEL = 'claude-sonnet-5-5';
+const HAIKU_MODEL = 'claude-haiku-5-5';
 
 /** What one `claude` runs on. */
 export interface ModelRoute {
