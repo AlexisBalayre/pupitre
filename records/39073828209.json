@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T22:10:27.034Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39073828209",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39073828209",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e05f1cdda47de84c7d15c6268913b6bc7403d189",
+  "source": "pr",
+  "pr_number": 154,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "security",
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "5b04aad077f89cba3e2a180cf121774fd6fd45d3",
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "571",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "575",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "567-569",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above `SECURITY_REVIEW_DIFF` explains the transport pins and lazy fetch but not the new `--no-replace-objects` + `-c core.useReplaceRefs=false` pair or `--no-relative`; without a WHY (session-writable replace refs can swap content, and older gits let a planted `core.useReplaceRefs=true` beat the flag), the pair looks redundant and invites someone to delete one half.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4706",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision 92 line this delta edited (\"no replace refs, `--text`, `--no-relative` and every submodule shown,\") now runs ~125 columns against the ~100-column wrap of the paragraph; rewrap it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "560",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conductor prompt now cites decision 41 for replace refs too, but decision 41's shared-config discussion covers diff drivers and attributes, not `refs/replace/*`; cite decision 92 for replace refs or drop the citation for that item.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6324638,
+  "duration_ms": 84047,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 5109,
+    "cache_read": 243154,
+    "cache_creation": 29927,
+    "total": 278204
+  }
+}
