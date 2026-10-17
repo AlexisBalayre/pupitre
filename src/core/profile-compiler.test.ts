@@ -137,6 +137,72 @@ describe('compileProfile', () => {
     );
   });
 
+  // Decision 99: workers share files, so every worker is told how to share them
+  // — peers can join after its launch, so the rules hold with no Peers section.
+  it('gives every worker the collaboration protocol, peers or not', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+
+    expect(compiled.contextMarkdown).not.toContain('## Peers');
+    expect(compiled.contextMarkdown).toContain(
+      'Before editing a shared file, message the peer what you will change ' +
+        '(the function or section) and agree who does what. If you change a shared signature or ' +
+        'contract, tell the peer at once. When you are blocked on a peer, say so with ' +
+        '`pup session ask` rather than waiting silently.',
+    );
+  });
+
+  describe('peers (decision 99)', () => {
+    const files = Array.from({ length: 22 }, (_, i) => `src/net/f${String(i).padStart(2, '0')}.ts`);
+
+    it('lists each peer by name, above the protocol, capping its files with a count', () => {
+      const context = ProfileCompiler.compileProfile({
+        ...makeInput(),
+        peers: [
+          { name: 'pup-s-2', files: ['src/net/index.ts'] },
+          { name: 'pup-s-3', files },
+        ],
+      }).contextMarkdown;
+
+      expect(context).toContain('- `pup-s-2` shares: src/net/index.ts\n');
+      expect(context).toContain(`- \`pup-s-3\` shares: ${files.slice(0, 20).join(', ')} +2 more`);
+      expect(context.indexOf('## Peers')).toBeLessThan(context.indexOf('## Session protocol'));
+    });
+
+    // A broad task such as the audit sweep overlaps every live session, and an
+    // overlapping launch is never refused, so the list must fit the budget.
+    it('lists at most eight peers and counts the rest, so many broad peers still fit the budget', () => {
+      const peers = Array.from({ length: 40 }, (_, i) => ({ name: `pup-s-${i}`, files }));
+
+      const compiled = ProfileCompiler.compileProfile({ ...makeInput(), peers });
+
+      expect(compiled.contextMarkdown).toContain('- `pup-s-7` shares:');
+      expect(compiled.contextMarkdown).not.toContain('`pup-s-8`');
+      expect(compiled.contextMarkdown).toContain(
+        '- +32 more sessions share your files; ListAgents names them.',
+      );
+    });
+
+    it('is part of the hash, like every other compiled fact', () => {
+      const alone = ProfileCompiler.compileProfile(makeInput());
+      const shared = ProfileCompiler.compileProfile({
+        ...makeInput(),
+        peers: [{ name: 'pup-s-2', files: ['src/net/index.ts'] }],
+      });
+
+      expect(shared.hash).not.toBe(alone.hash);
+    });
+
+    it("names the newcomer and the shared files in a peer's steer, scrubbed", () => {
+      expect(
+        ProfileCompiler.peerJoinedMessage({ name: 'pup-s\u001b-2', files: ['a\nb.ts', 'c.ts'] }),
+      ).toBe(
+        'A new peer session, pup-s -2, was just launched on files you also hold: a b.ts, c.ts. ' +
+          'Before you edit one of them, message it by SendMessage what you will change ' +
+          '(the function or section) and agree who does what.',
+      );
+    });
+  });
+
   // Decision 77: a layer adds denials after decision 74's and never removes one.
   describe('layer denials', () => {
     const denyOf = (input: CompileInput) =>
@@ -864,6 +930,23 @@ describe('compileConductorProfile', () => {
       encoding: 'utf8',
     }).status;
   }
+
+  // Decision 99 retired decision 41's refusal, so the conductor launches
+  // overlapping tasks rather than holding them back or narrowing them.
+  it('launches overlapping tasks freely, with no wait-or-re-scope rule', () => {
+    const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
+
+    expect(context).toContain(
+      'Scopes may overlap: pup names each worker the live sessions sharing its files, and they ' +
+        'agree between themselves who changes what.',
+    );
+    expect(context).toContain(
+      'a task whose scope overlaps a live session launches like any other.',
+    );
+    for (const retired of ['--allow-overlap', 're-scope', 'disjoint', 'refused overlap']) {
+      expect(context).not.toContain(retired);
+    }
+  });
 
   // The context is the operator's loop written down: what the conductor may
   // run, how it reaches a session by peer name, and that the merge itself is
