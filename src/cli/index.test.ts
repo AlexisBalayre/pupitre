@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -94,6 +95,14 @@ vi.mock('../core/merge-gate.service.js', () => ({
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+// The server and its socket are web-dashboard.test.ts's; here it binds nothing.
+vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
+// The browser opener is `pup dashboard --open`'s one boundary; every other
+// call, the fixtures' git included, runs for real.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
+});
 vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
@@ -196,6 +205,7 @@ import {
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
+import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import type { DashboardReading, ProjectReading } from './ui/use-snapshot.hook.js';
@@ -4293,6 +4303,122 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('dashboard', () => {
+    const URL_WITH_TOKEN = 'http://127.0.0.1:41234/?token=t0k3n';
+
+    /** The one listener the command added for `signal`, removed again so it outlives no test. */
+    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): () => void {
+      const added = process.listeners(signal).filter((listener) => !before.includes(listener));
+      onTestFinished(() => {
+        for (const listener of added) process.off(signal, listener);
+      });
+      expect(added).toHaveLength(1);
+      return added[0] as () => void;
+    }
+
+    it("serves this project's store, prints the url, and stops on Ctrl-C", async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const close = vi.fn(() => Promise.resolve());
+      vi.mocked(startWebDashboard).mockResolvedValue({ url: URL_WITH_TOKEN, close });
+      const sigints = process.listeners('SIGINT');
+      const sigterms = process.listeners('SIGTERM');
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+      const stop = addedListener('SIGINT', sigints);
+
+      expect(firstCall(startWebDashboard)[1]).toBe(repo);
+      expect(logs).toEqual([
+        `Dashboard on ${URL_WITH_TOKEN}`,
+        'Anyone holding this url reads the page; Ctrl-C stops the server.',
+      ]);
+      expect(addedListener('SIGTERM', sigterms)).toBe(stop);
+      stop();
+      expect(close).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    const OPENER = process.platform === 'darwin' ? 'open' : 'xdg-open';
+
+    /** `pup dashboard --open`, its signal listeners cleared after the test. */
+    async function runOpen(): Promise<void> {
+      vi.mocked(startWebDashboard).mockResolvedValue({
+        url: URL_WITH_TOKEN,
+        close: () => Promise.resolve(),
+      });
+      const sigints = process.listeners('SIGINT');
+      const sigterms = process.listeners('SIGTERM');
+      await buildProgram().parseAsync(['dashboard', '--open'], { from: 'user' });
+      addedListener('SIGINT', sigints);
+      addedListener('SIGTERM', sigterms);
+    }
+
+    /**
+     * The opener as a fake child: `outcome` is how it ends, raised after the
+     * action returns, as a real child's events are.
+     */
+    function stubOpener(outcome: 'opens' | 'missing' | 'fails'): { unref: () => void } {
+      const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
+      vi.mocked(spawn).mockImplementation((() => {
+        setImmediate(() => {
+          if (outcome === 'missing') child.emit('error', new Error('spawn xdg-open ENOENT'));
+          else child.emit('exit', outcome === 'fails' ? 3 : 0);
+        });
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof spawn);
+      return child;
+    }
+
+    /** One macrotask: the fake opener's exit or error has fired. */
+    function openerSettled(): Promise<void> {
+      return new Promise((resolve) => setImmediate(resolve));
+    }
+
+    it('hands the url to a detached opener it does not wait on, with --open', async () => {
+      useCwd(initRepo());
+      const child = stubOpener('opens');
+
+      await runOpen();
+      await openerSettled();
+
+      expect(spawn).toHaveBeenCalledWith(OPENER, [URL_WITH_TOKEN], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      expect(child.unref).toHaveBeenCalledOnce();
+      expect(logs).not.toContain('Could not open a browser; open the url above.');
+    });
+
+    it.each([
+      ['is missing', 'missing'],
+      ['exits non-zero', 'fails'],
+    ] as const)('says to open the url by hand when the opener %s', async (_how, outcome) => {
+      useCwd(initRepo());
+      stubOpener(outcome);
+
+      await runOpen();
+      await openerSettled();
+
+      expect(logs).toContain('Could not open a browser; open the url above.');
+    });
+
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s before binding anything', async (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv(variable, value);
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+
+      expect(startWebDashboard).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain('`pup dashboard` is operator-only.');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('report', () => {
     it('writes a self-contained report.html into the project dir and echoes the path', () => {
       const repo = initRepo();
@@ -5902,6 +6028,34 @@ describe('executable entry point', () => {
     });
 
     expect(out).toContain('Usage:');
+  });
+
+  // The binary path, not parseAsync from a test: an async action's rejection
+  // must reach the entry point's catch, not escape as an unhandled one.
+  it("prints a failed async action's refusal on one line, as every other command does", {
+    timeout: 20_000,
+  }, () => {
+    const home = tempDir('pup-home-');
+    const env: NodeJS.ProcessEnv = { ...GIT_ENV, HOME: home };
+    delete env.PUP_SESSION_ID;
+    delete env.PUP_CONDUCTOR;
+
+    const run = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(process.cwd(), 'src', 'cli', 'index.ts'),
+        'dashboard',
+        '--project',
+        'ghost',
+      ],
+      { encoding: 'utf8', env, cwd: process.cwd() },
+    );
+
+    expect(run.status).toBe(1);
+    expect(run.stderr.trim().split('\n')).toHaveLength(1);
+    expect(run.stderr).not.toContain('    at ');
   });
 });
 

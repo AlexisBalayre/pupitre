@@ -28,6 +28,7 @@ import {
   fleetSummary,
   goalHeadline,
   needsYou,
+  prFixRounds,
 } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -1199,6 +1200,47 @@ describe('needsYou', () => {
     appendEvent(db, 's-twice', 'merge', { branch: 'pup/s-twice', target: 'main', files: [] });
 
     expect(inbox()).toEqual([]);
+  });
+
+  // The store's half of an open PR's CI review state (decisions 86, 91).
+  describe('prFixRounds', () => {
+    const regate = (sessionId: string): void => {
+      appendEvent(db, sessionId, 'merge', {
+        branch: `pup/${sessionId}`,
+        sha: 'e'.repeat(40),
+        target: 'main',
+        files: [],
+        prUrl: 'https://github.com/o/r/pull/7',
+      });
+    };
+
+    it('counts the re-gates after the merge that opened the PR', () => {
+      seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+      expect(prFixRounds(db, 's-pr')).toBe(0);
+
+      regate('s-pr');
+      regate('s-pr');
+
+      expect(prFixRounds(db, 's-pr')).toBe(2);
+    });
+
+    it('stops at a landing or a merge with no PR, which closed the rounds before them', () => {
+      seedMerge('s-landed', 'https://github.com/o/r/pull/6');
+      regate('s-landed');
+      seedLanded('s-landed');
+      seedMerge('s-local');
+      seedMerge('s-reopened', 'https://github.com/o/r/pull/8');
+      appendEvent(db, 's-reopened', 'merge', {
+        branch: 'pup/s-reopened',
+        target: 'main',
+        files: [],
+      });
+      regate('s-reopened');
+
+      expect(prFixRounds(db, 's-landed')).toBe(0);
+      expect(prFixRounds(db, 's-local')).toBe(0);
+      expect(prFixRounds(db, 's-reopened')).toBe(0);
+    });
   });
 });
 

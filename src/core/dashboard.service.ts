@@ -334,8 +334,11 @@ function stallReason(session: DashboardSession, stalledAgeMs: number): string {
  * without git because the name is about to be handed to git.
  */
 const PLAIN_BRANCH = /^(?!-)(?!.*\.\.)(?!.*@\{)[^\s~^:?*[\\=\p{Cc}\p{Cf}]+$/u;
-/** A pull request and nothing else: the one url the inbox prints as the answer. */
-const PR_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+/**
+ * A pull request and nothing else: the one url the inbox prints as the answer,
+ * and the one string the web dashboard makes a link of (decision 91).
+ */
+export const PR_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
 /** The render loop is behind this call: a deep or planted history must not hold it. */
 const LANDED_CHECK_TIMEOUT_MS = 2_000;
 /**
@@ -577,6 +580,24 @@ function openPullRequest(
     return { url: PR_URL.test(url) ? url : undefined, sha: event.sha, target: event.target };
   }
   return undefined;
+}
+
+/**
+ * How many fix rounds the open PR of a merged session was re-gated after
+ * (decision 86): every `merge` event carrying a PR since the last `landed`
+ * one, less the merge that opened it. The store's half of the PR's CI review
+ * state; what the bot said is on the PR, which this does not ask GitHub about.
+ */
+export function prFixRounds(db: Database, sessionId: string): number {
+  let merges = 0;
+  for (const row of listEvents(db, sessionId).reverse()) {
+    if (row.type === 'landed') break;
+    const event = decodeEvent(row);
+    if (event.type !== 'merge') continue;
+    if (event.prUrl === undefined) break;
+    merges += 1;
+  }
+  return Math.max(0, merges - 1);
 }
 
 function newestSteer(newestFirst: EventRow[]): DashboardSteer | undefined {
