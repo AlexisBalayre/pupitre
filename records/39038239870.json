@@ -1,0 +1,305 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T13:56:34.384Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39038239870",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39038239870",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e919e465e68c92e244af51698e4283409614157c",
+  "source": "pr",
+  "pr_number": 153,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1310-1318",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`dashboard` is the only `async` action, but the production entry point calls the synchronous `buildProgram().parse()`. So when the project can't be resolved, `pup dashboard` crashes with an unhandled rejection and a stack trace, not the one-line message. The same happens when `listen` fails.",
+      "body": "`pup dashboard` is the CLI's first `async` action (it's the only `.action(async` in the repo). The binary's entry point still runs `buildProgram().parse()` inside a sync `try/catch` (`src/cli/index.ts` L2306-2314), and that `catch` is where `fatalExitCode` turns a `ProjectResolutionError` into its one-line message.\n\nCommander's `parse()` doesn't await an action's promise, so anything thrown inside this action becomes an unhandled rejection. There is no process-level `unhandledRejection` handler. Two throws can get there:\n- `project()` throwing `ProjectResolutionError`. This happens with `--project <unknown>`, outside a repo when several projects are registered, or from a session through `refuseUnlessOperator`.\n- `startWebDashboard` rejecting when `listen` fails.\n\nIn the first case the operator sees Node's stack trace instead of the clean refusal every other command prints. The new tests drive the command with `parseAsync`, so they never take the path the binary actually uses.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e919e465e68c92e244af51698e4283409614157c/src/cli/index.ts#L1310-L1318\n\n```ts\n.action(async (opts: { open?: boolean }) => {\n  const { repoPath, db } = project();\n  ...\n  const dashboard = await startWebDashboard(db, repoPath);\n```\n\nFix: in the entry point (https://github.com/AlexisBalayre/pupitre/blob/e919e465e68c92e244af51698e4283409614157c/src/cli/index.ts#L2306-L2314), switch to `await buildProgram().parseAsync();` inside the existing `try`. The module is ESM, so top-level await works there. Sync actions behave the same under `parseAsync`, and rejections then land in the same `catch`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1326-1331",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`--open` runs `execFileSync('xdg-open', …)` in the same process as the HTTP server. On Linux, if no browser is already running, the launched browser keeps the child's stdio pipes open. `execFileSync` then blocks the event loop until the browser exits, so the server can't answer the page it just opened.",
+      "body": "The server runs in the CLI's own event loop, but the browser is launched synchronously:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e919e465e68c92e244af51698e4283409614157c/src/cli/index.ts#L1326-L1331\n\n```ts\nif (!opts.open) return;\ntry {\n  execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [dashboard.url]);\n} catch {\n```\n\n`execFileSync`/`spawnSync` uses `pipe` stdio by default. It returns only once the child has exited and every stdio pipe has reached EOF, so a grandchild that inherits the pipe keeps the call blocked.\n\nOn Linux, `xdg-open` either runs the browser in the foreground (generic or `$BROWSER` mode) or hands off through `gio`/`kde-open`. In both cases a browser that wasn't already running inherits those pipes and holds them open while it runs. Until it exits:\n- the browser's request for `/?token=…` gets no answer, so the tab spins;\n- the poll timer stops;\n- the SIGINT/SIGTERM handlers can't run.\n\nmacOS `open` and an already-running browser return at once, which is likely why this went unnoticed. `pup report` and `pup map` use the same call (L2042, L2070), but nothing in those processes has to keep serving afterwards.\n\nFix: launch without blocking, e.g.\n\n```ts\nspawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [dashboard.url], { detached: true, stdio: 'ignore' })\n  .on('error', () => console.log('Could not open a browser; open the url above.'))\n  .unref();\n```\n\nThis needs `spawn` added to the `node:child_process` import, and the CLI tests that mock `execFileSync` updated to match.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The file uses the role suffix `.template`, which is not one of the 25 valid roles.",
+      "body": "`docs/conventions/naming.md` (line 15) says: \"**role** = exactly one of the 25 valid roles below\". `template` is not in that list, and the `FILE_NAMING_REGEX` in `.claude/project.env` that `validate-file-naming.sh` enforces rejects this name. This is the only `*.template.ts` file under `src/`, so there is no precedent for it either.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e919e465e68c92e244af51698e4283409614157c/src/core/web-dashboard.template.ts#L1-L1\n\nThe file holds pure render functions (`renderDashboardBody`, `renderDashboardPage`, `escapeHtml`), which suggests `utils`. But `utils` may not import a `service`, and the file imports `PR_URL` from `./dashboard.service.js`. Options:\n- Move `PR_URL` somewhere a utils file may import it (e.g. a `*.constants.ts`), then rename this file to `web-dashboard.utils.ts`.\n- Fold the rendering into `web-dashboard.service.ts`, its only consumer.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "257-264",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The left accent border on question, blocked and stalled inbox items never shows. `ul.rows > li` has specificity (0,1,2) and its `border` shorthand beats `.need-question, .need-blocked, .need-stalled` at (0,1,0), so urgent needs look like every other row. Writing the selectors as `.need.need-question, .need.need-blocked, .need.need-stalled` (0,2,0) fixes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "60-69",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The page leaves out the conflict radar that `pup status` prints from the same snapshot: the `OVERLAP a <-> b file` lines from `snapshot.overlaps`, the `(stale)` marker, and the 'conflict radar off' hint (`printConflictRadar`, src/cli/index.ts:1433-1446). Decision 91's list of sections leaves it out too, so this is a scoping gap rather than a regression. Still, the PR says the page matches `pup status`, and the 'matches pup status' test only checks against `needsYou(snapshot)`, so it cannot catch this.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "135-136",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A running session can be stalled and also have an open question. That is realistic: a session asks, ends its turn, and its events file goes quiet. Its row then says 'stalled — see Needs you', but `needOf` gives the question priority, so the inbox line shows the question and never the stall. The stall age and any 'TURN DIED … resume refused, needs a human' text appear nowhere on the page, while `pup status` prints them in the session row through `activityLabel`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "51, 135-158",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The page writes its own session labels instead of reusing the shared label module `src/cli/ui/dashboard-text.utils.ts`, so a label change will now need edits in two places that will drift. That module's header says `pup status` and `pup ui` share these words \"so they cannot disagree about what to call it\" (decision 52). `activityText`/`gateText`/`steerText`, the `ctx ~Nk` label and `UNMINTED_LABEL` re-implement `activityLabel`/`gateLabel`/`steerLabel`/`contextLabel`. The wording has already diverged: 'last gate: failed at X' vs 'gate fail: X', and the context label drops the ' — consider `pup respawn <id>`' suggestion. Reusing them means moving the helpers from src/cli/ui into src/core.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "591",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new exported `prFixRounds(db, sessionId)` is a second copy of the private `openPullRequest` walk (lines 568-583): it reads the events newest first, stops at `landed`, takes `merge`, and stops on a merge with no `prUrl`. It also calls `listEvents` again for each session, although `buildSessionView` (line 477) already loaded those events and called `openPullRequest` on them. Its only caller, `readView` in src/core/web-dashboard.service.ts:141-146, has to rebuild the snapshot's rule for when a PR is open (`openPr !== undefined && isMintedId`) before calling it. So two loops now decide which merges belong to the open PR, and they can drift apart. A simpler fix: count the re-gates inside `openPullRequest`'s own loop and put the count on `DashboardSession.openPr` (for example `openPr: { url, fixRounds }`). That removes the extra export, the second query per session, and the `fixRounds` map in `WebDashboardView`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "152",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readView` calls `listLedgerEntries` again and repeats the snapshot's `sanitizeReason` mapping for ledger entries field by field. Its own comment says it is \"scrubbed the same way\" as the snapshot's `overdueDebt`. Meanwhile `buildDashboardSnapshot` already calls `listLedgerEntries` for `openDebtCount` (src/core/dashboard.service.ts:114) and throws the rows away. So each render reads the ledger twice and keeps two copies of the scrub. A simpler fix: have the snapshot carry the sanitized open entries, with `openDebtCount` taken from their length, and drop the remap in `readView`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1326",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup dashboard --open` adds a third copy of the inline `try { execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [...]) } catch { console.log('Could not open a browser; ...') }` block. The other two are at src/cli/index.ts:2041-2045 (`map --open`) and 2069-2073 (`report --open`). AGENTS.md says no abstraction until the third use, and this is the third. The copy is also why src/cli/index.test.ts has to mock `node:child_process` for the whole module and add the `stubOpener` pass-through. A simpler fix: extract a small `openInBrowser(target, fallbackHint)` helper in src/cli and call it from all three commands.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "183",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The placeholder `'(PR url outside the pull-request shape; inspect the store)'` is copied word for word from `dashboard.service.ts:310`, the inbox's `pr-open` answer. If the inbox wording changes, the page's Open pull requests row will still show the old text. The fix is to export it as a constant from `dashboard.service.ts`, as this PR already did for `PR_URL`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "20",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`web-dashboard.service.ts` exports `interface WebDashboard` inline. The Type separation rule in general.md says to never inline an exported `type`/`interface` in a `*.service.ts` file, so it belongs in `src/core/types/*.types.ts`. `WebDashboardView` in the template file is the same drift.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "17-18, 169",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`DASHBOARD_POLL_MS`, `LOOPBACK`, `REFUSAL_CSP` (service) and `STATE_ORDER`, `UNMINTED_LABEL` (template) are module-level constants. general.md's 'No hardcoded values' rule puts thresholds and timeouts in the area's `*.constants.ts` (e.g. next to `src/core/page-shell.constants.ts`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.test.ts",
+      "line": "1206",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `describe('prFixRounds')` block is nested inside `describe('needsYou')`, but `prFixRounds` has nothing to do with the needs-you inbox. The test report will list it under the wrong function. It belongs in its own top-level `describe`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.test.ts",
+      "line": "397",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`expect(Date.now() - changedAt).toBeLessThanOrEqual(POLL_MS * 2)` checks real elapsed time (≤600 ms) and can flake on a loaded runner. The arrival of a frame containing the question (line 398) and vitest's test timeout already cover what matters, so drop the timing check or loosen it a lot.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.test.ts",
+      "line": "285-298, 302",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"matches pup status's reading\" test builds its expected strings with the production `escapeHtml`. Only the tests import it, yet it is exported, so a fault in the escaper would affect the expected and actual strings alike. This test can't catch it; only the separate escaping test, with its hand-written literals, would.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.test.ts",
+      "line": "304-311, 319, 365",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Several assertions match exact markup (`'<h3 class=\"state-group\">blocked'`, `/#1<\\/span><span class=\"state state-blocked\">overdue/`, `'<span class=\"sid\">s-done</span>'`), so renaming a CSS class or reordering sibling spans breaks them without any change in behaviour. Matching on visible text or a `data-` attribute would hold up better.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "43",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A session can write to the store, so it can plant a merge event whose `prUrl` matches `PR_URL` on any host (e.g. `https://github.com.evil.example/o/r/pull/1`). The dashboard now renders that as a clickable link listed as the session's PR, where `pup status` only printed it as text. That is a phishing step up, not script execution: `noopener noreferrer` and `no-referrer` keep the token from leaking. Decision 91 deliberately gates links on `PR_URL` alone, so pinning the host (to the repo's remote, or to the hosts the gate's `gh pr create` returns) is a design call for the author, not a defect.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4599-4601",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 91 accepts the token in `open`'s argv \"for the instant `open` runs\", on the grounds that anyone who can read it already holds the store. On Linux both halves are shaky. A browser that xdg-open starts cold keeps the token URL in its own argv for its whole lifetime. Other local users can read argv through /proc/<pid>/cmdline unless /proc has hidepid, and they hold the store only if the home directory is world-readable. Reword the accepted exposure, or hand the browser a 0600 redirect file instead of the raw token URL.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "73",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A tokened non-GET request gets a 405 with no `Allow` header, though RFC 9110 §15.5.6 says a 405 MUST carry one; HEAD is refused as well. The impact on a read-only loopback page is nil. Adding `Allow: GET` fixes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "90",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The /events stream sends no periodic keep-alive comment and no `retry:` field, so a stream over an unchanged store stays silent. That's fine on loopback, but an idle-timeout policy could drop it. EventSource reconnects and the server resends the board, so this is not a spec break.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/01-architecture.md",
+      "line": "10",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Line 10 says \"Dashboard (v2): local web UI. Not in v1.\" Decision 91 now ships a web dashboard without saying it supersedes or promotes that line. Decision 91 wins per AGENTS.md, but the architecture doc is stale. Decision 91 also does not mention the line, though it does call out Copiste's 'pup serve' daemon. docs/08-roadmap.md has no conflicting stack entry, and node:http fits the no-new-dependency rule.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4631-4646",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The roughly 16-line test inventory (token length, Host cases, escaping cases and so on) restates `web-dashboard.test.ts` and the CLI tests. It will go stale as tests change, and a decision record is meant to hold the why. Cut it to one sentence, or drop it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4585-4630",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The section lists every board section and per-session field (goal headline, question, activity, rejections, context, newest steer and so on). That restates `renderDashboardBody` and rots when a field is added. The decision should keep the invariants (the escaping chain, `PR_URL` as the only link source, SSE diffing) and leave the field list to the template.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "16, 26-40",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `startWebDashboard` JSDoc repeats decision 91's threat model, even though `hasToken`, `hardening` and `refuse` already carry their own WHY; one line of contract plus a pointer to decision 91 would do. The `DASHBOARD_POLL_MS` JSDoc likewise just restates the constant's name.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.411373500000001,
+  "duration_ms": 312058,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 18301,
+    "cache_read": 257757,
+    "cache_creation": 66579,
+    "total": 342651
+  }
+}
