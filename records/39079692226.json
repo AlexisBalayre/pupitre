@@ -1,0 +1,211 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T23:43:55.402Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39079692226",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39079692226",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f25dc911b94dd34c52a314f7901ad2895d380545",
+  "source": "pr",
+  "pr_number": 155,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "201-212",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The Peers section has no limit on how many peers it lists, and it is built before the context budget check. A launch that overlaps enough live sessions now fails with `ContextBudgetExceededError`, which is a refusal caused by the overlap itself. Through `pup new` it also leaves a backlog row behind.",
+      "body": "Decision 99 says an overlapping launch is \"never refused, with no cap\". But the context budget check can still refuse one, because of the Peers section itself.\n\n`peersSection` lists **every** overlapping peer. `PEER_FILES_SHOWN = 20` caps the files shown per peer, not the number of peers. `buildContextMarkdown` puts the section into `contextMarkdown` (line 248), which is then checked against the budget:\n\n```ts\nconst tokenEstimate = estimateTokens(contextMarkdown);\nif (tokenEstimate > contextBudget) {\n  throw new ContextBudgetExceededError(tokenEstimate, contextBudget);\n}\n```\n\n**When it triggers.** The default budget is 6000 tokens, about 24k chars at `CHARS_PER_TOKEN = 4`. A peer that shares 20 files costs roughly 200 tokens. The audit sweep is scoped `**/*`, so it overlaps every live session and usually shows each peer's full 20 files. On top of that, the context already holds the protocol, the knowledge slice and up to 8000 chars of brief. A sweep, or any broad task, therefore fails once there are roughly 10–20 live sessions.\n\n**Why it matters:**\n- **The launch is refused,** which is the opposite of decision 99.\n- **The error goes unhandled.** `ContextBudgetExceededError` is not an `InvalidProfileError`, so neither `createOrRefuse` nor `pup launch` expects it. `launchOrRefuse` rethrows it as an uncaught error instead of printing a one-line refusal. The message gives a token count, says nothing about peers, and points at a role layer that the launch doesn't use. `brief.service.ts` already avoids this same message because it misleads.\n- **`pup new` and the sweep leave a backlog row behind.** They have already run `planTask`. That is the orphan row the comment on `createSession` says it avoids.\n\n**Possible fixes:**\n- Cap the number of peers listed, for example the first N followed by \"+K more sessions; see `pup status`\".\n- Or leave the Peers section out of the token estimate.\n\nEither way, add a test with many broad peers.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f25dc911b94dd34c52a314f7901ad2895d380545/src/core/profile-compiler.service.ts#L201-L212\nhttps://github.com/AlexisBalayre/pupitre/blob/f25dc911b94dd34c52a314f7901ad2895d380545/src/core/profile-compiler.service.ts#L486-L490",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "168-179",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`introduceToPeers` steers every scope holder, including `awaiting-review`, `blocked` and `rejected` peers, not only `running` ones. A launch therefore types a turn into agents that have handed in their work or been parked for a human, and decision 99 doesn't say which peer states should get the steer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "45-53",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "docs/02-cli.md still says `pup launch` refuses a scope overlap with a live session and that `--allow-overlap` overrides it, and `pup new` still documents the flag. Decision 99 wins over it per AGENTS.md, but the CLI reference now describes behavior that no longer exists.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "187-191",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The only check left before `planTask` is `assertNoArmedGitDrivers` (decision 50), but the comment still points to decision 41, whose refusal this PR removes. Cite decision 50 instead, or drop the citation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-state.utils.ts",
+      "line": "45",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Comments in `src/core/session-state.utils.ts:45` (\"two agents editing one file (decision 41)\"), `src/core/scope-audit.utils.ts:41` and `src/core/types/overlap.types.ts:11` still describe decision 41's launch-time overlap guard as binding. `overlap.service.ts` was updated to cite decision 99; these three weren't.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "586-587",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `launchOrRefuse` JSDoc still gives \"the scope it collides with\" as an expected launch error, but no launch raises a scope collision any more since `ScopeConflictError` was deleted. Drop that example. The comment edited a few lines below also now breaks off early (\"…holding the task. Scrubbed line by\") and could be rewrapped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "448-454",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The deprecation notice goes to stdout via `console.log`, so a script that parses `pup new`/`pup launch` stdout (for example the first line, expecting `Launched session …` or `goal: …`) now gets an extra first line. Those are the scripts the one-release grace is meant to keep working; `console.error` keeps stdout unchanged.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "284",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`relaunchWindow` sends the saved launch-time `context.md` as the new window's first prompt, so its `## Peers` list can name peers that have since merged or been killed. Peers that joined after launch were told only to the old window, which the respawn kills, so the new window never hears of them. Re-deriving live peers at respawn would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "222-224, 260-262",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The coordination rule (\"message … what you will change (the function or section) and agree who does what\") is written out twice: once in `peerJoinedMessage` and once in the kickoff's session-protocol bullet. The two copies can drift. A shared constant would keep the newcomer's instruction and the existing peer's instruction identical.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "229, 479",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `peers` input is an inline intersection, `input: CompileInput & { peers?: SessionPeer[] }`, written out twice instead of as a field on `CompileInput` in `src/core/types/profile.types.ts`. That interface already holds the similar optional launch-time input `codegraphBinary?`, so the compiler's input contract is now split across three places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "879, 1014",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The two call sites pass different shapes to `noteAllowOverlap(passed: boolean | undefined)`. `pup new` passes `noteAllowOverlap(opts.allowOverlap === true)` and `pup launch` passes `noteAllowOverlap(opts.allowOverlap)`. Since the helper accepts `undefined`, the `=== true` coercion is redundant; dropping it makes the two match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "2579",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test copies the entire `--allow-overlap` notice sentence into a literal. The sibling `new` test at :3788 only matches the prefix `/^--allow-overlap has no effect/`. Any rewording of the notice will break the full-string test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "174",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The peer-joined steer records `by: newcomer` as a bare session id, while the CLI records a session sender as `session:<id>` (src/cli/index.ts:1611, 1635), so the dossier shows the same kind of sender in two shapes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "1157-1160",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 99 supersedes decision 41's refusal, but decision 41's header has no \"superseded by 99\" marker, unlike decision 9, which marks its own revision in its header. A reader of decision 41 won't learn that its refusal is gone.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "444-445",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above the `--allow-overlap` notice restates what `noteAllowOverlap` does and says \"now\". Decision 99 already records the one-release reason, so a bare \"(decision 99)\" would do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/session-event.types.ts",
+      "line": "49",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The `scope_overlap` payload key `accepted: { session; files }[]` was named for the waived-refusal model. Now that every overlap is allowed, nothing is \"accepted\", so the name is stale.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.748605000000001,
+  "duration_ms": 398598,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 14213,
+    "cache_read": 208721,
+    "cache_creation": 61788,
+    "total": 284734
+  }
+}
