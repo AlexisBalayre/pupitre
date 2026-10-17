@@ -5995,7 +5995,11 @@ describe('CLI commands', () => {
 // while `import.meta.url` is the resolved file, so without a realpath the
 // entry point decides it is being imported and exits 0 without parsing argv.
 describe('executable entry point', () => {
-  it('parses argv when invoked through a symlink, as the linked `pup` binary is', () => {
+  // It spawns a whole `pup` through tsx, which a host other suites load can
+  // take past the default 5 s; 20 s as decision 46's kickoff test (decision 94).
+  it('parses argv when invoked through a symlink, as the linked `pup` binary is', {
+    timeout: 20_000,
+  }, () => {
     const link = join(tempDir('pup-bin-'), 'pup');
     symlinkSync(join(process.cwd(), 'src', 'cli', 'index.ts'), link);
 

@@ -39,7 +39,6 @@ import {
   createPullRequest,
   findOpenPullRequest,
   originRepoSlug,
-  readPullRequestLanding,
   rewritePullRequest,
 } from './github.client.js';
 import { readOriginUrl } from './init.service.js';
@@ -61,6 +60,7 @@ import {
   PR_TITLE_MAX_CHARS,
 } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
@@ -87,6 +87,9 @@ import type {
   MergeRequest,
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
+
+// land.service.ts still imports COMMIT_SHA from here; a later task switches that import and drops this line.
+export { COMMIT_SHA } from './merge-gate.constants.js';
 
 export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
@@ -129,15 +132,41 @@ function plainDetail(detail: string): string {
   return detail.replace(CSI_ESCAPE, '').replace(CONTROL_CHARS, ' ').trimEnd();
 }
 
-function commandFailureDetail(error: unknown): string {
+/** A failed command's whole output, plain; its message when it printed nothing. */
+function commandFailureOutput(error: unknown): string {
   const failure = error as { stdout?: string; stderr?: string; message?: string };
   const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
+  return plainDetail(output || (failure.message ?? 'command failed'));
+}
+
+function commandFailureDetail(error: unknown): string {
   // Plain before the tail is taken, never after: the cut would otherwise land
   // mid-escape and leave its parameters as text, and a coloured runner spends
   // much of the budget on bytes nobody reads.
-  return plainDetail(output || (failure.message ?? 'command failed')).slice(
-    -GATE_OUTPUT_TAIL_CHARS,
-  );
+  return commandFailureOutput(error).slice(-GATE_OUTPUT_TAIL_CHARS);
+}
+
+/**
+ * The line each common runner opens a failed test with: vitest's `FAIL` and
+ * `×`, jest's `✕` and `●`, pytest's `FAILED`, go's `--- FAIL:`. A line, not a
+ * parse — the names are for the operator to read, never for anything to act on.
+ */
+const FAILED_TEST_LINE = /^\s*(?:FAIL|FAILED|×|✕|✗|●|--- FAIL:)\s+(.+?)\s*$/;
+/** Enough names to tell one flake from a broken suite, few enough to read. */
+const FAILED_TEST_NAMES_MAX = 10;
+
+/** The failed tests a failed test stage's output names, deduplicated. */
+function failingTestNames(error: unknown): string {
+  const names = [
+    ...new Set(
+      commandFailureOutput(error)
+        .split('\n')
+        .flatMap((line) => FAILED_TEST_LINE.exec(line)?.[1] ?? []),
+    ),
+  ];
+  if (names.length === 0) return 'none named in its output';
+  const more = names.length - FAILED_TEST_NAMES_MAX;
+  return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
 /**
@@ -274,6 +303,7 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
   }
   assertTargetName(req.repoPath, target);
   let pullRequest: PullRequestPlan | undefined;
+  let regate: RegatePlan | undefined;
   if (req.openPr) {
     assertGhAvailable(MERGE_PR_USE.command);
     // Resolved once, here, and carried to the push, so the PR's repo and the
@@ -288,9 +318,8 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     // Everything GitHub can refuse is settled here, before ten minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
-    pullRequest = merged
-      ? planRegate(req.repoPath, session.id, merged, ref, originUrl)
-      : { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
+    if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
+    else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
   return withMergeLock(req.repoPath, () => {
     // Not under the project's state dir beside the conductor's checkout: the
@@ -300,17 +329,8 @@ export function runMergeGate(db: Database, req: MergeRequest): MergeOutcome {
     const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
     try {
       const checkoutDir = join(checkoutRoot, 'checkout');
-      return pullRequest?.regate
-        ? regateMerged(
-            db,
-            req,
-            session,
-            pullRequest,
-            pullRequest.regate,
-            target,
-            sandbox,
-            checkoutDir,
-          )
+      return regate
+        ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
         : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest);
     } finally {
       // Still under the lock, on a pass, a failed stage and a throw alike.
@@ -760,22 +780,12 @@ export function pushTarget(
   return recorded;
 }
 
-interface PullRequestPlan extends PullRequestRef {
+export interface PullRequestPlan extends PullRequestRef {
   /** The push target recorded at setup; the push goes here literally (decision 56). */
   originUrl: string;
   /** Set when an open PR for this branch already exists and passed adoption checks. */
   adoptedUrl?: string;
-  /**
-   * Set on a re-gate (decision 86): the merged session's open PR, and the head
-   * GitHub reports for it, which the local branch must hold when it is pinned.
-   */
-  regate?: { head: string; prUrl: string };
 }
-
-/** A sha as the gate pins it, which can then never read as an option. */
-export const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
-
-const NOT_REGATED = 'Nothing was re-gated.';
 
 /**
  * The newest merge event, or `'landed'` when a `landed` event came after it:
@@ -813,98 +823,6 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
         `origin was recorded as. ${untouched}`,
     );
   }
-}
-
-interface MergeToRegate {
-  prUrl: string;
-  sha: string;
-  target: string;
-}
-
-/**
- * The merge a re-gate starts from (decision 86): the newest `merge` event of a
- * merged session, which must have opened a PR, pinned a sha and not landed.
- * Read before anything spawns, so a merged session with nothing to re-gate is
- * refused as cheaply as one in any other state.
- */
-function mergeToRegate(db: Database, sessionId: string): MergeToRegate {
-  const id = sanitizeReason(sessionId);
-  const merge = newestMerge(db, sessionId);
-  if (merge === 'landed') {
-    throw new Error(`Session ${id} has already landed; there is no PR to re-gate. ${NOT_REGATED}`);
-  }
-  if (merge?.prUrl === undefined) {
-    throw new Error(
-      `Session ${id} is merged with no pull request: its merge was a local fast-forward, ` +
-        `already on the target, so there is no PR to re-gate. ${NOT_REGATED}`,
-    );
-  }
-  const { prUrl, sha, target } = merge;
-  if (sha === undefined || !COMMIT_SHA.test(sha) || target === undefined) {
-    throw new Error(
-      `Session ${id}'s merge event names no pinned sha and target, so there is no pin to tell ` +
-        `a moved head from. ${NOT_REGATED}`,
-    );
-  }
-  return { prUrl, sha, target };
-}
-
-/**
- * Settle a re-gate with GitHub before the lock, as `findOpenPullRequest`
- * settles a first `--pr` gate (decisions 27, 86): the PR the merge recorded
- * must still be OPEN onto the same target, with a head other than the pinned
- * sha, and be the open PR adoption finds for the branch, past the same checks.
- * A head that is not a descendant of the pin is allowed: a fix round can
- * rebase. The stages then measure that head, never anything the merge recorded.
- */
-function planRegate(
-  repoPath: string,
-  sessionId: string,
-  merge: MergeToRegate,
-  ref: PullRequestRef,
-  originUrl: string,
-): PullRequestPlan {
-  const { prUrl, sha: pinned } = merge;
-  assertPullRequestOf(prUrl, ref.repo, NOT_REGATED);
-  if (merge.target !== ref.base) {
-    throw new Error(
-      `${prUrl} was gated onto ${sanitizeReason(merge.target)}, but the main checkout is on ` +
-        `${sanitizeReason(ref.base)}; check out ${sanitizeReason(merge.target)} there and re-run. ` +
-        NOT_REGATED,
-    );
-  }
-  const pr = readPullRequestLanding(repoPath, prUrl, ref.repo);
-  if (pr.state !== 'OPEN') {
-    const why =
-      pr.state === 'MERGED'
-        ? `it merged already; \`pup land ${sanitizeReason(sessionId)}\` lands it if its head ` +
-          'was the pinned sha'
-        : pr.state === 'CLOSED'
-          ? 'a closed PR has nothing to re-gate'
-          : 'only an open PR is re-gated';
-    throw new Error(
-      `${prUrl} is ${sanitizeReason(pr.state ?? 'in an unreadable state')} on GitHub, not ` +
-        `OPEN: ${why}. ${NOT_REGATED}`,
-    );
-  }
-  if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
-    throw new Error(`GitHub reports ${prUrl} with an unreadable head. ${NOT_REGATED}`);
-  }
-  if (pr.head === pinned) {
-    throw new Error(
-      `${prUrl} still has its head at ${pinned}, the commit the gate pinned: there is nothing ` +
-        `new to gate. Merge it on GitHub, then run \`pup land ${sanitizeReason(sessionId)}\`. ` +
-        NOT_REGATED,
-    );
-  }
-  const adoptedUrl = findOpenPullRequest(repoPath, ref);
-  if (adoptedUrl !== prUrl) {
-    throw new Error(
-      `The open pull request for ${sanitizeReason(ref.head)} is ${adoptedUrl ?? 'none'}, not ${prUrl}, the one ` +
-        `the merge recorded. ${NOT_REGATED}`,
-    );
-  }
-  return { ...ref, originUrl, adoptedUrl, regate: { head: pr.head, prUrl } };
 }
 
 function gateAndMerge(
@@ -1101,97 +1019,6 @@ function gateAndMerge(
   };
 }
 
-/**
- * A re-gate of a merged session whose open PR's head moved past the pin
- * (decision 86), with what `planRegate` settled. The stages are
- * `gateAndMerge`'s, on the local branch pinned at the head GitHub reports; the
- * rest is what a merged session leaves to do. `worktree-clean` is skipped, the
- * session's worktree having gone with the first merge, and `fresh-base` fails
- * rather than rebasing: there is no worktree to rebase in, and a rebased head
- * would no longer be the one the PR shows. A merged session has no window to
- * re-steer and no state to fall back to, so a failure is refused and the merge
- * event that stands stays the newest. On a pass nothing is pushed, the pin
- * being the head GitHub already shows, and a lease on a tracking ref the fix
- * round's push left behind would refuse it; the PR is rewritten and read back
- * at the pin, and the session stays merged. Nothing the first merge did
- * repeats: no teardown (the branch is left for `pup land`), no ratchet, no
- * decision draft, and no ledger entry of a kind the session already holds open.
- */
-function regateMerged(
-  db: Database,
-  req: MergeRequest,
-  session: SessionRow,
-  pullRequest: PullRequestPlan,
-  regate: { head: string; prUrl: string },
-  target: string,
-  sandbox: string,
-  checkoutDir: string,
-): MergeOutcome {
-  const stages: GateStageResult[] = [
-    {
-      stage: 'worktree-clean',
-      status: 'skipped',
-      detail: 'not measured — a re-gate reads the pushed branch, not the session worktree',
-    },
-  ];
-  const refused = (): MergeOutcome => ({
-    ...refuseGate(db, session, sandbox, stages),
-    regated: true,
-  });
-  const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
-  // Pinned first, and once: no rebase will move the branch.
-  const sha = pinRegatedHead(req.repoPath, session.branch, regate.head, regate.prUrl);
-  if (!isAncestor(req.repoPath, targetSha, sha)) {
-    stages.push({
-      stage: 'fresh-base',
-      status: 'fail',
-      detail:
-        `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ` +
-        `${targetSha}. Rebase it onto ${sanitizeReason(target)}, push it to the PR, then re-gate.`,
-    });
-    return refused();
-  }
-  stages.push({ stage: 'fresh-base', status: 'pass', detail: `already based on ${target}` });
-
-  const measured = measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
-  if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
-  const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
-  // The stages measure the whole branch again, so the flags the first gate
-  // filed come back with figures the fix round moved: a kind this session
-  // already holds open is not filed twice.
-  const held = new Set(
-    measured.openEntries.flatMap((entry) => debtKind(entry.description, session.id) ?? []),
-  );
-  const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, measured.flaggedDebt, (flag) =>
-    held.has(debtKind(flag.description, session.id) as string),
-  );
-
-  const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
-  try {
-    rewritePullRequest(req.repoPath, regate.prUrl, {
-      ...pullRequest,
-      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha),
-    });
-    assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
-  } catch (error) {
-    throw withLedgerKept(error, ledgerKept);
-  }
-  // Logged as a transition onto the state the session keeps, so every reader
-  // of the newest gate run finds it.
-  appendEvent(db, session.id, 'gate_result', { from: 'merged', to: 'merged', report });
-  const files = measured.changedPaths;
-  recordMerge(db, req.repoPath, session, { sha, target, files, prUrl: regate.prUrl }, false);
-  return {
-    status: 'merged',
-    report,
-    rejectCount: session.reject_count,
-    debtCandidates: measured.debtCandidates,
-    prUrl: regate.prUrl,
-    prWasAdopted: true,
-    regated: true,
-  };
-}
-
 /** What the stages measured, for the caller that lands it. */
 interface BranchMeasurement {
   changedPaths: string[];
@@ -1209,13 +1036,34 @@ interface BranchMeasurement {
 type FlaggedDebt = { description: string; files: string[] };
 
 /**
+ * Whether a failed stage run is the runner's own failing-tests exit, status 1
+ * for vitest, jest, pytest and `go test` alike: the one failure a re-run can
+ * tell from a flake. Anything else fails at once. A Ctrl-C reaches the gate's
+ * child with pup itself (`withMergeLock` keeps pup alive through it), and a
+ * re-run that passed would turn the operator's abort into a merge: so a child a
+ * signal killed, a runner that caught the interrupt (130, or pytest's 2), and a
+ * wrapper reporting a killed child (129, 143) are not re-run. Nor is a stage
+ * that ran out `GATE_COMMAND_TIMEOUT_MS`, which node marks with a `code` even
+ * when the runner traps the SIGTERM and exits 1, and whose re-run would hold
+ * the merge lock twice as long on a hung suite.
+ */
+function isRerunnable(error: unknown): boolean {
+  const { status, signal, code } = error as {
+    status?: number | null;
+    signal?: string | null;
+    code?: string;
+  };
+  return status === 1 && !signal && code === undefined;
+}
+
+/**
  * The stages every gate run measures on the pinned sha, from the gate's
  * checkout (decision 81): build, test and lint, a touched nested package's own
  * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
  * hard stage has recorded its failure in `stages`; the caller decides what a
  * failure does to the session.
  */
-function measureBranch(
+export function measureBranch(
   db: Database,
   req: MergeRequest,
   session: SessionRow,
@@ -1224,12 +1072,8 @@ function measureBranch(
   targetSha: string,
   sha: string,
 ): BranchMeasurement | undefined {
-  /** Runs one hard stage; false once it has recorded the failure. */
-  const commandStage = (
-    stage: string,
-    command: { command: string; args: string[] },
-    cwd: string,
-  ): boolean => {
+  /** One run of a stage's command: the error it threw, `undefined` on a pass. */
+  const runCommand = (command: { command: string; args: string[] }, cwd: string): unknown => {
     try {
       // The session wrote what this runs (its own scripts, its own config), so
       // it runs confined: an env allowlist (decision 28) inside a sandbox whose
@@ -1243,12 +1087,52 @@ function measureBranch(
         gateEnv: req.gateEnv,
         timeout: GATE_COMMAND_TIMEOUT_MS,
       });
+      return undefined;
+    } catch (error) {
+      return error ?? new Error('command failed');
+    }
+  };
+
+  /**
+   * Runs one hard stage; false once it has recorded the failure. A failed test
+   * stage runs once more, still under the lock, before it counts: a suite that
+   * passes on the re-run passes, named flaky with what failed the first time,
+   * so a timing-sensitive test the host's load tipped over is no rejection
+   * (decision 94). Build and lint are deterministic and never re-run, and
+   * neither is a test run that ended other than by the runner's own failing
+   * exit (`isRerunnable`).
+   */
+  const commandStage = (
+    stage: string,
+    command: { stage: string; command: string; args: string[] },
+    cwd: string,
+  ): boolean => {
+    const first = runCommand(command, cwd);
+    if (first === undefined) {
       stages.push({ stage, status: 'pass' });
       return true;
-    } catch (error) {
-      stages.push({ stage, status: 'fail', detail: commandFailureDetail(error) });
+    }
+    if (command.stage !== 'test' || !isRerunnable(first)) {
+      stages.push({ stage, status: 'fail', detail: commandFailureDetail(first) });
       return false;
     }
+    const rerun = runCommand(command, cwd);
+    if (rerun === undefined) {
+      stages.push({
+        stage,
+        status: 'pass',
+        detail: `flaky — failed, then passed on its one re-run; failing the first time: ${failingTestNames(first)}`,
+      });
+      return true;
+    }
+    stages.push({
+      stage,
+      status: 'fail',
+      detail:
+        `failed twice — failing the first time: ${failingTestNames(first)}; ` +
+        `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
+    });
+    return false;
   };
 
   // One repo has one build, one test and one lint, and the runner that answers
@@ -1467,7 +1351,7 @@ function measureBranch(
 }
 
 /** A soft flag without `--accept-debt`, or a re-gate's failure: recorded, nothing merged. */
-function refuseGate(
+export function refuseGate(
   db: Database,
   session: SessionRow,
   sandbox: string,
@@ -1483,7 +1367,7 @@ function refuseGate(
  * session-written `log.date` can fail this, and a failure after the write would
  * leave entries filed with no kept note.
  */
-function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
+export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
   return runGit(repoPath, ['log', '--reverse', '--format=%s', `${targetSha}..${sha}`])
     .trim()
     .split('\n')
@@ -1495,7 +1379,7 @@ function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string)
  * says the session already carries; the count is every flag the accepted debt
  * covers, for the refusals that must stay after the write.
  */
-function fileAcceptedDebt(
+export function fileAcceptedDebt(
   db: Database,
   req: MergeRequest,
   projectId: string,
@@ -1527,7 +1411,7 @@ function fileAcceptedDebt(
  * The `merge` event, with the commits the branch gained after the pin counted
  * and named unless the branch was deleted at it.
  */
-function recordMerge(
+export function recordMerge(
   db: Database,
   repoPath: string,
   session: SessionRow,
@@ -1553,7 +1437,7 @@ function recordMerge(
 }
 
 /** The title and body pupitre writes on a PR it opens or adopts. */
-function pullRequestText(
+export function pullRequestText(
   spec: TaskSpec,
   sessionId: string,
   report: GateReport,
@@ -1564,29 +1448,6 @@ function pullRequestText(
     title: prTitle(spec.goal) || `pup session ${sessionId}`,
     body: prBody(spec, report, commitSubjects, sha),
   };
-}
-
-/**
- * A re-gate's pin: the local branch's tip, which must be the head GitHub
- * reports for the PR, so the commit the stages measure is the one the PR shows
- * (decision 86). Read once, under the lock; a symref keeps its own refusal.
- */
-function pinRegatedHead(repoPath: string, branch: string, head: string, prUrl: string): string {
-  let tip: string | undefined;
-  try {
-    tip = resolveCommit(repoPath, `refs/heads/${branch}`);
-  } catch (error) {
-    rethrowIfKilled(error);
-    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
-  }
-  if (tip !== head) {
-    throw new Error(
-      `${sanitizeReason(branch)} is ${tip === undefined ? 'missing' : `at ${tip}`} in this ` +
-        `repo, but ${prUrl} has its head at ${head}; bring the local branch to the PR's head, ` +
-        `then re-run. ${NOT_REGATED}`,
-    );
-  }
-  return tip;
 }
 
 /**
@@ -1608,7 +1469,7 @@ const DEBT_FIGURES = [
  * `DEBT_FIGURES` places go: a digit in a path or name (`packages/app2`) is part
  * of the kind (decision 86).
  */
-function debtKind(description: string, sessionId: string): string | undefined {
+export function debtKind(description: string, sessionId: string): string | undefined {
   const suffix = ` session ${sessionId}`;
   if (!description.endsWith(suffix)) return undefined;
   return DEBT_FIGURES.reduce(
@@ -1763,7 +1624,7 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
  * files none twice, and the entries name this session (decision 82). The
  * message is extended in place so the refusal keeps its type.
  */
-function withLedgerKept(error: unknown, kept: number): unknown {
+export function withLedgerKept(error: unknown, kept: number): unknown {
   if (kept > 0 && error instanceof Error) {
     const [subject, pronoun] =
       kept === 1

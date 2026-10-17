@@ -194,6 +194,9 @@ function buildContextMarkdown(
     input.codegraphBinary ? codeGraphSection(SESSION_GRAPH) : undefined,
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
+      '- Run only the tests related to what you changed: the test runner’s related-tests form ' +
+      'when it has one (e.g. `vitest related <files>`), else the test files by name. Leave the ' +
+      'full suite to the merge gate, which runs it.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
       '  `pup session done "<one-line summary>"`\n' +
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +

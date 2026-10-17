@@ -4520,6 +4520,21 @@ changes back into those docs is pending.
     `--accept-debt` refuses with `regated`, no ledger entry, no merge event, no PR edit and no
     steer in the hint; the CLI prints the accept-debt line with no steer from an outcome alone,
     with no merged session in the store.
+    *Amended 2026-10-16 (debt #49):* the re-gate lives in `src/core/regate.service.ts`.
+    `mergeToRegate`, `planRegate`, `regateMerged` and `pinRegatedHead` moved there unchanged from
+    `merge-gate.service.ts`, which #147 and #148 had taken from 133 to 176 decision points; it
+    measures 150 after the move. `runMergeGate` still decides between a gate and a re-gate, and
+    the gate helpers the re-gate shares (`measureBranch`, `refuseGate`, `fileAcceptedDebt`,
+    `recordMerge`, `debtKind` and the rest) are exported from `merge-gate.service.ts`, so the two
+    modules import each other; every use sits inside a function body, so neither reads the other
+    while loading. `planRegate` returns a `RegatePlan`, whose `regate` field is no longer an
+    optional part of every `PullRequestPlan`, and `regateMerged` takes that plan alone instead of
+    the plan and its `regate` field. `COMMIT_SHA` is defined once, in `merge-gate.constants.ts`,
+    and the dashboard imports it instead of keeping its own copy; `merge-gate.service.ts`
+    re-exports it for `land.service.ts` only, until a later task switches that import and drops
+    the line. No behaviour changed: every
+    re-gate test asserts what it did, the refusals that throw before writing share
+    `expectRefusedUnwritten`, and the two that delete the local branch share one teardown helper.
 
 87. **Pastes go through a buffer named for the call, every attach spawns tmux from the runtime
     with the scrubbed environment, a steer reads the box by its frame, and `pup attach <session>`
@@ -4629,6 +4644,40 @@ changes back into those docs is pending.
     within one poll, and nothing more while the store is unchanged. `prFixRounds` counts re-gates
     and stops at a landing and at a merge without a PR. The CLI prints the url, stops the server on
     SIGINT, and refuses a session and the conductor without binding.
+
+94. **Worker windows run at nice 10, workers run related tests only, and the gate re-runs a failed
+    test stage once (2026-10-16).**
+    Two workers drove an 8-core Mac to load 15, and a gate's test stage, run while a worker's suite
+    ran, timed out on untouched timing-sensitive tests: a rejection, and two park the task as
+    blocked. Three changes let four sessions share the machine. Every worker's window starts
+    `claude` as `nice -n 10 claude …`, `nice` resolved on pup's PATH as `claude` is, so every test,
+    build and tool the window spawns inherits the niceness and yields the CPU to the gate. The
+    conductor's window is not niced: the gate runs inside the `pup merge --pr` the conductor starts,
+    and would inherit its niceness, so its stages run at normal priority as the operator's do. The
+    session protocol tells workers to run only the tests related to what they changed — the
+    runner's related-tests form when it has one (`vitest related <files>`), else the test files by
+    name — and to leave the full suite to the gate, which runs it. And a failed test stage, root or
+    a nested package's, runs once more under the same lock before it counts: a pass on the re-run
+    passes the stage, its detail naming it flaky with the tests that failed the first time; a
+    second failure rejects as before, its detail naming both runs' failing tests ahead of the
+    re-run's output tail. Only the failing-tests exit is re-run, status 1 for vitest, jest, pytest
+    and `go test` alike: a child a signal killed (an operator's Ctrl-C reaches it, and a passing
+    re-run would turn the abort into a merge), a runner that caught the interrupt (130, pytest's
+    2), a wrapper reporting a killed child (129, 143), and a stage that ran out its timeout (whose
+    re-run would hold the merge lock twice as long on a hung suite) each fail at once. A runner
+    whose failing-tests status is not 1 (cargo's 101) loses the re-run, which fails safe; one that
+    traps the interrupt and exits 1 cannot be told from a flake, and a second Ctrl-C ends its
+    re-run. Build and lint are deterministic and never re-run. Failing tests are
+    named from the lines common runners open a failure with (vitest's `FAIL` and `×`, jest's `✕`
+    and `●`, pytest's `FAILED`, go's `--- FAIL:`), at most ten, for the operator to read. The
+    `index.test.ts` symlink entry-point test, which spawns a whole `pup`, takes a 20 s timeout as
+    decision 46's kickoff test does.
+    Tests: the session's tmux argv carries `nice -n 10` before the resolved `claude`, and the
+    conductor's carries no `nice`; the gate's test spawn carries no `nice`; a test stage killed by
+    SIGINT, one exiting 130, one exiting 2 and one timed out each run once and reject; the compiled
+    context carries the related-tests line; with a fake adapter a test stage failing once then
+    passing merges, run twice, marked flaky with the failing name; one failing twice rejects naming
+    both runs' failures; a failing build and a failing lint each run once.
 
 ## Implementation notes
 

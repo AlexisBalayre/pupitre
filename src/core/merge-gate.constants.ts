@@ -53,3 +53,6 @@ export const MAX_REJECTS_BEFORE_BLOCKED = 2;
 
 /** PR titles built from a task goal are cut here — GitHub truncates around this anyway. */
 export const PR_TITLE_MAX_CHARS = 72;
+
+/** A sha as the gate pins it, which can then never read as an option. */
+export const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;

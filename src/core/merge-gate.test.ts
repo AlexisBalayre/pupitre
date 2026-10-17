@@ -1173,6 +1173,139 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(steerPane).toHaveBeenCalled();
   });
 
+  // A worker's suite runs at nice 10 and the gate's at pup's own priority, but
+  // a loaded host can still tip a timing-sensitive test over: the test stage
+  // gets one re-run under the same lock before it counts (decision 94).
+  describe('test stage re-run', () => {
+    /** A stage command that fails its first run in this checkout, then `then`. */
+    const failsOnce = (then: string): string =>
+      'if [ -e .ran-once ]; then ' +
+      then +
+      '; fi; touch .ran-once; printf " FAIL  src/a.test.ts > times out under load\\n"; exit 1';
+
+    const adapterWith = (stage: 'build' | 'test' | 'lint', script: string): Adapter => ({
+      ...passingAdapter,
+      gateCommands: () =>
+        passingAdapter
+          .gateCommands(repo)
+          .map((c) =>
+            c.stage === stage ? { stage, command: 'sh', args: ['-c', script, `${stage}-run`] } : c,
+          ),
+    });
+
+    /** How many times the gate spawned the command marked `marker`, sandboxed or bare. */
+    const runsOf = (marker: string): number =>
+      vi.mocked(execFileSync).mock.calls.filter(([, args]) => args?.includes(marker)).length;
+
+    it('passes a test stage that passes on its re-run, named flaky with what failed', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(adapterWith('test', failsOnce('exit 0')));
+
+      expect(outcome.status).toBe('merged');
+      expect(runsOf('test-run')).toBe(2);
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'test',
+        status: 'pass',
+        detail:
+          'flaky — failed, then passed on its one re-run; failing the first time: ' +
+          'src/a.test.ts > times out under load',
+      });
+    });
+
+    it('rejects a test stage that fails its re-run too, naming both runs’ failures', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(
+        adapterWith('test', failsOnce('printf "FAILED tests/b.py::test_other\\n"; exit 1')),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(2);
+      const stage = outcome.report.stages.at(-1);
+      expect(stage).toMatchObject({ stage: 'test', status: 'fail' });
+      expect(stage?.detail).toMatch(
+        /^failed twice — failing the first time: src\/a\.test\.ts > times out under load; on the re-run: tests\/b\.py::test_other\n/,
+      );
+      expect(steerPane).toHaveBeenCalled();
+    });
+
+    // A Ctrl-C reaches the gate's child with pup itself, and a stage timeout
+    // kills it with SIGTERM: a re-run that passed would turn an abort into a
+    // merge, or hold the lock twice as long on a hung suite.
+    it.each([
+      ['killed by SIGINT', 'kill -INT $$'],
+      ['killed by SIGTERM, as a stage timeout is', 'kill -TERM $$'],
+      ['exiting 130 on an interrupt it caught', 'exit 130'],
+      ['exiting 2, as pytest does on an interrupt', 'exit 2'],
+    ])('never re-runs a test stage %s', (_case, end) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(
+        adapterWith('test', `if [ -e .ran-once ]; then exit 0; fi; touch .ran-once; ${end}`),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+    });
+
+    it('never re-runs a test stage that ran out its timeout, even one that trapped the SIGTERM', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      // What node throws when the timeout's SIGTERM is trapped and the runner
+      // exits 1 by itself: an ordinary status, told apart only by its code.
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        if (args.includes('test-run')) {
+          throw Object.assign(new Error('spawnSync sh ETIMEDOUT'), {
+            code: 'ETIMEDOUT',
+            status: 1,
+            signal: null,
+          });
+        }
+        return real?.(file, args, opts as never);
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+
+      const outcome = merge(adapterWith('test', 'exit 0'));
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+    });
+
+    it.each(['build', 'lint'] as const)('never re-runs a failed %s', (stage) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = merge(adapterWith(stage, failsOnce('exit 0')));
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf(`${stage}-run`)).toBe(1);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage, status: 'fail' });
+    });
+
+    it('runs its stages at the priority pup runs at, never under nice', () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      expect(merge(adapterWith('test', 'exit 0')).status).toBe('merged');
+
+      const spawn = vi
+        .mocked(execFileSync)
+        .mock.calls.find(([, args]) => args?.includes('test-run'));
+      expect(spawn).toBeDefined();
+      const argv = [spawn?.[0], ...(spawn?.[1] ?? [])].map(String);
+      expect(argv.some((word) => word === 'nice' || word.endsWith('/nice'))).toBe(false);
+    });
+  });
+
   it('steers a stage detail as plain text when the command output carries ANSI escapes', () => {
     // Live on 2026-09-12: vitest coloured its failure, the escapes went into the
     // report whole, and the pane could not show the paste as the bytes that were
@@ -2824,23 +2957,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(killSession).toHaveBeenCalledTimes(1);
     });
 
-    it.each<[string, () => void, string, RegExp]>([
-      ['closed', () => gateThenFix(), 'CLOSED', /is CLOSED on GitHub, not OPEN: a closed PR/],
-      ['merged', () => gateThenFix(), 'MERGED', /is MERGED on GitHub, not OPEN: .*pup land s1/],
-      ['still at the pin', () => gateThenFix({ fixRound: false }), 'OPEN', /still has its head at/],
-    ])('refuses a PR %s, writing nothing', (_label, setup, state, refusal) => {
-      setup();
-      const events = listEvents(db, SESSION_ID).length;
-
-      expect(() => regate([fixChecking], fakeGh([openPrOnMain], undefined, state))).toThrow(
-        refusal,
-      );
-
-      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
-      expect(merges().at(-1)?.sha).toBe(pinned);
-      expect(prEdits()).toBe(1);
-    });
-
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
     function expectRefusedUnwritten(refusal: RegExp, gh = fakeGh([openPrOnMain])): void {
       const events = listEvents(db, SESSION_ID).length;
@@ -2854,6 +2970,29 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(prEdits()).toBe(edits);
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
     }
+
+    /** The fix round's review worktree removed, and the local branch it held deleted. */
+    function dropReviewBranch(): void {
+      sh(
+        repo,
+        'git',
+        'worktree',
+        'remove',
+        '--force',
+        join(repo, '.worktrees', `${SESSION_ID}-review`),
+      );
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+    }
+
+    it.each<[string, () => void, string, RegExp]>([
+      ['closed', () => gateThenFix(), 'CLOSED', /is CLOSED on GitHub, not OPEN: a closed PR/],
+      ['merged', () => gateThenFix(), 'MERGED', /is MERGED on GitHub, not OPEN: .*pup land s1/],
+      ['still at the pin', () => gateThenFix({ fixRound: false }), 'OPEN', /still has its head at/],
+    ])('refuses a PR %s, writing nothing', (_label, setup, state, refusal) => {
+      setup();
+
+      expectRefusedUnwritten(refusal, fakeGh([openPrOnMain], undefined, state));
+    });
 
     /** A merge event as the store can hold it: session-writable, so any shape. */
     function plantMerge(fields: Record<string, unknown>): void {
@@ -2933,15 +3072,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     it('refuses a local branch turned into a symref, with the symref refusal', () => {
       gateThenFix();
-      sh(
-        repo,
-        'git',
-        'worktree',
-        'remove',
-        '--force',
-        join(repo, '.worktrees', `${SESSION_ID}-review`),
-      );
-      sh(repo, 'git', 'branch', '-D', BRANCH);
+      dropReviewBranch();
       sh(repo, 'git', 'symbolic-ref', `refs/heads/${BRANCH}`, 'refs/heads/main');
 
       expectRefusedUnwritten(/is a symbolic ref to refs\/heads\/main/);
@@ -2949,15 +3080,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     it('refuses when the local branch is missing, before any stage', () => {
       gateThenFix();
-      sh(
-        repo,
-        'git',
-        'worktree',
-        'remove',
-        '--force',
-        join(repo, '.worktrees', `${SESSION_ID}-review`),
-      );
-      sh(repo, 'git', 'branch', '-D', BRANCH);
+      dropReviewBranch();
 
       expectRefusedUnwritten(/pup\/s1 is missing in this repo, but .* has its head at/);
     });
@@ -2967,11 +3090,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       expect(merge().status).toBe('merged');
       addOrigin();
-      const events = listEvents(db, SESSION_ID).length;
 
-      expect(() => regate()).toThrow(/merged with no pull request: .*local fast-forward/);
+      expectRefusedUnwritten(/merged with no pull request: .*local fast-forward/);
 
-      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(ghCalls()).toEqual([]);
     });
 
@@ -2979,8 +3100,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       gateThenFix();
       appendEvent(db, SESSION_ID, 'landed', { sha: pinned, target: 'main', prUrl: PR_URL });
 
-      expect(() => regate()).toThrow('has already landed');
-      expect(merges()).toHaveLength(1);
+      expectRefusedUnwritten(/has already landed/);
     });
 
     it('still refuses a merged session without --pr', () => {
@@ -2992,12 +3112,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     it('refuses when the local branch is not at the PR head, before any stage', () => {
       gateThenFix();
       commitIn(join(repo, '.worktrees', `${SESSION_ID}-review`), 'src/local.ts', 'x;\n');
-      const events = listEvents(db, SESSION_ID).length;
 
-      expect(() => regate()).toThrow(/is at [0-9a-f]+ in this repo, but .* has its head at/);
-
-      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
-      expect(prEdits()).toBe(1);
+      expectRefusedUnwritten(/is at [0-9a-f]+ in this repo, but .* has its head at/);
     });
 
     // The body vouches for the new pin only, as a first gate's does (decision 82).

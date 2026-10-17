@@ -9,6 +9,7 @@ import { eventDetail } from './dashboard-events.utils.js';
 import type { SessionState } from './db.client.js';
 import { runGit } from './git-diff.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
+import { COMMIT_SHA } from './merge-gate.constants.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
@@ -330,11 +331,9 @@ function stallReason(session: DashboardSession, stalledAgeMs: number): string {
  * A target git can read as a branch name and nothing else — no leading `-`, no
  * `..` or `@{`, none of `^ ~ : ? * [ =` or a backslash, no blank, control or format
  * character — what `assertTargetName` refuses at the gate, checked here
- * without git because the name is about to be handed to git. And a sha as
- * the gate pins it, which can then never read as an option.
+ * without git because the name is about to be handed to git.
  */
 const PLAIN_BRANCH = /^(?!-)(?!.*\.\.)(?!.*@\{)[^\s~^:?*[\\=\p{Cc}\p{Cf}]+$/u;
-const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 /**
  * A pull request and nothing else: the one url the inbox prints as the answer,
  * and the one string the web dashboard makes a link of (decision 91).
