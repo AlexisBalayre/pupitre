@@ -1,0 +1,94 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T14:12:52.063Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39039555975",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39039555975",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a23725b71dd0cb95fd7da341c99dbd7a29143db4",
+  "source": "pr",
+  "pr_number": 153,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e919e465e68c92e244af51698e4283409614157c",
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1310-1318",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1326-1331",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/web-dashboard.template.ts",
+      "line": "1",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1327-1337",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `--open` opener now prints 'Could not open a browser; open the url above.' from two handlers, `.on('error')` and `.on('exit')`. A local `const unopened = () => console.log(...)` would keep the message in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "216-430",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "After the fold, about 300 lines of pure HTML rendering share a file with the HTTP/SSE server. `escapeHtml` is now exported from the service only for the test. The file still reads as one dashboard service, so this is a note and asks for no change.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": null,
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `stubOpener` and `openerSettled` tests depend on `setImmediate` ordering, so each test needs `await openerSettled()` after `runOpen()`. If that await is missing, a 'not logged' assertion would pass for the wrong reason.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.0932939,
+  "duration_ms": 152421,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 5436,
+    "cache_read": 249792,
+    "cache_creation": 33892,
+    "total": 289134
+  }
+}
