@@ -4711,10 +4711,9 @@ changes back into those docs is pending.
     rewritten for the next child before `sandbox-exec` read the previous one's, so a child ran
     under another's grants, which is how the folded test run first lost its report directory to
     lint's profile, and how session code could have taken the grants of a child working in the
-    trusted checkout. Every one settles before any
-    result is read, so none outlives the checkout; an interrupt is the outcome whatever else
-    failed; and the report keeps today's order and stops where today's run stopped, so a failing
-    test still hides lint's result. A capability's own error still surfaces at the debt stages. A
+    trusted checkout. Every one settles before any result is read, so none outlives the
+    checkout; an interrupt is the outcome whatever else failed; and the report keeps today's order
+    and stops where today's run stopped, so a failing test still hides lint's result. A capability's own error still surfaces at the debt stages. A
     coverage run that was not folded still runs after them (`measureCoverage`), never alongside a
     suite. `pup init`, `pup audit` and `pup land` (`measureBaseline`) run build, then the test run,
     lint and the static debt together, then any unfolded coverage. The TypeScript adapter's
@@ -4745,15 +4744,22 @@ changes back into those docs is pending.
     removed with three retries. A removal that still fails, such as ENOTEMPTY from a child that
     wrote while being stopped, prints `Could not remove <path> (<code>); it is left behind.` on
     stderr and never throws over the stage results.
+    Measured: `measureBranch` on a clone of this repo at fad06ed with a two-line source change,
+    main's code against this branch's, one after the other, while other sessions kept the host's
+    load average between 9 and 45. Main took 599.6 s and 571.2 s; the branch took 275.4 s and
+    302.3 s, each with decision 94's re-run of a flaky test, and 313.7 s on one run (test stage
+    307.2 s, build 5.8 s, lint 0.6 s, every debt capability under 0.4 s). That is 46 to 54% less
+    than main's 585 s mean. Main's third run hung in its coverage run, whose 10-minute timeout
+    ended nothing, and was stopped after 85 minutes and not counted. The second branch run is how
+    the shared profile file above was found.
     Tests: a fake vitest on a TypeScript repo runs once for both stages, with the coverage figure
     from that run; a script with flags runs twice; a failing instrumented run is re-run once,
     fails the test stage and reads no coverage. In init, a folded run calls no `coverage`, a
     failing one fails the test stage and records the gap, and a test command that is another
     adapter's is not folded. Six sandboxed children started together each write into the
     directory granted to it, which fails on the shared profile file. `coveredTest` folds `vitest`
-    and `vitest run` and declines flags,
-    another runner, a pre or post script, a missing provider and a thresholds config (the last
-    proven by removing the check). In the gate and in init, a test stage that passes only if lint
+    and `vitest run` and declines flags, another runner, a pre or post script, a missing provider
+    and a thresholds config (the last proven by removing the check). In the gate and in init, a test stage that passes only if lint
     and every debt capability ran while it was running passes, and the stages keep their order.
     Every stage that ran something carries a time and coverage-without-a-capability none; the
     re-steer prints `- build: FAIL (0.2s) — …`; the CLI prints times on the gate's, init's and the
