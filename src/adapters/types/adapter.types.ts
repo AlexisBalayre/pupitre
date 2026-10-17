@@ -115,6 +115,23 @@ export interface CapabilityUnavailable {
 type Awaitable<T> = T | Promise<T>;
 
 /**
+ * The test stage's own suite run with line coverage on, so one run answers for
+ * both (decision 95). The caller runs `command` in place of the test stage's,
+ * in the checkout being measured with `writablePaths` granted, reads `report`
+ * after a run that passed, and calls `dispose` once it is done with it.
+ */
+export interface CoveredTestRun {
+  command: string;
+  args: string[];
+  /** Where the run writes its report, outside the checkout it measures. */
+  writablePaths: string[];
+  /** The coverage the last run wrote, or why it cannot be read. */
+  report(): CoverageReport | CapabilityUnavailable;
+  /** Removes what the run wrote outside the checkout. */
+  dispose(): void;
+}
+
+/**
  * A toolchain plugin (docs/06-adapters.md): the v1 gate surface plus the v1.1
  * debt-delta capabilities. Commands resolve from the repo's own config first
  * (package.json scripts); adapter defaults are the fallback. A missing stage
@@ -132,6 +149,12 @@ export interface Adapter {
   complexity?(ctx: CapabilityContext, files: string[]): Awaitable<FileComplexity[]>;
   /** Runs the suite with line coverage. */
   coverage?(ctx: CapabilityContext): Awaitable<CoverageReport | CapabilityUnavailable>;
+  /**
+   * The run `coverage` makes, as the test stage's command, when this adapter's
+   * `test` command runs exactly that suite; undefined when it runs anything
+   * else, and the caller runs the two apart (decision 95).
+   */
+  coveredTest?(ctx: CapabilityContext): CoveredTestRun | undefined;
   /**
    * Which of `files` this adapter expects to appear in a coverage report —
    * source the toolchain instruments, excluding tests, which coverage tools

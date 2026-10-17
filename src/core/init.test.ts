@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -142,6 +150,109 @@ describe('initProject', () => {
 
     expect(report.baseline.stages[1]).toMatchObject({ stage: 'test', status: 'fail' });
     expect(report.findings.some((f) => f.includes('test fails at baseline'))).toBe(true);
+  });
+
+  // One run answers for the test stage and for coverage (decision 95).
+  describe('an adapter whose test run measures coverage too', () => {
+    /** A `coveredTest` that runs `script` in the repo, logging each run to runs.log. */
+    function covering(script: string) {
+      const report = vi.fn(() => ({
+        files: { 'src/a.ts': { covered: [1], instrumented: [1, 2] } },
+      }));
+      const dispose = vi.fn();
+      const coveredTest = vi.fn(() => ({
+        command: 'sh',
+        args: ['-c', `echo run >> runs.log; ${script}`],
+        writablePaths: [],
+        report,
+        dispose,
+      }));
+      return { coveredTest, report, dispose };
+    }
+
+    it('runs the suite once, for the test stage and the coverage ratio both', async () => {
+      const { coveredTest, report, dispose } = covering('exit 0');
+      const coverage = vi.fn(() => ({ unavailable: 'ran the suite a second time' }));
+
+      const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
+
+      expect(readFileSync(join(repo, 'runs.log'), 'utf8')).toBe('run\n');
+      expect(coverage).not.toHaveBeenCalled();
+      expect(result.baseline.stages.find((s) => s.stage === 'test')?.status).toBe('pass');
+      expect(result.baseline.debt?.coverageRatio).toBe(0.5);
+      expect(report).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it('fails the test stage and leaves coverage unmeasured when that run fails', async () => {
+      const { coveredTest, report, dispose } = covering('exit 1');
+      const coverage = vi.fn(() => ({ files: {} }));
+
+      const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
+
+      expect(result.baseline.stages.find((s) => s.stage === 'test')?.status).toBe('fail');
+      expect(result.baseline.debt?.coverageRatio).toBeUndefined();
+      expect(result.baseline.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
+      expect(result.findings).toContainEqual(
+        expect.stringContaining('coverage not measured — the instrumented test run failed'),
+      );
+      expect(report).not.toHaveBeenCalled();
+      expect(coverage).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the two runs apart when the test command is another adapter’s', async () => {
+      const { coveredTest } = covering('exit 0');
+      const coverage = vi.fn(() => ({ files: {} }));
+      const measurer = makeAdapter({
+        id: 'measurer',
+        gateCommands: () => [],
+        coverage,
+        coveredTest,
+      });
+
+      await initProject(db, repo, [makeAdapter({ id: 'tester' }), measurer]);
+
+      expect(coveredTest).not.toHaveBeenCalled();
+      expect(coverage).toHaveBeenCalledOnce();
+    });
+  });
+
+  // The test stage passes only if lint and both debt capabilities ran while it
+  // was running (decision 95).
+  it('runs lint and the debt capabilities alongside the test run, reporting in order', async () => {
+    const waitForAll =
+      'i=0; while [ $i -lt 100 ]; do ' +
+      '[ -e lint.ran ] && [ -e dead-code.ran ] && [ -e duplication.ran ] && exit 0; ' +
+      'sleep 0.1; i=$((i+1)); done; echo "ran alone"; exit 2';
+    const adapter = makeAdapter({
+      gateCommands: () => [
+        { stage: 'build', command: 'true', args: [] },
+        { stage: 'test', command: 'sh', args: ['-c', waitForAll] },
+        { stage: 'lint', command: 'sh', args: ['-c', 'touch lint.ran'] },
+      ],
+      deadCode: (ctx) => {
+        writeFileSync(join(ctx.measurePath, 'dead-code.ran'), '');
+        return [];
+      },
+      duplication: (ctx) => {
+        writeFileSync(join(ctx.measurePath, 'duplication.ran'), '');
+        return { duplicatedLines: 0, blocks: [] };
+      },
+    });
+
+    const report = await initProject(db, repo, [adapter]);
+
+    expect(report.baseline.stages.map(({ stage, status }) => `${stage}:${status}`)).toEqual([
+      'build:pass',
+      'test:pass',
+      'lint:pass',
+    ]);
+    expect(report.baseline.debt).toEqual({
+      deadExports: [],
+      duplicatedLines: 0,
+      duplicationRule: DUPLICATION_RULE_ID,
+    });
   });
 
   it('marks missing commands as skipped with a not-measured finding', async () => {

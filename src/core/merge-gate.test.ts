@@ -1268,6 +1268,168 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
+  describe('one instrumented test run (decision 95)', () => {
+    /**
+     * A TypeScript repo whose `vitest` is a fake that logs each run to a file
+     * of its own in the gate's TMPDIR and, asked for coverage, writes a report
+     * covering line 1 of src/feature.ts. Returns the logged runs' argv.
+     */
+    function fakeVitest(testScript: string, passes = true): () => string[] {
+      const log = `vitest-runs-${Math.random().toString(36).slice(2)}`;
+      commitIn(repo, '.gitignore', 'node_modules\n');
+      commitIn(
+        repo,
+        'package.json',
+        JSON.stringify({
+          scripts: { test: testScript },
+          devDependencies: { vitest: '3.2.4', '@vitest/coverage-v8': '3.2.4' },
+        }),
+      );
+      const report = (file: string): string =>
+        JSON.stringify({
+          [file]: {
+            path: file,
+            statementMap: { 0: { start: { line: 1, column: 0 }, end: { line: 1, column: 1 } } },
+            s: { 0: 1 },
+            fnMap: {},
+            f: {},
+            branchMap: {},
+            b: {},
+          },
+        });
+      const bin = join(repo, 'node_modules', '.bin');
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(
+        join(bin, 'vitest'),
+        [
+          '#!/bin/sh',
+          `echo "$*" >> "$TMPDIR/${log}"`,
+          'for arg in "$@"; do case "$arg" in',
+          '  --coverage.reportsDirectory=*) dir=$(printf %s "$arg" | cut -d= -f2-) ;;',
+          'esac; done',
+          `[ -n "$dir" ] && printf '%s' '${report('@CHECKOUT@/src/feature.ts')}' | sed "s|@CHECKOUT@|$(pwd -P)|g" > "$dir/coverage-final.json"`,
+          passes ? 'exit 0' : 'echo " FAIL  src/a.test.ts > breaks"; exit 1',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      return () => {
+        const call = vi.mocked(spawn).mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        const path = join(call?.env?.TMPDIR ?? '', log);
+        return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n') : [];
+      };
+    }
+
+    it('runs the suite once, and takes the test stage and the coverage figure from it', async () => {
+      const runs = fakeVitest('vitest run');
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ coverageRatio: 0.5 });
+
+      const outcome = await merge(typescriptAdapter);
+
+      expect(runs()).toEqual([expect.stringMatching(/^run --coverage\.enabled /)]);
+      expect(outcome.report.stages).toContainEqual({ stage: 'test', status: 'pass' });
+      expect(outcome.report.stages).toContainEqual({
+        stage: 'coverage',
+        status: 'pass',
+        detail: expect.stringContaining('100%'),
+      });
+    });
+
+    // A script the instrumented run does not reproduce keeps its own run: the
+    // test stage must pass on the run the repo declared (decision 95).
+    it('keeps the declared test run apart when the script is more than a plain vitest run', async () => {
+      const runs = fakeVitest('vitest run --reporter=dot');
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ coverageRatio: 0.5 });
+
+      const outcome = await merge(typescriptAdapter);
+
+      expect(runs()).toEqual([
+        'run --reporter=dot',
+        expect.stringMatching(/^run --coverage\.enabled /),
+      ]);
+      expect(outcome.report.stages).toContainEqual({ stage: 'test', status: 'pass' });
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({ stage: 'coverage', status: 'pass' }),
+      );
+    });
+
+    it('fails the test stage on a failing instrumented run, re-run once, and reads no coverage', async () => {
+      const runs = fakeVitest('vitest', false);
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = await merge(typescriptAdapter);
+
+      expect(outcome.status).toBe('rejected');
+      expect(runs()).toEqual([
+        expect.stringMatching(/^run --coverage\.enabled /),
+        expect.stringMatching(/^run --coverage\.enabled /),
+      ]);
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'test',
+        status: 'fail',
+        detail: expect.stringContaining('src/a.test.ts > breaks'),
+      });
+      expect(outcome.report.stages.map((s) => s.stage)).not.toContain('coverage');
+    });
+  });
+
+  // Each read-only stage waits for none of the others: the test stage below
+  // passes only if lint and every debt capability ran while it was running.
+  it('runs lint and the debt capabilities alongside the test run, reporting in order', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const markers = ['lint', 'dead-code', 'duplication', 'complexity'];
+    const waitForAll =
+      'i=0; while [ $i -lt 100 ]; do ' +
+      `${markers.map((m) => `[ -e ${m}.ran ]`).join(' && ')} && exit 0; ` +
+      'sleep 0.1; i=$((i+1)); done; echo "ran alone"; exit 2';
+    const mark = (ctx: CapabilityContext, marker: string): void => {
+      if (ctx.measurePath !== repo) writeFileSync(join(ctx.measurePath, `${marker}.ran`), '');
+    };
+    const adapter = debtAdapter({
+      gateCommands: () => [
+        { stage: 'build', command: 'true', args: [] },
+        { stage: 'test', command: 'sh', args: ['-c', waitForAll] },
+        { stage: 'lint', command: 'sh', args: ['-c', 'touch lint.ran'] },
+      ],
+      deadCode: (ctx) => {
+        mark(ctx, 'dead-code');
+        return [];
+      },
+      duplication: (ctx) => {
+        mark(ctx, 'duplication');
+        return { duplicatedLines: 0, blocks: [] };
+      },
+      complexity: (ctx) => {
+        mark(ctx, 'complexity');
+        return [];
+      },
+    });
+
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+
+    const outcome = await merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.stages.map(({ stage, status }) => `${stage}:${status}`)).toEqual([
+      'worktree-clean:pass',
+      'fresh-base:pass',
+      'build:pass',
+      'test:pass',
+      'lint:pass',
+      'scope-audit:pass',
+      'diff-size:pass',
+      'dead-code:pass',
+      'duplication:pass',
+      'complexity:pass',
+      'coverage:skipped',
+    ]);
+  });
+
   // A worker's suite runs at nice 10 and the gate's at pup's own priority, but
   // a loaded host can still tip a timing-sensitive test over: the test stage
   // gets one re-run under the same lock before it counts (decision 94).

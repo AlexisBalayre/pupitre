@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
-import { judgeDebt, measureDebt } from './debt.service.js';
+import { judgeDebt, measureCoverage, measureStaticDebt } from './debt.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
-import type { DebtVerdict, GateDebtMeasurement } from './types/debt.types.js';
+import type { DebtMeasurement, DebtVerdict, GateDebtMeasurement } from './types/debt.types.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 
@@ -12,13 +12,16 @@ function adapter(id: string, capabilities: Partial<Adapter> = {}): Adapter {
   return { id, detect: () => true, gateCommands: () => [], ...capabilities };
 }
 
-describe('measureDebt', () => {
+/** What `measureStaticDebt` returns over adapters that declare neither of its capabilities. */
+const NOTHING: DebtMeasurement = { debt: {}, gaps: [] };
+
+describe('measureStaticDebt', () => {
   it('reports no debt at all for adapters that declare no capability', async () => {
-    expect(await measureDebt([adapter('ts')], CTX)).toEqual({ debt: {}, gaps: [] });
+    expect(await measureStaticDebt([adapter('ts')], CTX)).toEqual({ debt: {}, gaps: [] });
   });
 
   it('unions dead exports over every adapter that measured', async () => {
-    const measured = await measureDebt(
+    const measured = await measureStaticDebt(
       [
         adapter('ts', { deadCode: () => [{ file: 'src/a.ts', exportName: 'a' }] }),
         adapter('python', { deadCode: () => [{ file: 'pkg/b.py', exportName: 'b' }] }),
@@ -34,7 +37,7 @@ describe('measureDebt', () => {
   });
 
   it('keeps what the other adapters measured, and says which one could not', async () => {
-    const measured = await measureDebt(
+    const measured = await measureStaticDebt(
       [
         adapter('ts', { deadCode: () => [{ file: 'src/a.ts', exportName: 'a' }] }),
         adapter('python', { deadCode: () => ({ unavailable: 'vulture missing' }) }),
@@ -50,7 +53,7 @@ describe('measureDebt', () => {
 
   // A bar of [] would read as "0 dead exports" and flag every later finding.
   it('leaves the dead-export bar unset when no adapter could measure it', async () => {
-    const measured = await measureDebt(
+    const measured = await measureStaticDebt(
       [adapter('python', { deadCode: () => ({ unavailable: 'vulture missing' }) })],
       CTX,
     );
@@ -60,7 +63,7 @@ describe('measureDebt', () => {
   });
 
   it('sums duplicated lines over every adapter and stamps the rule', async () => {
-    const measured = await measureDebt(
+    const measured = await measureStaticDebt(
       [
         adapter('ts', {
           duplication: () => ({
@@ -89,14 +92,16 @@ describe('measureDebt', () => {
   // A custom adapter self-reports its numbers and may not know the rule, so the
   // gate must fall silent about fixtures rather than claim it counted none.
   it('leaves the fixture count absent when no adapter reported one', async () => {
-    const measured = await measureDebt(
+    const measured = await measureStaticDebt(
       [adapter('custom', { duplication: () => ({ duplicatedLines: 8, blocks: [] }) })],
       CTX,
     );
 
     expect(measured.duplication).toEqual({ duplicatedLines: 8, blocks: [] });
   });
+});
 
+describe('measureCoverage', () => {
   // One ratio per repo: two runners' ratios are not one number, and the gate's
   // patch bar has to come from the same report `coverableFiles` answers about.
   it('takes coverage from the first adapter that declares it, and names that adapter', async () => {
@@ -107,14 +112,15 @@ describe('measureDebt', () => {
       coverage: () => ({ files: { 'pkg/b.py': { covered: [], instrumented: [1] } } }),
     });
 
-    const measured = await measureDebt([ts, python], CTX);
+    const measured = await measureCoverage(NOTHING, [ts, python], CTX);
 
     expect(measured.debt.coverageRatio).toBe(0.5);
     expect(measured.coverageAdapter).toBe(ts);
   });
 
   it('records the coverage gap and leaves the ratio unset when the run is unavailable', async () => {
-    const measured = await measureDebt(
+    const measured = await measureCoverage(
+      NOTHING,
       [adapter('ts', { coverage: () => ({ unavailable: 'instrumented run crashed' }) })],
       CTX,
     );
@@ -124,6 +130,39 @@ describe('measureDebt', () => {
     expect(measured.gaps).toEqual([
       { adapterId: 'ts', capability: 'coverage', reason: 'instrumented run crashed' },
     ]);
+  });
+
+  // The test run already ran the suite instrumented (decision 95); a second run
+  // would double the gate's longest stage for the same figure.
+  it('takes the report the test run folded in, without running the suite again', async () => {
+    const coverage = vi.fn(() => ({ unavailable: 'ran the suite twice' }));
+    const folded = { files: { 'src/a.ts': { covered: [1, 2], instrumented: [1, 2] } } };
+
+    const measured = await measureCoverage(NOTHING, [adapter('ts', { coverage })], CTX, folded);
+
+    expect(coverage).not.toHaveBeenCalled();
+    expect(measured.coverage).toBe(folded);
+    expect(measured.debt.coverageRatio).toBe(1);
+  });
+
+  it('records a folded run that measured nothing as that adapter’s coverage gap', async () => {
+    const ts = adapter('ts', { coverage: () => ({ files: {} }) });
+
+    const measured = await measureCoverage({ debt: { duplicatedLines: 3 }, gaps: [] }, [ts], CTX, {
+      unavailable: 'the instrumented test run failed',
+    });
+
+    expect(measured.debt).toEqual({ duplicatedLines: 3 });
+    expect(measured.gaps).toEqual([
+      { adapterId: 'ts', capability: 'coverage', reason: 'the instrumented test run failed' },
+    ]);
+    expect(measured.coverageAdapter).toBe(ts);
+  });
+
+  it('leaves the measurement as it was when no adapter measures coverage', async () => {
+    const measured = { debt: { duplicatedLines: 3 }, gaps: [] };
+
+    expect(await measureCoverage(measured, [adapter('ts')], CTX)).toBe(measured);
   });
 });
 

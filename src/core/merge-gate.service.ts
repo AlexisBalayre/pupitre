@@ -14,13 +14,20 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, localContext, sanitizeReason } from '../adapters/capability.utils.js';
-import type { CapabilityContext, FileComplexity } from '../adapters/types/adapter.types.js';
+import type {
+  CapabilityContext,
+  CapabilityUnavailable,
+  CoverageReport,
+  FileComplexity,
+  GateStage,
+  NestedPackage,
+} from '../adapters/types/adapter.types.js';
 import {
   killSession as killTmux,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
 import { patchCoverage } from './coverage.utils.js';
-import { judgeDebt, measureDebt, quotePath } from './debt.service.js';
+import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
   armedGitDrivers,
@@ -1087,7 +1094,7 @@ export async function measureBranch(
 ): Promise<BranchMeasurement | undefined> {
   /** One run of a stage's command: the error it threw, `undefined` on a pass. */
   const runCommand = async (
-    command: { command: string; args: string[] },
+    command: { command: string; args: string[]; writablePaths?: string[] },
     cwd: string,
   ): Promise<unknown> => {
     try {
@@ -1100,6 +1107,7 @@ export async function measureBranch(
       await runGateChild(command.command, command.args, {
         cwd,
         repoPath: req.repoPath,
+        ...(command.writablePaths ? { writablePaths: command.writablePaths } : {}),
         gateEnv: req.gateEnv,
         timeout: GATE_COMMAND_TIMEOUT_MS,
       });
@@ -1112,7 +1120,7 @@ export async function measureBranch(
   };
 
   /**
-   * Runs one hard stage; false once it has recorded the failure. A failed test
+   * Runs one hard stage to its result. A failed test
    * stage runs once more, still under the lock, before it counts: a suite that
    * passes on the re-run passes, named flaky with what failed the first time,
    * so a timing-sensitive test the host's load tipped over is no rejection
@@ -1122,35 +1130,29 @@ export async function measureBranch(
    */
   const commandStage = async (
     stage: string,
-    command: { stage: string; command: string; args: string[] },
+    command: { stage: string; command: string; args: string[]; writablePaths?: string[] },
     cwd: string,
-  ): Promise<boolean> => {
+  ): Promise<GateStageResult> => {
     const first = await runCommand(command, cwd);
-    if (first === undefined) {
-      stages.push({ stage, status: 'pass' });
-      return true;
-    }
+    if (first === undefined) return { stage, status: 'pass' };
     if (command.stage !== 'test' || !isRerunnable(first)) {
-      stages.push({ stage, status: 'fail', detail: commandFailureDetail(first) });
-      return false;
+      return { stage, status: 'fail', detail: commandFailureDetail(first) };
     }
     const rerun = await runCommand(command, cwd);
     if (rerun === undefined) {
-      stages.push({
+      return {
         stage,
         status: 'pass',
         detail: `flaky — failed, then passed on its one re-run; failing the first time: ${failingTestNames(first)}`,
-      });
-      return true;
+      };
     }
-    stages.push({
+    return {
       stage,
       status: 'fail',
       detail:
         `failed twice — failing the first time: ${failingTestNames(first)}; ` +
         `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
-    });
-    return false;
+    };
   };
 
   // One repo has one build, one test and one lint, and the runner that answers
@@ -1181,13 +1183,108 @@ export async function measureBranch(
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
   const commands = primary?.gateCommands(req.repoPath) ?? [];
-  for (const stage of ['build', 'test', 'lint'] as const) {
-    const command = commands.find((c) => c.stage === stage);
-    if (!command) {
-      stages.push({ stage, status: 'skipped', detail: 'not measured — no command available' });
-      continue;
+  const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
+  const notMeasured = (stage: GateStage): GateStageResult => ({
+    stage,
+    status: 'skipped',
+    detail: 'not measured — no command available',
+  });
+  const nestedStage = (pkg: NestedPackage, stage: string): string =>
+    `${stage} (${quotePath(pkg.dir)})`;
+
+  // Build first and alone: every stage after it reads what it produced.
+  const build = commandFor('build');
+  const built = build ? await commandStage('build', build, checkout) : notMeasured('build');
+  stages.push(built);
+  if (built.status === 'fail') return undefined;
+
+  // One instrumented run answers for the test stage and for coverage when the
+  // adapter whose test command it is measures coverage too (decision 95).
+  const test = commandFor('test');
+  const coverageAdapter = req.adapters.find((a) => a.coverage);
+  const covered =
+    test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;
+  // The suites run one after another, never two at once: the root's, then each
+  // nested package's (decision 59), each stopping the chain where its failure
+  // stops the report.
+  const suites = (async () => {
+    const results = new Map<string, GateStageResult>();
+    let folded: CoverageReport | CapabilityUnavailable | undefined;
+    try {
+      if (test) {
+        const run = covered ? { ...test, ...covered } : test;
+        const result = await commandStage('test', run, checkout);
+        results.set('test', result);
+        if (result.status === 'fail') return { results };
+        folded = covered?.report();
+      }
+    } finally {
+      covered?.dispose();
     }
-    if (!(await commandStage(stage, command, checkout))) return undefined;
+    for (const pkg of nestedPackages) {
+      for (const command of pkg.commands.filter((c) => c.stage === 'test')) {
+        const stage = nestedStage(pkg, command.stage);
+        const result = await commandStage(stage, command, join(checkout, pkg.dir));
+        results.set(stage, result);
+        if (result.status === 'fail') return { results, folded };
+      }
+    }
+    return { results, folded };
+  })();
+  // Alongside the suites: every stage that only reads the checkout, each in a
+  // child of its own as before (decision 95).
+  const lint = commandFor('lint');
+  const linted = lint && commandStage('lint', lint, checkout);
+  const typechecks = new Map<string, Promise<GateStageResult>>();
+  for (const pkg of nestedPackages) {
+    for (const command of pkg.commands.filter((c) => c.stage !== 'test')) {
+      const stage = nestedStage(pkg, command.stage);
+      typechecks.set(stage, commandStage(stage, command, join(checkout, pkg.dir)));
+    }
+  }
+  const staticDebt = measureStaticDebt(req.adapters, capabilityContext);
+  const complexityAdapters = req.adapters.filter((a) => a.complexity);
+  const complexityOf = async (ctx: CapabilityContext): Promise<FileComplexity[]> => {
+    const files: FileComplexity[] = [];
+    for (const adapter of complexityAdapters) {
+      files.push(...((await adapter.complexity?.(ctx, changedPaths)) ?? []));
+    }
+    return files;
+  };
+  const complexity =
+    complexityAdapters.length > 0
+      ? {
+          // "Before" reads the main checkout, which the merge lock holds at
+          // the target branch — no historical checkout needed.
+          before: complexityOf(localContext(req.repoPath, req.gateEnv)),
+          after: complexityOf(capabilityContext),
+        }
+      : undefined;
+  // Every one settles before any is read, so none outlives the checkout this
+  // gate removes, and an interrupt is the outcome whatever else failed. A debt
+  // capability's own error waits for the debt stages, where it surfaced before.
+  const settled = await Promise.allSettled([
+    suites,
+    linted,
+    staticDebt,
+    complexity?.before,
+    complexity?.after,
+    ...typechecks.values(),
+  ]);
+  const interrupted = settled.find(
+    (outcome) => outcome.status === 'rejected' && outcome.reason instanceof GateInterruptedError,
+  );
+  if (interrupted?.status === 'rejected') throw interrupted.reason;
+
+  // Reported in today's order, stopping where today's run stopped.
+  const { results: suiteResults, folded } = await suites;
+  for (const [stage, result] of [
+    ['test', suiteResults.get('test')],
+    ['lint', await linted],
+  ] as const) {
+    const reported = result ?? notMeasured(stage);
+    stages.push(reported);
+    if (reported.status === 'fail') return undefined;
   }
 
   const flaggedDebt: { description: string; files: string[] }[] = [];
@@ -1209,9 +1306,15 @@ export async function measureBranch(
   for (const pkg of nestedPackages) {
     const dir = quotePath(pkg.dir);
     for (const command of pkg.commands) {
-      if (!(await commandStage(`${command.stage} (${dir})`, command, join(checkout, pkg.dir)))) {
-        return undefined;
-      }
+      const stage = nestedStage(pkg, command.stage);
+      // A nested test is in `suiteResults` here: the chain stops only at a
+      // failure, and every earlier one was reported, and returned on, above.
+      const result =
+        command.stage === 'test'
+          ? (suiteResults.get(stage) as GateStageResult)
+          : await (typechecks.get(stage) as Promise<GateStageResult>);
+      stages.push(result);
+      if (result.status === 'fail') return undefined;
     }
     for (const stage of pkg.missing) {
       flaggedDebt.push({
@@ -1311,27 +1414,17 @@ export async function measureBranch(
     stages.push({ stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` });
   }
 
-  const measurement = await measureDebt(req.adapters, capabilityContext);
-  const complexityAdapters = req.adapters.filter((a) => a.complexity);
-  const complexityOf = async (ctx: CapabilityContext): Promise<FileComplexity[]> => {
-    const files: FileComplexity[] = [];
-    for (const adapter of complexityAdapters) {
-      files.push(...((await adapter.complexity?.(ctx, changedPaths)) ?? []));
-    }
-    return files;
-  };
+  const measurement = await measureCoverage(
+    await staticDebt,
+    req.adapters,
+    capabilityContext,
+    folded,
+  );
   const judged = judgeDebt(
     {
       ...measurement,
-      ...(complexityAdapters.length > 0
-        ? {
-            complexity: {
-              // "Before" reads the main checkout, which the merge lock holds at
-              // the target branch — no historical checkout needed.
-              before: await complexityOf(localContext(req.repoPath, req.gateEnv)),
-              after: await complexityOf(capabilityContext),
-            },
-          }
+      ...(complexity
+        ? { complexity: { before: await complexity.before, after: await complexity.after } }
         : {}),
       coverableFiles:
         measurement.coverageAdapter?.coverableFiles?.(capabilityContext, changedPaths) ?? [],

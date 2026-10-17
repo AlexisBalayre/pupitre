@@ -41,8 +41,8 @@ export interface DebtMeasurement {
 }
 
 /**
- * What the gate hands `judgeDebt`: `measureDebt` over the session's worktree,
- * plus the three things only the diff can supply.
+ * What the gate hands `judgeDebt`: `measureStaticDebt` and `measureCoverage`
+ * over the gate's checkout, plus the three things only the diff can supply.
  */
 export interface GateDebtMeasurement extends DebtMeasurement {
   /** Complexity over the changed files, from the target branch and the worktree. */

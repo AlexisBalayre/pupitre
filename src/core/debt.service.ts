@@ -2,6 +2,7 @@ import { isUnavailable, sanitizeReason } from '../adapters/capability.utils.js';
 import type {
   Adapter,
   CapabilityContext,
+  CapabilityUnavailable,
   CoverageReport,
   DeadExport,
   DuplicationReport,
@@ -39,17 +40,14 @@ export const DEAD_CODE = 'dead code';
 export const COVERAGE = 'coverage';
 
 /**
- * Run every debt capability the detected adapters declare, over one checkout.
- * Counts sum across adapters rather than stopping at the first: a
- * TypeScript+Python repo has debt in both languages, and a bar counted over
- * one of them is not the repo's bar (decision 72).
- *
- * Coverage is the exception — one ratio per repo, from the first adapter that
- * can produce one, exactly as `pup init` has always taken it. Two runners'
- * ratios are not one number, and the gate's patch-coverage bar has to come
- * from the same report `coverableFiles` is answered against.
+ * Dead code and duplication, from every debt capability the detected adapters
+ * declare, over one checkout. Counts sum across adapters rather than stopping
+ * at the first: a TypeScript+Python repo has debt in both languages, and a bar
+ * counted over one of them is not the repo's bar (decision 72). Both only read
+ * the checkout, so a caller runs this alongside its test run (decision 95);
+ * `measureCoverage` adds what needs the suite itself.
  */
-export async function measureDebt(
+export async function measureStaticDebt(
   adapters: Adapter[],
   ctx: CapabilityContext,
 ): Promise<DebtMeasurement> {
@@ -85,29 +83,44 @@ export async function measureDebt(
     debt.duplicationRule = DUPLICATION_RULE_ID;
   }
 
-  const coverageAdapter = adapters.find((a) => a.coverage);
-  let coverage: CoverageReport | undefined;
-  if (coverageAdapter) {
-    const result = await coverageAdapter.coverage?.(ctx);
-    if (isUnavailable(result)) {
-      gaps.push({
-        adapterId: coverageAdapter.id,
-        capability: COVERAGE,
-        reason: result.unavailable,
-      });
-    } else {
-      coverage = result;
-    }
-    const ratio = coverage ? repoCoverageRatio(coverage) : undefined;
-    if (ratio !== undefined) debt.coverageRatio = ratio;
-  }
+  return { debt, gaps, ...(duplication ? { duplication } : {}) };
+}
 
+/**
+ * `measured` with the repo's coverage. One ratio per repo, from the first
+ * adapter that can produce one, exactly as `pup init` has always taken it: two
+ * runners' ratios are not one number, and the gate's patch-coverage bar has to
+ * come from the same report `coverableFiles` is answered against.
+ *
+ * `folded` is that adapter's report from the test run, when the test stage ran
+ * its `coveredTest` (decision 95). Without it the adapter runs the suite again,
+ * so a caller runs this once its test runs are over, never alongside them.
+ */
+export async function measureCoverage(
+  measured: DebtMeasurement,
+  adapters: Adapter[],
+  ctx: CapabilityContext,
+  folded?: CoverageReport | CapabilityUnavailable,
+): Promise<DebtMeasurement> {
+  const coverageAdapter = adapters.find((a) => a.coverage);
+  if (!coverageAdapter) return measured;
+  const result = folded ?? (await coverageAdapter.coverage?.(ctx));
+  if (isUnavailable(result)) {
+    return {
+      ...measured,
+      gaps: [
+        ...measured.gaps,
+        { adapterId: coverageAdapter.id, capability: COVERAGE, reason: result.unavailable },
+      ],
+      coverageAdapter,
+    };
+  }
+  const ratio = result ? repoCoverageRatio(result) : undefined;
   return {
-    debt,
-    gaps,
-    ...(duplication ? { duplication } : {}),
-    ...(coverage ? { coverage } : {}),
-    ...(coverageAdapter ? { coverageAdapter } : {}),
+    ...measured,
+    debt: { ...measured.debt, ...(ratio !== undefined ? { coverageRatio: ratio } : {}) },
+    ...(result ? { coverage: result } : {}),
+    coverageAdapter,
   };
 }
 

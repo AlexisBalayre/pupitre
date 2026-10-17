@@ -4,13 +4,14 @@ import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
 import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
-import { failureSummary } from './capability.utils.js';
+import { failureSummary, isUnavailable } from './capability.utils.js';
 import { nestedPackageDirs } from './git-tree.client.js';
 import type {
   Adapter,
   CapabilityContext,
   CapabilityUnavailable,
   CoverageReport,
+  CoveredTestRun,
   DeadExport,
   DepGraph,
   DuplicationReport,
@@ -163,6 +164,59 @@ export function rootCoverageReport(
   );
 }
 
+/** The `test` scripts the instrumented run reproduces exactly. */
+const PLAIN_VITEST_SCRIPT = /^vitest(?: run)?$/;
+
+/**
+ * The instrumented vitest run behind `coverage` and `coveredTest`, or why the
+ * trusted manifest allows none. Its report directory exists from here on, and
+ * `dispose` removes it.
+ */
+function instrumentedRun(ctx: CapabilityContext): CoveredTestRun | CapabilityUnavailable {
+  // Declared in the trusted manifest, run against the measured checkout: a
+  // session cannot switch the stage off by dropping its own devDependency.
+  const manifest = readManifest(ctx.configPath);
+  const deps = { ...manifest?.dependencies, ...manifest?.devDependencies };
+  if (!deps.vitest || !(deps['@vitest/coverage-v8'] ?? deps['@vitest/coverage-istanbul'])) {
+    return { unavailable: 'no vitest + @vitest/coverage-* in package.json' };
+  }
+  // Pinned from the trusted manifest. Left to the worktree's config, a
+  // session can select `provider: 'custom'` with its own provider module and
+  // hand the gate a forged report — 100% covered, every file present — which
+  // then ratchets the stored baseline to the forged number (decision 30).
+  const provider = deps['@vitest/coverage-v8'] ? 'v8' : 'istanbul';
+  const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
+  return {
+    command: 'npx',
+    args: [
+      '--no-install',
+      'vitest',
+      'run',
+      '--coverage.enabled',
+      `--coverage.provider=${provider}`,
+      // Vitest 3+ reports only files a test loaded. Without this, a module
+      // no test imports is absent rather than 0%-covered, which turns an
+      // untested file into "not in the report" instead of a precise patch
+      // coverage flag — and makes every type-only module look hidden.
+      `--coverage.include=**/*.{${SOURCE_EXTENSIONS.map((ext) => ext.slice(1)).join(',')}}`,
+      '--coverage.reporter=json',
+      `--coverage.reportsDirectory=${outDir}`,
+    ],
+    writablePaths: [outDir],
+    report: () => {
+      try {
+        const raw = JSON.parse(
+          readFileSync(join(outDir, 'coverage-final.json'), 'utf8'),
+        ) as IstanbulCoverageMap;
+        return rootCoverageReport(raw, ctx);
+      } catch (error) {
+        return { unavailable: `instrumented vitest run failed: ${failureSummary(error)}` };
+      }
+    },
+    dispose: () => removeGateDir(outDir),
+  };
+}
+
 export const typescriptAdapter: Adapter = {
   id: 'typescript',
 
@@ -299,60 +353,40 @@ export const typescriptAdapter: Adapter = {
   },
 
   async coverage(ctx: CapabilityContext): Promise<CoverageReport | CapabilityUnavailable> {
-    const { measurePath, configPath, gateEnv } = ctx;
-    // Declared in the trusted manifest, run against the measured checkout: a
-    // session cannot switch the stage off by dropping its own devDependency.
-    const manifest = readManifest(configPath);
-    const deps = { ...manifest?.dependencies, ...manifest?.devDependencies };
-    if (!deps.vitest || !(deps['@vitest/coverage-v8'] ?? deps['@vitest/coverage-istanbul'])) {
-      return { unavailable: 'no vitest + @vitest/coverage-* in package.json' };
-    }
-    // Pinned from the trusted manifest. Left to the worktree's config, a
-    // session can select `provider: 'custom'` with its own provider module and
-    // hand the gate a forged report — 100% covered, every file present — which
-    // then ratchets the stored baseline to the forged number (decision 30).
-    const provider = deps['@vitest/coverage-v8'] ? 'v8' : 'istanbul';
-    const outDir = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
+    const run = instrumentedRun(ctx);
+    if (isUnavailable(run)) return run;
     try {
       // The instrumented run executes the repo's own test suite, so it runs
       // confined like a gate stage — and needs its report directory writable,
       // since the sandbox's default-allow does not survive a TMPDIR under HOME
       // (decisions 28, 36).
-      await runGateChild(
-        'npx',
-        [
-          '--no-install',
-          'vitest',
-          'run',
-          '--coverage.enabled',
-          `--coverage.provider=${provider}`,
-          // Vitest 3+ reports only files a test loaded. Without this, a module
-          // no test imports is absent rather than 0%-covered, which turns an
-          // untested file into "not in the report" instead of a precise patch
-          // coverage flag — and makes every type-only module look hidden.
-          `--coverage.include=**/*.{${SOURCE_EXTENSIONS.map((ext) => ext.slice(1)).join(',')}}`,
-          '--coverage.reporter=json',
-          `--coverage.reportsDirectory=${outDir}`,
-        ],
-        {
-          cwd: measurePath,
-          repoPath: configPath,
-          writablePaths: [outDir],
-          gateEnv,
-          timeout: COVERAGE_RUN_TIMEOUT_MS,
-        },
-      );
-      const raw = JSON.parse(
-        readFileSync(join(outDir, 'coverage-final.json'), 'utf8'),
-      ) as IstanbulCoverageMap;
-      return rootCoverageReport(raw, ctx);
+      await runGateChild(run.command, run.args, {
+        cwd: ctx.measurePath,
+        repoPath: ctx.configPath,
+        writablePaths: run.writablePaths,
+        gateEnv: ctx.gateEnv,
+        timeout: COVERAGE_RUN_TIMEOUT_MS,
+      });
+      return run.report();
     } catch (error) {
       if (error instanceof GateInterruptedError) throw error;
       // A failed instrumented run (crash, timeout, threshold config) degrades to
       // "not measured" — the plain test stage has already gated correctness.
       return { unavailable: `instrumented vitest run failed: ${failureSummary(error)}` };
     } finally {
-      removeGateDir(outDir);
+      run.dispose();
     }
+  },
+
+  coveredTest(ctx: CapabilityContext): CoveredTestRun | undefined {
+    // Only a test script that is the plain run the instrumented one repeats:
+    // `vitest` runs once outside a terminal, as every gate child is. Flags,
+    // another runner or a pre/post script would make the two different runs,
+    // and the test stage would then pass on a run nobody made (decision 95).
+    const scripts = readManifest(ctx.configPath)?.scripts ?? {};
+    if (!PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '')) return undefined;
+    if (scripts.pretest !== undefined || scripts.posttest !== undefined) return undefined;
+    const run = instrumentedRun(ctx);
+    return isUnavailable(run) ? undefined : run;
   },
 };
