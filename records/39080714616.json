@@ -1,0 +1,113 @@
+{
+  "schema_version": 2,
+  "timestamp": "2026-10-17T23:57:51.814Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39080714616",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39080714616",
+  "actor": "AlexisBalayre",
+  "commit_sha": "873f39a223bad7ca568b71aa99906025ad35a497",
+  "source": "pr",
+  "pr_number": 155,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "f25dc911b94dd34c52a314f7901ad2895d380545",
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "201-212",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "219-221",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"ListAgents names them\" overstates what the worker can do: ListAgents lists every pup session and the conductor, not the ones that share this worker's files, so for a non-sweep task the hidden N cannot be identified (the peer-joined steer each of them receives is the real mitigation). The line also reads \"+1 more sessions\" when N is 1.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "215-217",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 8 peers shown are simply the oldest holding sessions (`listSessions` is `ORDER BY created_at`, and `intersectSessionFiles` keeps that order). The newest sessions, the ones most likely to be editing right now, are the ones folded into \"+N more\"; ordering by number of shared files or by recency would make the cap keep the most relevant peers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4773-4778",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 99 still says the Peers section lists \"each peer by name\" (at most 20 files per peer) and that `launchTask` \"caps nothing\", and its Tests paragraph does not mention the new 8-peer cap or the \"+N more\" line, so the record and the code now disagree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "585",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The reworded `launchOrRefuse` JSDoc line (\"An error the caller could not have avoided — a task already claimed — is printed as a refusal; anything else is a bug and\") was joined onto one ~125-character line instead of rewrapped to the ~80-column width of the lines around it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "444",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `ALLOW_OVERLAP_DESCRIPTION` is now only `// Decision 99.`. That is a bare citation with no WHY, and the constant's text already says overlap is always allowed. AGENTS.md allows comments only for a non-obvious WHY, so delete it, or restore the one-line WHY (the flag is kept for one release so scripts keep working).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "171-172",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above the new 8-peer test restates the `PEERS_SHOWN` JSDoc (the section counts toward the budget, and a launch is never refused), and the `it` title already says \"so many broad peers still fit the budget\". Delete it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7750422000000001,
+  "duration_ms": 245465,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 7513,
+    "cache_read": 212444,
+    "cache_creation": 39862,
+    "total": 259831
+  }
+}
