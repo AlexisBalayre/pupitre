@@ -186,7 +186,7 @@ import {
 } from '../core/session-handoff.service.js';
 import {
   LaunchRolledBackError,
-  ScopeConflictError,
+  TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
   UnknownSessionError,
@@ -2168,13 +2168,14 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('Launched sweep session');
     });
 
-    it('launches a sweep that allows the overlap it always has', () => {
+    it('launches a sweep recorded as the audit, with no overlap flag to pass', () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockReturnValue('sweep-abc');
 
       buildProgram().parse(['audit', '--sweep'], { from: 'user' });
 
-      expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true, origin: 'audit' });
+      expect(firstCall(createSession)[1]).toMatchObject({ origin: 'audit' });
+      expect(firstCall(createSession)[1]).not.toHaveProperty('allowOverlap');
     });
 
     // The compile reads the project brief, so a brief over the cap refuses the
@@ -2516,30 +2517,16 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('reports a scope conflict and exits 1 rather than throwing', () => {
-      useCwd(initRepo());
-      vi.mocked(launchTask).mockImplementation(() => {
-        throw new ScopeConflictError('t-1', [{ sessionId: 's1', files: ['src/a.ts'] }]);
-      });
-
-      buildProgram().parse(['launch', 't-1'], { from: 'user' });
-
-      expect(errors.join('\n')).toContain('src/a.ts');
-      expect(process.exitCode).toBe(1);
-    });
-
     it('scrubs the refusal a launch error prints', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new ScopeConflictError('t-1', [
-          { sessionId: '\u001b[2Js1', files: ['src/\u001b[2Ja.ts'] },
-        ]);
+        throw new TaskAlreadyClaimedError('t-1', '\u001b[2Js1');
       });
 
       buildProgram().parse(['launch', 't-1'], { from: 'user' });
 
       expect(errors.join('\n')).not.toContain('\u001b');
-      expect(errors.join('\n')).toContain('holds: [2Js1 (src/ [2Ja.ts).');
+      expect(errors.join('\n')).toContain('claimed by session [2Js1.');
       expect(process.exitCode).toBe(1);
     });
 
@@ -2580,19 +2567,34 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('passes --allow-overlap through to the launch', () => {
+    // Decision 99: overlap is always allowed, and the flag is accepted for one
+    // release so a script passing it keeps working, with a line saying so.
+    it('accepts --allow-overlap with a one-line notice and launches as a plain launch would', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
 
       buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
 
-      expect(firstCall(launchTask)[1]).toMatchObject({ allowOverlap: true });
+      expect(logs[0]).toBe(
+        '--allow-overlap has no effect: overlap with a live session is always allowed, and the flag goes in the next release.',
+      );
+      expect(firstCall(launchTask)[1]).not.toHaveProperty('allowOverlap');
+      expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
+      expect(process.exitCode).toBeUndefined();
     });
 
-    // Guarding only `--allow-overlap` left the command open: a session could
-    // kill the holder of a scope and launch a conflicting task plainly, so the
-    // whole command is operator-only by the rule that keeps `pup merge` and spec
-    // authoring so (decisions 26, 42).
+    it('prints no notice for a plain launch', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(logs.join('\n')).not.toContain('--allow-overlap');
+    });
+
+    // Launching is operator- and conductor-only: a session launching one would
+    // mint itself a fresh session past decision 7's reject cap, by the rule
+    // that keeps `pup merge` and spec authoring so (decisions 26, 42).
     it.each([
       ['', []],
       [' --allow-overlap', ['--allow-overlap']],
@@ -3564,15 +3566,14 @@ describe('CLI commands', () => {
       vi.stubEnv('PUP_CONDUCTOR', 'p1');
     });
 
-    it('launches a task, and answers for an overlap it waves through', () => {
+    it('launches a task, recorded as the launcher of any overlap it makes', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
 
-      buildProgram().parse(['launch', 't-abc', '--allow-overlap'], { from: 'user' });
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
       expect(firstCall(launchTask)[1]).toMatchObject({
         taskId: 't-abc',
-        allowOverlap: true,
         overlapVia: 'conductor',
       });
       expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
@@ -3594,14 +3595,13 @@ describe('CLI commands', () => {
       useCwd(initRepo());
       vi.mocked(createSession).mockReturnValue('t-1-0');
 
-      buildProgram().parse(['new', 'fix the thing', '--scope', 'src/**', '--allow-overlap'], {
+      buildProgram().parse(['new', 'fix the thing', '--scope', 'src/**'], {
         from: 'user',
       });
 
       expect(firstCall(createSession)[1]).toMatchObject({
         origin: 'conductor',
         overlapVia: 'conductor',
-        allowOverlap: true,
       });
     });
 
@@ -3777,7 +3777,7 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('passes --allow-overlap through, since `new` is `plan add` plus a launch', () => {
+    it('accepts --allow-overlap on `new` too, with the same notice', () => {
       useCwd(initRepo());
       vi.mocked(createSession).mockReturnValue('t-abc-0');
 
@@ -3785,7 +3785,8 @@ describe('CLI commands', () => {
         from: 'user',
       });
 
-      expect(firstCall(createSession)[1]).toMatchObject({ allowOverlap: true });
+      expect(logs[0]).toMatch(/^--allow-overlap has no effect/);
+      expect(firstCall(createSession)[1]).not.toHaveProperty('allowOverlap');
     });
 
     it('reports the launch that rolled itself back', () => {
@@ -3802,18 +3803,6 @@ describe('CLI commands', () => {
       );
       expect(process.exitCode).toBe(1);
       expect(logs.join('\n')).not.toContain('Launched session');
-    });
-
-    it('reports a scope conflict from `new` and exits 1 rather than throwing', () => {
-      useCwd(initRepo());
-      vi.mocked(createSession).mockImplementation(() => {
-        throw new ScopeConflictError('t-1', [{ sessionId: 's1', files: ['src/a.ts'] }]);
-      });
-
-      buildProgram().parse(['new', 'do the thing', '--scope', 'src/**'], { from: 'user' });
-
-      expect(errors.join('\n')).toContain('src/a.ts');
-      expect(process.exitCode).toBe(1);
     });
 
     it('defaults acceptance criteria when --accept is omitted', () => {

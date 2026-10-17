@@ -74,12 +74,12 @@ const CANDIDATE_KEY = 'launch:candidate';
 
 /**
  * Live sessions whose scope already claims tracked files this scope also
- * claims — admission control for `pup launch`, asked before a worktree exists
- * (decision 41).
+ * claims — the peers `pup launch` introduces a new worker to, asked before a
+ * worktree exists (decision 99, once decision 41's refusal).
  *
  * Scopes are resolved against `git ls-files` rather than a diff because the
  * task has written nothing yet, which is the whole point: the radar reports an
- * overlap once both agents are in the file, this refuses the second launch.
+ * overlap once both agents are in the file, this names it before either is.
  * The consequence is that a scope naming only files that do not exist yet
  * resolves to nothing and cannot conflict.
  */

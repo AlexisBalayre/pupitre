@@ -12,6 +12,7 @@ import {
   SessionPaneMissingError,
   steerPane,
   transcriptDir,
+  windowLabel,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
@@ -21,6 +22,7 @@ import { scopeConflicts } from './overlap.service.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import {
   compileProfile,
+  peerJoinedMessage,
   snapshotUserConfigHash,
   writeCompiledProfile,
 } from './profile-compiler.service.js';
@@ -44,7 +46,6 @@ import {
 import {
   isRefusedSteer,
   rollBackRefusedLaunch,
-  ScopeConflictError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -53,12 +54,14 @@ import {
 } from './session-lifecycle.errors.js';
 import { isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
+import type { ScopeConflict } from './types/overlap.types.js';
 import type { SessionId, TaskSpec } from './types/profile.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
   PlanTaskRequest,
   RouteOverride,
+  SessionPeer,
 } from './types/session-lifecycle.types.js';
 
 /** A short, filesystem- and tmux-safe id derived from the task id and a counter. */
@@ -117,17 +120,13 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   // driver name is chosen by whoever wrote it, so there is nothing to disarm
   // — only a refusal (decision 50).
   assertNoArmedGitDrivers(req.repoPath);
-  // Admission control, not a report: the radar notices two sessions in one file
-  // 15 seconds after both are already editing it, which is too late to be a
-  // decision. Measured before the worktree exists so a refusal costs nothing,
-  // and always measured, so `--allow-overlap` records what it waved through
-  // rather than skipping the question (decision 41).
+  // Not a refusal: workers share files and agree between themselves who
+  // changes what (decision 99, superseding decision 41's refusal). Measured
+  // before the launch because the radar notices two sessions in one file only
+  // once both are editing it, too late to introduce them.
   const conflicts = scopeConflicts(db, req.repoPath, task.scopeIn, task.scopeOut);
-  if (conflicts.length > 0 && !req.allowOverlap) {
-    throw new ScopeConflictError(row.id, conflicts);
-  }
   // Before anything is built: a task past the top of its ladder is refused
-  // as cheaply as a scope conflict. The tier is the one `--tier` stored, else
+  // before a worktree exists. The tier is the one `--tier` stored, else
   // the one the scope-in implies, and the climb is from the task's newest
   // session, which a relaunch replaces.
   const route = nextWindowRoute(
@@ -139,7 +138,7 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
     req.overrideVia !== 'conductor',
   );
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
-  const sessionId = startSession(db, { ...req, task }, route);
+  const sessionId = startSession(db, { ...req, task }, route, conflicts.map(peerOf));
   if (conflicts.length > 0) {
     appendEvent(db, sessionId, 'scope_overlap', {
       via: req.overlapVia ?? 'operator',
@@ -148,8 +147,36 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
         files: conflict.files,
       })),
     });
+    introduceToPeers(db, sessionId, conflicts);
   }
   return sessionId;
+}
+
+/** A live session sharing files, as the worker launched beside it is told of it. */
+function peerOf(conflict: ScopeConflict): SessionPeer {
+  return { name: windowLabel({ sessionId: conflict.sessionId }), files: conflict.files };
+}
+
+/**
+ * Steer each live session sharing files with the one just launched, once,
+ * with the newcomer's name and what they share (decision 99). After the
+ * kickoff landed, so a peer that messages straight away reaches a window
+ * that has read its task. Best effort: a peer whose window refuses the paste
+ * is not a reason to undo a launch that worked, and the newcomer's kickoff
+ * already names it, so either side can open the conversation.
+ */
+function introduceToPeers(db: Database, newcomer: string, conflicts: ScopeConflict[]): void {
+  const name = windowLabel({ sessionId: newcomer });
+  for (const conflict of conflicts) {
+    try {
+      steerSession(db, conflict.sessionId, peerJoinedMessage({ name, files: conflict.files }), {
+        kind: 'peer-joined',
+        by: newcomer,
+      });
+    } catch (error) {
+      if (!isRefusedSteer(error) && !(error instanceof TerminalSessionError)) throw error;
+    }
+  }
 }
 
 /**
@@ -157,28 +184,14 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
  * from the operator's side. Returns the created session id.
  */
 export function createSession(db: Database, req: NewSessionRequest): string {
-  // Both refusals are asked before the row is written, not only inside
-  // `launchTask`, and for the same reason. A refusal costs an operator nothing
-  // on `pup launch`, where the task already existed, but here it would leave
-  // the spec they just abandoned sitting in the backlog — unclaimed,
-  // attributed to them, and listed as planned work until someone notices and
-  // drops it (decision 41).
+  // Asked before the row is written, not only inside `launchTask`: a refusal
+  // costs an operator nothing on `pup launch`, where the task already existed,
+  // but here it would leave the spec they just abandoned sitting in the
+  // backlog — unclaimed, attributed to them, and listed as planned work until
+  // someone notices and drops it (decision 41).
   assertNoArmedGitDrivers(req.repoPath);
-  const conflicts = scopeConflicts(db, req.repoPath, req.task.scopeIn, req.task.scopeOut);
-  if (conflicts.length > 0 && !req.allowOverlap) {
-    throw new ScopeConflictError(req.task.id, conflicts);
-  }
   planTask(db, req);
-  // Decided once, above. `launchTask` re-measures for its own `pup launch` path
-  // and for the `scope_overlap` record, but must not re-decide: a holder that
-  // appears in the window between the two reads would otherwise refuse after
-  // the row exists, which is the orphan this function was reordered to prevent.
-  return launchTask(db, {
-    ...req,
-    taskId: req.task.id,
-    allowOverlap: true,
-    overlapVia: req.allowOverlap ? (req.overlapVia ?? 'operator') : 'raced',
-  });
+  return launchTask(db, { ...req, taskId: req.task.id });
 }
 
 /**
@@ -264,6 +277,7 @@ function startSession(
   db: Database,
   req: LaunchTaskRequest & { task: TaskSpec },
   route: SessionRoute,
+  peers: SessionPeer[],
 ): string {
   const paths = projectPaths(req.repoPath);
 
@@ -300,6 +314,7 @@ function startSession(
     userConfigHash,
     outDir: compiledDir,
     codegraphBinary: binary,
+    peers,
   });
   runGit(req.repoPath, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
   writeCompiledProfile(compiled, compiledDir);

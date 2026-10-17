@@ -55,7 +55,6 @@ import {
 } from './session.repository.js';
 import {
   LaunchRolledBackError,
-  ScopeConflictError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -248,11 +247,12 @@ describe('launchTask claim guard', () => {
   });
 });
 
-describe('launchTask scope-conflict guard', () => {
+describe('launchTask scope overlap (decision 99)', () => {
   let db: Database;
   let repo: string;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     db = openStore(':memory:');
     // projectPaths writes compiled profiles under $HOME/.pupitre.
     vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-home-'))));
@@ -269,118 +269,164 @@ describe('launchTask scope-conflict guard', () => {
     vi.unstubAllEnvs();
   });
 
-  /** A running session already holding `src/core/**`. */
-  function seedHolder(): void {
+  /** A running session already holding `scopeIn`, in a pane of its own. */
+  function seedHolder(id = 's-held', scopeIn = ['src/core/**'], pane = '%3'): void {
     insertTask(db, {
-      id: 't-held',
+      id: `t-${id}`,
       projectId: projectId(repo),
-      spec: JSON.stringify({ id: 't-held', goal: 'hold it', scopeIn: ['src/core/**'] }),
+      spec: JSON.stringify({ id: `t-${id}`, goal: 'hold it', scopeIn }),
     });
     insertSession(db, {
-      id: 's-held',
-      taskId: 't-held',
-      worktreePath: join(repo, '.worktrees', 's-held'),
-      branch: 'pup/s-held',
+      id,
+      taskId: `t-${id}`,
+      worktreePath: join(repo, '.worktrees', id),
+      branch: `pup/${id}`,
       profileHash: 'hash',
     });
-    transitionSession(db, 's-held', 'running');
+    db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane, id);
+    transitionSession(db, id, 'running');
   }
 
-  const launch = (allowOverlap?: boolean) =>
+  const launch = (overlapVia?: 'operator' | 'conductor') =>
     launchTask(db, {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
       claudeUserDir: join(repo, '.claude'),
-      allowOverlap,
+      overlapVia,
     });
 
-  it('refuses a task whose scope a live session already holds', () => {
+  const kickoffText = () => String(vi.mocked(kickoff).mock.calls.at(-1)?.[1]);
+  const steersTo = (paneId: string) =>
+    vi.mocked(steerPane).mock.calls.filter(([pane]) => pane.paneId === paneId);
+
+  it('launches a task whose scope a live session already holds', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder();
-
-    expect(launch).toThrow(ScopeConflictError);
-  });
-
-  it('names the session and the shared file so the operator can act', () => {
-    planTask(db, { repoPath: repo, task: spec() });
-    seedHolder();
-
-    expect(launch).toThrow(/s-held.*src\/core\/github\.client\.ts/);
-  });
-
-  // Refused before `git worktree add`, so a retry after narrowing the scope is
-  // not blocked by an orphan branch of the same name (decision 40's trap).
-  it('leaves no session, worktree or branch behind when it refuses', () => {
-    planTask(db, { repoPath: repo, task: spec() });
-    seedHolder();
-
-    expect(launch).toThrow(ScopeConflictError);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
-      n: 0,
-    });
-    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
-    expect(listBacklogTasks(db, projectId(repo)).map((t) => t.id)).toEqual(['t-1']);
-  });
-
-  it('launches when nothing live holds the scope', () => {
-    planTask(db, { repoPath: repo, task: spec() });
 
     expect(launch()).toBe('t-1');
+    expect(getSession(db, 't-1')?.state).toBe('running');
   });
 
-  // The pane id, not the session name: a session target resolves to whichever
-  // pane is active, and the agent can split (decision 46). Stored before the
-  // kickoff types into it, and the kickoff goes to the same pane.
-  it('stores the launch pane and kicks off into it', () => {
-    planTask(db, { repoPath: repo, task: spec() });
-
-    const sessionId = launch();
-
-    expect(getSession(db, sessionId)?.tmux_target).toBe('%7');
-    expect(vi.mocked(kickoff).mock.calls[0]?.[0]).toEqual({ sessionId, paneId: '%7' });
-  });
-
-  it('launches over the conflict when the operator allows the overlap', () => {
+  it('writes one scope_overlap event naming both sessions and the shared files', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder();
 
-    expect(launch(true)).toBe('t-1');
-  });
+    launch();
 
-  // The override is a considered one, so it leaves the same kind of trace
-  // `--accept-debt` does: what was waved through, and against whom.
-  it('records what an allowed overlap waved through', () => {
-    planTask(db, { repoPath: repo, task: spec() });
-    seedHolder();
-
-    const overlap = listEvents(db, launch(true)).find((e) => e.type === 'scope_overlap');
-
-    expect(JSON.parse(overlap?.payload ?? '{}')).toEqual({
+    // Across every session, not only the newcomer's: one record, not one per side.
+    const recorded = db
+      .prepare("SELECT session_id, payload FROM events WHERE type = 'scope_overlap'")
+      .all() as { session_id: string; payload: string }[];
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.session_id).toBe('t-1');
+    expect(JSON.parse(recorded[0]?.payload ?? '{}')).toEqual({
       via: 'operator',
       accepted: [{ session: 's-held', files: ['src/core/github.client.ts'] }],
     });
   });
 
-  // `pup launch` refusing costs nothing — the task was already in the backlog.
-  // `pup new` refusing after `planTask` would leave the spec the operator just
-  // abandoned in the backlog, attributed to them and launchable by any session.
-  it('writes no task row when `pup new` is refused for a conflict', () => {
+  it('records the conductor as the launcher of an overlap it made', () => {
+    planTask(db, { repoPath: repo, task: spec() });
     seedHolder();
 
-    expect(() =>
-      createSession(db, {
-        repoPath: repo,
-        base: DEFAULT_BASE_PROFILE,
-        task: spec(),
-        claudeUserDir: join(repo, '.claude'),
-      }),
-    ).toThrow(ScopeConflictError);
-    expect(getTask(db, 't-1')).toBeUndefined();
-    expect(listBacklogTasks(db, projectId(repo))).toEqual([]);
+    const overlap = listEvents(db, launch('conductor')).find((e) => e.type === 'scope_overlap');
+
+    expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('conductor');
   });
 
-  it('still plans and launches through `pup new` when the operator allows the overlap', () => {
+  it('records nothing and steers no one when nothing live shares the scope', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder('s-other', ['docs/**']);
+
+    expect(listEvents(db, launch()).some((e) => e.type === 'scope_overlap')).toBe(false);
+    expect(steerPane).not.toHaveBeenCalled();
+  });
+
+  it("names each overlapping peer and its shared files in the new worker's kickoff", () => {
+    commitIn(repo, 'src/core/gate.service.ts', 'export const g = 1;\n');
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/core/**'] }) });
+    seedHolder('s-a', ['src/core/github.client.ts'], '%3');
+    seedHolder('s-b', ['src/core/gate.service.ts'], '%4');
+
+    launch();
+
+    expect(kickoffText()).toContain(
+      '## Peers\n' +
+        'These live sessions are scoped to files you also hold. Each is reached by SendMessage ' +
+        'under its peer name (it appears in ListAgents); follow the collaboration rules in the ' +
+        'session protocol below.\n' +
+        '- `pup-s-a` shares: src/core/github.client.ts\n' +
+        '- `pup-s-b` shares: src/core/gate.service.ts',
+    );
+  });
+
+  it('has no peers section when the launch overlaps nothing', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+
+    launch();
+
+    expect(kickoffText()).not.toContain('## Peers');
+  });
+
+  it('steers each existing peer exactly once, naming the newcomer and the shared files', () => {
+    commitIn(repo, 'src/core/gate.service.ts', 'export const g = 1;\n');
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/core/**'] }) });
+    seedHolder('s-a', ['src/core/github.client.ts'], '%3');
+    seedHolder('s-b', ['src/core/**'], '%4');
+
+    launch();
+
+    expect(steersTo('%3')).toHaveLength(1);
+    expect(steersTo('%3')[0]?.[1]).toBe(
+      'A new peer session, pup-t-1, was just launched on files you also hold: ' +
+        'src/core/github.client.ts. Before you edit one of them, message it by SendMessage ' +
+        'what you will change (the function or section) and agree who does what.',
+    );
+    expect(steersTo('%4')).toHaveLength(1);
+    expect(steersTo('%4')[0]?.[1]).toContain(
+      'src/core/gate.service.ts, src/core/github.client.ts.',
+    );
+    expect(
+      listEvents(db, 's-a')
+        .filter((e) => e.type === 'steer')
+        .map((e) => JSON.parse(e.payload)),
+    ).toEqual([{ kind: 'peer-joined', by: 't-1' }]);
+  });
+
+  // The newcomer's kickoff already names the peer, so either side can open the
+  // conversation; a peer's refused paste is no reason to undo a launch that worked.
+  it('keeps the launch when a peer refuses the steer', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    seedHolder();
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError('s-held', 10, 'box-absent');
+    });
+
+    expect(launch()).toBe('t-1');
+    expect(getSession(db, 't-1')?.state).toBe('running');
+    expect(listEvents(db, 's-held').some((e) => e.type === 'steer')).toBe(false);
+  });
+
+  // Paths come from `git ls-files` and a peer name from the store; both are
+  // typed into a pane, where a control character is a keystroke.
+  it('scrubs control characters from peer names and paths in the kickoff and the steer', () => {
+    const planted = 'src/core/evil\u001b]0;pwn\u0007\u009b2J.ts';
+    commitIn(repo, planted, 'export const e = 1;\n');
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['src/core/**'] }) });
+    seedHolder('s\u001b[31m-held', [planted]);
+
+    launch();
+
+    for (const text of [kickoffText(), String(steersTo('%3')[0]?.[1])]) {
+      expect(text).toContain('evil ]0;pwn 2J.ts');
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence is the point
+      expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    }
+    expect(kickoffText()).toContain('`pup-s [31m-held` shares:');
+  });
+
+  it('plans and launches through `pup new` over a live session, recording the overlap', () => {
     seedHolder();
 
     const sessionId = createSession(db, {
@@ -388,14 +434,15 @@ describe('launchTask scope-conflict guard', () => {
       base: DEFAULT_BASE_PROFILE,
       task: spec(),
       claudeUserDir: join(repo, '.claude'),
-      allowOverlap: true,
     });
 
     expect(getTask(db, 't-1')).toBeDefined();
-    expect(listEvents(db, sessionId).some((e) => e.type === 'scope_overlap')).toBe(true);
+    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
+    expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('operator');
+    expect(steersTo('%3')).toHaveLength(1);
   });
 
-  // The conflict check is the first consumer of a stored spec's globs, so a row
+  // The overlap check is the first consumer of a stored spec's globs, so a row
   // written before `pup plan add` validated them must still fail legibly.
   it('refuses a stored spec with no usable scope before reading its globs', () => {
     planTask(db, { repoPath: repo, task: spec() });
@@ -417,55 +464,16 @@ describe('launchTask scope-conflict guard', () => {
     expect(getTask(db, 't-1')).toBeDefined();
   });
 
-  // `createSession` admits before the row exists and cannot refuse after, so a
-  // holder that appears between its read and `launchTask`'s is recorded — but
-  // as raced, not as something the operator accepted (decision 41). The race
-  // is staged in the store: a trigger seeds the holder the moment the
-  // candidate's own task row lands, i.e. after the first read, before the second.
-  it('records a holder that raced in as raced, not as operator-accepted', () => {
-    insertTask(db, {
-      id: 't-held',
-      projectId: projectId(repo),
-      spec: JSON.stringify({ id: 't-held', goal: 'hold it', scopeIn: ['src/core/**'] }),
-    });
-    db.exec(`CREATE TRIGGER race AFTER INSERT ON tasks WHEN NEW.id = 't-1' BEGIN
-      INSERT INTO sessions (id, task_id, worktree_path, branch, profile_hash)
-      VALUES ('s-held', 't-held', '${join(repo, '.worktrees', 's-held')}', 'pup/s-held', 'h');
-    END`);
-
-    const sessionId = createSession(db, {
-      repoPath: repo,
-      base: DEFAULT_BASE_PROFILE,
-      task: spec(),
-      claudeUserDir: join(repo, '.claude'),
-    });
-
-    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
-    expect(JSON.parse(overlap?.payload ?? '{}')).toMatchObject({
-      via: 'raced',
-      accepted: [{ session: 's-held' }],
-    });
-  });
-
-  it('records the operator as the one who waved an overlap through `pup new`', () => {
-    seedHolder();
-
-    const sessionId = createSession(db, {
-      repoPath: repo,
-      base: DEFAULT_BASE_PROFILE,
-      task: spec(),
-      claudeUserDir: join(repo, '.claude'),
-      allowOverlap: true,
-    });
-
-    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
-    expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('operator');
-  });
-
-  it('records nothing when there was no conflict to allow', () => {
+  // The pane id, not the session name: a session target resolves to whichever
+  // pane is active, and the agent can split (decision 46). Stored before the
+  // kickoff types into it, and the kickoff goes to the same pane.
+  it('stores the launch pane and kicks off into it', () => {
     planTask(db, { repoPath: repo, task: spec() });
 
-    expect(listEvents(db, launch(true)).some((e) => e.type === 'scope_overlap')).toBe(false);
+    const sessionId = launch();
+
+    expect(getSession(db, sessionId)?.tmux_target).toBe('%7');
+    expect(vi.mocked(kickoff).mock.calls[0]?.[0]).toEqual({ sessionId, paneId: '%7' });
   });
 });
 
