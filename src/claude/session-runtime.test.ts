@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,7 +52,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
 });
 
-import { WorktreeRepointedError } from '../core/git-diff.client.js';
+import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
@@ -141,6 +149,21 @@ describe('preseedTrust', () => {
     expect(config.numStartups).toBe(3);
     const projects = readProjects(claudeJson);
     expect(projects[repo]).toEqual({ hasTrustDialogAccepted: true, allowedTools: ['Read'] });
+  });
+
+  // A session window passes its pins: asked of git, the root would be the repo
+  // the worktree's pointers name, which the session can choose (decision 101).
+  it("seeds the pins' repo root, whatever the worktree's gitfile names", () => {
+    const { repo, worktree } = initRepoWithWorktree();
+    const pins = verifiedWorktreeGitEnv(repo, worktree);
+    const elsewhere = tempDir('pup-elsewhere-');
+    sh(elsewhere, 'git', 'init', '-q');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${join(elsewhere, '.git')}\n`);
+    const claudeJson = join(tempDir('pup-cfg-'), 'claude.json');
+
+    preseedTrust(worktree, claudeJson, pins);
+
+    expect(Object.keys(readProjects(claudeJson)).sort()).toEqual([repo, worktree].sort());
   });
 
   it('seeds only the launch path when it is not a git checkout', () => {
@@ -263,6 +286,15 @@ const FAKE_NICE_BIN = '/fake/bin/nice';
  * three literal copies of them read as a clone of the production call itself
  * (addendum to decision 47).
  */
+/** The `-e` pairs of a session window's git config (decision 101). */
+const WINDOW_GIT_CONFIG_ARGS = [
+  'GIT_CONFIG_COUNT=2',
+  'GIT_CONFIG_KEY_0=diff.ignoreSubmodules',
+  'GIT_CONFIG_VALUE_0=all',
+  'GIT_CONFIG_KEY_1=status.submoduleSummary',
+  'GIT_CONFIG_VALUE_1=false',
+].flatMap((pair) => ['-e', pair]);
+
 function spawnPrefix(name: string): string[] {
   return ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name];
 }
@@ -315,6 +347,7 @@ describe('launchSession', () => {
       `GIT_COMMON_DIR=${join(repo, '.git')}`,
       '-e',
       `GIT_WORK_TREE=${opts.worktreePath}`,
+      ...WINDOW_GIT_CONFIG_ARGS,
       '-e',
       `PUP_BIN=${process.argv[1] ?? 'pup'}`,
       FAKE_NICE_BIN,
@@ -342,6 +375,63 @@ describe('launchSession', () => {
     expect(() => launchSession(opts)).toThrow(WorktreeRepointedError);
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
     expect(tmuxCalls).toEqual([]);
+  });
+
+  // Claude Code's startup git and the code graph's run on the window's
+  // environment alone, outside the Bash sandbox. A gitlink over a `.git` the
+  // session made would have their status and diff run a child git there, past
+  // the pins, so the window skips submodules too (decision 101).
+  it("runs no child git in a gitlink under the window's own environment", () => {
+    launchSession(opts);
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    const windowEnv = Object.fromEntries(
+      spawn.flatMap((arg, i) => (spawn[i - 1] === '-e' ? [arg.split(/=(.*)/s).slice(0, 2)] : [])),
+    ) as Record<string, string>;
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    const sub = join(opts.worktreePath, 'sub');
+    mkdirSync(sub);
+    sh(sub, 'git', 'init', '-q');
+    writeFileSync(join(sub, 'f'), 'a\n');
+    sh(sub, 'git', 'add', 'f');
+    sh(sub, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'sub');
+    sh(sub, 'git', 'config', 'filter.pwn.clean', `sh -c 'echo pwned >> ${marker}; cat'`);
+    writeFileSync(join(sub, '.git/info/attributes'), '* filter=pwn\n');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sub,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    });
+    sh(
+      opts.worktreePath,
+      'git',
+      'update-index',
+      '--add',
+      '--cacheinfo',
+      `160000,${head.trim()},sub`,
+    );
+    const later = () => new Date(Date.now() + 60_000);
+    const asWindow = { ...GIT_ENV, ...windowEnv };
+    for (const args of [
+      ['status', '--short'],
+      ['diff', '--stat'],
+    ]) {
+      // The plant is live: plain git with the pins alone runs it.
+      utimesSync(join(sub, 'f'), later(), later());
+      execFileSync('git', args, {
+        cwd: opts.worktreePath,
+        env: { ...asWindow, GIT_CONFIG_COUNT: '0' },
+      });
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+
+      utimesSync(join(sub, 'f'), later(), later());
+      execFileSync('git', args, { cwd: opts.worktreePath, env: asWindow });
+      expect(existsSync(marker)).toBe(false);
+    }
   });
 
   // `pup launch` and `pup new` are the conductor's to run, and they run in its

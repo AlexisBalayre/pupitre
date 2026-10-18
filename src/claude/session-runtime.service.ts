@@ -364,14 +364,21 @@ function spawnDetachedSession(
  * keys the dialog on the git common-dir ROOT, not the launch cwd (verified on
  * 2.1.218: a trusted worktree under an untrusted repo still shows the dialog,
  * and accepting it writes `hasTrustDialogAccepted` on the repo root) — so both
- * paths are seeded. `claudeJsonPath` is overridable for tests only.
+ * paths are seeded. `claudeJsonPath` is overridable for tests only. A session
+ * window passes its pins, and the root is then their common dir's: asked of
+ * git, it would be whatever repo the worktree's pointers name (decision 101).
  */
-export function preseedTrust(worktreePath: string, claudeJsonPath = CLAUDE_JSON): void {
+export function preseedTrust(
+  worktreePath: string,
+  claudeJsonPath = CLAUDE_JSON,
+  git?: WorktreeGitEnv,
+): void {
   const config = existsSync(claudeJsonPath)
     ? (JSON.parse(readFileSync(claudeJsonPath, 'utf8')) as Record<string, unknown>)
     : {};
   const projects = (config.projects ?? {}) as Record<string, Record<string, unknown>>;
-  for (const path of new Set([worktreePath, ...mainRepoRoot(worktreePath)])) {
+  const roots = git ? [dirname(git.GIT_COMMON_DIR)] : mainRepoRoot(worktreePath);
+  for (const path of new Set([worktreePath, ...roots])) {
     projects[path] = { ...projects[path], hasTrustDialogAccepted: true };
   }
   config.projects = projects;
@@ -460,6 +467,22 @@ interface ClaudeWindowOptions {
 }
 
 /**
+ * Config a session window's git takes from its environment, beside the pins
+ * (decision 101). A gitlink in the index over a `.git` of the session's makes
+ * `status` and `diff` run a child git in it, with the submodule's own GIT_DIR,
+ * which the pins do not reach; Claude Code's startup git and the code graph's
+ * run outside the Bash sandbox on this environment alone. `status.submoduleSummary`
+ * because the summary spawns git in each submodule whatever `diff.ignoreSubmodules` says.
+ */
+const WINDOW_GIT_CONFIG = {
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules',
+  GIT_CONFIG_VALUE_0: 'all',
+  GIT_CONFIG_KEY_1: 'status.submoduleSummary',
+  GIT_CONFIG_VALUE_1: 'false',
+};
+
+/**
  * How far below normal a session's `claude` runs, and so every test, build and
  * tool it spawns: niceness is inherited. The conductor's window keeps normal
  * priority, since the gate it runs (`pup merge --pr`) runs in its `pup` and
@@ -475,14 +498,14 @@ const SESSION_NICENESS = '10';
  * and hand the process the same bypass-permissions, user-setting-sources argv.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
-  preseedTrust(opts.cwd);
+  preseedTrust(opts.cwd, CLAUDE_JSON, opts.git);
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
       ...opts.caller,
-      ...opts.git,
+      ...(opts.git ? { ...opts.git, ...WINDOW_GIT_CONFIG } : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',

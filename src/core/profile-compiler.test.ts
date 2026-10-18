@@ -660,6 +660,90 @@ describe('generated bash re-check (decision 63)', () => {
       expect(existsSync(marker)).toBe(false);
     });
 
+    it('holds the pins when the gitfile is swapped after the check', () => {
+      const gitfile = join(worktree, '.git');
+      const trusted = readFileSync(gitfile, 'utf8');
+      writeFileSync(gitfile, `gitdir: ${armedRepo(join(root, 'armed'))}\n`);
+      expectPlainGitFires(join(worktree, 'src/net/client.ts'));
+      // A head that shows the check the trusted gitfile, as a swap between the
+      // check and the git call would.
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      const realHead = spawnSync('/bin/sh', ['-c', 'command -v head'], { encoding: 'utf8' });
+      writeFileSync(
+        join(bin, 'head'),
+        `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${gitfile}' ]; then printf '%s' '${trusted.trimEnd()}'; else exec ${realHead.stdout.trim()} "$@"; fi\n`,
+        { mode: 0o755 },
+      );
+      const lied = { PATH: `${bin}:${process.env.PATH}` };
+      const payload = (phase: string) => ({
+        hook_event_name: phase,
+        tool_use_id: 'toolu_01swap',
+        tool_input: { command: 'echo hi' },
+      });
+
+      expect(run(payload('PreToolUse'), lied).status).toBe(0);
+      expect(run(payload('PostToolUse'), lied).status).toBe(0);
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it('refuses while git would read the worktree config, and runs no clean filter', () => {
+      const worktreeConfig = join(repo, '.git/worktrees/s-1/config.worktree');
+      plainGit(
+        root,
+        'config',
+        '--file',
+        worktreeConfig,
+        'filter.pwn.clean',
+        `sh -c 'echo pwned >> ${marker}; cat'`,
+      );
+      writeFileSync(join(repo, '.git/info/attributes'), '* filter=pwn\n');
+      plainGit(
+        root,
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        'true',
+      );
+      expectPlainGitFires(join(worktree, 'src/net/client.ts'));
+
+      const result = bash('echo hi');
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`git would read ${repo}/.git/worktrees/s-1/config.worktree`);
+      expect(existsSync(marker)).toBe(false);
+
+      // The file alone refuses, and so does the extension alone.
+      plainGit(
+        root,
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        'false',
+      );
+      expect(bash('echo hi').status).toBe(2);
+      unlinkSync(worktreeConfig);
+      plainGit(
+        root,
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        'true',
+      );
+      expect(bash('echo hi').status).toBe(2);
+      plainGit(
+        root,
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        '--unset',
+        'extensions.worktreeConfig',
+      );
+      expect(bash('echo hi').status).toBe(0);
+    });
+
     it('runs no child git in a gitlink over a .git the session made', () => {
       const sub = join(worktree, 'src/net/sub');
       armedRepo(sub);
@@ -977,6 +1061,8 @@ describe('generated hooks over a merge of the target', () => {
       expect(result.stderr).toContain('or its commondir no longer names');
     });
 
+    // Ten hook runs and two merges, each hook with its pointer check: well past
+    // vitest's default under a full parallel run.
     it('refuses the same Edit once the file is resolved, or over a merge of anything but the tip', () => {
       bash('git merge main');
       bash('git add src/cli/decoy.ts');
@@ -990,7 +1076,7 @@ describe('generated hooks over a merge of the target', () => {
       expect(
         edit('src/cli/decoy.ts', block.replace('>>>>>>> main', '>>>>>>> side'), 'one main').status,
       ).toBe(2);
-    });
+    }, 20_000);
   });
 });
 

@@ -295,6 +295,11 @@ function buildContextMarkdown(
     peersSection(input.peers ?? []),
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
+      "- Your window's git is pinned to this worktree by `GIT_DIR`, `GIT_COMMON_DIR` and " +
+      '`GIT_WORK_TREE`. For a git command aimed at another repo (a clone, a `git init` in a ' +
+      'temp dir), clear them for that command alone: `env -u GIT_DIR -u GIT_COMMON_DIR -u ' +
+      'GIT_WORK_TREE git …`. Run with them set, a clone fails and an init writes ' +
+      '`core.worktree` into the shared config. Never unset them for the whole shell.\n' +
       '- Run only the tests related to what you changed: the test runner’s related-tests form ' +
       'when it has one (e.g. `vitest related <files>`), else the test files by name. Leave the ' +
       'full suite to the merge gate, which runs it.\n' +
@@ -330,8 +335,9 @@ function buildContextMarkdown(
  * `diff` skip submodules too, since a gitlink over a `.git` of the session's
  * runs a child git there that drops the pins. `pinned_worktree` checks both
  * pointers with filesystem reads alone and fails when either names another
- * dir, so a rewrite is refused loudly rather than ignored; both hooks call it
- * before their first `safe_git`.
+ * dir, so a rewrite is refused loudly rather than ignored, and fails while git
+ * would read the admin dir's session-writable `config.worktree`, as
+ * `verifiedWorktreeGitEnv` does; both hooks call it before their first `safe_git`.
  *
  * `merge_of_target` prints MERGE_HEAD while a merge of the target's tip is in
  * progress in the worktree, and fails otherwise. The target is the branch the
@@ -353,14 +359,23 @@ safe_git() {
 }
 unset CDPATH
 pinned_worktree() {
-  { [ -f "$WORKTREE/.git" ] && [ ! -L "$WORKTREE/.git" ] &&
+  if ! { [ -f "$WORKTREE/.git" ] && [ ! -L "$WORKTREE/.git" ] &&
     [ "$(head -c ${POINTER_MAX_BYTES} -- "$WORKTREE/.git")" = "gitdir: $GIT_ADMIN" ] &&
     [ "$(cd -P -- "$GIT_ADMIN" && pwd -P)" = "$GIT_ADMIN" ] &&
     [ -f "$GIT_ADMIN/commondir" ] && [ ! -L "$GIT_ADMIN/commondir" ] &&
     [ "$(cd -P -- "$GIT_ADMIN" && cd -P -- "$(head -c ${POINTER_MAX_BYTES} commondir)" && pwd -P)" = "$GIT_COMMON" ]
-  } 2>/dev/null && return 0
-  printf 'BLOCKED: %s/.git or its commondir no longer names %s; no git runs in this worktree until both are restored.\\n' \\
-    "$WORKTREE" "$GIT_ADMIN" >&2
+  } 2>/dev/null; then
+    printf 'BLOCKED: %s/.git or its commondir no longer names %s; no git runs in this worktree until both are restored.\\n' \\
+      "$WORKTREE" "$GIT_ADMIN" >&2
+    return 1
+  fi
+  # Exit 1 is "no such key"; a value git cannot read as a boolean counts as on.
+  EXTENSION=$(safe_git config --file "$GIT_COMMON/config" --type bool --get extensions.worktreeConfig 2>/dev/null)
+  case "$?/$EXTENSION" in
+    1/|0/false) [ ! -e "$GIT_ADMIN/config.worktree" ] && [ ! -L "$GIT_ADMIN/config.worktree" ] && return 0 ;;
+  esac
+  printf 'BLOCKED: git would read %s/config.worktree, which the session can write; no git runs in this worktree until it is gone and extensions.worktreeConfig is off.\\n' \\
+    "$GIT_ADMIN" >&2
   return 1
 }
 merge_of_target() {

@@ -9,7 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
@@ -796,6 +796,71 @@ describe('worktree git pins (decision 101)', () => {
 
     pinnedStatus();
     expect(existsSync(marker)).toBe(false);
+  });
+
+  // Pinned git still reads `<admin>/config.worktree` while the extension is on,
+  // and the file sits beside commondir, where the session can write it.
+  it('refuses while git would read the worktree config, and runs no filter from it', () => {
+    const worktreeConfig = join(repo, '.git/worktrees/s-1/config.worktree');
+    sh(
+      repo,
+      'git',
+      'config',
+      '--file',
+      worktreeConfig,
+      'filter.pwn.clean',
+      `sh -c 'echo pwned >> ${marker}; cat'`,
+    );
+    writeFileSync(join(worktree, '.gitattributes'), '* filter=pwn\n');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(/config\.worktree/);
+
+    sh(repo, 'git', 'config', 'extensions.worktreeConfig', 'true');
+    touchLater(join(worktree, 'src/app.ts'));
+    pinnedStatus();
+    // The plant is live: with the extension on, pinned git runs it.
+    expect(existsSync(marker)).toBe(true);
+    unlinkSync(worktreeConfig);
+    // Written from outside the repo, which git refuses to open once the value is unreadable.
+    const setExtension = (value: string) =>
+      sh(
+        dirname(marker),
+        'git',
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        value,
+      );
+    // The extension alone refuses too: a file written after the check would be read.
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(/extensions\.worktreeConfig/);
+    setExtension('maybe');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    setExtension('false');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).not.toThrow();
+  });
+
+  // A session window sets `diff.ignoreSubmodules=all` through the environment,
+  // and pup run from it, its tests included, must not inherit that into the
+  // scope audit's diff, where it would hide a gitlink change.
+  it("leaves out the config a caller's environment hands git", () => {
+    vi.stubEnv('GIT_CONFIG_COUNT', '1');
+    vi.stubEnv('GIT_CONFIG_KEY_0', 'diff.ignoreSubmodules');
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'all');
+    vi.stubEnv('GIT_CONFIG_PARAMETERS', "'diff.ignoresubmodules'='all'");
+    const sub = makeRepo();
+    writeFileSync(join(sub, 'f'), 'a\n');
+    commitAll(sub, 'sub');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sub,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    });
+    sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head.trim()},vendored`);
+    sh(repo, 'git', 'commit', '-q', '-m', 'gitlink');
+
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['vendored']);
+    vi.unstubAllEnvs();
   });
 
   it('refuses a gitfile that is a symlink or a fifo, without blocking on the fifo', () => {

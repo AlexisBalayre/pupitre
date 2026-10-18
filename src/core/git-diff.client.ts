@@ -4,6 +4,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   openSync,
   readFileSync,
   readSync,
@@ -20,11 +21,22 @@ export type { DiffFileStat };
  * Environment without the GIT_DIR family: when pup itself runs inside a git
  * hook, those inherited vars would point every child git call (and any git
  * usage in gate commands) at the hook's repo instead of the target path.
+ * Without the config git takes from the environment too: a session window
+ * sets `diff.ignoreSubmodules=all` that way (decision 101), and a pup run from
+ * it, its tests included, would otherwise inherit it into the scope audit's
+ * diff and stop seeing a gitlink change.
  */
 export function scrubbedGitEnv(): NodeJS.ProcessEnv {
   const scrubbed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !scrubbed.includes(key)));
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !scrubbed.includes(key) && !ENV_CONFIG_KEY.test(key),
+    ),
+  );
 }
+
+/** The variables git reads command-scope config from. */
+const ENV_CONFIG_KEY = /^GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)$/;
 
 /** The three variables that pin git to a session worktree's trusted dirs (decision 101). */
 export interface WorktreeGitEnv {
@@ -91,14 +103,10 @@ function realpathOrUndefined(path: string): string | undefined {
 }
 
 export class WorktreeRepointedError extends Error {
-  constructor(worktreePath: string, env: WorktreeGitEnv) {
+  constructor(worktreePath: string, problem: string) {
     super(
-      `Refusing to run git in ${sanitizeReason(worktreePath)}: its .git no longer names ` +
-        `${sanitizeReason(env.GIT_DIR)}, or that admin dir's commondir no longer names ` +
-        `${sanitizeReason(env.GIT_COMMON_DIR)}. A session can rewrite both from inside its ` +
-        'sandbox, and any git that followed them would run the filters of a repo it chose. ' +
-        'Restore them (`git worktree repair` from the main checkout) and retry, and treat the ' +
-        'session that rewrote them as compromised.',
+      `Refusing to run git in ${sanitizeReason(worktreePath)}: ${problem}, and treat the ` +
+        'session that did it as compromised.',
     );
     this.name = 'WorktreeRepointedError';
   }
@@ -111,6 +119,13 @@ export class WorktreeRepointedError extends Error {
  * the common dir. Pinned git would not follow a rewritten pointer anyway; the
  * check is what makes the rewrite loud, since everything that runs git there
  * unpinned — the session's own window, the operator's shell — would follow it.
+ *
+ * Pinned git still reads one file a session can write, `<admin dir>/config.worktree`,
+ * whenever `extensions.worktreeConfig` is on, and it takes a filter or an
+ * `include.path` like any config. So the check also refuses while the file
+ * exists or the extension is on: off, git never reads the file. The extension
+ * lives in the common dir's config, which this takes to be out of a session's
+ * reach; where it is not (decision 41's exposure), no pin holds anyway.
  */
 export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): WorktreeGitEnv {
   const env = worktreeGitEnv(repoPath, worktreePath);
@@ -122,9 +137,61 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
     commondir === undefined ||
     realpathOrUndefined(resolve(env.GIT_DIR, commondir)) !== env.GIT_COMMON_DIR
   ) {
-    throw new WorktreeRepointedError(worktreePath, env);
+    throw new WorktreeRepointedError(
+      worktreePath,
+      `its .git no longer names ${sanitizeReason(env.GIT_DIR)}, or that admin dir's ` +
+        `commondir no longer names ${sanitizeReason(env.GIT_COMMON_DIR)}. A session can ` +
+        'rewrite both from inside its sandbox, and any git that followed them would run the ' +
+        'filters of a repo it chose. Restore them (`git worktree repair` from the main ' +
+        'checkout) and retry',
+    );
+  }
+  if (
+    lstatSync(join(env.GIT_DIR, 'config.worktree'), { throwIfNoEntry: false }) ||
+    worktreeConfigOn(worktreePath, env)
+  ) {
+    throw new WorktreeRepointedError(
+      worktreePath,
+      `git would read ${sanitizeReason(join(env.GIT_DIR, 'config.worktree'))}, which a ` +
+        'session can write from inside its sandbox: the file exists, or ' +
+        `extensions.worktreeConfig is on in ${sanitizeReason(join(env.GIT_COMMON_DIR, 'config'))}. ` +
+        'Remove the file and turn the extension off, then retry',
+    );
   }
   return env;
+}
+
+/**
+ * Whether the common dir's own config turns `extensions.worktreeConfig` on, as
+ * git reads it for the repository format: that file alone, no includes. A
+ * value git cannot read as a boolean counts as on.
+ */
+function worktreeConfigOn(worktreePath: string, env: WorktreeGitEnv): boolean {
+  try {
+    const value = runGit(
+      worktreePath,
+      [
+        'config',
+        '--file',
+        join(env.GIT_COMMON_DIR, 'config'),
+        '--type',
+        'bool',
+        '--get',
+        'extensions.worktreeConfig',
+      ],
+      { env: { ...env }, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return value.trim() !== 'false';
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is git's "no such key"; anything else is a config it could not read.
+    return !(
+      typeof error === 'object' &&
+      error !== null &&
+      'status' in error &&
+      error.status === 1
+    );
+  }
 }
 
 /**

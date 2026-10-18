@@ -5336,11 +5336,38 @@ changes back into those docs is pending.
     `<worktree>/<path>/.git` makes `status` and a worktree `diff` run a child git in that
     directory, with `GIT_DIR` set to the submodule's own repo, so the pins do not reach it and
     its armed filter runs. With the flag, git skips submodules entirely. The rebase was checked
-    with the same plant and runs no child (`submodule.recurse=false`, decision 80).
+    with the same plant and runs no child (`submodule.recurse=false`, decision 80). The window
+    cannot take a flag, so it gets the same rule as command-scope config through tmux `-e`:
+    `GIT_CONFIG_COUNT=2` with `diff.ignoreSubmodules=all` and `status.submoduleSummary=false`.
+    The second is needed because a submodule summary runs child gits even with the first set.
+    Config from the environment outranks every config file, so a session cannot turn either
+    back on. pup's own git drops `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`
+    and `GIT_CONFIG_PARAMETERS` with the GIT_DIR family, so the scope audit's diff, run from a
+    shell that inherited the window's environment, still lists a gitlink change.
+    *No worktree config.* With `extensions.worktreeConfig` on, git also reads
+    `<admin dir>/config.worktree`, a file inside the admin dir the session can write, which
+    would arm a driver under the pins. So the check refuses while that file exists, or while
+    the extension is on in `<common>/config` or holds a value git cannot read as a boolean.
+    git reads the extension from that file alone, never through an include. The fix assumes
+    `<common>/config` is out of the session's reach. Where it is not, which is decision 41's
+    exposure, a session arms a driver there directly and no pin holds.
+    *Trust seeded for the pinned repo.* `preseedTrust` marks the root of the pins' common dir
+    as trusted, not the repo `git rev-parse --git-common-dir` names from inside the worktree,
+    so a launch runs no unpinned git there either.
+    *Other repos from the window.* With the three variables set, `git clone` fails with "working
+    tree already exists", and `git init` in another directory writes `core.worktree=<worktree>`
+    into the shared `<common>/config` (reproduced). The kickoff tells the session to clear them
+    for that one command (`env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE git …`), and never
+    for the whole shell.
     *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
     pick another name, because a stale admin dir held it, is refused at launch, never followed.
-    The window's repo is derived from the worktree path, `<repo>/.worktrees/<session-id>`, the one
-    layout `startSession` uses. With `all`, the hooks and the gate's worktree-clean stage no
+    The hooks and the gate take the repo from the project path they are given. A launch takes it
+    from the worktree path, `<repo>/.worktrees/<session-id>`, the one layout `startSession` uses,
+    because `launchSession`'s callers (session-lifecycle and session-handoff) pass no project
+    path. Passing it through is a follow-up. Until then, a row whose worktree path names
+    another repo's layout pins the window to that repo. Two other follow-ups are open: the
+    codegraph indexing a respawn runs in the worktree, and the conductor checkout's git, both
+    still unpinned. With `all`, the hooks and the gate's worktree-clean stage no
     longer see a gitlink change. The gate's scope audit, on the branch's own diff, still does.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
     between still blocks until the hook timeout, as decision 99's MERGE_HEAD read does. A
@@ -5353,8 +5380,16 @@ changes back into those docs is pending.
     session-made `.git` with the same filter fires it under plain status, and leaves no marker
     after a re-check run, a pinned status, or a gate that merges the branch holding it. A
     symlinked or fifo gitfile is refused without blocking. The driver check reads the trusted
-    config whatever the gitfile names. A launch passes the three variables to tmux and opens
-    nothing over either rewritten pointer.
+    config whatever the gitfile names. A launch passes the three variables and the submodule
+    config to tmux, and opens nothing over either rewritten pointer. In a gitlink over an armed
+    `.git`, `status` and `diff` run under the window's own environment leave no marker, while a
+    control with `GIT_CONFIG_COUNT=0` fires it. A `config.worktree` arming the filter, with the
+    extension on, fires it under plain status and is refused by both checks. So is the file
+    alone, the extension alone, and an unreadable value. A swap after the check, by a `head` on
+    the hook's PATH that shows the check the trusted gitfile, and in the gate by a wrapper that
+    restores the trusted gitfile around each check and puts the armed one back after it, leaves
+    no marker. The gate merges, and only the teardown's `worktree remove` refuses the swapped
+    gitfile. Each swap test fails with the pins taken out of `safe_git` or out of the gate.
 
 ## Implementation notes
 

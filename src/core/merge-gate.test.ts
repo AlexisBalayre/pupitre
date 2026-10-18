@@ -51,6 +51,27 @@ vi.mock('./merge-gate.constants.js', async (importOriginal) => {
   };
 });
 
+// Set by the one test that swaps the worktree's gitfile around every check, as
+// a session racing the gate would: each check reads the trusted pointer, each
+// git call after it finds the swapped one.
+const pointerSwap = vi.hoisted(() => ({
+  around: undefined as ((check: () => void) => void) | undefined,
+}));
+vi.mock('./git-diff.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./git-diff.client.js')>();
+  return {
+    ...actual,
+    verifiedWorktreeGitEnv: (repoPath: string, worktreePath: string) => {
+      let env = undefined as ReturnType<typeof actual.verifiedWorktreeGitEnv> | undefined;
+      const check = () => {
+        env = actual.verifiedWorktreeGitEnv(repoPath, worktreePath);
+      };
+      pointerSwap.around ? pointerSwap.around(check) : check();
+      return env as ReturnType<typeof actual.verifiedWorktreeGitEnv>;
+    },
+  };
+});
+
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import {
@@ -1895,6 +1916,35 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await expect(merge()).rejects.toThrow(WorktreeRepointedError);
       expect(existsSync(marker)).toBe(false);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('holds the pins when the gitfile is swapped after each check', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(repo, 'README.md', '# hello\n');
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const gitfile = join(worktree, '.git');
+      const trusted = readFileSync(gitfile, 'utf8');
+      const swapped = `gitdir: ${armedRepo(tempDir('pup-armed-'), 'src/app.ts')}\n`;
+      writeFileSync(gitfile, swapped);
+      expectPlainGitFires(worktree, join(worktree, 'src/app.ts'));
+      let checks = 0;
+      pointerSwap.around = (check) => {
+        writeFileSync(gitfile, trusted);
+        check();
+        checks += 1;
+        writeFileSync(gitfile, swapped);
+      };
+      onTestFinished(() => {
+        pointerSwap.around = undefined;
+        writeFileSync(gitfile, trusted);
+      });
+
+      // Merged under the pins; only the teardown, which validates the gitfile
+      // itself, refuses the swapped one, and loudly.
+      await expect(merge()).rejects.toThrow(/worktree remove/);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(checks).toBeGreaterThanOrEqual(2);
+      expect(existsSync(marker)).toBe(false);
     });
 
     it('runs no child git in a gitlink over a .git the session made', async () => {
