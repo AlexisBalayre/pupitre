@@ -48,7 +48,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "worktree:create": "bash scripts/worktree-create.sh",
-    "worktree:clean": "bash scripts/worktree-clean.sh"
+    "worktree:clean": "bash scripts/worktree-clean.sh",
+    "worktree:remove": "bash scripts/worktree-remove.sh"
   },
   "dependencies": {
     "@types/react": "^19.3.0",
