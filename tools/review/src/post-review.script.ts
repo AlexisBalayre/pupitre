@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { commentableLines, resolveAnchor, trueLine } from "./diff-anchor.utils";
-import { bodyLines } from "./review-body.utils";
+import { bodyLines, commentBody } from "./review-body.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import { type Finding, postedRecordSchema, type ReviewSummary, reviewSummarySchema } from "./review-metrics.schemas";
 
@@ -23,8 +23,11 @@ function warn(message: string): void {
   process.stdout.write(`::warning::${message}\n`);
 }
 
+// The workflow runs this from the tooling copy, never the PR checkout, so git
+// and gh are pointed back at the checkout; unset (tests, a local run), they
+// inherit the working directory.
 function gh(args: string[], input?: string): string {
-  return execFileSync("gh", args, { encoding: "utf8", input });
+  return execFileSync("gh", args, { encoding: "utf8", input, cwd: process.env.GITHUB_WORKSPACE });
 }
 
 function parseSummary(raw: string): ReviewSummary | null {
@@ -49,29 +52,19 @@ interface AnchoredComment {
 
 function fileDiff(mergeBase: string, file: string): string {
   try {
-    // `:/` anchors the pathspec at the repo root: `pnpm --filter` runs this from
-    // the package directory, where a plain repo-relative path would match nothing
-    // and quietly send every finding to the summary instead of the diff.
+    // `:/` anchors the pathspec at the repo root: run from the package directory
+    // (tests, a local run), a plain repo-relative path would match nothing and
+    // quietly send every finding to the summary instead of the diff.
     // Two-dot from the resolved merge base, never three-dot from `origin/main`,
     // which the action's depth-1 base fetch grafts parentless.
-    return execFileSync("git", ["diff", `${mergeBase}..HEAD`, "--unified=0", "--", `:/${file}`], { encoding: "utf8" });
+    return execFileSync("git", ["diff", `${mergeBase}..HEAD`, "--unified=0", "--", `:/${file}`], {
+      encoding: "utf8",
+      cwd: process.env.GITHUB_WORKSPACE,
+    });
   } catch {
     warn(`could not diff ${file}; its findings go in the review body`);
     return "";
   }
-}
-
-function commentBody(finding: Finding, relocatedFrom: number | null): string {
-  const parts: string[] = [];
-  if (relocatedFrom !== null) parts.push(`Re: \`${finding.file}:${relocatedFrom}\``, "");
-  parts.push(finding.body ?? finding.description);
-  if (finding.suggestion !== null) {
-    // A committable suggestion rewrites the line it is attached to, so on a
-    // relocated anchor it would replace code the finding never mentioned. Same
-    // text, inert fence.
-    parts.push("", relocatedFrom === null ? "```suggestion" : "```", finding.suggestion, "```");
-  }
-  return parts.join("\n");
 }
 
 function prepare(summary: ReviewSummary, mergeBase: string) {
@@ -208,21 +201,24 @@ function main(): void {
     reviewPosted = true;
     process.stdout.write(`posted a review on #${prNumber} with ${posted} inline comment(s)\n`);
   } finally {
+    const importants = anchored.length + unanchored.length;
+    const failure = noVerdict ?? (reviewPosted ? null : "the review could not be posted");
+    // A quick or area-restricted pass is no merge signal, so the status and the
+    // reaction both say it was partial.
+    const partial = env.REVIEW_PARTIAL === "true";
+    const outcome = importants > 0 ? `${importants} important finding(s)` : "no blocking issues";
     const sha = env.REVIEW_COMMIT_SHA ?? "";
     if (sha) {
-      const importants = anchored.length + unanchored.length;
-      if (noVerdict) setCommitStatus(repository, sha, "failure", noVerdict);
-      else if (!reviewPosted) setCommitStatus(repository, sha, "failure", "the review could not be posted");
-      else {
-        setCommitStatus(
-          repository,
-          sha,
-          "success",
-          importants > 0 ? `${importants} important finding(s)` : "no blocking issues",
-        );
-      }
+      if (failure) setCommitStatus(repository, sha, "failure", failure);
+      else setCommitStatus(repository, sha, "success", `${partial ? "partial review: " : ""}${outcome}`);
     } else {
       warn("no commit sha; skipping the claude-review status");
+    }
+    // The workflow puts this reaction on the `@claude review` comment; a local
+    // run has no step to hand it to.
+    if (env.GITHUB_OUTPUT) {
+      const reaction = failure ? "confused" : importants > 0 ? "-1" : partial ? "+1" : "rocket";
+      appendFileSync(env.GITHUB_OUTPUT, `reaction=${reaction}\n`);
     }
     const output = env.REVIEW_POSTED_OUTPUT ?? "posted.json";
     writeFileSync(output, `${JSON.stringify(postedRecordSchema.parse({ comments_posted: posted }), null, 2)}\n`);

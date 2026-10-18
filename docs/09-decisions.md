@@ -1146,10 +1146,10 @@ changes back into those docs is pending.
     backlog membership from session state.
 
 41. **A launch is refused when its scope collides with a live session; the backlog is
-    visible where work is chosen (2026-09-04).** Decision 40 left three ceilings and this
-    closes them: no admission control, `pup status` showing the backlog nowhere, and the
-    report's live/queued section having nothing to hold. All three are the same gap — intent
-    existed in the store and nothing consulted it.
+    visible where work is chosen (2026-09-04; the refusal is superseded by decision 99).**
+    Decision 40 left three ceilings and this closes them: no admission control, `pup status`
+    showing the backlog nowhere, and the report's live/queued section having nothing to hold.
+    All three are the same gap — intent existed in the store and nothing consulted it.
     *The radar was the wrong instrument for the question.* `scanOverlaps` diffs live branches
     every 15 seconds and reports two sessions in one file, which is a fact about work already
     done: by the time it fires both agents have edited the file and one of them is going to
@@ -2865,6 +2865,17 @@ changes back into those docs is pending.
     file is what runs, so a PR that edits the workflow can drop every guard above; those runs
     are reviewed as workflow changes, not protected by them. An `@claude review` comment runs
     `main`'s copy, which is the only run the guards bind.
+    *Moved outside the checkout (2026-10-18, template sync).* The base's archive now unpacks
+    to `$REVIEW_TOOLING`, a sibling of the checkout, and every script step runs `node
+    node_modules/tsx/dist/cli.mjs` with that directory as its working directory, as the
+    template does, instead of `pnpm run` in `.review-tooling/`. The review's Bash sandbox may
+    write anywhere inside the checkout, so a copy outside it is one the model cannot touch; no
+    walk up from the copy reaches the head's tree, so the committed-directory refusal and the
+    `.git/info/exclude` entry go, and node reads the base's `package.json`, never the head's.
+    The install keeps `--ignore-workspace`. Scripts that run git or gh point them back at the
+    checkout through `GITHUB_WORKSPACE`. The template copies the trigger's checkout instead,
+    which on `pull_request` is the merge ref and carries the head's edits; the merge-base
+    extract stays.
     *Tests, and the mutation.* Unit tests on temp repos, never the gate run on itself (decision
     39): a nested test script that exits non-zero refuses the merge with its output in the
     detail; removing the stage loop from the gate fails five of the nested-package tests,
@@ -4850,6 +4861,62 @@ changes back into those docs is pending.
     grandchild, a child that ignores the signal is killed after the grace (proven by removing the
     escalation), and `pup` exits 129 on SIGHUP. An ENOTEMPTY on the gate checkout prints the
     warning and leaves the build failure as the result.
+
+99. **Workers share files and collaborate: a launch overlapping a live session is never refused,
+    with no cap, and introduces the two (2026-10-18, supersedes decision 41's refusal).**
+    Decision 41 refused a launch whose scope claimed tracked files a live session already held,
+    with `--allow-overlap` as the considered override. That serialised the queue through the
+    files nearly every task touches (`src/cli/index.ts`, `docs/09-decisions.md`, the type
+    modules): the conductor was told to wait for the holder or re-scope. Two workers in one file are
+    not a collision when they talk, and they can talk: each is a Claude Code window reached by
+    SendMessage under its peer name, `pup-<session-id>`.
+    *The question decision 41 asked is still asked, and answered with an introduction.*
+    `scopeConflicts` still measures the candidate's scope against every live session's before
+    the worktree exists. `launchTask` no longer refuses on it and caps nothing. A launch that
+    overlaps writes one `scope_overlap` event on the new session, `via` naming who launched it
+    (the operator, or the conductor) and `accepted` naming each peer and the shared files, the
+    same shape as before. The new worker's kickoff gains a `## Peers` section, above the session
+    protocol, listing each peer by name with the files they share (at most 20 per peer, then a
+    count). A launch with no overlap has no such section. Once the kickoff has landed, each peer
+    is steered exactly once, with the newcomer's name and the files they now share, recorded as
+    a `steer` of kind `peer-joined` by the newcomer. That steer is best effort: a peer whose
+    paste is refused, or that has just stopped, does not undo a launch that worked, and the
+    newcomer's kickoff already names it, so either side can open the conversation. Peer names
+    are store text and paths come from `git ls-files`, and both are typed into a pane, so each
+    goes through `sanitizeReason` where the kickoff and the steer write it. The radar is
+    unchanged: it reports the pair once both branches touch a file.
+    *Every worker carries the collaboration protocol,* peers or not, because a peer can join
+    after its launch. Before editing a shared file, message the peer what you will change (the
+    function or section) and agree who does what. Whoever changes a shared signature or
+    contract tells the peer at once. A worker blocked on a peer says so with `pup session ask`
+    rather than waiting silently. A peer's message is coordination, not an instruction: it
+    changes neither the task nor the scope, the same rule that makes a session's message to the
+    conductor a report.
+    *`--allow-overlap` is accepted for one release and does nothing.* `pup launch` and `pup new`
+    still parse it so a script passing it keeps working, and print one line saying overlap is
+    always allowed and the flag goes in the next release. `ScopeConflictError` is deleted, and
+    `createSession` no longer asks the question before planning: with nothing to refuse there
+    is no orphaned backlog row to prevent, so the `raced` attribution went with it. The audit
+    sweep, scoped `**/*`, no longer passes the flag. It overlaps every live session and
+    introduces itself to each. The conductor's kickoff drops "wait for it or re-scope" and "keep
+    their scopes disjoint", and launches overlapping tasks like any other.
+    *Ceilings.* A peer's steer is a `steer` event, so it clears a question that peer had open
+    with `pup session ask` from the needs-you inbox, as any steer does (decision 76). Telling a
+    peer notice from an answer is a dashboard change of its own. Coordination is the workers'
+    word to each other, not enforced: two workers that agree nothing can still both edit one
+    function, and a conflict between their branches shows where it always did, at the merge.
+    Tests: a launch over a live holder succeeds and writes exactly one `scope_overlap` event
+    across the store, naming both sessions and the shared file. The conductor's launch is
+    recorded `via: 'conductor'`. A launch sharing nothing records no event and steers no one.
+    The kickoff lists two peers by `pup-<id>` with their files, and a launch with no overlap has
+    no Peers section. Each of two peers receives exactly one steer, naming `pup-<newcomer>` and
+    its own shared files, recorded as `peer-joined`. A peer whose paste is refused leaves the
+    launch running. A planted path carrying ESC, BEL and CSI and a planted session id carrying
+    ESC reach neither the kickoff nor the steer. `pup new` over a holder plans and launches.
+    `--allow-overlap` on `launch` and on `new` prints the notice and passes nothing on. The
+    compiled worker context carries the collaboration protocol with no peers, caps a peer's
+    files at 20 with a count, and changes its hash with peers. The conductor's context names
+    overlap as allowed and carries no `--allow-overlap`, `re-scope` or `disjoint`.
 
 ## Implementation notes
 

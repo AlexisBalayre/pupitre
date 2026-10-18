@@ -28,15 +28,8 @@ export interface LaunchTaskRequest {
   claudeUserDir: string;
   model?: string;
   effort?: string;
-  /** Launch despite a live session already holding files in this scope. */
-  allowOverlap?: boolean;
-  /**
-   * Who answers for an allowed overlap in the `scope_overlap` record: the
-   * operator or the conductor who passed the flag, or nobody — `createSession`
-   * admitted the task before the holder existed and a refusal now would
-   * orphan the row.
-   */
-  overlapVia?: 'operator' | 'conductor' | 'raced';
+  /** Who launched it, named in the `scope_overlap` record; the operator when unset. */
+  overlapVia?: 'operator' | 'conductor';
   /** Who named `model`/`effort`; only the operator's lifts the top-rung refusal. */
   overrideVia?: 'operator' | 'conductor';
 }
@@ -46,7 +39,15 @@ export interface NewSessionRequest extends PlanTaskRequest {
   claudeUserDir: string;
   model?: string;
   effort?: string;
-  allowOverlap?: boolean;
-  /** Who passed `--allow-overlap`; the operator when unset. */
+  /** Who launched it, named in the `scope_overlap` record; the operator when unset. */
   overlapVia?: 'operator' | 'conductor';
+}
+
+/**
+ * A live session sharing files with a worker being launched (decision 99): the
+ * name it is reached by over SendMessage, and the files the two share.
+ */
+export interface SessionPeer {
+  name: string;
+  files: string[];
 }

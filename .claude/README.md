@@ -33,7 +33,7 @@ What a session pays for this config, in approximate tokens (bytes / 4), so addit
 |---|---|---|
 | `CLAUDE.md` + `AGENTS.md` | every session | ~1.0k |
 | Descriptions of the model-invocable skills | every session | ~0.7k |
-| Descriptions of all 11 agents | every session | ~0.7k |
+| Descriptions of all 12 agents | every session | ~0.8k |
 | `docs/conventions/general.md` + `naming.md` | first `.ts` file touched | ~3.1k |
 | `docs/conventions/testing.md` | first test file touched | ~1.2k |
 
@@ -55,16 +55,16 @@ A rule fires on the first Read, Edit, or Write of a matching path (not on MCP re
 │   └── testing-conventions.md     # tests → testing.md
 │
 ├── skills/                # Auto-discoverable knowledge + workflows (each is <name>/SKILL.md)
-│   ├── to-spec/   to-tickets/   to-questionnaire/                # planning & specs
-│   ├── wayfinder/   implement/
-│   ├── tdd/   diagnosing-bugs/   resolving-merge-conflicts/      # engineering
-│   ├── wizard/   research/
+│   ├── to-spec/   to-tickets/   wayfinder/   implement/          # planning & specs
+│   ├── implement-spec/   to-questionnaire/
+│   ├── tdd/   diagnosing-bugs/   wizard/   research/             # engineering
 │   ├── improve-codebase-architecture/                            # engineering (manual)
 │   ├── grilling/   grill-me/   grill-with-docs/                  # thinking / design
 │   ├── codebase-design/   domain-modeling/   zoom-out/   prototype/
 │   ├── pr-description/   pr-ci-review/                           # PR & review
 │   ├── address-review-comments/   review-retro/
-│   ├── writing-for-agents/   handoff/   caveman/   wait-what/     # meta / workflow
+│   ├── writing-for-agents/   retro/   handoff/   caveman/        # meta / workflow
+│   ├── wait-what/
 │   └── obsidian-vault/   daily-note/                             # personal integrations (.env)
 │
 ├── agents/                # Custom subagents for specialized tasks
@@ -73,7 +73,7 @@ A rule fires on the first Read, Edit, or Write of a matching path (not on MCP re
 │   ├── review-context.md          review-conventions.md          # dispatched by pr-ci-review
 │   ├── review-correctness.md      review-docs.md
 │   ├── review-maintainability.md  review-security.md
-│   ├── review-validator.md
+│   ├── review-spec.md             review-validator.md
 │   └── comment-pruner.md          # dispatched by the comment-pruner Stop hook
 │
 └── hooks/                    # Deterministic shell scripts (zero LLM cost)
@@ -119,7 +119,7 @@ paths:
 
 Skills are directories with a `SKILL.md` that Claude discovers automatically. Claude sees the description at session start (tiny context cost) and loads the full content when the skill is relevant.
 
-This repo ships **28 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
+This repo ships **29 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
 
 **Frontmatter options:**
 - `name` — identifier and `/slash-command` name
@@ -141,7 +141,7 @@ Specialized AI workers that run in their own context window. Claude delegates to
 | `convention-checker` | Haiku | Read, Glob, Grep | Fast convention compliance audit |
 | `security-reviewer` | Opus | Read, Glob, Grep, Bash | Deep security analysis |
 | `architecture-explainer` | Sonnet | Read, Glob, Grep | Answer why/how architecture questions, grounded in `docs/` |
-| `review-*` (7 agents) | Sonnet/Opus | Read, Glob, Grep, Bash | Area reviewers + adversarial validator, dispatched by the `pr-ci-review` skill |
+| `review-*` (8 agents) | Sonnet/Opus | Read, Glob, Grep, Bash | Area reviewers + adversarial validator, dispatched by the `pr-ci-review` skill |
 | `comment-pruner` | Sonnet | Read, Edit, Grep, Glob, Bash | Prune low-value comments; dispatched by the `comment-pruner.sh` Stop hook |
 
 **Frontmatter options:**

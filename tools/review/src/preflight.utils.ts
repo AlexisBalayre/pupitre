@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { REVIEW_DEPTHS, REVIEWER_AREAS, type ReviewDepth, type ReviewerArea } from "./review-metrics.schemas";
 
 /**
  * Pure logic behind the review preflight. Head freshness,
@@ -15,6 +16,53 @@ export interface PriorRecord {
   commit_sha: string | null;
   timestamp: string;
   is_error: boolean;
+  /** A quick or area-restricted review, which left the rest of its head unreviewed. */
+  partial: boolean;
+}
+
+/**
+ * What a `@claude review` comment asks for: the words after the trigger on its
+ * line, in any order, up to the first that is not a keyword, so prose after
+ * the trigger (`@claude review, thanks!`) never reads as part of the request.
+ * Words split on anything but letters and hyphens, so punctuation or markdown
+ * around a keyword (`full.`, a code span, bold) never hides it, and a quote of
+ * an earlier comment never stands in for this one's trigger. `areas` is empty
+ * when the comment named none, leaving the orchestrator to gate them. `spec` is
+ * no keyword: it spawns only on a PR that closes an issue, so a review asked
+ * for it alone could spawn nothing and fail.
+ */
+export function parseReviewRequest(comment: string): { full: boolean; depth: ReviewDepth; areas: ReviewerArea[] } {
+  const unquoted = comment
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith(">"))
+    .join("\n");
+  const words =
+    /@claude review\b(.*)/i
+      .exec(unquoted)?.[1]
+      .toLowerCase()
+      .split(/[^a-z-]+/)
+      .filter(Boolean) ?? [];
+  let full = false;
+  let depth: ReviewDepth = "standard";
+  const areas = new Set<ReviewerArea>();
+  for (const word of words) {
+    const named = REVIEW_DEPTHS.find((candidate) => candidate === word);
+    const area = REVIEWER_AREAS.find((candidate) => candidate === word && candidate !== "spec");
+    if (word === "full") full = true;
+    else if (named) depth = named;
+    else if (area) areas.add(area);
+    else break;
+  }
+  return { full, depth, areas: [...areas] };
+}
+
+/**
+ * Whether a review left part of its head unreviewed: a quick one, or one
+ * restricted to named areas. Typed loosely because it also reads old records,
+ * which carry neither field and were complete.
+ */
+export function isPartialReview(depth: unknown, areas: unknown): boolean {
+  return depth === ("quick" satisfies ReviewDepth) || (Array.isArray(areas) && areas.length > 0);
 }
 
 /** Working-tree paths from `git status --porcelain`, rename targets included. */
@@ -29,11 +77,15 @@ export function porcelainPaths(porcelain: string): string[] {
   return paths;
 }
 
-/** The newest non-errored record, or null when the PR has never been reviewed. */
+/**
+ * The newest non-errored, complete record, or null when the PR has never had
+ * one. A partial review is never the prior: an incremental round diffed from
+ * its head would leave the areas it skipped unreviewed on everything before it.
+ */
 export function newestCleanRecord(records: PriorRecord[]): PriorRecord | null {
   let newest: PriorRecord | null = null;
   for (const record of records) {
-    if (record.is_error || record.commit_sha === null) continue;
+    if (record.is_error || record.partial || record.commit_sha === null) continue;
     if (newest === null || record.timestamp > newest.timestamp) newest = record;
   }
   return newest;

@@ -12,9 +12,19 @@ import { z } from "zod";
  * anything the author must read has to travel through `findingSchema`.
  */
 
-export const REVIEWER_AREAS = ["correctness", "security", "conventions", "context", "maintainability", "docs"] as const;
+export const REVIEWER_AREAS = [
+  "correctness",
+  "security",
+  "conventions",
+  "context",
+  "maintainability",
+  "docs",
+  "spec",
+] as const;
 
 export const reviewerAreaSchema = z.enum(REVIEWER_AREAS);
+
+export const REVIEW_DEPTHS = ["quick", "standard", "deep"] as const;
 
 const tagSchema = z.enum(["important", "nit", "pre-existing"]);
 const confidenceSchema = z.enum(["high", "medium"]);
@@ -26,6 +36,7 @@ const processComponentSchema = z.enum([
   "context",
   "maintainability",
   "docs",
+  "spec",
   "consolidator",
   "validator",
   "orchestrator",
@@ -115,6 +126,20 @@ const tokensSchema = z.object({
   total: z.number().int().nullable(),
 });
 
+const permissionDenialSchema = z.object({
+  tool: z.string(),
+  input: z.string().describe("The denied call's command (Bash) or its JSON input, cut to 200 characters."),
+});
+
+const modelUsageSchema = z.object({
+  model: z.string(),
+  input: z.number().int().nullable(),
+  output: z.number().int().nullable(),
+  cache_read: z.number().int().nullable(),
+  cache_creation: z.number().int().nullable(),
+  cost_usd: z.number().nullable(),
+});
+
 export const metricsRecordSchema = z.object({
   schema_version: z.number().int(),
   timestamp: z.string(),
@@ -131,6 +156,14 @@ export const metricsRecordSchema = z.object({
   reviewers_skipped: z.array(reviewerAreaSchema).describe("Derived: the reviewer areas absent from reviewers_spawned."),
   review_mode: reviewModeSchema,
   incremental_from_sha: z.string().nullable(),
+  review_depth: z
+    .enum(REVIEW_DEPTHS)
+    .describe("The depth a `@claude review` comment asked for; standard on every other trigger."),
+  review_areas: z
+    .array(reviewerAreaSchema)
+    .describe(
+      "The areas a `@claude review` comment restricted the review to; empty when the orchestrator gated them. A quick or area-restricted record is a partial review, which the preflight never takes as the prior.",
+    ),
   prior_importants: z.array(priorImportantSchema).nullable(),
   findings: z.array(findingSchema).nullable(),
   refuted_findings: z.array(refutedFindingSchema).nullable(),
@@ -150,7 +183,21 @@ export const metricsRecordSchema = z.object({
   cost_usd: z.number().nullable(),
   duration_ms: z.number().int().nullable(),
   num_turns: z.number().int().nullable(),
-  tokens: tokensSchema.nullable(),
+  tokens: tokensSchema
+    .nullable()
+    .describe("The orchestrator's own turns only: subagent tokens are counted in model_usage, not here."),
+  model_usage: z
+    .array(modelUsageSchema)
+    .nullable()
+    .describe(
+      "The whole run, orchestrator and every subagent, split by model; each entry's cost_usd is its share of cost_usd.",
+    ),
+  permission_denials: z
+    .array(permissionDenialSchema)
+    .nullable()
+    .describe(
+      "Tool calls the run's permission rules refused, as the result reports them; null when the result carries no list.",
+    ),
 });
 
 /** The poster's hand-off to the metrics step, written as `posted.json`. */
@@ -158,8 +205,12 @@ export const postedRecordSchema = z.object({
   comments_posted: z.number().int(),
 });
 
+export type ReviewerArea = z.infer<typeof reviewerAreaSchema>;
+export type ReviewDepth = (typeof REVIEW_DEPTHS)[number];
 export type Finding = z.infer<typeof findingSchema>;
 export type RefutedFinding = z.infer<typeof refutedFindingSchema>;
 export type ReviewSummary = z.infer<typeof reviewSummarySchema>;
 export type MetricsRecord = z.infer<typeof metricsRecordSchema>;
 export type Tokens = z.infer<typeof tokensSchema>;
+export type ModelUsage = z.infer<typeof modelUsageSchema>;
+export type PermissionDenial = z.infer<typeof permissionDenialSchema>;

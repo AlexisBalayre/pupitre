@@ -1,8 +1,11 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { parseReviewRequest } from "./preflight.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import {
   type MetricsRecord,
+  type ModelUsage,
   metricsRecordSchema,
+  type PermissionDenial,
   postedRecordSchema,
   REVIEWER_AREAS,
   type ReviewSummary,
@@ -22,7 +25,7 @@ import {
 // Bump whenever the record's meaning changes (a field added or repurposed, a
 // pipeline change that alters what a field measures): the retro partitions
 // trends by schema_version, so a silent semantic change poisons its baselines.
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 6;
 
 function warn(message: string): void {
   process.stdout.write(`::warning::${message}\n`);
@@ -65,6 +68,8 @@ interface PlatformMetrics {
   duration_ms: number | null;
   num_turns: number | null;
   tokens: Tokens | null;
+  model_usage: ModelUsage[] | null;
+  permission_denials: PermissionDenial[] | null;
 }
 
 const EMPTY_PLATFORM: PlatformMetrics = {
@@ -73,6 +78,8 @@ const EMPTY_PLATFORM: PlatformMetrics = {
   duration_ms: null,
   num_turns: null,
   tokens: null,
+  model_usage: null,
+  permission_denials: null,
 };
 
 function findResultEntry(parsed: unknown): Record<string, unknown> | null {
@@ -119,12 +126,39 @@ function platformMetrics(executionFile: string | undefined): PlatformMetrics {
     warn("no result entry in execution file; platform metrics unknown");
     return EMPTY_PLATFORM;
   }
+  const byModel = asRecord(result.modelUsage);
   return {
     is_error: result.is_error === true || result.subtype === "error",
     cost_usd: asNumber(result.total_cost_usd),
     duration_ms: asInt(result.duration_ms),
     num_turns: asInt(result.num_turns),
     tokens: tokensFromUsage(asRecord(result.usage)),
+    model_usage: byModel
+      ? Object.entries(byModel).map(([model, raw]) => {
+          const usage = asRecord(raw);
+          return {
+            model,
+            input: asInt(usage?.inputTokens),
+            output: asInt(usage?.outputTokens),
+            cache_read: asInt(usage?.cacheReadInputTokens),
+            cache_creation: asInt(usage?.cacheCreationInputTokens),
+            cost_usd: asNumber(usage?.costUSD),
+          };
+        })
+      : null,
+    permission_denials: Array.isArray(result.permission_denials)
+      ? result.permission_denials.map((raw) => {
+          const denial = asRecord(raw);
+          const input = asRecord(denial?.tool_input);
+          const text = typeof input?.command === "string" ? input.command : JSON.stringify(input ?? {});
+          return {
+            tool: typeof denial?.tool_name === "string" ? denial.tool_name : "unknown",
+            // The record is published on a branch, and a denied Write would
+            // otherwise carry a whole file into it.
+            input: text.slice(0, 200),
+          };
+        })
+      : null,
   };
 }
 
@@ -170,6 +204,8 @@ function summaryTable(record: MetricsRecord): string {
       : record.review_mode;
   const rows: [string, string | number][] = [
     ["Mode", mode],
+    ["Depth", record.review_depth],
+    ["Areas", record.review_areas.join(", ") || "gated"],
     ["Reviewers returned", `${record.reviewers_returned.length} of ${record.reviewers_spawned.length}`],
     ["Findings", findings.length],
     ["Refuted (validation)", (record.refuted_findings ?? []).length],
@@ -177,7 +213,12 @@ function summaryTable(record: MetricsRecord): string {
     ["By area", areas],
     ["Comments posted", posted],
     ["Cost (USD est.)", record.cost_usd === null ? "-" : record.cost_usd.toFixed(4)],
-    ["Tokens (total)", record.tokens?.total ?? "-"],
+    ...(record.model_usage ?? []).map((m): [string, string] => [
+      `Cost: ${m.model}`,
+      m.cost_usd === null ? "-" : m.cost_usd.toFixed(4),
+    ]),
+    ["Tokens (orchestrator)", record.tokens?.total ?? "-"],
+    ["Permission denials", record.permission_denials?.length ?? "-"],
     ["Turns", record.num_turns ?? "-"],
     ["Errored", String(record.is_error)],
   ];
@@ -203,6 +244,7 @@ function main(): void {
   // step's output: the record keeps what that step reported for the retro.
   const summary = parseSummary(env.REVIEW_STRUCTURED_OUTPUT ?? "");
   const platform = platformMetrics(env.REVIEW_EXECUTION_FILE);
+  const request = parseReviewRequest(env.REVIEW_COMMENT ?? "");
 
   // A failed action step often produces no execution log, so its result cannot
   // report the error; the step outcome folds in through `noVerdictReason`. The
@@ -230,6 +272,8 @@ function main(): void {
     // the orchestrator's report, and full is the population errored runs belong in.
     review_mode: summary?.review_mode ?? "full",
     incremental_from_sha: summary?.incremental_from_sha ?? null,
+    review_depth: request.depth,
+    review_areas: request.areas,
     prior_importants: summary?.prior_importants ?? null,
     findings: summary?.findings ?? null,
     refuted_findings: summary?.refuted_findings ?? null,
@@ -241,6 +285,8 @@ function main(): void {
     duration_ms: platform.duration_ms,
     num_turns: platform.num_turns,
     tokens: platform.tokens,
+    model_usage: platform.model_usage,
+    permission_denials: platform.permission_denials,
   };
 
   const validated = metricsRecordSchema.parse(record);

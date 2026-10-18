@@ -99,7 +99,6 @@ import {
 import {
   isRefusedSteer,
   LaunchRolledBackError,
-  ScopeConflictError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -126,7 +125,7 @@ import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
-import type { RouteOverride } from '../core/types/session-lifecycle.types.js';
+import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -447,8 +446,16 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
-const ALLOW_OVERLAP_DESCRIPTION =
-  'launch even though a live session already holds files in this scope';
+// Decision 99.
+const ALLOW_OVERLAP_DESCRIPTION = 'no effect: overlap is always allowed (removed next release)';
+
+function noteAllowOverlap(passed: boolean | undefined): void {
+  if (passed) {
+    console.error(
+      '--allow-overlap has no effect: overlap with a live session is always allowed, and the flag goes in the next release.',
+    );
+  }
+}
 
 // A window's model and effort are routed by its task's tier and rung (decision
 // 92); either flag is the operator's override, recorded on the session.
@@ -580,8 +587,7 @@ type ExpectedLaunchError = new (...args: never[]) => Error;
  * back in the backlog (decision 40) — so the retry is always
  * `pup launch <task>`, for a sweep too: `createSession` had already planned the
  * sweep task, and a `--sweep` re-run would mint a second one beside the orphan.
- * An error the caller could not have avoided — the scope it collides with, a
- * task already claimed — is printed as a refusal; anything else is a bug and
+ * An error the caller could not have avoided — a task already claimed — is printed as a refusal; anything else is a bug and
  * is rethrown, so widening one caller's `expected` never widens another's.
  * Returns the session id, or undefined once a refusal has been printed.
  */
@@ -599,14 +605,38 @@ function launchOrRefuse(
     }
     if (!expected.some((type) => error instanceof type)) throw error;
     // Every expected launch error prints through here, and their messages
-    // quote what the store holds — a `ScopeConflictError` names the live
-    // session a task collides with and the files it claimed. Scrubbed line by
+    // quote what the store holds — a `TaskAlreadyClaimedError` names the
+    // session holding the task. Scrubbed line by
     // line like every other block (decision 69); a launch compiles from
     // `DEFAULT_BASE_PROFILE` rather than a layer file today, so the multi-line
     // shape is the helper's to keep rather than a case reachable from here.
     refuse(sanitizeLines((error as Error).message));
     return undefined;
   }
+}
+
+/**
+ * Plan and launch a task this command just minted — `pup new` and `pup audit
+ * --sweep`. The task is new, so nothing can claim it first; what is left for
+ * the operator to answer is the compile, which validates the spec AND reads
+ * the project brief, so an oversized brief refuses in one line rather than
+ * crashing out of a launch (decision 57).
+ */
+function createOrRefuse(
+  db: Database,
+  repoPath: string,
+  task: TaskSpec,
+  fields: Pick<NewSessionRequest, 'model' | 'effort' | 'origin' | 'overlapVia'>,
+): string | undefined {
+  return launchOrRefuse(task.id, [InvalidProfileError], () =>
+    createSession(db, {
+      repoPath,
+      base: DEFAULT_BASE_PROFILE,
+      task,
+      claudeUserDir: join(homedir(), '.claude'),
+      ...fields,
+    }),
+  );
 }
 
 /**
@@ -671,7 +701,7 @@ function callingConductor(): string | undefined {
  * What a plan, launch or `pup new` records about who asked for it. A task the
  * conductor authors is a later session's kickoff prompt, so its origin says
  * so rather than wearing the operator's `human` (decision 40's rule); an
- * overlap it waves through is answered for by it. Empty for the operator, so
+ * overlap its launch makes is recorded as its own. Empty for the operator, so
  * the defaults stand.
  */
 function conductorAttribution(): { origin?: 'conductor'; overlapVia?: 'conductor' } {
@@ -849,21 +879,12 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
-      // `InvalidProfileError` too: the compile validates the spec AND reads the
-      // project brief, so an oversized brief must refuse in one line here
-      // rather than crash out of a launch (decision 57).
-      const sessionId = launchOrRefuse(task.id, [ScopeConflictError, InvalidProfileError], () =>
-        createSession(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          task,
-          claudeUserDir: join(homedir(), '.claude'),
-          model: opts.model as string | undefined,
-          effort: opts.effort as string | undefined,
-          allowOverlap: opts.allowOverlap === true,
-          ...conductorAttribution(),
-        }),
-      );
+      noteAllowOverlap(opts.allowOverlap === true);
+      const sessionId = createOrRefuse(db, repoPath, task, {
+        model: opts.model as string | undefined,
+        effort: opts.effort as string | undefined,
+        ...conductorAttribution(),
+      });
       if (sessionId === undefined) return;
       reportLaunched(sessionId);
     });
@@ -986,14 +1007,14 @@ export function buildProgram(): Command {
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .action((taskId: string, opts: RouteOverride & { allowOverlap?: boolean }) => {
       const { repoPath, db } = project();
-      // Admitting work belongs to whoever answers for the collision it may
-      // cause. Guarding only `--allow-overlap` left the command itself open, so
-      // a session could kill the holder of a scope and launch a conflicting
-      // task plainly — the same rule and detection that keep `--pr` and spec
+      // Admitting work belongs to the operator and the conductor: a session
+      // launching one would mint itself a fresh session past decision 7's
+      // reject cap — the same rule and detection that keep `--pr` and spec
       // authoring operator-only (decisions 26, 42).
       if (callingSession(db)) {
         return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
       }
+      noteAllowOverlap(opts.allowOverlap);
       const planned = getTask(db, taskId);
       if (planned) {
         const spec = taskSpecForDisplay(planned);
@@ -1002,13 +1023,7 @@ export function buildProgram(): Command {
       }
       const sessionId = launchOrRefuse(
         taskId,
-        [
-          UnknownTaskError,
-          TaskAlreadyClaimedError,
-          ScopeConflictError,
-          InvalidProfileError,
-          TopRungReachedError,
-        ],
+        [UnknownTaskError, TaskAlreadyClaimedError, InvalidProfileError, TopRungReachedError],
         () =>
           launchTask(db, {
             repoPath,
@@ -1017,7 +1032,6 @@ export function buildProgram(): Command {
             claudeUserDir: join(homedir(), '.claude'),
             model: opts.model,
             effort: opts.effort,
-            allowOverlap: opts.allowOverlap,
             overlapVia: conductorAttribution().overlapVia,
             overrideVia: callingConductor() ? 'conductor' : 'operator',
           }),
@@ -2255,26 +2269,13 @@ export function buildProgram(): Command {
           return refuse('Baseline regressed — fix the regression before sweeping.');
         }
         const task = buildSweepTask(`sweep-${Date.now().toString(36)}` as TaskId, report.findings);
-        // The task was just minted and the sweep waives the one conflict a
-        // launch can raise, so the only refusal left for the operator to answer
-        // is the project brief, which the compile reads and can refuse for
-        // being oversized (decision 57).
-        const sessionId = launchOrRefuse(task.id, [InvalidProfileError], () =>
-          createSession(db, {
-            repoPath,
-            base: DEFAULT_BASE_PROFILE,
-            task,
-            claudeUserDir: join(homedir(), '.claude'),
-            model: opts.model,
-            origin: 'audit',
-            // A sweep is scoped to the whole repo by construction, so it overlaps
-            // every live session there is. Refusing it would make `--sweep`
-            // unrunnable whenever anything else is running, with no flag to say
-            // otherwise; the `scope_overlap` event records which sessions it
-            // stepped on, which is what the refusal was protecting (decision 41).
-            allowOverlap: true,
-          }),
-        );
+        const sessionId = createOrRefuse(db, repoPath, task, {
+          model: opts.model,
+          // A sweep is scoped to the whole repo by construction, so it
+          // overlaps every live session there is: each is introduced to it
+          // and the `scope_overlap` event records them all (decision 99).
+          origin: 'audit',
+        });
         if (sessionId === undefined) return;
         reportLaunched(sessionId, 'sweep session');
         return;
