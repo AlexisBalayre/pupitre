@@ -249,8 +249,6 @@ export function readPullRequestLanding(
 const REVIEW_BOT_LOGIN = 'github-actions';
 /** The commit status the poster pins to the head it reviewed, its verdict in a line. */
 const REVIEW_STATUS_CONTEXT = 'claude-review';
-/** The description the poster sets when it reached a verdict it could not post. */
-export const REVIEW_NOT_POSTED_STATUS = 'the review could not be posted';
 /**
  * GraphQL's page cap: the newest reviews and threads are read, and a PR whose
  * newest review run's threads reach past the page is refused rather than half read.
@@ -315,7 +313,11 @@ export interface ReviewThread {
    * anyone with write access can: the body is no longer the bot's text.
    */
   isEditedByOther: boolean;
-  /** Someone hid the finding on GitHub, as an injection attempt is hidden. */
+  /**
+   * Someone hid the finding on GitHub, as an injection attempt is hidden. True
+   * for anything GitHub answered but a plain `false`, so a field outside its
+   * shape never reads as shown.
+   */
   isMinimized: boolean;
 }
 
@@ -422,7 +424,7 @@ export function readPullRequestReview(
       if (!finding || !isReviewBot(finding.author)) return [];
       const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
       // An edit names its editor; one gone from GitHub reads as nobody, so as not the bot.
-      const edited = [finding.lastEditedAt, finding.editor].some(
+      const isEdited = [finding.lastEditedAt, finding.editor].some(
         (field) => field !== undefined && field !== null,
       );
       return [
@@ -431,8 +433,7 @@ export function readPullRequestReview(
           path: typeof thread.path === 'string' ? thread.path : undefined,
           line: line as number | undefined,
           body: typeof finding.body === 'string' ? finding.body : '',
-          isEditedByOther: edited && !isReviewBot(finding.editor),
-          // Relayed only on a plain false: a field outside its shape is no proof it is shown.
+          isEditedByOther: isEdited && !isReviewBot(finding.editor),
           isMinimized: finding.isMinimized !== false,
         },
       ];

@@ -40,6 +40,7 @@ import {
   killSession,
   launchSession,
   SteerNotDeliveredError,
+  steerPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
@@ -62,7 +63,11 @@ import {
 } from './session.repository.js';
 import { hardRespawnSession, requestHandoff } from './session-handoff.service.js';
 import { LaunchRolledBackError } from './session-lifecycle.errors.js';
-import { killSession as killPupSession, markSessionDone } from './session-lifecycle.service.js';
+import {
+  killedFixRoundMessage,
+  killSession as killPupSession,
+  markSessionDone,
+} from './session-lifecycle.service.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR &
 // co., which a pre-commit hook run would aim at the pupitre repo instead.
@@ -604,16 +609,17 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       { threads: [{ id: 'PRRT_hidden', body: 'A finding.', isMinimized: true }] },
       /Thread PRRT_hidden on .* was hidden on GitHub, so it is not relayed as the review\./,
     ],
-    // Threads relay only with the bot's final verdict on the head (decision 90).
+    // Threads relay only under the bot's SUCCESS status on the head, and
+    // nothing clears any other state by itself (decision 90).
     [
       'threads under no status',
       { status: null, threads: OPEN_THREAD },
-      /threads on .* came with no final status on its head [0-9a-f]{40}: it set no status on it\. Wait for the review of the head, then re-run\./,
+      /threads on .* came with no SUCCESS status on its head [0-9a-f]{40}: it set no status on it\. Comment `@claude review` on the PR to have the head reviewed, then re-run\./,
     ],
     [
       'threads under a pending status',
       { status: { state: 'PENDING', description: 'Skipped: docs only' }, threads: OPEN_THREAD },
-      /came with no final status .*: it set its status to PENDING \(Skipped: docs only\)\. Comment `@claude review` on the PR to have the head reviewed, then re-run\./,
+      /came with no SUCCESS status .*: it set its status to PENDING \(Skipped: docs only\)\. Comment `@claude review`/,
     ],
     [
       "threads under the poster's could-not-post status",
@@ -621,7 +627,17 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         status: { state: 'FAILURE', description: 'the review could not be posted' },
         threads: OPEN_THREAD,
       },
-      /came with no final status .*\(the review could not be posted\)\. Wait for the review/,
+      /came with no SUCCESS status .*\(the review could not be posted\)\. Comment `@claude review`/,
+    ],
+    [
+      'threads under a no-verdict failure',
+      { status: { state: 'FAILURE', description: 'no verdict: timed out' }, threads: OPEN_THREAD },
+      /came with no SUCCESS status .*\(no verdict: timed out\)\. Comment `@claude review`/,
+    ],
+    [
+      'a PR the bot has not reviewed, with no status',
+      { reviewedOn: null, status: null, threads: OPEN_THREAD },
+      /has not reviewed .* set no status on it\. Comment `@claude review`/,
     ],
     [
       'a finding edited by an account gone from GitHub',
@@ -815,6 +831,65 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     expect(vi.mocked(launchSession).mock.calls[0]?.[0].mcpConfigPath).toBeUndefined();
   });
 
+  // A partial pass's findings are still worth fixing; only a clean verdict
+  // needs the full review (decision 90).
+  it("relays the threads under a partial review's SUCCESS status", async () => {
+    seedPrMerge();
+    reviewOnGitHub({
+      status: { state: 'SUCCESS', description: 'partial review: 1 important finding(s)' },
+      threads: OPEN_THREAD,
+    });
+
+    expect(await fix()).toMatchObject({ threads: 1 });
+  });
+
+  // `pup land` updates origin's tracking ref under the lock, then releases it
+  // and writes `landed` only after its audit (decision 90).
+  it("refuses a pin already on origin's target, as a land finishing leaves it", async () => {
+    seedPrMerge();
+    sh(repo, 'git', 'update-ref', 'refs/remotes/origin/main', pinned);
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await expectRefusedUnwritten(
+      new RegExp(
+        `${pinned} is already landed on main \\(pup land is finishing\\); nothing to fix\\. No fix round was started\\.`,
+      ),
+    );
+    expect(existsSync(worktree)).toBe(false);
+  });
+
+  // The returning worker edits the same files again (decisions 90, 99).
+  it('records and introduces the live sessions sharing its files once the kickoff lands', async () => {
+    seedPrMerge();
+    insertTask(db, {
+      id: 'task-p1',
+      projectId: projectId(repo),
+      spec: JSON.stringify({ id: 'task-p1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+    });
+    insertSession(db, {
+      id: 'p1',
+      taskId: 'task-p1',
+      worktreePath: join(repo, '.worktrees', 'p1'),
+      branch: 'pup/p1',
+      profileHash: 'hash',
+      tmuxTarget: '%5',
+    });
+    transitionSession(db, 'p1', 'running');
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await fix({}, 'conductor');
+
+    expect(payloads('scope_overlap')).toEqual([
+      { via: 'conductor', accepted: [{ session: 'p1', files: ['src/app.ts'] }] },
+    ]);
+    expect(
+      listEvents(db, 'p1')
+        .filter((row) => row.type === 'steer')
+        .map((row) => JSON.parse(row.payload)),
+    ).toEqual([{ kind: 'peer-joined', by: SESSION_ID }]);
+    expect(vi.mocked(steerPane).mock.calls.map(([pane]) => pane.paneId)).toEqual(['%5']);
+  });
+
   // A respawn's kickoff carries no threads (decision 90).
   it('refuses pup respawn and pup kill --respawn mid-round, pointing at pup kill then pup fix', async () => {
     seedPrMerge();
@@ -869,6 +944,83 @@ describe('startFixRound', { timeout: 30_000 }, () => {
 
       expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', rung: 1 });
       expect(payloads('fix_round')).toHaveLength(2);
+    });
+
+    // A second kill would refuse merged -> killed and mask why the round failed.
+    it('undoes a round a pup kill took back to merged during the kickoff wait', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      vi.mocked(kickoff).mockImplementationOnce(() => {
+        killPupSession(db, SESSION_ID);
+        return false;
+      });
+
+      const refused = await fix().catch((error: unknown) => error);
+
+      expect(refused).toBeInstanceOf(LaunchRolledBackError);
+      expect((refused as LaunchRolledBackError).rolledBack).toMatch(/never became ready/);
+      expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'merged', tmux_target: null });
+      expect(vi.mocked(killSession).mock.calls.at(-1)).toEqual([SESSION_ID, '%9']);
+      expect(existsSync(worktree)).toBe(false);
+      expect(sh(repo, 'git', 'worktree', 'list')).not.toContain(worktree);
+    });
+
+    // Round 1's wait ends after a pup kill, the operator's cleanup and round 2
+    // began: its undo must not reach round 2's window or worktree.
+    it("leaves a newer round's session, pane and worktree alone", async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      vi.mocked(kickoff).mockImplementationOnce(() => {
+        killPupSession(db, SESSION_ID);
+        rmSync(worktree, { recursive: true });
+        sh(repo, 'git', 'worktree', 'prune');
+        // What round 2 leaves, written as `pup fix` writes it: kickoff is
+        // synchronous, so the second round cannot run from inside it.
+        sh(repo, 'git', 'worktree', 'add', '-q', worktree, BRANCH);
+        db.prepare("UPDATE sessions SET state = 'running', tmux_target = '%7' WHERE id = ?").run(
+          SESSION_ID,
+        );
+        appendEvent(db, SESSION_ID, 'fix_round', {
+          prUrl: PR_URL,
+          head: pinned,
+          threads: ['PRRT_open'],
+          rejectBase: 0,
+        });
+        vi.mocked(killSession).mockClear();
+        return false;
+      });
+
+      await expect(fix()).rejects.toThrow(
+        "Session s1's window never became ready, and a newer fix round has taken the session " +
+          'since, so this one undid nothing.',
+      );
+
+      expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', tmux_target: '%7' });
+      expect(killSession).not.toHaveBeenCalled();
+      expect(existsSync(worktree)).toBe(true);
+      expect(sh(repo, 'git', 'worktree', 'list')).toContain(worktree);
+    });
+
+    // A window still running must not outlive its tree.
+    it('keeps the worktree and names its cleanup when the window cannot be killed', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      vi.mocked(kickoff).mockReturnValueOnce(false);
+      vi.mocked(killSession).mockImplementation((_, paneId) => {
+        if (paneId !== undefined) throw new Error('tmux refused the kill.');
+      });
+
+      try {
+        await expect(fix()).rejects.toThrow(
+          "tmux refused the kill. The round's worktree was left; once its window is gone, remove " +
+            'it with `rm -r .worktrees/s1` then `git worktree prune` from the main checkout (do ' +
+            'not run git inside it).',
+        );
+
+        expect(existsSync(worktree)).toBe(true);
+      } finally {
+        vi.mocked(killSession).mockReset();
+      }
     });
 
     it('answers a refused paste with the refusal and what was undone', async () => {
@@ -945,6 +1097,20 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       );
 
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+    });
+
+    // The id is read from the store: a path built from an unminted one is no
+    // command to hand out.
+    it('names the cleanup command only for a minted id', () => {
+      expect(killedFixRoundMessage(SESSION_ID)).toContain(
+        'its worktree must go: remove it with `rm -r .worktrees/s1` then `git worktree prune` ' +
+          'from the main checkout (do not run git inside it).',
+      );
+      const unminted = killedFixRoundMessage('../../home\u001b[2J');
+      expect(unminted).toContain('its row is not minted, so no command is named here');
+      expect(unminted).not.toContain('rm -r');
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is the point
+      expect(unminted).not.toMatch(/\u001b/);
     });
 
     it('kills a session outside a round as before, its task back in the backlog', () => {

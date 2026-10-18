@@ -1,5 +1,4 @@
 import { existsSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
@@ -8,14 +7,12 @@ import {
   launchSession,
   type SessionPane,
 } from '../claude/session-runtime.service.js';
-import { prepareGraph } from './codegraph.client.js';
 import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.client.js';
 import {
   assertGhAvailable,
   originRepoSlug,
   type PullRequestReview,
-  REVIEW_NOT_POSTED_STATUS,
   type ReviewThread,
   readPullRequestReview,
 } from './github.client.js';
@@ -23,6 +20,8 @@ import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
+  assertTargetName,
+  isAncestor,
   newestMerge,
   type OriginUse,
   plainDetail,
@@ -31,10 +30,11 @@ import {
   withMergeLock,
 } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
-import { writeCompiledProfile } from './profile-compiler.service.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
+  currentFixRound,
+  type EventRow,
   getSession,
   recordSessionRoute,
   type SessionRoute,
@@ -51,9 +51,12 @@ import {
   killSession,
   type ProfileSource,
   recompileSessionProfile,
+  recordOverlaps,
+  type SessionCompile,
+  worktreeCleanup,
+  writeSessionProfile,
 } from './session-lifecycle.service.js';
 import { FIX_ROUND_EDGE } from './session-state.utils.js';
-import type { CompiledProfile } from './types/profile.types.js';
 import type { EventPayloads } from './types/session-event.types.js';
 import type { RouteOverride } from './types/session-lifecycle.types.js';
 
@@ -141,20 +144,26 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   // Under the lock `pup merge` and `pup land` take, since both move the branch
   // and the worktree this restores; the window opens after it, as it may take
   // a while to become ready.
-  await withMergeLock(req.repoPath, () => {
-    assertStillPinned(db, session.id, pinned);
+  const roundId = await withMergeLock(req.repoPath, () => {
+    assertStillPinned(db, req.repoPath, session.id, pinned);
     restoreWorktree(req.repoPath, session, head);
-    takeFixRoundEdge(db, session.id, { prUrl, head, threads: threads.map((thread) => thread.id) });
+    return takeFixRoundEdge(db, session.id, {
+      prUrl,
+      head,
+      threads: threads.map((thread) => thread.id),
+    });
   });
   relaunchWorker(
     db,
     req.repoPath,
     session,
+    roundId,
     paths,
     recompiled,
     route,
     fixRoundBrief(prUrl, head, threads),
   );
+  recordOverlaps(db, session.id, recompiled.conflicts, req.overrideVia);
   return { prUrl, head, threads: threads.length };
 }
 
@@ -233,8 +242,8 @@ function orNotStarted<T>(run: () => T): T {
  * are about the code the worker will be handed. The threads are the ones that
  * run opened: an earlier round's, left unresolved, are about code since
  * changed, and that run raised again whatever it still found. They are relayed
- * only once the bot's status on the head is final and not the poster's failure
- * to post, so a review of an earlier head cannot pass as the head's. A finding
+ * only under the bot's SUCCESS status on the head, the one the poster sets on
+ * every run it posted, findings or not. A finding
  * someone else edited, or one hidden on GitHub, is refused, not relayed. With
  * none, the head is clean only when the bot's status says so: a review that
  * reached no verdict, a partial one, or one whose findings had no line to
@@ -278,12 +287,12 @@ function reviewVerdict(
       ? 'set no status on it'
       : `set its status to ${sanitizeReason(status.state)} ` +
         `(${sanitizeReason(status.description) || 'no description'})`;
-  // The preflight skips a push it judges not worth reviewing with a pending
-  // status and no review, so waiting alone never clears it.
+  // Only SUCCESS is final. Nothing clears the rest by itself: no status, the
+  // preflight's PENDING on a push it skipped, the poster's FAILURE, a dead run.
   const wait =
-    status?.state === 'PENDING'
-      ? 'Comment `@claude review` on the PR to have the head reviewed, then re-run.'
-      : 'Wait for the review of the head, then re-run.';
+    status?.state === 'SUCCESS'
+      ? 'Wait for the review of the head, then re-run.'
+      : 'Comment `@claude review` on the PR to have the head reviewed, then re-run.';
   if (review.reviewedHead !== head) {
     return {
       refusal:
@@ -295,12 +304,12 @@ function reviewVerdict(
     };
   }
   const threads = review.openThreads;
-  const edited = threads.find((thread) => thread.isEditedByOther || thread.isMinimized);
-  if (edited !== undefined) {
+  const untrusted = threads.find((thread) => thread.isEditedByOther || thread.isMinimized);
+  if (untrusted !== undefined) {
     return {
       refusal:
-        `Thread ${sanitizeReason(edited.id)} on ${prUrl} ` +
-        (edited.isMinimized
+        `Thread ${sanitizeReason(untrusted.id)} on ${prUrl} ` +
+        (untrusted.isMinimized
           ? 'was hidden on GitHub, so it is not relayed as the review. '
           : "was edited after the review bot posted it, by an account that is not the bot's, " +
             "so its text is no longer the review's. ") +
@@ -308,14 +317,10 @@ function reviewVerdict(
     };
   }
   if (threads.length > 0) {
-    if (
-      status === undefined ||
-      status.state === 'PENDING' ||
-      status.description === REVIEW_NOT_POSTED_STATUS
-    ) {
+    if (status?.state !== 'SUCCESS') {
       return {
         refusal:
-          `The CI review's threads on ${prUrl} came with no final status on its head ${head}: ` +
+          `The CI review's threads on ${prUrl} came with no SUCCESS status on its head ${head}: ` +
           `it ${said}. ${wait}`,
       };
     }
@@ -376,11 +381,9 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): v
     .split('\n')
     .includes(`worktree ${session.worktree_path}`);
   if (isRegistered || existsSync(session.worktree_path)) {
-    const dir = `.worktrees/${sanitizeReason(session.id)}`;
     throw new Error(
-      `pup fix found ${dir} left from an earlier round; remove it with \`rm -r ${dir}\` then ` +
-        '`git worktree prune` from the main checkout (do not run git inside it), then re-run. ' +
-        NOT_STARTED,
+      `pup fix found .worktrees/${sanitizeReason(session.id)} left from an earlier round; ` +
+        `${worktreeCleanup(session.id)}, then re-run. ${NOT_STARTED}`,
     );
   }
   // `worktree add` checks out every file and runs a smudge filter on each
@@ -396,15 +399,32 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): v
 }
 
 /**
- * The store asked again once the lock is held: a re-gate or a `pup land` that
- * finished while the review was read moved the newest merge, and the review
- * answered for the one before.
+ * Asked again once the lock is held. A re-gate that finished while the review
+ * was read moved the newest merge, and the review answered for the one before.
+ * A `pup land` under way has not: it releases the lock after the fast-forward
+ * and teardown, and writes `landed` only after its audit, minutes later. What
+ * it moves under the lock is origin's tracking ref, so a pin that ref already
+ * holds has landed whatever the store says yet (decision 90).
  */
-function assertStillPinned(db: Database, sessionId: string, pinned: string): void {
+function assertStillPinned(
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  pinned: string,
+): void {
   const merge = newestMerge(db, sessionId);
   if (merge === 'landed' || merge?.sha !== pinned) {
     throw new Error(
       `Session ${sanitizeReason(sessionId)}'s newest merge moved while the review was read. ` +
+        NOT_STARTED,
+    );
+  }
+  // `pup land` refuses a merge with no target, so none is landing.
+  if (merge.target === undefined) return;
+  orNotStarted(() => assertTargetName(repoPath, merge.target as string));
+  if (isAncestor(repoPath, pinned, `refs/remotes/origin/${merge.target}`)) {
+    throw new Error(
+      `${pinned} is already landed on ${merge.target} (pup land is finishing); nothing to fix. ` +
         NOT_STARTED,
     );
   }
@@ -416,20 +436,22 @@ function assertStillPinned(db: Database, sessionId: string, pinned: string): voi
  * the row has left `merged`. Until the round's window opens, or for good if
  * pup dies first, a steer, an interrupt or the watchdog finds no pane rather
  * than a dead one, and a kill goes by name. The event keeps the rejection
- * count the round starts from, which the gate's cap counts from.
+ * count the round starts from, which the gate's cap counts from. Returns the
+ * event's id, which names this round for its own undo.
  */
 function takeFixRoundEdge(
   db: Database,
   sessionId: string,
   round: Omit<EventPayloads['fix_round'], 'rejectBase'>,
-): void {
-  orNotStarted(
+): number {
+  return orNotStarted(
     db.transaction(() => {
       transitionSessionAlong(db, sessionId, FIX_ROUND_EDGE, { kind: 'fix-round' });
       const { reject_count: rejectBase } = db
         .prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ? RETURNING reject_count')
         .get(sessionId) as { reject_count: number };
       appendEvent(db, sessionId, 'fix_round', { ...round, rejectBase });
+      return (currentFixRound(db, sessionId) as EventRow).id;
     }),
   );
 }
@@ -440,32 +462,56 @@ function takeFixRoundEdge(
  * the session's fresh window: the `respawn` event is what bounds what this
  * window runs into from the windows before it, for its own later climb
  * (decision 92). A kickoff that never lands is undone the way `pup kill` ends
- * a round, back to `merged`, and its worktree removed, so `pup fix` can be re-run; the `fix_round` event
- * stays as the trace of the round that was tried. The route is stored only
- * once the kickoff landed, so an undone round climbs once on its retry.
+ * a round, back to `merged`, and its worktree is removed, so `pup fix` can be
+ * re-run; the `fix_round` event stays as the trace of the round that was
+ * tried. The route is stored only once the kickoff landed, so an undone round
+ * climbs once on its retry.
  */
 function relaunchWorker(
   db: Database,
   repoPath: string,
   session: SessionRow,
+  roundId: number,
   paths: ProjectPaths,
-  { compiled, binary }: { compiled: CompiledProfile; binary: string | undefined },
+  compile: SessionCompile,
   route: SessionRoute,
   brief: string,
 ): void {
   const compiledDir = paths.compiledDir(session.id);
+  let pane: SessionPane | undefined;
+  let isDelivered = false;
+  let hasRowMoved = false;
+  // A `pup kill` during the kickoff wait, then a cleanup and a newer round,
+  // leave the session, its pane and its worktree that round's.
+  const isOwnRound = () => currentFixRound(db, session.id)?.id === roundId;
   // The worktree goes too: the next round refuses a surviving one, and this
-  // one's window ran, so nothing reuses it either.
+  // one's window ran, so nothing reuses it either. Only once the window is
+  // gone, so nothing still running in it outlives its tree.
   const undoRound = () => {
-    killSession(db, session.id);
+    try {
+      // A `pup kill` during the kickoff wait took the row back to merged
+      // already, and would refuse a second kill.
+      if (getSession(db, session.id)?.state === FIX_ROUND_EDGE.from) {
+        killTmux(session.id, pane?.paneId);
+      } else {
+        killSession(db, session.id);
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        error.message += ` The round's worktree was left; once its window is gone, ${worktreeCleanup(session.id)}.`;
+      }
+      throw error;
+    }
     rmSync(session.worktree_path, { recursive: true, force: true });
     runGit(repoPath, ['worktree', 'prune']);
   };
-  let pane: SessionPane | undefined;
-  let delivered = false;
-  let hasRowMoved = false;
   try {
-    writeCompiledProfile(compiled, compiledDir);
+    const { settingsPath, mcpConfigPath } = writeSessionProfile(
+      compile,
+      repoPath,
+      session.worktree_path,
+      compiledDir,
+    );
     // By name only: the pane id the gate recorded can be another window's
     // once tmux has restarted. A window of this name is one a failed teardown
     // left, and would refuse the new one.
@@ -473,13 +519,9 @@ function relaunchWorker(
     pane = launchSession({
       sessionId: session.id,
       worktreePath: session.worktree_path,
-      settingsPath: join(compiledDir, 'settings.json'),
+      settingsPath,
       route: routeFor(route.tier, route.rung, route),
-      // From this compile's binary, as a launch decides, never from an
-      // `mcp.json` on disk the recompile did not write.
-      mcpConfigPath: prepareGraph(binary, repoPath, session.worktree_path)
-        ? join(compiledDir, 'mcp.json')
-        : undefined,
+      mcpConfigPath,
     });
     // A `pup kill` while the window opened took the row back to merged: a
     // pane stored on it would be a live window on a session that has none.
@@ -494,15 +536,16 @@ function relaunchWorker(
       );
     }
     try {
-      delivered = kickoff(pane, `${compiled.contextMarkdown}\n\n${brief}`);
+      isDelivered = kickoff(pane, `${compile.compiled.contextMarkdown}\n\n${brief}`);
     } finally {
-      appendEvent(db, session.id, 'respawn', { delivered });
+      appendEvent(db, session.id, 'respawn', { delivered: isDelivered });
     }
   } catch (error) {
     if (hasRowMoved) {
       killTmux(session.id, pane?.paneId);
       throw error;
     }
+    if (!isOwnRound()) throw error;
     if (!isRefusedSteer(error)) {
       undoRound();
       throw error;
@@ -514,7 +557,13 @@ function relaunchWorker(
       error,
     );
   }
-  if (!delivered) {
+  if (!isDelivered) {
+    if (!isOwnRound()) {
+      throw new Error(
+        `Session ${sanitizeReason(session.id)}'s window never became ready, and a newer fix ` +
+          'round has taken the session since, so this one undid nothing.',
+      );
+    }
     throw rollBackRefusedLaunch(
       undoRound,
       `Session ${sanitizeReason(session.id)}'s window never became ready, so the threads were ` +

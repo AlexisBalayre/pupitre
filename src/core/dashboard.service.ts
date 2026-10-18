@@ -354,8 +354,8 @@ const NEED_ORDER: DashboardNeed['kind'][] = [
 
 /**
  * What the CI review says on a merged session's open PR (decision 90): the
- * review bot's unresolved threads on the PR's head, zero when its status reads
- * clean on that head, which is what the status says, never proof.
+ * review bot's unresolved threads on the PR's head, or zero when its status
+ * on that head reads clean. A clean status is a claim, not a check.
  */
 export interface CiReview {
   openThreads: number;

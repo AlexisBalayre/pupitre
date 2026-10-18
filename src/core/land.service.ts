@@ -137,8 +137,10 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
     const now = getSession(db, session.id)?.state;
     if (now !== 'merged') {
       throw new Error(
-        `Session ${id} moved to ${now ?? 'gone'} while \`pup land\` waited for the merge lock. ` +
-          'Nothing was landed.',
+        (now === undefined
+          ? `Session ${id} was removed from the store`
+          : `Session ${id} became ${now}`) +
+          ' while `pup land` waited for the merge lock. Nothing was landed.',
       );
     }
     const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
