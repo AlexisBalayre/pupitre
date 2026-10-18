@@ -253,6 +253,9 @@ export async function runGateChild(
     let settled = false;
     const settle = (): boolean => {
       clearTimeout(timer);
+      // The direct child has exited, but a group member that ignored the stop
+      // and holds no pipe would outlive the grace that `untrack` cancels.
+      if (failure !== undefined || live.interruptedBy) signalGroup(child, 'SIGKILL');
       untrack(live);
       if (settled) return false;
       settled = true;

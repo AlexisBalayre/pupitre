@@ -66,8 +66,15 @@ describe('typescriptAdapter', () => {
 describe('typescriptAdapter.coveredTest', () => {
   const manifest = (scripts: Record<string, string>): string =>
     JSON.stringify({ scripts, devDependencies: { vitest: '^4', '@vitest/coverage-v8': '^4' } });
+  /** A repo whose install left the vitest binary the folded run starts. */
+  const installedRepo = (files: Record<string, string>): string => {
+    const dir = makeRepo(files);
+    mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', '.bin', 'vitest'), '');
+    return dir;
+  };
   const coveredTestIn = (files: Record<string, string>) => {
-    const run = typescriptAdapter.coveredTest?.(localContext(makeRepo(files)));
+    const run = typescriptAdapter.coveredTest?.(localContext(installedRepo(files)));
     run?.dispose();
     return run;
   };
@@ -104,6 +111,12 @@ describe('typescriptAdapter.coveredTest', () => {
     expect(coveredTestIn(files)).toBeUndefined();
   });
 
+  it('keeps the two runs apart for an install with no vitest binary, as Plug-n-Play leaves', () => {
+    const repo = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+
+    expect(typescriptAdapter.coveredTest?.(localContext(repo))).toBeUndefined();
+  });
+
   // The gate's test stage ran `pm run test` in the session's checkout, so a
   // session's own script or threshold is what the folded run must match.
   it.each<[string, Record<string, string>]>([
@@ -119,7 +132,7 @@ describe('typescriptAdapter.coveredTest', () => {
     ['an unreadable manifest', { 'package.json': '{' }],
   ])('keeps the two runs apart when the session adds %s', (_, files) => {
     const configPath = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
-    const run = typescriptAdapter.coveredTest?.({ configPath, measurePath: makeRepo(files) });
+    const run = typescriptAdapter.coveredTest?.({ configPath, measurePath: installedRepo(files) });
     run?.dispose();
 
     expect(run).toBeUndefined();
@@ -129,14 +142,14 @@ describe('typescriptAdapter.coveredTest', () => {
   // where its manifest was; opening it for a plain read would block pup.
   it('declines to fold, without blocking, when the session left a fifo for its manifest', () => {
     const configPath = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
-    const measurePath = makeRepo({});
+    const measurePath = installedRepo({});
     execFileSync('mkfifo', [join(measurePath, 'package.json')]);
 
     expect(typescriptAdapter.coveredTest?.({ configPath, measurePath })).toBeUndefined();
   });
 
   it('writes its report outside the checkout, in a directory dispose removes', () => {
-    const repo = makeRepo({
+    const repo = installedRepo({
       'package.json': manifest({ test: 'vitest run' }),
       'vitest.config.ts': "export default { test: { include: ['src/**/*.test.ts'] } };",
     });

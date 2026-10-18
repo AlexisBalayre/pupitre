@@ -4371,9 +4371,11 @@ changes back into those docs is pending.
     the child's failure unwinds the stack and the `finally` releases the lock. The listener's body
     never runs, since a synchronous body never yields to the event loop that dispatches it, so a
     signal sent to pup alone, which kills no child, is discarded and the locked section runs to its
-    end. A git child an interrupt killed is not read as git's answer to the ancestry checks, the
-    symref probes, the worktree removal, the branch read or the branch delete (not an ancestor, a
-    locked worktree): the land stops before the audit and the `landed` event, and a re-run picks up
+    end. Decision 95 makes the gate's locked body asynchronous: there an interrupt is forwarded
+    to every stage child and the lock is released in the gate's `finally`. A git child an
+    interrupt killed is not read as git's answer to the ancestry checks, the symref probes, the
+    worktree removal, the branch read or the branch delete (not an ancestor, a locked worktree):
+    the land stops before the audit and the `landed` event, and a re-run picks up
     where it stopped. The gate swallows an interrupted branch delete, which it reaches only after
     the merge landed, so the branch stays and the ratchet still runs. A git that crashed on its own
     keeps the catch's fallback. The audit runs outside the lock with
@@ -4784,9 +4786,12 @@ changes back into those docs is pending.
     decides the test stage, with decision 94's one re-run, and the coverage stage reads that
     run's report; a failing run fails the test stage, so the gate stops there as before, and in
     `pup init`, `pup audit` and `pup land` coverage is a gap, "the instrumented test run failed,
-    so its coverage is not read". The TypeScript adapter declares it only for a trusted `test`
-    script that is exactly `vitest` or `vitest run`, with no `pretest` or `posttest`, and no
-    vitest or vite config at the trusted root that mentions `thresholds`. Anything else would make
+    so its coverage is not read". The TypeScript adapter declares it only when, in the trusted
+    checkout and the measured one alike, the `test` script is exactly `vitest` or `vitest run`,
+    with no `pretest` or `posttest`, and no vitest or vite config at the root mentions
+    `thresholds`, read only as regular files; and only when the measured checkout has
+    `node_modules/.bin/vitest`, which the folded `npx --no-install` launch needs and a
+    Plug'n'Play install lacks. Anything else would make
     the instrumented run a different run from the one the script makes, or fail a run whose every
     test passed on a coverage figure, and keeps today's two runs. The run is the one `coverage`
     always made: the provider pinned from the trusted manifest, every source file included, the

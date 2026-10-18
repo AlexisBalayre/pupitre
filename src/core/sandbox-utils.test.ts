@@ -233,19 +233,29 @@ describe('runGateChild', () => {
     const cwd = fakeCheckout();
     const helper = join(cwd, 'helper.pid');
 
+    // The parent waits for the helper's pid before sleeping, so the helper
+    // exists before the timeout can fire however loaded the machine is.
     const failure = await runGateChild(
       'perl',
       [
         '-MPOSIX',
         '-e',
-        `if (!fork) { setsid; open my $f, '>', '${helper}'; print $f $$; close $f; sleep 30; exit } sleep 30`,
+        `if (!fork) { setsid; open my $f, '>', '${helper}.tmp'; print $f $$; close $f; rename '${helper}.tmp', '${helper}'; sleep 30; exit } ` +
+          `select(undef, undef, undef, 0.05) until -e '${helper}'; sleep 30`,
       ],
-      { cwd, repoPath: cwd, timeout: 500 },
+      { cwd, repoPath: cwd, timeout: 2_000 },
     ).catch((error: unknown) => error);
 
-    expect(failure).toMatchObject({ code: 'ETIMEDOUT' });
-    process.kill(Number(readFileSync(helper, 'utf8')), 'SIGKILL');
-  }, 10_000);
+    try {
+      expect(failure).toMatchObject({ code: 'ETIMEDOUT' });
+    } finally {
+      try {
+        process.kill(Number(readFileSync(helper, 'utf8')), 'SIGKILL');
+      } catch {
+        // Never forked: nothing to clean up.
+      }
+    }
+  }, 15_000);
 
   it('kills a timed-out child that ignores SIGTERM once the grace runs out', async () => {
     const cwd = fakeCheckout();

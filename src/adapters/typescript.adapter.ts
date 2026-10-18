@@ -449,6 +449,10 @@ export const typescriptAdapter: Adapter = {
         return undefined;
       }
     }
+    // The folded run starts vitest through `npx --no-install`, which finds it
+    // only here: a Plug'n'Play install has no such binary, and its test script,
+    // started by its package manager, would pass where the folded run fails.
+    if (!existsSync(join(ctx.measurePath, 'node_modules', '.bin', 'vitest'))) return undefined;
     const run = instrumentedRun(ctx);
     return isUnavailable(run) ? undefined : run;
   },
