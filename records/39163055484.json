@@ -1,0 +1,176 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T20:28:42.089Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39163055484",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39163055484",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c5760399687f5ad4b427088189716bc8ab566369",
+  "source": "pr",
+  "pr_number": 164,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "1-2",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The file has the `utils` role but breaks that contract in two ways: it imports `needsYou` from `../../core/dashboard.service.js`, and `createTerminalStatus` is a stateful writer that closes over a mutable `pushed` flag and writes to a stream.",
+      "body": "**The `.utils.ts` suffix breaks the role contract.**\n\n`docs/conventions/naming.md` (line 76), on `utils`:\n> **Pure functions only.** Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\n\nAnd line 15:\n> The role suffix is a *contract*: it declares the calling convention the file's exports must follow.\n\nThis file breaks that contract in two ways:\n- Line 1 is `import { needsYou } from '../../core/dashboard.service.js';`, which imports a service.\n- The only export, `createTerminalStatus(stream, env)`, is a `create<Thing>(deps)` builder. It holds lifecycle state (`let pushed = false`, changed by `update` and `stop`) and calls `stream.write(...)`.\n\nThe Exceptions section of `naming.md` has no carve-out that covers this. The naming taxonomy has two roles that fit:\n- `factory`, for `create<Thing>(deps)` builders.\n- `manager`, for a stateful runtime resource with a lifecycle.\n\nRename the file to `terminal-status.factory.ts` (or `.manager.ts`). The other option is to split it: keep the pure helpers (`scrubValue`, the byte builders) in a `.utils.ts`, and move the writer and the `needsYou` import into a factory.\n\n(Some older `.utils.ts` files, such as `dashboard-text.utils.ts`, also import services. Those are existing violations, not a precedent the rule allows.)\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c5760399687f5ad4b427088189716bc8ab566369/src/cli/ui/terminal-status.utils.ts#L1-L2",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "62-68",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Under `pup ui --all` the tab's detail shows the first need of the first project that has one, not the most urgent need across the fleet. `needsYou` sorts by NEED_ORDER only within each snapshot, and `flatMap` then joins the lists in project order.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "54-76",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readTerminalStatus` never reads `reading.unreadable`. Under `--all`, a project store that can't be opened (or all of them failing) leaves the tab showing green 'idle' / '0 need you' while the screen shows unreadable errors.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "117-123",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Restoring the title depends only on the xterm title stack (CSI 23;0t). A terminal that ignores push/pop keeps the stale 'pup … · N running' title after exit. Writing an empty OSC 2 just before POP_TITLE would be a cheap fallback.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "66-67",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The title's `<project>` is `snapshot.projectId`, a 12-hex-character hash of the repo path, so the tab reads 'pup 3f9a2c1b7d4e · …'. Also, `--all` with exactly one readable project shows that project's id rather than the 'fleet' that decision 97 states.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "55-64",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The running count is recomputed with `snapshot.sessions.filter(state === 'running')` instead of calling `fleetSummary(snapshot)` from `src/core/dashboard.service.ts`, which exists so every reader agrees on these counts. The two match today but can drift.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "61-64",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pr-open` exclusion adds a tab-only definition of \"needs you\" in the CLI layer, so the tab's 'M need you' differs from `pup status` and the fleet view whenever a PR is open. It's acceptable inline for a single caller, but it belongs in core if a second reader wants it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/terminal-status.utils.ts",
+      "line": "35-42",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `scrubValue` JSDoc says `;` is \"dropped\", but the code replaces it with `,` (`.replace(/;/g, ',')`). Decision 97 describes it correctly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-terminal-status.hook.ts",
+      "line": "5-13",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The hook declares a `StatusStream` type alias that duplicates `createTerminalStatus`'s inline stream type. If the injectable stream/env seam stays for tests, export the type from the writer file instead of declaring it twice.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5307",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 97 is appended after decision 100, out of numeric order. There's no written ordering rule and nearby entries are already out of order, so only reorder if the maintainer cares.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9472019999999999,
+  "duration_ms": 282958,
+  "num_turns": 12,
+  "tokens": {
+    "input": 8,
+    "output": 8815,
+    "cache_read": 125968,
+    "cache_creation": 54058,
+    "total": 188849
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 32729,
+      "cache_read": 802162,
+      "cache_creation": 131726,
+      "cost_usd": 1.6360323999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 9613,
+      "cache_read": 348686,
+      "cache_creation": 72030,
+      "cost_usd": 0.31116959999999994
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 6a2c5dd052eccf2d5924b6f4a133470927a15b7e..HEAD -- src/cli/ui/terminal-status.utils.ts src/cli/ui/use-terminal-status.hook.ts src/cli/ui/app.component.tsx"
+    }
+  ]
+}
