@@ -213,11 +213,11 @@ jobs:
           echo "schema=$schema" >> "$GITHUB_OUTPUT"
 
       # AGENTS.md is startup-read config like CLAUDE.md (which imports it), but
-      # the action's SENSITIVE_PATHS list predates it: v1.0.237 still restores
-      # CLAUDE.md, .claude/ and .mcp.json, not AGENTS.md, so the PR head's copy
-      # would execute unreviewed. Apply the action's own treatment first:
-      # snapshot the head's copy for reviewers, then take the merge base's.
-      # Drop this step once upstream restores AGENTS.md itself. Not under
+      # the action's SENSITIVE_PATHS list predates it: it restores CLAUDE.md,
+      # .claude/ and .mcp.json, not AGENTS.md, so the PR head's copy would
+      # execute unreviewed. Apply the action's own treatment first: snapshot
+      # the head's copy for reviewers, then take the merge base's. Drop this
+      # step once a bump's SENSITIVE_PATHS lists AGENTS.md. Not under
       # .claude-pr/: the action clears that directory before the model starts.
       # The snapshot is written from the object store into a directory made
       # fresh here, never copied through a path: the head can commit the
@@ -338,7 +338,7 @@ jobs:
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: claude-review
         # SHA-pinned (secrets + write token); the tag comment tracks the version.
-        uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1.0.237
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1.0.251
         # The reviewer manifests keep their `opus` / `sonnet` aliases; these pin
         # the aliases to exact ids, so a Claude Code bump cannot move a tier
         # silently, while a local /pr-ci-review still follows the local defaults.

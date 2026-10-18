@@ -596,7 +596,7 @@ export function attachWindow(target: WindowTarget): number | null {
 }
 
 /** A word a shell takes literally, single-quoted when it would not. */
-function shellWord(word: string): string {
+export function shellWord(word: string): string {
   return /^[\w.,:/@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
 

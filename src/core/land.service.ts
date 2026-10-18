@@ -2,10 +2,12 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { windowLabel } from '../claude/session-runtime.service.js';
 import { auditProject } from './audit.service.js';
 import {
   assertNoArmedGitDrivers,
   currentBranch,
+  gitDiffPaths,
   rethrowIfKilled,
   runGit,
 } from './git-diff.client.js';
@@ -26,7 +28,10 @@ import {
   withScratchGitDir,
 } from './merge-gate.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
-import { appendEvent, getSession } from './session.repository.js';
+import { mainLandedMessage } from './profile-compiler.service.js';
+import { appendEvent, getSession, listSessions } from './session.repository.js';
+import { steerSession } from './session-lifecycle.service.js';
+import { holdingStates } from './session-state.utils.js';
 import type { LandOutcome } from './types/land.types.js';
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };
@@ -199,7 +204,66 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   // `pup audit`, which the operator runs (decision 84).
   const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
   appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
+  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
   return { prUrl, mergeCommit, target, ...landed, audit };
+}
+
+/**
+ * Steer each live session whose branch changed a file the landed PR changed,
+ * once, to take the target in now (decision 99): a conflict met one land at a
+ * time is one change wide, and the gate's rebase stays the final check. The
+ * PR's files are its merge commit against its first parent, the target it
+ * merged into; a session's are its branch's own changes since it forked from
+ * the target. After the `landed` event and best effort: the land is done
+ * whatever a steer does. A session whose steer fails for any reason, a refused
+ * paste, a stop, tmux or the store, is skipped and the rest are still steered,
+ * and so is one whose branch git cannot read yet, a queued session's. A PR whose
+ * files git cannot list steers no one, rather than report a land that happened
+ * as failed. Only an interrupt stops it. A skipped session is not reported yet
+ * (decision 99).
+ */
+function steerOverlappingSessions(
+  db: Database,
+  repoPath: string,
+  landedId: string,
+  mergeCommit: string,
+  target: string,
+  targetSha: string,
+): void {
+  let landedFiles: Set<string>;
+  try {
+    landedFiles = new Set(gitDiffPaths(repoPath, `${mergeCommit}^1`, mergeCommit));
+  } catch (error) {
+    rethrowIfKilled(error);
+    return;
+  }
+  const name = windowLabel({ sessionId: landedId });
+  for (const peer of listSessions(db, holdingStates())) {
+    // Store text about to name a ref: only the branch a launch mints is read.
+    if (!SESSION_ID_PATTERN.test(peer.id) || peer.branch !== `pup/${peer.id}`) continue;
+    let files: string[];
+    try {
+      files = gitDiffPaths(repoPath, targetSha, `refs/heads/${peer.branch}`).filter((path) =>
+        landedFiles.has(path),
+      );
+    } catch (error) {
+      rethrowIfKilled(error);
+      continue;
+    }
+    if (files.length === 0) continue;
+    try {
+      // A branch the gate already pushed as a PR is GitHub's too: it takes the
+      // target as a merge commit, since a rebase would replace history there.
+      const merge = newestMerge(db, peer.id);
+      const openPullRequest = typeof merge === 'object' && merge.prUrl !== undefined;
+      steerSession(db, peer.id, mainLandedMessage({ name, target, files, openPullRequest }), {
+        kind: 'main-landed',
+        by: landedId,
+      });
+    } catch (error) {
+      rethrowIfKilled(error);
+    }
+  }
 }
 
 /**
@@ -245,9 +309,8 @@ function fetchTarget(
 
 /**
  * What the gate's own teardown may have left (it is best effort): the
- * session's worktree, and its branch while main holds every commit of it, as
- * `pnpm worktree:clean` removes a worktree whose PR merged. A branch with
- * commits main lacks is kept for the operator, as the gate keeps one that moved
+ * session's worktree, and its branch while main holds every commit of it. A
+ * branch with commits main lacks is kept for the operator, as the gate keeps one that moved
  * past the pin.
  */
 function tearDown(

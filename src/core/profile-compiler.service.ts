@@ -8,8 +8,10 @@ import {
   type ModelRoute,
   SECURITY_REVIEW_EFFORT,
 } from '../claude/model-ladder.constants.js';
+import { shellWord } from '../claude/session-runtime.service.js';
 import { readBrief, workerBrief } from './brief.service.js';
 import { codegraphMcpConfig } from './codegraph.client.js';
+import { GIT_SAFE_CONFIG } from './git-diff.client.js';
 import { globsToGrepFile } from './glob.utils.js';
 import {
   CHARS_PER_TOKEN,
@@ -235,6 +237,32 @@ export function peerJoinedMessage(peer: SessionPeer): string {
   );
 }
 
+/**
+ * The one steer each live worker overlapping a land receives (decision 99):
+ * take the target in now, while the conflict is one change wide. A branch
+ * with an open pull request merges it, since rewriting a branch GitHub already
+ * holds would need its history replaced there; any other branch rebases.
+ */
+export function mainLandedMessage(landed: {
+  name: string;
+  target: string;
+  files: string[];
+  openPullRequest: boolean;
+}): string {
+  // A ref name may hold `;` or `$(`, and the worker runs this as typed.
+  const ref = shellWord(`refs/heads/${sanitizeReason(landed.target)}`);
+  const take = landed.openPullRequest
+    ? `Your branch has an open pull request, so keep its history: run \`git merge ${ref}\`, ` +
+      'which records a merge commit, and do not rebase it.'
+    : `Run \`git rebase ${ref}\`.`;
+  return (
+    `${sanitizeReason(landed.name)} just landed on ${sanitizeReason(landed.target)}, changing ` +
+    `files your branch changes too: ${namedPeerFiles(landed.files)}. Take it in now, before ` +
+    `your next edit: commit your work in progress first. ${take} Resolve any conflicts, ` +
+    're-run the tests for the files involved, and report in one line what taking it in changed.'
+  );
+}
+
 function buildContextMarkdown(
   merged: ProfileLayer,
   input: CompileInput & { peers?: SessionPeer[] },
@@ -285,6 +313,31 @@ function buildContextMarkdown(
 }
 
 /**
+ * Shell both worktree hooks share (decision 99). `safe_git` is git under the
+ * pins `runGit` applies, each a Pupitre constant single-quoted into the script.
+ * `merge_of_target` prints MERGE_HEAD while a merge of the target's tip is in
+ * progress in the worktree, and fails otherwise. The target is the branch the
+ * main checkout has out, the one the gate merges into, and MERGE_HEAD must be
+ * its tip exactly. MERGE_HEAD is read from the worktree's own file, one object
+ * id in its first 66 bytes, since a ref lookup by that name falls back to
+ * shared refs any worktree can plant (refs/heads/MERGE_HEAD). The read stops
+ * there: the file sits outside the worktree, where `git status` never sees a
+ * write, and a huge one would run every check past the hook timeout. Best effort: a session
+ * can move the target's branch itself, so the gate's scope audit, on the
+ * branch's own diff, is what holds (decisions 6, 63).
+ */
+const MERGE_OF_TARGET_SHELL = `safe_git() { git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"; }
+merge_of_target() {
+  HEAD_FILE=$(safe_git -C "$WORKTREE" rev-parse --path-format=absolute --git-path MERGE_HEAD 2>/dev/null) || return 1
+  [ -f "$HEAD_FILE" ] || return 1
+  MERGING=$(head -c 66 -- "$HEAD_FILE") || return 1
+  case "$MERGING" in *[!0-9a-f]*) return 1 ;; esac
+  [ \${#MERGING} -eq 40 ] || [ \${#MERGING} -eq 64 ] || return 1
+  TIP=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'main-worktree/HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$MERGING" = "$TIP" ] && printf '%s\\n' "$MERGING"
+}`;
+
+/**
  * Scope enforcement. Task-controlled patterns live in sidecar files read via
  * `grep -E -f`, so no glob value is ever interpolated into shell source; only
  * Pupitre-owned, validated paths are. REL is normalized and parent traversal
@@ -313,10 +366,56 @@ case "/$REL/" in *"/../"*) echo "BLOCKED: path traversal is not allowed." >&2; e
 if printf '%s\\n' "$REL" | grep -qiE '^\\.claude/'; then
   echo "BLOCKED: .claude/ is owned by Pupitre and read-only for sessions." >&2; exit 2
 fi
+${MERGE_OF_TARGET_SHELL}
+# Out of scope, an Edit still goes through when all it does is resolve a conflict
+# a merge of the target left in the file (decision 99). The replaced text is
+# exactly one conflict block, from its <<<<<<< line to its >>>>>>> line, with one
+# ======= between and at most a diff3 ||||||| before it, and the new text is one
+# side, the other, or ours then theirs, line for line. A marker line ending in a
+# CR is still a marker. An empty side is taken only with the block's final
+# newline, so taking it leaves no line behind. The index must hold the conflict
+# that merge makes: the branch's blob as ours, the tip's as theirs, and the two
+# different, so a conflict staged by hand over a file holding marker lines earns
+# nothing. A Write never goes through, since it replaces the whole file.
+RESOLUTION='def bare: rtrimstr("\\r");
+def resolutions:
+  (if endswith("\\n") then "\\n" else "" end) as $end
+  | (rtrimstr("\\n") / "\\n") as $lines
+  | if ($lines | length) < 3
+      or ($lines[0] | bare | test("^<{7}( |$)") | not)
+      or ($lines[-1] | bare | test("^>{7}( |$)") | not)
+    then empty
+    else $lines[1:-1] as $body
+      | [$body | to_entries[] | select(.value | test("^(<{7}|>{7}|[|]{7}|={7})")) | .key] as $marks
+      | ($marks | last) as $sep
+      | if $sep == null or ($body[$sep] | bare) != "=======" or ($marks | length) > 2
+          or (($marks | length) == 2 and ($body[$marks[0]] | bare | test("^[|]{7}( |$)") | not))
+        then empty
+        else ($body[:$marks[0]]) as $ours | ($body[$sep + 1:]) as $theirs
+          | ($ours, $theirs, $ours + $theirs)
+          | if length > 0 then join("\\n") + $end elif $end == "\\n" then "" else empty end
+        end
+    end;
+  .tool_name == "Edit"
+  and (.tool_input.new_string | type == "string")
+  and (.tool_input.old_string | type == "string")
+  and (.tool_input.new_string as $new | any(.tool_input.old_string | resolutions; . == $new))'
+resolves_conflict() {
+  [ "$(printf '%s' "$INPUT" | jq -r "$RESOLUTION")" = true ] || return 1
+  MERGED=$(merge_of_target) || return 1
+  STAGES=$(safe_git -C "$WORKTREE" --literal-pathspecs ls-files -u -- "$REL") || return 1
+  OURS=$(printf '%s\\n' "$STAGES" | awk '$3 == 2 { print $2 }')
+  THEIRS=$(printf '%s\\n' "$STAGES" | awk '$3 == 3 { print $2 }')
+  [ -n "$OURS" ] && [ -n "$THEIRS" ] && [ "$OURS" != "$THEIRS" ] || return 1
+  [ "$OURS" = "$(safe_git -C "$WORKTREE" rev-parse -q --verify "HEAD:$REL" 2>/dev/null)" ] &&
+    [ "$THEIRS" = "$(safe_git -C "$WORKTREE" rev-parse -q --verify "$MERGED:$REL" 2>/dev/null)" ]
+}
 if printf '%s\\n' "$REL" | grep -qE -f '${join(hooksDir, 'scope-out.pat')}'; then
+  resolves_conflict && exit 0
   echo "BLOCKED: file is in scope-out for this task." >&2; exit 2
 fi
 if printf '%s\\n' "$REL" | grep -qE -f '${join(hooksDir, 'scope-in.pat')}'; then exit 0; fi
+resolves_conflict && exit 0
 echo "BLOCKED: file is outside this task's scope-in." >&2
 exit 2
 `;
@@ -384,6 +483,7 @@ WORK=$(mkdir -p "$SNAPSHOTS" && mktemp -d "$SNAPSHOTS/work.XXXXXX") || {
   [ "$PHASE" = PreToolUse ] && exit 0
   echo "SCOPE CHECK FAILED: bash re-check could not make its scratch dir." >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
+${MERGE_OF_TARGET_SHELL}
 
 # One line per dirty path outside this task's scope: "<fingerprint> <reason> <path>".
 # Returns 1 when git cannot be read and 2 when there are too many paths to check;
@@ -391,15 +491,20 @@ trap 'rm -rf "$WORK"' EXIT
 # newline inside a name into \\001 before NUL becomes the line separator, so a
 # record is always one line and a name is only ever quoted data, never split,
 # globbed or evaluated. Precedence is the scope hook's: .claude/, then scope-out,
-# then scope-in.
+# then scope-in. While a merge of the target is in progress, a tracked path whose
+# worktree content is the merged tip's came in from the target and is not the
+# session's change (decision 99): the branch is judged by what differs from that
+# tip, asked of git once rather than path by path, which would outrun the hook's
+# timeout on a merge that brings in many files.
 out_of_scope() {
-  git -C "$WORKTREE" -c core.fsmonitor= status --porcelain=v1 -z --untracked-files=all \\
+  MERGED=$(merge_of_target) || MERGED=
+  safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
     --no-renames > "$WORK/status" || return 1
   # An ignored path is in no listing above, and the ignore rule can be the session's
   # own: .git/info/exclude is not a worktree path, so writing it is invisible. Under
   # .claude/ the ignored files are listed too, and only those (!!) are kept from this
   # pass, since everything else in it is already in the first.
-  git -C "$WORKTREE" -c core.fsmonitor= status --porcelain=v1 -z --untracked-files=all \\
+  safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
     --ignored=traditional --no-renames -- ':(icase).claude' > "$WORK/protected" || return 1
   { tr '\\n\\000' '\\001\\n' < "$WORK/status"
     tr '\\n\\000' '\\001\\n' < "$WORK/protected" | grep '^!! '
@@ -407,9 +512,19 @@ out_of_scope() {
   # Every record the loop below would read, in-scope ones included: the cap is
   # on the forks, not on the verdicts.
   [ "$(wc -l < "$WORK/records")" -le ${RECHECK_MAX_DIRTY_PATHS} ] || return 2
+  if [ -n "$MERGED" ]; then
+    safe_git -C "$WORKTREE" diff --no-ext-diff --no-textconv --no-renames --name-only -z \\
+      "$MERGED" -- > "$WORK/merged" || return 1
+    tr '\\n\\000' '\\001\\n' < "$WORK/merged" > "$WORK/differs"
+  fi
   while IFS= read -r ENTRY; do
     CODE=\${ENTRY%"\${ENTRY#??}"}
     FILE=\${ENTRY#???}
+    # Untracked and ignored paths are in no diff against a commit, so they never pass.
+    if [ -n "$MERGED" ] && [ "$CODE" != '??' ] && [ "$CODE" != '!!' ] &&
+      ! grep -qxF -e "$FILE" "$WORK/differs"; then
+      continue
+    fi
     if printf '%s\\n' "$FILE" | grep -qiE '^\\.claude/'; then REASON=protected-path
     elif printf '%s\\n' "$FILE" | grep -qE -f "$HOOKS/scope-out.pat"; then REASON=scope-out
     elif printf '%s\\n' "$FILE" | grep -qE -f "$HOOKS/scope-in.pat"; then continue
@@ -426,7 +541,7 @@ out_of_scope() {
                SIZE=$(( $(wc -c < "$WORKTREE/$FILE") ))
                if [ "$SIZE" -gt ${RECHECK_HASH_MAX_BYTES} ]; then SUM=large-$SIZE
                else
-                 SUM=$(git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null) || SUM=unreadable
+                 SUM=$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null) || SUM=unreadable
                fi
              else SUM=special
              fi ;;
