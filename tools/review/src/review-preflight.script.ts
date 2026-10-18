@@ -3,9 +3,11 @@ import { appendFileSync } from "node:fs";
 import {
   decideMode,
   isCommentOnlyDelta,
+  isPartialReview,
   newestCleanRecord,
   parseRawDiff,
   type PriorRecord,
+  parseReviewRequest,
   porcelainPaths,
 } from "./preflight.utils";
 
@@ -34,8 +36,11 @@ function out(name: string, value: string): void {
   appendFileSync(process.env.GITHUB_OUTPUT ?? "preflight-output.txt", `${name}=${value}\n`);
 }
 
+// The workflow runs this from the tooling copy, never the PR checkout, so git
+// and gh are pointed back at the checkout; unset (tests, a local run), they
+// inherit the working directory.
 function git(...args: string[]): string {
-  return execFileSync("git", args, { encoding: "utf8" }).trim();
+  return execFileSync("git", args, { encoding: "utf8", cwd: process.env.GITHUB_WORKSPACE }).trim();
 }
 
 function gitOk(...args: string[]): boolean {
@@ -48,7 +53,7 @@ function gitOk(...args: string[]): boolean {
 }
 
 function gh(...args: string[]): string {
-  return execFileSync("gh", args, { encoding: "utf8" }).trim();
+  return execFileSync("gh", args, { encoding: "utf8", cwd: process.env.GITHUB_WORKSPACE }).trim();
 }
 
 function markNotReviewed(sha: string, description: string): void {
@@ -70,8 +75,8 @@ function headRefOid(prNumber: string): string {
 function priorRecords(prNumber: string): PriorRecord[] {
   let hits: string;
   try {
-    // `:(top)` anchors the pathspec at the repo root: `pnpm --filter` runs this
-    // from the package directory, where a plain `records/` would match nothing.
+    // `:(top)` anchors the pathspec at the repo root: run from the package
+    // directory (tests, a local run), a plain `records/` would match nothing.
     hits = git("grep", "-l", `"pr_number": ${prNumber},`, METRICS_REF, "--", ":(top)records/");
   } catch {
     // git grep exits non-zero on no match and when the ref is absent; either
@@ -87,6 +92,7 @@ function priorRecords(prNumber: string): PriorRecord[] {
         commit_sha: typeof parsed.commit_sha === "string" ? parsed.commit_sha : null,
         timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
         is_error: parsed.is_error === true,
+        partial: isPartialReview(parsed.review_depth, parsed.review_areas),
       });
     } catch {
       warn(`unreadable record ${hit}; skipping it`);
@@ -99,7 +105,10 @@ async function main(): Promise<void> {
   const prNumber = process.env.REVIEW_PR_NUMBER ?? "";
   if (!/^\d+$/.test(prNumber)) fail("REVIEW_PR_NUMBER missing or not a number");
   const trigger = process.env.REVIEW_TRIGGER ?? "";
-  const forceFull = process.env.REVIEW_FORCE_FULL === "true";
+  const request = parseReviewRequest(process.env.REVIEW_COMMENT ?? "");
+  out("depth", request.depth);
+  out("areas", request.areas.join(", ") || "gated");
+  out("partial", String(isPartialReview(request.depth, request.areas)));
 
   let headSha = headRefOid(prNumber);
   if (git("rev-parse", "HEAD") !== headSha) {
@@ -155,18 +164,26 @@ async function main(): Promise<void> {
       const raw = execFileSync(
         "git",
         ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--ignore-submodules=none", priorSha, "HEAD"],
-        { encoding: "utf8" },
+        { encoding: "utf8", cwd: process.env.GITHUB_WORKSPACE },
       );
       // Fatal decoding: two invalid byte runs must not both read as U+FFFD.
       const utf8 = new TextDecoder("utf-8", { fatal: true });
       isCommentOnly = isCommentOnlyDelta(parseRawDiff(raw), (sha) =>
-        utf8.decode(execFileSync("git", ["cat-file", "blob", sha])),
+        utf8.decode(execFileSync("git", ["cat-file", "blob", sha], { cwd: process.env.GITHUB_WORKSPACE })),
       );
     } catch {
       isCommentOnly = false; // an unreadable delta is reviewed, never skipped
     }
   }
-  const decision = decideMode({ prior, headSha, trigger, forceFull, isAncestor, hasMerges, isCommentOnly });
+  const decision = decideMode({
+    prior,
+    headSha,
+    trigger,
+    forceFull: request.full,
+    isAncestor,
+    hasMerges,
+    isCommentOnly,
+  });
 
   if (decision.kind === "skip-duplicate") {
     process.stdout.write(`::notice::head ${headSha} already reviewed (${decision.priorPath}); nothing new to review\n`);
