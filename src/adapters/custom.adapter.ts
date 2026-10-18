@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-import { runGateChild, UndeclaredSandboxError } from '../core/sandbox.utils.js';
+import {
+  GateInterruptedError,
+  runGateChild,
+  runGateChildSync,
+  UndeclaredSandboxError,
+} from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,
@@ -34,35 +39,65 @@ const CONFIG_KEYS = [
   'coverage',
 ];
 
-function runJson<TOutput>(
+async function runJson<TOutput>(
   capability: string,
   command: string,
   ctx: CapabilityContext,
   stdin?: string,
-): TOutput {
+): Promise<TOutput> {
   let stdout: string;
   try {
     // The command string comes from the trusted checkout, but it runs in the
     // session's worktree against the session's scripts — same seam, same
     // confinement as a gate stage (decisions 28, 36).
-    stdout = runGateChild('sh', ['-c', command], {
-      cwd: ctx.measurePath,
-      repoPath: ctx.configPath,
-      gateEnv: ctx.gateEnv,
-      timeout: CUSTOM_COMMAND_TIMEOUT_MS,
-      ...(stdin !== undefined ? { input: stdin } : {}),
-    });
+    stdout = await runGateChild('sh', ['-c', command], childOptions(ctx, stdin));
   } catch (error) {
-    // Not the command's failure: pup refused to run it, and the operator's
-    // instructions are in that message, not in a wrapped stderr (decision 78).
-    if (error instanceof UndeclaredSandboxError) throw error;
-    const failure = error as { stderr?: string; message?: string };
-    throw new CustomAdapterCommandError(
-      capability,
-      command,
-      (failure.stderr ?? failure.message ?? 'command failed').trim().slice(0, 200),
-    );
+    throw commandError(capability, command, error);
   }
+  return parseResult<TOutput>(capability, command, stdout);
+}
+
+/** `runJson` for `depGraph`, which `pup map` reads synchronously. */
+function runJsonSync<TOutput>(
+  capability: string,
+  command: string,
+  ctx: CapabilityContext,
+): TOutput {
+  let stdout: string;
+  try {
+    stdout = runGateChildSync('sh', ['-c', command], childOptions(ctx));
+  } catch (error) {
+    throw commandError(capability, command, error);
+  }
+  return parseResult<TOutput>(capability, command, stdout);
+}
+
+function childOptions(ctx: CapabilityContext, stdin?: string) {
+  return {
+    cwd: ctx.measurePath,
+    repoPath: ctx.configPath,
+    gateEnv: ctx.gateEnv,
+    timeout: CUSTOM_COMMAND_TIMEOUT_MS,
+    ...(stdin !== undefined ? { input: stdin } : {}),
+  };
+}
+
+function commandError(capability: string, command: string, error: unknown): Error {
+  // Not the command's failure: pup refused to run it, or was interrupted, and
+  // the operator's instructions are in that message, not in a wrapped stderr
+  // (decisions 78, 95).
+  if (error instanceof UndeclaredSandboxError || error instanceof GateInterruptedError) {
+    return error;
+  }
+  const failure = error as { stderr?: string; message?: string };
+  return new CustomAdapterCommandError(
+    capability,
+    command,
+    (failure.stderr ?? failure.message ?? 'command failed').trim().slice(0, 200),
+  );
+}
+
+function parseResult<TOutput>(capability: string, command: string, stdout: string): TOutput {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -165,7 +200,7 @@ export function loadCustomAdapter(repoPath: string): Adapter | undefined {
   // they simply run against whichever checkout is being measured.
   if (config.depGraph) {
     const command = config.depGraph;
-    adapter.depGraph = (ctx) => runJson<DepGraph>('depGraph', command, ctx);
+    adapter.depGraph = (ctx) => runJsonSync<DepGraph>('depGraph', command, ctx);
   }
   if (config.deadCode) {
     const command = config.deadCode;
@@ -182,12 +217,13 @@ export function loadCustomAdapter(repoPath: string): Adapter | undefined {
   }
   if (config.coverage) {
     const command = config.coverage;
-    adapter.coverage = (ctx) => {
+    adapter.coverage = async (ctx) => {
       // The coverage contract already has an "unavailable" channel — use it,
       // and carry the reason rather than dropping it (decision 29).
       try {
-        return runJson<CoverageReport>('coverage', command, ctx);
+        return await runJson<CoverageReport>('coverage', command, ctx);
       } catch (error) {
+        if (error instanceof GateInterruptedError) throw error;
         return { unavailable: `coverage command failed: ${failureSummary(error)}` };
       }
     };

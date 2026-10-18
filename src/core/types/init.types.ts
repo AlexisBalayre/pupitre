@@ -52,3 +52,8 @@ export interface InitReport {
   /** How the baseline stage children were confined, as `sandboxLabel()` phrases it. */
   sandbox: string;
 }
+
+/** A baseline measured but not yet stored, with the debt capabilities that could not measure. */
+export interface MeasuredBaseline extends InitReport {
+  gaps: DebtGap[];
+}

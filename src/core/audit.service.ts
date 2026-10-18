@@ -14,7 +14,12 @@ import type {
   StageTransition,
 } from './types/audit.types.js';
 import type { DebtGap } from './types/debt.types.js';
-import type { BaselineStageStatus, DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type {
+  BaselineStageStatus,
+  DebtBaseline,
+  MeasuredBaseline,
+  ProjectBaseline,
+} from './types/init.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 function classifyDelta(before: BaselineStageStatus, after: BaselineStageStatus): StageDelta {
@@ -153,10 +158,21 @@ export function auditProject(
   adapters: Adapter[],
   gateEnv?: string[],
   onRegression: 'refresh' | 'keep' = 'refresh',
-): AuditOutcome {
+): Promise<AuditOutcome> {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
-  const report = measureBaseline(db, repoPath, adapters, gateEnv);
+  // Not async, so measureBaseline's refusals still throw (see there).
+  return measureBaseline(db, repoPath, adapters, gateEnv).then((report) =>
+    judgeAudit(db, previous, report, onRegression),
+  );
+}
+
+function judgeAudit(
+  db: Database,
+  previous: ProjectBaseline | null,
+  report: MeasuredBaseline,
+  onRegression: 'refresh' | 'keep',
+): AuditOutcome {
   const unmeasured = previous
     ? report.gaps
         .filter((gap) => isNewGap(previous, gap))

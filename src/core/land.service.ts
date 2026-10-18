@@ -48,7 +48,7 @@ interface LandRequest {
  * (decision 26), and a `landed` event drops the PR from the inbox. A re-run
  * after a failure part-way is safe: each step skips what is already done.
  */
-export function landSession(db: Database, req: LandRequest): LandOutcome {
+export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
   const session = getSession(db, req.sessionId);
   const id = sanitizeReason(req.sessionId);
   if (!session) throw new Error(`No session ${id}. Nothing was landed.`);
@@ -138,7 +138,7 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
   }
   const mergeCommit = pr.mergeCommit;
 
-  const landed = withMergeLock(req.repoPath, () => {
+  const landed = await withMergeLock(req.repoPath, () => {
     const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
     const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
     // A squash or rebase merge lands other commits than the ones the gate
@@ -197,7 +197,7 @@ export function landSession(db: Database, req: LandRequest): LandOutcome {
   // The conductor may run this, so no human stands between an observed
   // regression and the bar: a regressed measurement is reported and left for
   // `pup audit`, which the operator runs (decision 84).
-  const audit = auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
+  const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
   appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
   return { prUrl, mergeCommit, target, ...landed, audit };
 }

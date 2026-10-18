@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -90,8 +98,8 @@ describe('initProject', () => {
     repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-init-')));
   });
 
-  it('stores a passing baseline on the project row', () => {
-    const report = initProject(db, repo, [makeAdapter()]);
+  it('stores a passing baseline on the project row', async () => {
+    const report = await initProject(db, repo, [makeAdapter()]);
 
     expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
     expect(report.findings).toEqual([]);
@@ -118,18 +126,18 @@ describe('initProject', () => {
       expect(getProject(db, projectId(repo))).toBeUndefined();
     });
 
-    it('stores the baseline under the declaration and names it', () => {
+    it('stores the baseline under the declaration and names it', async () => {
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'vm');
 
-      const report = initProject(db, repo, [makeAdapter()]);
+      const report = await initProject(db, repo, [makeAdapter()]);
 
       expect(report.sandbox).toBe('vm (declared by operator)');
       expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
     });
   });
 
-  it('records a failing stage and surfaces it as a finding, without throwing', () => {
+  it('records a failing stage and surfaces it as a finding, without throwing', async () => {
     const adapter = makeAdapter({
       gateCommands: () => [
         { stage: 'build', command: 'true', args: [] },
@@ -138,48 +146,151 @@ describe('initProject', () => {
       ],
     });
 
-    const report = initProject(db, repo, [adapter]);
+    const report = await initProject(db, repo, [adapter]);
 
     expect(report.baseline.stages[1]).toMatchObject({ stage: 'test', status: 'fail' });
     expect(report.findings.some((f) => f.includes('test fails at baseline'))).toBe(true);
   });
 
-  it('marks missing commands as skipped with a not-measured finding', () => {
+  // One run answers for the test stage and for coverage (decision 95).
+  describe('an adapter whose test run measures coverage too', () => {
+    /** A `coveredTest` that runs `script` in the repo, logging each run to runs.log. */
+    function covering(script: string) {
+      const report = vi.fn(() => ({
+        files: { 'src/a.ts': { covered: [1], instrumented: [1, 2] } },
+      }));
+      const dispose = vi.fn();
+      const coveredTest = vi.fn(() => ({
+        command: 'sh',
+        args: ['-c', `echo run >> runs.log; ${script}`],
+        writablePaths: [],
+        report,
+        dispose,
+      }));
+      return { coveredTest, report, dispose };
+    }
+
+    it('runs the suite once, for the test stage and the coverage ratio both', async () => {
+      const { coveredTest, report, dispose } = covering('exit 0');
+      const coverage = vi.fn(() => ({ unavailable: 'ran the suite a second time' }));
+
+      const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
+
+      expect(readFileSync(join(repo, 'runs.log'), 'utf8')).toBe('run\n');
+      expect(coverage).not.toHaveBeenCalled();
+      expect(result.baseline.stages.find((s) => s.stage === 'test')?.status).toBe('pass');
+      expect(result.baseline.debt?.coverageRatio).toBe(0.5);
+      expect(report).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it('fails the test stage and leaves coverage unmeasured when that run fails', async () => {
+      const { coveredTest, report, dispose } = covering('exit 1');
+      const coverage = vi.fn(() => ({ files: {} }));
+
+      const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
+
+      expect(result.baseline.stages.find((s) => s.stage === 'test')?.status).toBe('fail');
+      expect(result.baseline.debt?.coverageRatio).toBeUndefined();
+      expect(result.baseline.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
+      expect(result.findings).toContainEqual(
+        expect.stringContaining('coverage not measured — the instrumented test run failed'),
+      );
+      expect(report).not.toHaveBeenCalled();
+      expect(coverage).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the two runs apart when the test command is another adapter’s', async () => {
+      const { coveredTest } = covering('exit 0');
+      const coverage = vi.fn(() => ({ files: {} }));
+      const measurer = makeAdapter({
+        id: 'measurer',
+        gateCommands: () => [],
+        coverage,
+        coveredTest,
+      });
+
+      await initProject(db, repo, [makeAdapter({ id: 'tester' }), measurer]);
+
+      expect(coveredTest).not.toHaveBeenCalled();
+      expect(coverage).toHaveBeenCalledOnce();
+    });
+  });
+
+  // The test stage passes only if lint and both debt capabilities ran while it
+  // was running (decision 95).
+  it('runs lint and the debt capabilities alongside the test run, reporting in order', async () => {
+    const waitForAll =
+      'i=0; while [ $i -lt 100 ]; do ' +
+      '[ -e lint.ran ] && [ -e dead-code.ran ] && [ -e duplication.ran ] && exit 0; ' +
+      'sleep 0.1; i=$((i+1)); done; echo "ran alone"; exit 2';
+    const adapter = makeAdapter({
+      gateCommands: () => [
+        { stage: 'build', command: 'true', args: [] },
+        { stage: 'test', command: 'sh', args: ['-c', waitForAll] },
+        { stage: 'lint', command: 'sh', args: ['-c', 'touch lint.ran'] },
+      ],
+      deadCode: (ctx) => {
+        writeFileSync(join(ctx.measurePath, 'dead-code.ran'), '');
+        return [];
+      },
+      duplication: (ctx) => {
+        writeFileSync(join(ctx.measurePath, 'duplication.ran'), '');
+        return { duplicatedLines: 0, blocks: [] };
+      },
+    });
+
+    const report = await initProject(db, repo, [adapter]);
+
+    expect(report.baseline.stages.map(({ stage, status }) => `${stage}:${status}`)).toEqual([
+      'build:pass',
+      'test:pass',
+      'lint:pass',
+    ]);
+    expect(report.baseline.debt).toEqual({
+      deadExports: [],
+      duplicatedLines: 0,
+      duplicationRule: DUPLICATION_RULE_ID,
+    });
+  });
+
+  it('marks missing commands as skipped with a not-measured finding', async () => {
     const adapter = makeAdapter({
       gateCommands: () => [{ stage: 'build', command: 'true', args: [] }],
     });
 
-    const report = initProject(db, repo, [adapter]);
+    const report = await initProject(db, repo, [adapter]);
 
     expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'skipped', 'skipped']);
     expect(report.findings).toHaveLength(2);
   });
 
-  it("records origin's URL on the project row, raw", () => {
+  it("records origin's URL on the project row, raw", async () => {
     addOrigin(repo);
     // The rewrite `remote get-url` would apply and `config --get` does not:
     // recording the rewritten value would record whatever a session had
     // already aimed the repo at (decisions 54, 56).
     sh(repo, 'git', 'config', 'url./tmp/elsewhere/.insteadOf', ORIGIN_URL);
 
-    const report = initProject(db, repo, [makeAdapter()]);
+    const report = await initProject(db, repo, [makeAdapter()]);
 
     expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
     expect(report.findings).toEqual([]);
   });
 
-  it('refuses to record a URL nobody could have typed', () => {
+  it('refuses to record a URL nobody could have typed', async () => {
     // Terminal escapes in a remote URL repaint whatever is printed around it,
     // and a stored one would be reprinted on every init and audit.
     addOrigin(repo, `${ORIGIN_URL}\u001b[2Aowned`);
 
-    const report = initProject(db, repo, [makeAdapter()]);
+    const report = await initProject(db, repo, [makeAdapter()]);
 
     expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
     expect(report.findings[0]).toContain('not a URL anyone could have typed');
   });
 
-  it('holds the first record on a project whose sessions could have written it', () => {
+  it('holds the first record on a project whose sessions could have written it', async () => {
     addOrigin(repo);
     const pid = projectId(repo);
     ensureProject(db, pid, repo);
@@ -192,65 +303,65 @@ describe('initProject', () => {
       profileHash: 'h',
     });
 
-    const held = initProject(db, repo, [makeAdapter()]);
+    const held = await initProject(db, repo, [makeAdapter()]);
 
     expect(getProject(db, pid)?.origin_url).toBeNull();
     expect(held.findings[0]).toContain('--origin-moved');
     // The flag is how the operator confirms it, first record or later move.
-    const confirmed = initProject(db, repo, [makeAdapter()], undefined, 're-record');
+    const confirmed = await initProject(db, repo, [makeAdapter()], undefined, 're-record');
     expect(getProject(db, pid)?.origin_url).toBe(ORIGIN_URL);
     expect(confirmed.findings).toEqual([]);
   });
 
-  it('records nothing when the repo has no origin', () => {
+  it('records nothing when the repo has no origin', async () => {
     sh(repo, 'git', 'init', '-b', 'main');
 
-    initProject(db, repo, [makeAdapter()]);
+    await initProject(db, repo, [makeAdapter()]);
 
     expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
   });
 
-  it('keeps the recorded push target when origin now says something else, and says so', () => {
+  it('keeps the recorded push target when origin now says something else, and says so', async () => {
     addOrigin(repo);
-    initProject(db, repo, [makeAdapter()]);
+    await initProject(db, repo, [makeAdapter()]);
     sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:attacker/repo.git');
 
-    const report = initProject(db, repo, [makeAdapter()]);
+    const report = await initProject(db, repo, [makeAdapter()]);
 
     expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
     expect(report.findings).toEqual([expect.stringContaining('git@github.com:attacker/repo.git')]);
     expect(report.findings[0]).toContain('--origin-moved');
   });
 
-  it('re-records the push target when the operator says origin moved', () => {
+  it('re-records the push target when the operator says origin moved', async () => {
     addOrigin(repo);
-    initProject(db, repo, [makeAdapter()]);
+    await initProject(db, repo, [makeAdapter()]);
     sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:owner/renamed.git');
 
-    const report = initProject(db, repo, [makeAdapter()], undefined, 're-record');
+    const report = await initProject(db, repo, [makeAdapter()], undefined, 're-record');
 
     expect(getProject(db, projectId(repo))?.origin_url).toBe('git@github.com:owner/renamed.git');
     expect(report.findings).toEqual([]);
   });
 
-  it('refreshes the baseline on re-run', () => {
-    initProject(db, repo, [
+  it('refreshes the baseline on re-run', async () => {
+    await initProject(db, repo, [
       makeAdapter({ gateCommands: () => [{ stage: 'build', command: 'false', args: [] }] }),
     ]);
-    const second = initProject(db, repo, [makeAdapter()]);
+    const second = await initProject(db, repo, [makeAdapter()]);
 
     expect(second.findings).toEqual([]);
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
   });
 
-  it('captures debt metrics in the baseline when the adapter can measure them', () => {
+  it('captures debt metrics in the baseline when the adapter can measure them', async () => {
     const adapter = makeAdapter({
       deadCode: () => [{ file: 'src/a.ts', exportName: 'orphan' }],
       duplication: () => ({ duplicatedLines: 12, blocks: [] }),
     });
 
-    initProject(db, repo, [adapter]);
+    await initProject(db, repo, [adapter]);
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt).toEqual({
@@ -260,48 +371,50 @@ describe('initProject', () => {
     });
   });
 
-  it('captures the repo coverage ratio when the adapter can measure it', () => {
+  it('captures the repo coverage ratio when the adapter can measure it', async () => {
     const adapter = makeAdapter({
       coverage: () => ({ files: { 'src/a.ts': { covered: [1], instrumented: [1, 2] } } }),
     });
 
-    initProject(db, repo, [adapter]);
+    await initProject(db, repo, [adapter]);
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.coverageRatio).toBe(0.5);
   });
 
-  it('leaves debt metrics out of the baseline when no adapter can measure them', () => {
-    initProject(db, repo, [makeAdapter()]);
+  it('leaves debt metrics out of the baseline when no adapter can measure them', async () => {
+    await initProject(db, repo, [makeAdapter()]);
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt).toBeUndefined();
   });
 
-  it('does not store an empty dead-export baseline when the tooling is unavailable', () => {
-    initProject(db, repo, [makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) })]);
+  it('does not store an empty dead-export baseline when the tooling is unavailable', async () => {
+    await initProject(db, repo, [
+      makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) }),
+    ]);
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toBeUndefined();
   });
 
-  it('reports why a capability could not measure, so the gap is visible before any session', () => {
-    const report = initProject(db, repo, [
+  it('reports why a capability could not measure, so the gap is visible before any session', async () => {
+    const report = await initProject(db, repo, [
       makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) }),
     ]);
 
     expect(report.findings).toContainEqual(expect.stringContaining('vulture missing'));
   });
 
-  it('stores an empty dead-export baseline when the tooling measured and found nothing', () => {
+  it('stores an empty dead-export baseline when the tooling measured and found nothing', async () => {
     // [] is a measurement: it becomes the bar every later session is held to.
-    initProject(db, repo, [makeAdapter({ deadCode: () => [] })]);
+    await initProject(db, repo, [makeAdapter({ deadCode: () => [] })]);
 
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.deadExports).toEqual([]);
   });
 
-  it('stores nothing when the package manager itself cannot load from the toolchain cache', () => {
+  it('stores nothing when the package manager itself cannot load from the toolchain cache', async () => {
     // The poisoned shape: a corepack install with an empty bin/. The repair
     // moves it aside before the child runs, and the stage still runs the path
     // it was handed, so the crash is Node's real missing-entrypoint banner.
@@ -327,8 +440,8 @@ describe('initProject', () => {
     });
 
     try {
-      expect(() => initProject(db, repo, [adapter])).toThrow(BrokenToolchainError);
-      expect(() => initProject(db, repo, [adapter])).toThrow(install);
+      await expect(initProject(db, repo, [adapter])).rejects.toThrow(BrokenToolchainError);
+      await expect(initProject(db, repo, [adapter])).rejects.toThrow(install);
     } finally {
       vi.unstubAllEnvs();
       rmSync(tmp, { recursive: true, force: true });
@@ -342,11 +455,11 @@ describe('initProject', () => {
     expect(() => initProject(db, repo, [adapter])).toThrow(NoAdapterError);
   });
 
-  it('appends a history row for every capture, first init included', () => {
-    const first = initProject(db, repo, [
+  it('appends a history row for every capture, first init included', async () => {
+    const first = await initProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 12, blocks: [] }) }),
     ]);
-    const second = initProject(db, repo, [makeAdapter()]);
+    const second = await initProject(db, repo, [makeAdapter()]);
 
     const history = listBaselineHistory(db, projectId(repo));
     expect(history.map((r) => r.captured_at)).toEqual([
@@ -360,11 +473,11 @@ describe('initProject', () => {
     expect(history[1]?.debt).toBeNull();
   });
 
-  it('backfills a baseline stored before the history table existed, before overwriting it', () => {
+  it('backfills a baseline stored before the history table existed, before overwriting it', async () => {
     const pid = projectId(repo);
     const legacy = seedPreHistoryBaseline(db, pid, repo, { duplicatedLines: 184 });
 
-    const report = initProject(db, repo, [makeAdapter()]);
+    const report = await initProject(db, repo, [makeAdapter()]);
 
     const history = listBaselineHistory(db, pid);
     expect(history.map((r) => r.captured_at)).toEqual([
@@ -374,12 +487,12 @@ describe('initProject', () => {
     expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({ duplicatedLines: 184 });
   });
 
-  it('does not seed the same pre-history baseline twice across re-runs', () => {
+  it('does not seed the same pre-history baseline twice across re-runs', async () => {
     const pid = projectId(repo);
     const legacy = seedPreHistoryBaseline(db, pid, repo);
 
-    const first = initProject(db, repo, [makeAdapter()]);
-    const second = initProject(db, repo, [makeAdapter()]);
+    const first = await initProject(db, repo, [makeAdapter()]);
+    const second = await initProject(db, repo, [makeAdapter()]);
 
     // Exactly one row per capture: an unguarded backfill would re-append the
     // first run's baseline on the second run, not the legacy one.

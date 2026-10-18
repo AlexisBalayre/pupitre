@@ -153,12 +153,11 @@ import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
 import { landSession } from '../core/land.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
-import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
-import { UndeclaredSandboxError } from '../core/sandbox.utils.js';
+import { GateInterruptedError, UndeclaredSandboxError } from '../core/sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -1721,13 +1720,13 @@ describe('CLI commands', () => {
   // Off darwin with no declaration, both refuse in one line before measuring
   // anything; with it, both print the declared label (decision 78).
   describe.each(['init', 'audit'])('%s off darwin', (command) => {
-    it('refuses in one line naming PUP_SANDBOX=vm, and stores nothing', () => {
+    it('refuses in one line naming PUP_SANDBOX=vm, and stores nothing', async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', undefined);
 
-      buildProgram().parse([command], { from: 'user' });
+      await buildProgram().parseAsync([command], { from: 'user' });
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
@@ -1735,12 +1734,12 @@ describe('CLI commands', () => {
       expect(logs).toEqual([]);
     });
 
-    it('runs under the declaration and prints the declared label', () => {
+    it('runs under the declaration and prints the declared label', async () => {
       useCwd(initRepoWithAdapter());
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'vm');
 
-      buildProgram().parse([command], { from: 'user' });
+      await buildProgram().parseAsync([command], { from: 'user' });
 
       expect(logs).toContain('sandbox: vm (declared by operator)');
     });
@@ -1765,30 +1764,30 @@ describe('CLI commands', () => {
   });
 
   describe('init', () => {
-    it('reports the NoAdapterError and exits 1 when no adapter detects the repo', () => {
+    it('reports the NoAdapterError and exits 1 when no adapter detects the repo', async () => {
       useCwd(initRepo());
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('No adapter detected')]);
       expect(logs).toEqual([]);
     });
 
-    it('throws when run outside any git repo (no project to resolve)', () => {
+    it('throws when run outside any git repo (no project to resolve)', async () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(() => buildProgram().parse(['init'], { from: 'user' })).toThrow();
+      await expect(buildProgram().parseAsync(['init'], { from: 'user' })).rejects.toThrow();
     });
 
     // Beside the sandbox line and for the same reason (decision 36): an
     // operator who never sees it cannot tell a fleet whose sessions get a code
     // graph from one whose sessions grep.
-    it('reports the installed codegraph version beside the sandbox line', () => {
+    it('reports the installed codegraph version beside the sandbox line', async () => {
       useCwd(initRepoWithAdapter());
       stubCodegraph('codegraph 1.6.0');
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(logs).toContain('codegraph: codegraph 1.6.0');
       expect(logs.indexOf('codegraph: codegraph 1.6.0')).toBe(
@@ -1796,13 +1795,26 @@ describe('CLI commands', () => {
       );
     });
 
-    it('says so when the operator has none — detected like gh and tmux, never required', () => {
+    it('says so when the operator has none — detected like gh and tmux, never required', async () => {
       useCwd(initRepoWithAdapter());
       stubCodegraph();
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(logs).toContain('codegraph: not installed');
+    });
+
+    it('prints each stage’s wall time (decision 95)', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(join(repo, '.pupitre', 'adapter.yml'), 'id: probe\nbuild: sleep 0.2\n');
+
+      await buildProgram().parseAsync(['init'], { from: 'user' });
+
+      expect(logs).toContainEqual(
+        expect.stringMatching(/^ {2}build {4}PASS {5}(0\.[2-9]|[1-9]\d*\.\d)s$/),
+      );
     });
 
     const ORIGIN_URL = 'git@github.com:owner/repo.git';
@@ -1830,11 +1842,11 @@ describe('CLI commands', () => {
     // The recorded push target is what `pup merge --pr` refuses to differ from,
     // so it is printed with the other lines about how this fleet is confined
     // (decisions 36, 51, 56).
-    it("records origin's URL and prints it beside the sandbox line", () => {
+    it("records origin's URL and prints it beside the sandbox line", async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
       expect(logs).toContain(`push target: ${ORIGIN_URL}`);
@@ -1843,10 +1855,10 @@ describe('CLI commands', () => {
       );
     });
 
-    it('says the push target is unrecorded when the repo has no origin to record', () => {
+    it('says the push target is unrecorded when the repo has no origin to record', async () => {
       useCwd(initRepoWithAdapter());
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(logs).toContain(
         'push target: not recorded — `pup merge --pr` refuses until `pup init` records one',
@@ -1861,13 +1873,13 @@ describe('CLI commands', () => {
     it.each([
       ['', []],
       [' --origin-moved', ['--origin-moved']],
-    ])('refuses `init%s` when a session is calling', (_label, flags) => {
+    ])('refuses `init%s` when a session is calling', async (_label, flags) => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
       seedSession(repo, 's1');
       vi.stubEnv('PUP_SESSION_ID', 's1');
 
-      buildProgram().parse(['init', ...flags], { from: 'user' });
+      await buildProgram().parseAsync(['init', ...flags], { from: 'user' });
 
       expect(errors).toEqual(['`pup init` is operator-only; sessions cannot move the baseline.']);
       expect(logs).toEqual([]);
@@ -1882,12 +1894,12 @@ describe('CLI commands', () => {
 
     // The conductor is the operator's delegate for setup, as it is for the
     // audit (decision 48): the guard asks for a session and nothing else.
-    it('lets the conductor run `init`', () => {
+    it('lets the conductor run `init`', async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
       vi.stubEnv('PUP_CONDUCTOR', 'p1');
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(errors).toEqual([]);
       expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
@@ -1898,7 +1910,7 @@ describe('CLI commands', () => {
       db.close();
     });
 
-    it('prints a recorded push target through the sanitizer', () => {
+    it('prints a recorded push target through the sanitizer', async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
       // A row written before `recordOriginUrl` refused these: printing it raw
@@ -1911,7 +1923,7 @@ describe('CLI commands', () => {
       );
       db.close();
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       expect(logs).toContain(`push target: ${ORIGIN_URL} [2Aowned`);
     });
@@ -1919,7 +1931,7 @@ describe('CLI commands', () => {
     // The record is made before the stages so a stage that dies cannot lose it
     // (decision 55); the line reporting it has to survive the same death, or a
     // first record lands with no output at all.
-    it('prints the recorded push target when a broken toolchain kills the capture', () => {
+    it('prints the recorded push target when a broken toolchain kills the capture', async () => {
       const repo = initRepo();
       execFileSync('git', ['remote', 'add', 'origin', ORIGIN_URL], {
         cwd: repo,
@@ -1949,7 +1961,9 @@ describe('CLI commands', () => {
         `id: fake\nbuild: node ${join(install, 'bin', 'pnpm.cjs')}\n`,
       );
 
-      expect(() => buildProgram().parse(['init'], { from: 'user' })).toThrow('toolchain cache');
+      await expect(buildProgram().parseAsync(['init'], { from: 'user' })).rejects.toThrow(
+        'toolchain cache',
+      );
 
       expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
       expect(logs).toEqual([`push target: ${ORIGIN_URL}`]);
@@ -1964,12 +1978,12 @@ describe('CLI commands', () => {
     // A finding names the adapter that could not measure, and a custom
     // adapter's id comes out of `.pupitre/adapter.yml` — a file the repo
     // carries, not a constant pup owns (decision 68).
-    it('scrubs the findings and the sandbox line of the tail', () => {
+    it('scrubs the findings and the sandbox line of the tail', async () => {
       const repo = initRepo();
       useCwd(repo);
       writeCustomAdapter(repo, 'id: "fa\\e[2Jke"\ncoverage: exit 3\n');
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       const page = logs.join('\n');
       expect(page).toContain('adapters: fa [2Jke');
@@ -1979,29 +1993,29 @@ describe('CLI commands', () => {
 
     // The stage detail is the last line of a failing command's own output,
     // written by whatever the repo's build script runs (decision 68).
-    it("scrubs a failing stage's output", () => {
+    it("scrubs a failing stage's output", async () => {
       const repo = initRepo();
       useCwd(repo);
       writeCustomAdapter(repo, 'build: \'printf "bo\\033[2Jom" >&2; exit 1\'\n');
 
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
       const page = logs.join('\n');
       expect(page).toContain('bo [2Jom');
       expect(page).not.toContain('\u001b');
     });
 
-    it('re-records a moved origin when the operator says it moved', () => {
+    it('re-records a moved origin when the operator says it moved', async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
       execFileSync('git', ['config', 'remote.origin.url', 'git@github.com:owner/renamed.git'], {
         cwd: repo,
         env: GIT_ENV,
         encoding: 'utf8',
       });
 
-      buildProgram().parse(['init', '--origin-moved'], { from: 'user' });
+      await buildProgram().parseAsync(['init', '--origin-moved'], { from: 'user' });
 
       expect(recordedOrigin(repo)).toBe('git@github.com:owner/renamed.git');
       expect(logs).toContain('push target: git@github.com:owner/renamed.git');
@@ -2009,38 +2023,38 @@ describe('CLI commands', () => {
   });
 
   describe('audit', () => {
-    it('reports the NoAdapterError and exits 1 when no adapter detects the repo', () => {
+    it('reports the NoAdapterError and exits 1 when no adapter detects the repo', async () => {
       useCwd(initRepo());
 
-      buildProgram().parse(['audit'], { from: 'user' });
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('No adapter detected')]);
       expect(logs).toEqual([]);
     });
 
-    it('throws when run outside any git repo (no project to resolve)', () => {
+    it('throws when run outside any git repo (no project to resolve)', async () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(() => buildProgram().parse(['audit'], { from: 'user' })).toThrow();
+      await expect(buildProgram().parseAsync(['audit'], { from: 'user' })).rejects.toThrow();
     });
 
     // The repeat path prints it too, or the capability goes quiet on every run
     // after the first (decision 29).
-    it('reports the codegraph capability on the re-run path as well', () => {
+    it('reports the codegraph capability on the re-run path as well', async () => {
       useCwd(initRepoWithAdapter());
       stubCodegraph('1.6.0');
 
-      buildProgram().parse(['audit'], { from: 'user' });
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
 
       expect(logs).toContain('codegraph: 1.6.0');
     });
 
-    it('reports an absent codegraph on the re-run path too', () => {
+    it('reports an absent codegraph on the re-run path too', async () => {
       useCwd(initRepoWithAdapter());
       stubCodegraph();
 
-      buildProgram().parse(['audit'], { from: 'user' });
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
 
       expect(logs).toContain('codegraph: not installed');
     });
@@ -2048,17 +2062,17 @@ describe('CLI commands', () => {
     // The repeat path prints its own stage lines rather than `pup init`'s, and
     // a regressed stage carries the failing command's output with it
     // (decision 68).
-    it('scrubs the transition lines and the regressed stage output', () => {
+    it('scrubs the transition lines and the regressed stage output', async () => {
       const repo = initRepo();
       useCwd(repo);
       const adapterYml = join(repo, '.pupitre', 'adapter.yml');
       mkdirSync(join(repo, '.pupitre'), { recursive: true });
       writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\n');
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
       writeFileSync(adapterYml, 'build: \'printf "bo\\033[2Jom" >&2; exit 1\'\n');
       logs.length = 0;
 
-      buildProgram().parse(['audit'], { from: 'user' });
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
 
       const page = logs.join('\n');
       expect(page).toContain('build    PASS -> FAIL');
@@ -2067,7 +2081,7 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('keeps the baseline and exits 1 when a debt metric was not measured', () => {
+    it('keeps the baseline and exits 1 when a debt metric was not measured', async () => {
       const repo = initRepo();
       useCwd(repo);
       const adapterYml = join(repo, '.pupitre', 'adapter.yml');
@@ -2076,7 +2090,7 @@ describe('CLI commands', () => {
         adapterYml,
         `id: probe\nbuild: exit 0\ndeadCode: echo '[]'\ncoverage: echo '{"files":{"a.ts":{"covered":[1],"instrumented":[1]}}}'\n`,
       );
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
       const before = baselineRows(repo);
       writeFileSync(
         adapterYml,
@@ -2084,12 +2098,14 @@ describe('CLI commands', () => {
       );
       logs.length = 0;
 
-      buildProgram().parse(['audit'], { from: 'user' });
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
 
       expect(errors[0]).toMatch(/^probe: coverage not measured — coverage command failed: .*boom/);
       expect(errors).toHaveLength(2);
       expect(errors[1]).toMatch(/^Baseline kept: a debt metric was not measured/);
       expect(logs.join('\n')).toContain('build    PASS');
+      // With its wall time, as `pup init` prints it (decision 95).
+      expect(logs).toContainEqual(expect.stringMatching(/^ {2}build {4}PASS {13}\d+\.\ds$/));
       // The drift of what did measure still prints, above the refusal.
       expect(logs).toContainEqual(expect.stringMatching(/^ {2}dead-code 0 -> 0\s*$/));
       expect(logs.join('\n')).not.toContain('debt baseline:');
@@ -2098,7 +2114,7 @@ describe('CLI commands', () => {
       expect(baselineRows(repo)).toEqual(before);
     });
 
-    it('launches no sweep when a debt metric was not measured', () => {
+    it('launches no sweep when a debt metric was not measured', async () => {
       const repo = initRepo();
       useCwd(repo);
       const adapterYml = join(repo, '.pupitre', 'adapter.yml');
@@ -2107,24 +2123,24 @@ describe('CLI commands', () => {
         adapterYml,
         `id: probe\nbuild: exit 0\ncoverage: echo '{"files":{"a.ts":{"covered":[1],"instrumented":[1]}}}'\n`,
       );
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
       writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\ncoverage: echo boom >&2; exit 1\n');
 
-      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+      await buildProgram().parseAsync(['audit', '--sweep'], { from: 'user' });
 
       expect(errors.at(-1)).toMatch(/^Baseline kept: a debt metric was not measured/);
       expect(createSession).not.toHaveBeenCalled();
       expect(process.exitCode).toBe(1);
     });
 
-    it('refreshes the baseline when every metric measured', () => {
+    it('refreshes the baseline when every metric measured', async () => {
       const repo = initRepo();
       useCwd(repo);
       mkdirSync(join(repo, '.pupitre'), { recursive: true });
       writeFileSync(join(repo, '.pupitre', 'adapter.yml'), 'id: probe\nbuild: exit 0\n');
-      buildProgram().parse(['init'], { from: 'user' });
+      await buildProgram().parseAsync(['init'], { from: 'user' });
 
-      buildProgram().parse(['audit'], { from: 'user' });
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
 
       expect(logs).toContain('Baseline refreshed.');
       expect(errors).toEqual([]);
@@ -2148,13 +2164,13 @@ describe('CLI commands', () => {
     // A sweep is scoped to the whole repo, so it collides with every live
     // session there is; refusing it would make `--sweep` unrunnable whenever
     // anything else runs, and there is no flag to say otherwise (decision 41).
-    it('reports the sweep launch that rolled itself back', () => {
+    it('reports the sweep launch that rolled itself back', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockImplementation(() => {
         throw rolledBackLaunch('sweep-abc');
       });
 
-      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+      await buildProgram().parseAsync(['audit', '--sweep'], { from: 'user' });
 
       // The sweep task was already planned, so the retry is a launch of it,
       // not another `--sweep` that would plan a second one beside the orphan.
@@ -2168,11 +2184,11 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('Launched sweep session');
     });
 
-    it('launches a sweep recorded as the audit, with no overlap flag to pass', () => {
+    it('launches a sweep recorded as the audit, with no overlap flag to pass', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockReturnValue('sweep-abc');
 
-      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+      await buildProgram().parseAsync(['audit', '--sweep'], { from: 'user' });
 
       expect(firstCall(createSession)[1]).toMatchObject({ origin: 'audit' });
       expect(firstCall(createSession)[1]).not.toHaveProperty('allowOverlap');
@@ -2181,13 +2197,13 @@ describe('CLI commands', () => {
     // The compile reads the project brief, so a brief over the cap refuses the
     // sweep in one line. The sweep's expected-error list was empty, which made
     // it the one launch path that crashed on it instead (decision 57).
-    it('refuses a sweep in one line when the project brief is over the cap', () => {
+    it('refuses a sweep in one line when the project brief is over the cap', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(createSession).mockImplementation(() => {
         throw new InvalidProfileError('The project brief at /s/brief.md is 9000 characters.');
       });
 
-      buildProgram().parse(['audit', '--sweep'], { from: 'user' });
+      await buildProgram().parseAsync(['audit', '--sweep'], { from: 'user' });
 
       expect(errors).toEqual(['The project brief at /s/brief.md is 9000 characters.']);
       expect(process.exitCode).toBe(1);
@@ -2200,13 +2216,13 @@ describe('CLI commands', () => {
     it.each([
       ['', []],
       [' --sweep', ['--sweep']],
-    ])('refuses `audit%s` when a session is calling', (_label, flags) => {
+    ])('refuses `audit%s` when a session is calling', async (_label, flags) => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       seedSession(repo, 's1');
       vi.stubEnv('PUP_SESSION_ID', 's1');
 
-      buildProgram().parse(['audit', ...flags], { from: 'user' });
+      await buildProgram().parseAsync(['audit', ...flags], { from: 'user' });
 
       expect(createSession).not.toHaveBeenCalled();
       expect(errors).toEqual(['`pup audit` is operator-only; sessions cannot move the baseline.']);
@@ -3646,10 +3662,10 @@ describe('CLI commands', () => {
 
     // The fast-forward moves main; the conductor gates through --pr and the
     // human merges the PR (decision 75).
-    it('is refused the local merge, and told to use --pr', () => {
+    it('is refused the local merge, and told to use --pr', async () => {
       useCwd(initRepoWithAdapter());
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(runMergeGate).not.toHaveBeenCalled();
       expect(errors).toEqual([
@@ -5395,13 +5411,13 @@ describe('CLI commands', () => {
 
     // A session landing a branch picks the moment the baseline moves, which is
     // why it may not run the audit either (decision 84).
-    it('refuses when a session is calling, landing nothing', () => {
+    it('refuses when a session is calling, landing nothing', async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       seedOpenPr(repo);
       vi.stubEnv('PUP_SESSION_ID', 's1');
 
-      buildProgram().parse(['land', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
 
       expect(errors).toEqual([
         '`pup land` is refused to sessions; the operator or the conductor runs it.',
@@ -5411,13 +5427,13 @@ describe('CLI commands', () => {
     });
 
     // The human merged the PR on GitHub; what is left is the conductor's to run.
-    it('lands from the conductor and reports what moved', () => {
+    it('lands from the conductor and reports what moved', async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
-      vi.mocked(landSession).mockReturnValue(landedOutcome());
+      vi.mocked(landSession).mockResolvedValue(landedOutcome());
 
-      buildProgram().parse(['land', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
 
       expect(firstCall(landSession)[1]).toMatchObject({ repoPath: repo, sessionId: 's1' });
       expect(logs).toContain(
@@ -5427,16 +5443,16 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
-    it('names a kept branch and a target that already held the merge', () => {
+    it('names a kept branch and a target that already held the merge', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(landSession).mockReturnValue({
+      vi.mocked(landSession).mockResolvedValue({
         ...landedOutcome(),
         fastForwarded: false,
         removedWorktree: false,
         keptBranch: 'pup/s1',
       });
 
-      buildProgram().parse(['land', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
 
       expect(logs).toContain(
         `Landed s1: ${PR} merged as ${'a'.repeat(40)}; main already held it at ${'a'.repeat(40)}.`,
@@ -5446,25 +5462,25 @@ describe('CLI commands', () => {
     });
 
     // It ends on the audit, which runs children: refused before anything moves (decision 78).
-    it('refuses off darwin with no sandbox declared, landing nothing', () => {
+    it('refuses off darwin with no sandbox declared, landing nothing', async () => {
       useCwd(initRepoWithAdapter());
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', undefined);
 
-      buildProgram().parse(['land', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
 
       expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
       expect(process.exitCode).toBe(1);
       expect(landSession).not.toHaveBeenCalled();
     });
 
-    it('prints a refusal on one line with its control characters gone', () => {
+    it('prints a refusal on one line with its control characters gone', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockImplementation(() => {
         throw new Error('PR is OPEN\u001b[2J on GitHub, not MERGED. Nothing was landed.');
       });
 
-      buildProgram().parse(['land', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
 
       expect(errors).toEqual(['PR is OPEN [2J on GitHub, not MERGED. Nothing was landed.']);
       expect(process.exitCode).toBe(1);
@@ -5499,90 +5515,69 @@ describe('CLI commands', () => {
     }
 
     /**
-     * The gate's lock is a directory released in a `finally`, which a process
-     * killed by a signal never reaches — Ctrl-C at the terminal, or the SIGTERM
-     * `pup ui`'s `q` sends this child. Left behind, it refuses every later
-     * merge on behalf of a run that is long gone.
+     * Under its lock the gate outlives a Ctrl-C and the SIGTERM `pup ui`'s `q`
+     * sends this child: it stops every stage child and removes the lock in its
+     * own `finally` (decision 95), so the command adds no handler of its own.
      */
-    describe('the lock a signal would otherwise strand', () => {
-      /** The signal listeners `merge` added, and the lock path it guards. */
-      function runMergeUnderSignals(repo: string): {
-        handlers: NodeJS.SignalsListener[];
-        lockPath: string;
-      } {
-        const before = process.listeners('SIGINT');
-        vi.mocked(runMergeGate).mockImplementation(() => {
-          // Inside the gate: the listeners are live and the lock is held.
-          mkdirSync(join(repo, '.git', MERGE_LOCK_DIRNAME), { recursive: true });
-          handlers = process
-            .listeners('SIGINT')
-            .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
-          throw new Error('interrupted');
+    describe('an interrupted gate', () => {
+      it('adds no signal handler of its own while the gate runs', async () => {
+        useCwd(initRepoWithAdapter());
+        const listening = () => ({
+          int: process.listeners('SIGINT').length,
+          term: process.listeners('SIGTERM').length,
         });
-        let handlers: NodeJS.SignalsListener[] = [];
-        buildProgram().parse(['merge', 's1'], { from: 'user' });
-        return { handlers, lockPath: join(repo, '.git', MERGE_LOCK_DIRNAME) };
-      }
+        const before = listening();
+        let during: ReturnType<typeof listening> | undefined;
+        vi.mocked(runMergeGate).mockImplementation(async () => {
+          during = listening();
+          return mergedOutcome();
+        });
 
-      it('removes the lock this run took, and exits', () => {
-        const repo = initRepoWithAdapter();
-        useCwd(repo);
-        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+        await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
-        const { handlers, lockPath } = runMergeUnderSignals(repo);
-        expect(handlers).toHaveLength(1);
-        handlers[0]?.('SIGINT');
-
-        expect(existsSync(lockPath)).toBe(false);
-        expect(exit).toHaveBeenCalledWith(130);
+        expect(during).toEqual(before);
       });
 
-      // A lock that was already there belongs to another merge, and removing it
-      // would hand that run's exclusion to whoever interrupted this one.
-      it('leaves a lock it found already held', () => {
-        const repo = initRepoWithAdapter();
-        useCwd(repo);
-        mkdirSync(join(repo, '.git', MERGE_LOCK_DIRNAME), { recursive: true });
-        vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      it.each([
+        ['SIGINT', 130],
+        ['SIGTERM', 143],
+        ['SIGHUP', 129],
+      ] as const)('leaves %s to the entry point, which exits %i', async (signal, code) => {
+        useCwd(initRepoWithAdapter());
+        vi.mocked(runMergeGate).mockRejectedValue(new GateInterruptedError(signal));
 
-        const { handlers, lockPath } = runMergeUnderSignals(repo);
-        handlers[0]?.('SIGTERM');
+        const escaped = await buildProgram()
+          .parseAsync(['merge', 's1'], { from: 'user' })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
 
-        expect(existsSync(lockPath)).toBe(true);
-      });
-
-      // Once the gate has returned it has released its own lock, so a later
-      // signal must not reach a handler that would delete the next run's.
-      it('takes its handlers off again when the gate returns', () => {
-        const repo = initRepoWithAdapter();
-        useCwd(repo);
-        const before = process.listeners('SIGINT').length;
-
-        vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
-        buildProgram().parse(['merge', 's1'], { from: 'user' });
-
-        expect(process.listeners('SIGINT')).toHaveLength(before);
+        expect(escaped).toBeInstanceOf(GateInterruptedError);
+        expect(logs).toEqual([]);
+        expect(fatalExitCode(escaped)).toBe(code);
+        expect(errors).toEqual([expect.stringContaining(`Interrupted by ${signal}`)]);
       });
     });
 
     // The gate refuses before running a child (decision 78); the command turns
     // that into one line on stderr, like every other gate refusal.
-    it('refuses in one line when the gate finds no sandbox and no declaration', () => {
+    it('refuses in one line when the gate finds no sandbox and no declaration', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockImplementation(() => {
         throw new UndeclaredSandboxError();
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
       expect(logs).toEqual([]);
     });
 
-    it('prints the declared label on the gate report', () => {
+    it('prints the declared label on the gate report', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(
+      vi.mocked(runMergeGate).mockResolvedValue(
         mergedOutcome({
           report: {
             sessionId: 's1',
@@ -5593,35 +5588,63 @@ describe('CLI commands', () => {
         }),
       );
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain(`  ${'sandbox'.padEnd(16)} vm (declared by operator)`);
     });
 
-    it('rejects --accept-debt without --review-by', () => {
+    it('prints each stage’s wall time beside its status, and none for a stage untimed', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockResolvedValue(
+        mergedOutcome({
+          report: {
+            sessionId: 's1',
+            passed: true,
+            sandbox: 'none',
+            stages: [
+              { stage: 'build', status: 'pass', durationMs: 1234 },
+              { stage: 'test', status: 'pass', detail: '12 files', durationMs: 41_000 },
+              { stage: 'coverage', status: 'skipped', detail: 'not measured' },
+            ],
+          },
+        }),
+      );
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(`  ${'build'.padEnd(16)} PASS 1.2s`);
+      expect(logs).toContain(`  ${'test'.padEnd(16)} PASS 41.0s  12 files`);
+      expect(logs).toContain(`  ${'coverage'.padEnd(16)} SKIPPED  not measured`);
+    });
+
+    it('rejects --accept-debt without --review-by', async () => {
       useCwd(initRepo());
 
-      buildProgram().parse(['merge', 's1', '--accept-debt', 'shortcut taken'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--accept-debt', 'shortcut taken'], {
+        from: 'user',
+      });
 
       expect(errors).toEqual(['--accept-debt and --review-by must be passed together.']);
       expect(process.exitCode).toBe(1);
       expect(runMergeGate).not.toHaveBeenCalled();
     });
 
-    it('rejects --review-by without --accept-debt', () => {
+    it('rejects --review-by without --accept-debt', async () => {
       useCwd(initRepo());
 
-      buildProgram().parse(['merge', 's1', '--review-by', 'before v2'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--review-by', 'before v2'], {
+        from: 'user',
+      });
 
       expect(errors).toEqual(['--accept-debt and --review-by must be passed together.']);
       expect(process.exitCode).toBe(1);
       expect(runMergeGate).not.toHaveBeenCalled();
     });
 
-    it('reports no adapter detected and exits 1', () => {
+    it('reports no adapter detected and exits 1', async () => {
       useCwd(initRepo());
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('No adapter detected')]);
@@ -5633,12 +5656,12 @@ describe('CLI commands', () => {
     it.each([
       ['', []],
       [' --pr', ['--pr']],
-    ])('refuses `merge%s` when a session is calling', (_label, flags) => {
+    ])('refuses `merge%s` when a session is calling', async (_label, flags) => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       seedSession(repo, 's1', repo);
 
-      buildProgram().parse(['merge', 's2', ...flags], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's2', ...flags], { from: 'user' });
 
       expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
       expect(logs).toEqual([]);
@@ -5649,22 +5672,22 @@ describe('CLI commands', () => {
     // The variable once counted only when it named a session that exists, to
     // keep garbage out of the ledger's acceptor; with the acceptor constant, a
     // variable naming no session is still a session, not an operator (decision 44).
-    it('refuses when PUP_SESSION_ID names no session', () => {
+    it('refuses when PUP_SESSION_ID names no session', async () => {
       useCwd(initRepoWithAdapter());
       vi.stubEnv('PUP_SESSION_ID', 'does-not-exist');
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
       expect(runMergeGate).not.toHaveBeenCalled();
     });
 
-    it('forwards the repo, session, and detected adapter to the gate', () => {
+    it('forwards the repo, session, and detected adapter to the gate', async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
-      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+      vi.mocked(runMergeGate).mockResolvedValue(mergedOutcome());
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(runMergeGate).toHaveBeenCalledTimes(1);
       const [, request] = firstCall(runMergeGate);
@@ -5677,14 +5700,14 @@ describe('CLI commands', () => {
     // Whole but clean: pup's own refusals carry remediation steps past the
     // scrubber's 300-character cut, and an adapter command's stderr from the
     // session's worktree can ride in the same message (decision 68).
-    it('reports a thrown gate error whole, with control characters stripped', () => {
+    it('reports a thrown gate error whole, with control characters stripped', async () => {
       useCwd(initRepoWithAdapter());
       const long = `worktree has a held lock; ${'run `git config --unset x`. '.repeat(14)}`;
       vi.mocked(runMergeGate).mockImplementation(() => {
         throw new Error(`${long}\u001b]52;c;payload\u0007 tail`);
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(long.length).toBeGreaterThan(300);
       expect(errors).toEqual([`${long} ]52;c;payload  tail`]);
@@ -5694,7 +5717,7 @@ describe('CLI commands', () => {
 
     // The gate reads the stored spec strictly, and its refusal quotes store
     // text: the task id, and the glob that failed (decision 68).
-    it('scrubs a gate refusal that quotes the stored spec', () => {
+    it('scrubs a gate refusal that quotes the stored spec', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockImplementation(() => {
         throw new MalformedTaskSpecError(
@@ -5703,16 +5726,16 @@ describe('CLI commands', () => {
         );
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(errors.join('\n')).toContain('Task t- [2J1 has an unusable spec');
       expect(errors.join('\n')).not.toContain('\u001b');
       expect(process.exitCode).toBe(1);
     });
 
-    it('merges and cleans up on a passing gate with no PR', () => {
+    it('merges and cleans up on a passing gate with no PR', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(
+      vi.mocked(runMergeGate).mockResolvedValue(
         mergedOutcome({
           report: {
             sessionId: 's1',
@@ -5723,20 +5746,20 @@ describe('CLI commands', () => {
         }),
       );
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs.some((l) => /lint\s+PASS/.test(l))).toBe(true);
       expect(logs).toContain('Merged s1; worktree and branch cleaned up.');
       expect(process.exitCode).toBeUndefined();
     });
 
-    it('reports an opened PR when merging with --pr', () => {
+    it('reports an opened PR when merging with --pr', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(
+      vi.mocked(runMergeGate).mockResolvedValue(
         mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
       );
 
-      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--pr'], { from: 'user' });
 
       expect(firstCall(runMergeGate)[1].openPr).toBe(true);
       expect(logs).toContain(
@@ -5746,9 +5769,9 @@ describe('CLI commands', () => {
 
     // The wording comes from the outcome the core returns, never from the
     // session's state: no merged session is seeded in these.
-    it('reports a re-gate of a merged session as the PR vouching for its new head', () => {
+    it('reports a re-gate of a merged session as the PR vouching for its new head', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(
+      vi.mocked(runMergeGate).mockResolvedValue(
         mergedOutcome({
           prUrl: 'https://github.com/acme/repo/pull/7',
           prWasAdopted: true,
@@ -5756,7 +5779,7 @@ describe('CLI commands', () => {
         }),
       );
 
-      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--pr'], { from: 'user' });
 
       expect(logs).toContain(
         'Re-gated s1; https://github.com/acme/repo/pull/7 now carries this gate report for its ' +
@@ -5765,9 +5788,9 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
-    it('reports a re-gate a hard stage refused, naming the stage and the retry', () => {
+    it('reports a re-gate a hard stage refused, naming the stage and the retry', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'refused',
         report: {
           sessionId: 's1',
@@ -5779,7 +5802,7 @@ describe('CLI commands', () => {
         regated: true,
       });
 
-      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--pr'], { from: 'user' });
 
       expect(logs).toContain(
         'Re-gate refused: build failed on the new head, and the PR still vouches for the ' +
@@ -5788,9 +5811,9 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('reports a re-gate refused only for a flag as needing --accept-debt, never a steer', () => {
+    it('reports a re-gate refused only for a flag as needing --accept-debt, never a steer', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'refused',
         report: {
           sessionId: 's1',
@@ -5802,7 +5825,7 @@ describe('CLI commands', () => {
         regated: true,
       });
 
-      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--pr'], { from: 'user' });
 
       expect(logs).toContain(
         'Re-gate refused: diff-size flagged on the new head, and the PR still vouches for the ' +
@@ -5813,13 +5836,13 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('reports an adopted PR when one was already open', () => {
+    it('reports an adopted PR when one was already open', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(
+      vi.mocked(runMergeGate).mockResolvedValue(
         mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: true }),
       );
 
-      buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--pr'], { from: 'user' });
 
       expect(logs).toContain(
         'Gate passed; reused the open PR https://github.com/acme/repo/pull/7 and rewrote its ' +
@@ -5827,13 +5850,13 @@ describe('CLI commands', () => {
       );
     });
 
-    it('surfaces debt candidates touched by the merge', () => {
+    it('surfaces debt candidates touched by the merge', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(
+      vi.mocked(runMergeGate).mockResolvedValue(
         mergedOutcome({ debtCandidates: [{ id: 3, description: 'old shortcut' }] }),
       );
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain(
         'This merge touched files of open debt #3 (old shortcut) — if the shortcut is gone, ' +
@@ -5845,7 +5868,7 @@ describe('CLI commands', () => {
     // `pup log` does, through the same printer, so both scrub them (decision
     // 68). Only the print is exercised: the keystroke after it wants a real
     // tty, and the stub raises the ENOTTY a stdin that is not one raises.
-    it('scrubs the decision record it offers for review', () => {
+    it('scrubs the decision record it offers for review', async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       seedSession(repo, 's1');
@@ -5858,7 +5881,7 @@ describe('CLI commands', () => {
         files: ['src/a.ts'],
       });
       db.close();
-      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome({ decisionRecordId: id }));
+      vi.mocked(runMergeGate).mockResolvedValue(mergedOutcome({ decisionRecordId: id }));
       vi.spyOn(process.stdout, 'write').mockReturnValue(true);
       const stdin = process.stdin as NodeJS.ReadStream & { setRawMode?: unknown };
       const wasTty = stdin.isTTY;
@@ -5869,7 +5892,9 @@ describe('CLI commands', () => {
       };
 
       try {
-        expect(() => buildProgram().parse(['merge', 's1'], { from: 'user' })).toThrow('ENOTTY');
+        await expect(buildProgram().parseAsync(['merge', 's1'], { from: 'user' })).rejects.toThrow(
+          'ENOTTY',
+        );
       } finally {
         stdin.isTTY = wasTty;
         stdin.setRawMode = wasRawMode;
@@ -5882,19 +5907,19 @@ describe('CLI commands', () => {
       expect(page).not.toContain('\u001b');
     });
 
-    it('does not crash when a decision record id has no matching row', () => {
+    it('does not crash when a decision record id has no matching row', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome({ decisionRecordId: 999 }));
+      vi.mocked(runMergeGate).mockResolvedValue(mergedOutcome({ decisionRecordId: 999 }));
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain('Merged s1; worktree and branch cleaned up.');
       expect(process.exitCode).toBeUndefined();
     });
 
-    it('reports a refused gate and exits 1', () => {
+    it('reports a refused gate and exits 1', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'refused',
         report: {
           sessionId: 's1',
@@ -5905,7 +5930,7 @@ describe('CLI commands', () => {
         rejectCount: 0,
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain(
         'Merge refused: diff-size flagged. Re-run with --accept-debt "<reason>" --review-by ' +
@@ -5918,9 +5943,9 @@ describe('CLI commands', () => {
     // stage detail is a failing command's stderr out of the session's worktree.
     // `pup review`'s copy of the same report has been scrubbed since decision
     // 67; this one had not (decision 68).
-    it('scrubs the gate report it prints', () => {
+    it('scrubs the gate report it prints', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'refused',
         report: {
           sessionId: 's1',
@@ -5931,7 +5956,7 @@ describe('CLI commands', () => {
         rejectCount: 0,
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       const page = logs.join('\n');
       expect(page).toContain('[2Jdiff-size');
@@ -5941,10 +5966,10 @@ describe('CLI commands', () => {
     });
 
     // Why per line and not whole: `printGateStage`'s doc (decision 68).
-    it('scrubs a multi-line stage detail line by line, keeping every line', () => {
+    it('scrubs a multi-line stage detail line by line, keeping every line', async () => {
       useCwd(initRepoWithAdapter());
       const paths = Array.from({ length: 12 }, (_, i) => `\u001b[2Jsrc/out-of-scope-${i}.ts`);
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'refused',
         report: {
           sessionId: 's1',
@@ -5955,7 +5980,7 @@ describe('CLI commands', () => {
         rejectCount: 0,
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       const shown = logs.filter((line) => line.includes('[2Jsrc/out-of-scope-'));
       expect(shown).toHaveLength(12);
@@ -5965,29 +5990,29 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('\u001b');
     });
 
-    it('reports a rejected gate and exits 1', () => {
+    it('reports a rejected gate and exits 1', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'rejected',
         report: { sessionId: 's1', passed: false, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 1,
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain('Gate failed; report re-injected into the session (rejection 1/2).');
       expect(process.exitCode).toBe(1);
     });
 
-    it('reports a blocked gate and exits 1', () => {
+    it('reports a blocked gate and exits 1', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue({
+      vi.mocked(runMergeGate).mockResolvedValue({
         status: 'blocked',
         report: { sessionId: 's1', passed: false, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 2,
       });
 
-      buildProgram().parse(['merge', 's1'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
       expect(logs).toContain(
         'Gate failed; session parked as blocked — needs a human. Address it, then `pup unblock s1`.',
@@ -5995,11 +6020,11 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('forwards --accept-debt/--review-by, attributed to the human the guard admits', () => {
+    it('forwards --accept-debt/--review-by, attributed to the human the guard admits', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+      vi.mocked(runMergeGate).mockResolvedValue(mergedOutcome());
 
-      buildProgram().parse(
+      await buildProgram().parseAsync(
         ['merge', 's1', '--accept-debt', 'shipped a shortcut', '--review-by', 'before v2'],
         { from: 'user' },
       );
@@ -6012,17 +6037,17 @@ describe('CLI commands', () => {
       });
     });
 
-    it('throws when run outside any git repo (no project to resolve)', () => {
+    it('throws when run outside any git repo (no project to resolve)', async () => {
       useCwd(tempDir('pup-cli-noproj-'));
 
-      expect(() => buildProgram().parse(['merge', 's1'], { from: 'user' })).toThrow();
+      await expect(buildProgram().parseAsync(['merge', 's1'], { from: 'user' })).rejects.toThrow();
     });
 
-    it('records the approver an operator names instead of human', () => {
+    it('records the approver an operator names instead of human', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+      vi.mocked(runMergeGate).mockResolvedValue(mergedOutcome());
 
-      buildProgram().parse(
+      await buildProgram().parseAsync(
         ['merge', 's1', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', 'tg:alexis'],
         { from: 'user' },
       );
@@ -6030,10 +6055,12 @@ describe('CLI commands', () => {
       expect(firstCall(runMergeGate)[1].acceptDebt?.acceptedBy).toBe('tg:alexis');
     });
 
-    it('refuses --approved-by without --accept-debt', () => {
+    it('refuses --approved-by without --accept-debt', async () => {
       useCwd(initRepoWithAdapter());
 
-      buildProgram().parse(['merge', 's1', '--approved-by', 'tg:alexis'], { from: 'user' });
+      await buildProgram().parseAsync(['merge', 's1', '--approved-by', 'tg:alexis'], {
+        from: 'user',
+      });
 
       expect(errors).toEqual([
         '--approved-by names who accepted the debt; pass it with --accept-debt.',
@@ -6045,10 +6072,10 @@ describe('CLI commands', () => {
     // Scrubbing to nothing must not fall back to the operator's `human`.
     it.each([[''], ['\u001b\u0007 ']])(
       'refuses an --approved-by that scrubs to nothing (%j)',
-      (who) => {
+      async (who) => {
         useCwd(initRepoWithAdapter());
 
-        buildProgram().parse(
+        await buildProgram().parseAsync(
           ['merge', 's1', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', who],
           { from: 'user' },
         );
@@ -6068,13 +6095,13 @@ describe('CLI commands', () => {
         vi.stubEnv('PUP_CONDUCTOR', 'p1');
       });
 
-      it('runs the gate and opens the PR with --pr', () => {
+      it('runs the gate and opens the PR with --pr', async () => {
         useCwd(initRepoWithAdapter());
-        vi.mocked(runMergeGate).mockReturnValue(
+        vi.mocked(runMergeGate).mockResolvedValue(
           mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
         );
 
-        buildProgram().parse(['merge', 's1', '--pr'], { from: 'user' });
+        await buildProgram().parseAsync(['merge', 's1', '--pr'], { from: 'user' });
 
         expect(firstCall(runMergeGate)[1].openPr).toBe(true);
         expect(logs).toContain(
@@ -6083,12 +6110,15 @@ describe('CLI commands', () => {
         expect(process.exitCode).toBeUndefined();
       });
 
-      it('is refused accepting debt without naming the approver', () => {
+      it('is refused accepting debt without naming the approver', async () => {
         useCwd(initRepoWithAdapter());
 
-        buildProgram().parse(['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c'], {
-          from: 'user',
-        });
+        await buildProgram().parseAsync(
+          ['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c'],
+          {
+            from: 'user',
+          },
+        );
 
         expect(errors).toEqual([
           'The conductor relays a debt approval, it does not give one: pass --approved-by <who> with --accept-debt.',
@@ -6097,27 +6127,30 @@ describe('CLI commands', () => {
         expect(runMergeGate).not.toHaveBeenCalled();
       });
 
-      it.each(['human', 'Human'])("is refused wearing the operator's own entry (%s)", (who) => {
-        useCwd(initRepoWithAdapter());
+      it.each(['human', 'Human'])(
+        "is refused wearing the operator's own entry (%s)",
+        async (who) => {
+          useCwd(initRepoWithAdapter());
 
-        buildProgram().parse(
-          ['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', who],
-          { from: 'user' },
-        );
+          await buildProgram().parseAsync(
+            ['merge', 's1', '--pr', '--accept-debt', 'r', '--review-by', 'c', '--approved-by', who],
+            { from: 'user' },
+          );
 
-        expect(errors).toEqual([
-          '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
-        ]);
-        expect(process.exitCode).toBe(1);
-        expect(runMergeGate).not.toHaveBeenCalled();
-      });
+          expect(errors).toEqual([
+            '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
+          ]);
+          expect(process.exitCode).toBe(1);
+          expect(runMergeGate).not.toHaveBeenCalled();
+        },
+      );
 
-      it('records the approver it names, and `pup debt` prints it', () => {
+      it('records the approver it names, and `pup debt` prints it', async () => {
         const repo = initRepoWithAdapter();
         useCwd(repo);
         // Stands in for the gate's ledger write, which merge-gate.test.ts
         // covers: the entry carries whatever acceptor the request names.
-        vi.mocked(runMergeGate).mockImplementation((db, request) => {
+        vi.mocked(runMergeGate).mockImplementation(async (db, request) => {
           ensureProject(db, projectId(repo), repo);
           insertLedgerEntry(db, {
             projectId: projectId(repo),
@@ -6130,7 +6163,7 @@ describe('CLI commands', () => {
           return mergedOutcome();
         });
 
-        buildProgram().parse(
+        await buildProgram().parseAsync(
           [
             'merge',
             's1',
@@ -6155,11 +6188,11 @@ describe('CLI commands', () => {
         expect(logs.some((l) => l.includes('accepted by: tg:alexis'))).toBe(true);
       });
 
-      it('scrubs a control character out of the approver before the gate sees it', () => {
+      it('scrubs a control character out of the approver before the gate sees it', async () => {
         useCwd(initRepoWithAdapter());
-        vi.mocked(runMergeGate).mockReturnValue(mergedOutcome());
+        vi.mocked(runMergeGate).mockResolvedValue(mergedOutcome());
 
-        buildProgram().parse(
+        await buildProgram().parseAsync(
           [
             'merge',
             's1',
