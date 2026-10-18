@@ -4934,9 +4934,12 @@ changes back into those docs is pending.
     branch is told to run `git rebase refs/heads/<target>`, the ref shell-quoted where a ref
     name may hold what a shell reads as syntax. No steer mentions a force-push. The
     worker commits its work in progress first, resolves the conflicts, re-runs the tests for the
-    files involved and reports in one line. The steer is best effort, as an introduction is: a
-    refused paste, a session that has just stopped and a branch git cannot read are skipped, and
-    the land is done whatever a steer does. Session ids and branches are store text about to
+    files involved and reports in one line. The steer is best effort: the land is done whatever a
+    steer does. A session whose steer fails for any reason, a refused paste, a stop, tmux or the
+    store, is skipped and the rest are still steered, and so is a branch git cannot read; only an
+    interrupt stops the loop. Unlike an introduction, a steer failure past a refused paste or a
+    stop is not rethrown, since the land it would report as failed has already happened and its
+    audit would be lost. Session ids and branches are store text about to
     name a ref, so only a session whose branch is `pup/<id>` is read. The gate's mechanical
     rebase stays the final check.
     *The hooks read a merge of main as main's change.* A merge of main that stops on a conflict
@@ -4947,11 +4950,18 @@ changes back into those docs is pending.
     merged. It is one git call per check, not one per path, so a merge bringing in many files
     does not push the hook past its timeout, where it fails open. The tip is the main
     checkout's HEAD (`main-worktree/HEAD`), the branch the gate merges into, and MERGE_HEAD must
-    be that commit exactly, so a merge of anything else, a commit the session made or the
-    target's own past, earns nothing. The Edit hook lets one kind of edit through outside
-    scope-in or inside scope-out: an Edit, never a Write, whose replaced text is one whole
-    conflict block, from its `<<<<<<<` line to its `>>>>>>>` line, and whose new text holds no
-    marker and is made only of lines of the block (one side, the other, or both). The index
+    be that commit exactly. MERGE_HEAD is read from the worktree's own file (`git rev-parse
+    --git-path MERGE_HEAD`), one object id and nothing else: a ref lookup by that name falls
+    back to `refs/tags/MERGE_HEAD` and `refs/heads/MERGE_HEAD`, which any worktree can write, and
+    would make every linked worktree look mid-merge. Both hooks are best effort here, not a
+    guarantee: the session can move the target's branch with `update-ref` and write its own
+    MERGE_HEAD file, so a commit it made can pass for the tip. The gate's scope audit, on the
+    branch's own merge-base diff, is what holds. The Edit hook lets one kind of edit through
+    outside scope-in or inside scope-out: an Edit, never a Write, whose replaced text is exactly
+    one conflict block, from its `<<<<<<<` line to its `>>>>>>>` line, with one `=======` between
+    and at most a diff3 `|||||||` before it, and whose new text is one side, the other, or ours
+    then theirs, line for line. A marker line ending in a CR is still a marker. An empty side
+    is taken only with the block's final newline, so taking it leaves no blank line. The index
     must hold the conflict such a merge makes: the branch's blob at stage 2, the tip's at
     stage 3, and the two different, so a conflict staged by hand over a file that happens to
     hold marker lines earns nothing. A committed merge needed no change: the gate diffs against
@@ -4972,21 +4982,30 @@ changes back into those docs is pending.
     status` does, so a session that forges index entries could hide a write from the re-check,
     and a session whose branch already holds marker lines in an out-of-scope file can stage the
     branch-and-tip conflict by hand and edit within that block. Either way the file differs from
-    the target, and the gate's scope audit refuses it. A `pup land` run git-diffs each live
+    the target, and the gate's scope audit refuses it. A failed steer is not reported per peer
+    yet: core returns an outcome the CLI prints, and `LandOutcome` has no field for it. Recording
+    it as a `steer` event with `delivered: false` would be wrong, since the inbox reads any steer
+    as the answer to an open question and `decodeEvent` drops `delivered`. Carrying the skipped
+    sessions on `LandOutcome` and printing them is a follow-up. A `pup land` run git-diffs each live
     session's branch, as the gate and the overlap check already do, so the transport pins owed
     against a planted promisor remote cover it too.
     Tests: after a land, a live session sharing a landed file gets one `main-landed` steer and
     one sharing none gets nothing. The steer says rebase without an open PR and merge with one,
     and neither mentions a force-push. A refused paste records no steer and leaves the land
-    done. The steer scrubs the landed name, the target and the files, and shell-quotes a target
+    done. Any other steer error leaves the land done with its audit and the other sessions
+    steered, while an interrupt during a steer still stops it. The steer scrubs the landed name, the target and the files, and shell-quotes a target
     holding `;`. In a real repo with a
     linked worktree, a `git merge main` stopped on a conflict, with main's out-of-scope and
     scope-out files staged, passes the re-check, and so does committing the resolved merge. After
     it, an Edit, a Write and a Bash write to an out-of-scope file are still refused. In a file
-    conflicted outside scope-in or inside scope-out, an Edit keeping one side, the other or both
-    passes; one adding a line of its own, leaving a marker, touching no marker or written as a
+    conflicted outside scope-in or inside scope-out, an Edit keeping one side, the other or ours
+    then theirs passes; one adding a line of its own, reordering or repeating the sides, leaving
+    a marker, emptying a block without its final newline, touching no marker or written as a
     Write is refused, as is the same Edit once the file is staged or during a merge of a commit
-    other than the tip. An Edit over marker lines whose conflict was staged by hand, all three
+    other than the tip. An Edit spanning two blocks and the code between them is refused, while
+    the first block alone passes. In a CRLF file, a separator typed with a CR is read as a
+    marker. A MERGE_HEAD ref planted in the shared refs, as a branch and as a tag, makes no
+    worktree look mid-merge. An Edit over marker lines whose conflict was staged by hand, all three
     stages at one blob, is refused. A write of an out-of-scope file is reported though a
     planted replace ref makes the tip hold the same content.
 

@@ -43,6 +43,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { TerminalSessionError } from './session-lifecycle.errors.js';
+import type { LandOutcome } from './types/land.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR &
 // co., which a pre-commit hook run would aim at the pupitre repo instead.
@@ -269,7 +270,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       transitionSession(db, id, 'running');
     }
 
-    async function landMerged(): Promise<void> {
+    async function landMerged(): Promise<LandOutcome> {
       seedPrMerge();
       const merge = mergeOnGitHub();
       fakeGh({
@@ -278,7 +279,7 @@ describe('landSession', { timeout: 20_000 }, () => {
         headRefOid: pinned,
         mergeCommit: { oid: merge },
       });
-      await land();
+      return land();
     }
 
     const steersTo = (id: string) =>
@@ -350,13 +351,29 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
     });
 
-    it('lets any other steer failure through, with the land already recorded', async () => {
+    it('lands with its audit whatever else a steer throws, and still steers the rest', async () => {
+      seedPeer('s3', 'src/feature.ts');
       seedPeer('s2', 'src/feature.ts');
-      vi.mocked(steerPane).mockImplementation(() => {
-        throw new Error('tmux: server exited unexpectedly');
+      vi.mocked(steerPane).mockImplementation((pane) => {
+        if (pane.paneId === '%s3') throw new Error('tmux: server exited unexpectedly');
       });
 
-      await expect(landMerged()).rejects.toThrow('tmux: server exited unexpectedly');
+      const outcome = await landMerged();
+
+      expect(landedEvents()).toHaveLength(1);
+      expect(outcome.audit.heldOnRegression).toBe(false);
+      expect(getProject(db, pid)?.baseline).not.toBeNull();
+      expect(steerEvents('s3')).toEqual([]);
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+    });
+
+    it('stops on an interrupt during a steer, with the land already recorded', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementation(() => {
+        throw Object.assign(new Error('tmux interrupted'), { signal: 'SIGINT' });
+      });
+
+      await expect(landMerged()).rejects.toThrow('tmux interrupted');
       expect(landedEvents()).toHaveLength(1);
     });
 

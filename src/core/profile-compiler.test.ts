@@ -815,6 +815,46 @@ describe('generated hooks over a merge of the target', () => {
     expect(edit('src/net/legacy/old.ts', conflict, 'other').status).toBe(2);
   });
 
+  it('reads no MERGE_HEAD a worktree planted in the shared refs', () => {
+    fork({}, { 'src/cli/index.ts': 'main\n' });
+    // No merge runs here; any worktree can write a ref by that name.
+    git(repo, 'update-ref', 'refs/heads/MERGE_HEAD', 'main');
+    git(repo, 'tag', 'MERGE_HEAD', 'main');
+
+    expect(bash('printf "main\\n" > src/cli/index.ts').status).toBe(2);
+    expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
+  });
+
+  it('allows one whole block only, never a span of blocks and the code between', () => {
+    const lines = (tag: string) => `a ${tag}\nx1\nx2\nx3\nx4\nx5\nx6\nx7\nb ${tag}\n`;
+    fork({ 'src/cli/decoy.ts': lines('branch') }, { 'src/cli/decoy.ts': lines('main') });
+    bash('git merge main');
+    const text = readFileSync(join(worktree, 'src/cli/decoy.ts'), 'utf8');
+    expect(text.match(/^<<<<<<< /gm)).toHaveLength(2);
+    const span = text.slice(text.indexOf('<<<<<<<'));
+
+    expect(edit('src/cli/decoy.ts', span, 'a main\n').status).toBe(2);
+    expect(edit('src/cli/decoy.ts', span, '').status).toBe(2);
+    expect(edit('src/cli/decoy.ts', span.slice(0, span.indexOf('x1')), 'a main\n').status).toBe(0);
+  });
+
+  it('reads a marker line ending in a CR as a marker', () => {
+    fork(
+      { 'src/cli/decoy.ts': 'one branch\r\ntwo\r\n' },
+      { 'src/cli/decoy.ts': 'one main\r\ntwo\r\n' },
+    );
+    bash('git merge main');
+    const text = readFileSync(join(worktree, 'src/cli/decoy.ts'), 'utf8');
+    const crlfBlock = text.slice(0, text.indexOf('two'));
+    expect(crlfBlock).toContain('one main\r\n');
+    // A side carrying a separator of its own, typed with a CR.
+    const forged = crlfBlock.replace('one main\r\n', 'one main\r\n=======\r\n');
+
+    expect(edit('src/cli/decoy.ts', crlfBlock, 'one main\r\n').status).toBe(0);
+    expect(edit('src/cli/decoy.ts', crlfBlock, 'one main\r\n=======\r\n').status).toBe(2);
+    expect(edit('src/cli/decoy.ts', forged, 'one main\r\n=======\r\n').status).toBe(2);
+  });
+
   describe('a conflict main left in an out-of-scope file', () => {
     const block = '<<<<<<< HEAD\none branch\n=======\none main\n>>>>>>> main';
 
@@ -822,20 +862,26 @@ describe('generated hooks over a merge of the target', () => {
       fork({ 'src/cli/decoy.ts': 'one branch\ntwo\n' }, { 'src/cli/decoy.ts': 'one main\ntwo\n' });
     });
 
-    it('allows an Edit that keeps one side, the other, or both', () => {
+    it('allows an Edit that keeps one side, the other, or ours then theirs', () => {
       bash('git merge main');
       expect(readFileSync(join(worktree, 'src/cli/decoy.ts'), 'utf8')).toContain(block);
 
       expect(edit('src/cli/decoy.ts', block, 'one main').status).toBe(0);
       expect(edit('src/cli/decoy.ts', block, 'one branch').status).toBe(0);
-      expect(edit('src/cli/decoy.ts', block, 'one main\none branch').status).toBe(0);
+      expect(edit('src/cli/decoy.ts', block, 'one branch\none main').status).toBe(0);
+      expect(edit('src/cli/decoy.ts', `${block}\n`, 'one main\n').status).toBe(0);
     });
 
-    it('refuses an Edit that writes a line of its own, leaves a marker, or is a Write', () => {
+    it('refuses an Edit that writes a line of its own, reorders, leaves a marker, or is a Write', () => {
       bash('git merge main');
 
       expect(edit('src/cli/decoy.ts', block, 'one main\nevil()').status).toBe(2);
+      expect(edit('src/cli/decoy.ts', block, 'one main\none branch').status).toBe(2);
+      expect(edit('src/cli/decoy.ts', block, 'one main\none main').status).toBe(2);
       expect(edit('src/cli/decoy.ts', block, 'one main\n=======').status).toBe(2);
+      // Without its final newline, an emptied block would leave a blank line.
+      expect(edit('src/cli/decoy.ts', block, '').status).toBe(2);
+      expect(edit('src/cli/decoy.ts', `${block}\n`, 'one main').status).toBe(2);
       expect(edit('src/cli/decoy.ts', 'two', 'two').status).toBe(2);
       expect(edit('src/cli/decoy.ts', block, 'one main', 'Write').status).toBe(2);
     });

@@ -318,12 +318,20 @@ function buildContextMarkdown(
  * `merge_of_target` prints MERGE_HEAD while a merge of the target's tip is in
  * progress in the worktree, and fails otherwise. The target is the branch the
  * main checkout has out, the one the gate merges into, and MERGE_HEAD must be
- * its tip exactly: a merge of any other commit, one the session made or the
- * target's own past, earns nothing from either hook.
+ * its tip exactly. MERGE_HEAD is read from the worktree's own file, one object
+ * id and nothing else, since a ref lookup by that name falls back to shared
+ * refs any worktree can plant (refs/heads/MERGE_HEAD). Best effort: a session
+ * can move the target's branch itself, so the gate's scope audit, on the
+ * branch's own diff, is what holds (decisions 6, 63).
  */
 const MERGE_OF_TARGET_SHELL = `safe_git() { git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"; }
 merge_of_target() {
-  MERGING=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'MERGE_HEAD^{commit}' 2>/dev/null) || return 1
+  HEAD_FILE=$(safe_git -C "$WORKTREE" rev-parse --path-format=absolute --git-path MERGE_HEAD 2>/dev/null) || return 1
+  [ -f "$HEAD_FILE" ] || return 1
+  MERGING=$(cat -- "$HEAD_FILE") || return 1
+  case "$MERGING" in *[!0-9a-f]*) return 1 ;; esac
+  [ \${#MERGING} -eq 40 ] || [ \${#MERGING} -eq 64 ] || return 1
+  safe_git -C "$WORKTREE" cat-file -e "$MERGING^{commit}" 2>/dev/null || return 1
   TIP=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'main-worktree/HEAD^{commit}' 2>/dev/null) || return 1
   [ "$MERGING" = "$TIP" ] && printf '%s\\n' "$MERGING"
 }`;
@@ -359,20 +367,38 @@ if printf '%s\\n' "$REL" | grep -qiE '^\\.claude/'; then
 fi
 ${MERGE_OF_TARGET_SHELL}
 # Out of scope, an Edit still goes through when all it does is resolve a conflict
-# a merge of the target left in the file (decision 99). The replaced text is one
-# whole conflict block, from its <<<<<<< line to its >>>>>>> line, and the new
-# text holds no marker and is made only of lines of the block: one side, the
-# other, or both. The index must hold the conflict that merge makes: the
-# branch's blob as ours, the tip's as theirs, and the two different, so a
-# conflict staged by hand over a file holding marker lines earns nothing. A Write
-# never goes through, since it replaces the whole file.
-RESOLUTION='def marker: test("(^|\\n)(<{7}|={7}|>{7}|[|]{7})( [^\\n]*)?(\\n|$)");
+# a merge of the target left in the file (decision 99). The replaced text is
+# exactly one conflict block, from its <<<<<<< line to its >>>>>>> line, with one
+# ======= between and at most a diff3 ||||||| before it, and the new text is one
+# side, the other, or ours then theirs, line for line. A marker line ending in a
+# CR is still a marker. An empty side is taken only with the block's final
+# newline, so taking it leaves no line behind. The index must hold the conflict
+# that merge makes: the branch's blob as ours, the tip's as theirs, and the two
+# different, so a conflict staged by hand over a file holding marker lines earns
+# nothing. A Write never goes through, since it replaces the whole file.
+RESOLUTION='def bare: rtrimstr("\\r");
+def resolutions:
+  (if endswith("\\n") then "\\n" else "" end) as $end
+  | (rtrimstr("\\n") / "\\n") as $lines
+  | if ($lines | length) < 3
+      or ($lines[0] | bare | test("^<{7}( |$)") | not)
+      or ($lines[-1] | bare | test("^>{7}( |$)") | not)
+    then empty
+    else $lines[1:-1] as $body
+      | [$body | to_entries[] | select(.value | test("^(<{7}|>{7}|[|]{7}|={7})")) | .key] as $marks
+      | ($marks | last) as $sep
+      | if $sep == null or ($body[$sep] | bare) != "=======" or ($marks | length) > 2
+          or (($marks | length) == 2 and ($body[$marks[0]] | bare | test("^[|]{7}( |$)") | not))
+        then empty
+        else ($body[:$marks[0]]) as $ours | ($body[$sep + 1:]) as $theirs
+          | ($ours, $theirs, $ours + $theirs)
+          | if length > 0 then join("\\n") + $end elif $end == "\\n" then "" else empty end
+        end
+    end;
   .tool_name == "Edit"
-  and (.tool_input.old_string | type == "string"
-    and (rtrimstr("\\n") / "\\n" | (first | test("^<{7}( |$)")) and (last | test("^>{7}( |$)"))))
-  and (.tool_input.new_string | type == "string" and (marker | not))
-  and ((.tool_input.old_string / "\\n") as $old
-    | all(.tool_input.new_string / "\\n" | .[]; . as $line | any($old[]; . == $line)))'
+  and (.tool_input.new_string | type == "string")
+  and (.tool_input.old_string | type == "string")
+  and (.tool_input.new_string as $new | any(.tool_input.old_string | resolutions; . == $new))'
 resolves_conflict() {
   [ "$(printf '%s' "$INPUT" | jq -r "$RESOLUTION")" = true ] || return 1
   MERGED=$(merge_of_target) || return 1

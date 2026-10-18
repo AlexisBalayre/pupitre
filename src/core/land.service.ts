@@ -30,7 +30,6 @@ import {
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
-import { isRefusedSteer, TerminalSessionError } from './session-lifecycle.errors.js';
 import { steerSession } from './session-lifecycle.service.js';
 import { holdingStates } from './session-state.utils.js';
 import type { LandOutcome } from './types/land.types.js';
@@ -215,11 +214,13 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
  * time is one change wide, and the gate's rebase stays the final check. The
  * PR's files are its merge commit against its first parent, the target it
  * merged into; a session's are its branch's own changes since it forked from
- * the target. After the `landed` event and best effort, as a peer's
- * introduction is: the land is done whatever a steer does, a session whose
- * paste is refused or that has just stopped is skipped, and so is one whose
- * branch git cannot read yet, a queued session's. A PR whose files git cannot
- * list steers no one, rather than report a land that happened as failed.
+ * the target. After the `landed` event and best effort: the land is done
+ * whatever a steer does. A session whose steer fails for any reason, a refused
+ * paste, a stop, tmux or the store, is skipped and the rest are still steered,
+ * and so is one whose branch git cannot read yet, a queued session's. A PR whose
+ * files git cannot list steers no one, rather than report a land that happened
+ * as failed. Only an interrupt stops it. A skipped session is not reported yet
+ * (decision 99).
  */
 function steerOverlappingSessions(
   db: Database,
@@ -250,17 +251,17 @@ function steerOverlappingSessions(
       continue;
     }
     if (files.length === 0) continue;
-    // A branch the gate already pushed as a PR is GitHub's too: it takes the
-    // target as a merge commit, since a rebase would replace history there.
-    const merge = newestMerge(db, peer.id);
-    const openPullRequest = typeof merge === 'object' && merge.prUrl !== undefined;
     try {
+      // A branch the gate already pushed as a PR is GitHub's too: it takes the
+      // target as a merge commit, since a rebase would replace history there.
+      const merge = newestMerge(db, peer.id);
+      const openPullRequest = typeof merge === 'object' && merge.prUrl !== undefined;
       steerSession(db, peer.id, mainLandedMessage({ name, target, files, openPullRequest }), {
         kind: 'main-landed',
         by: landedId,
       });
     } catch (error) {
-      if (!isRefusedSteer(error) && !(error instanceof TerminalSessionError)) throw error;
+      rethrowIfKilled(error);
     }
   }
 }
