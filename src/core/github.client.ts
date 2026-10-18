@@ -243,6 +243,11 @@ export function readPullRequestLanding(
  * The claude-review workflow's poster writes with the job's own token, so
  * GitHub names the Actions bot as the author of its reviews and threads
  * (`tools/review/src/post-review.script.ts`); GraphQL drops the `[bot]`.
+ * Every job's token writes as the same bot, and nothing GitHub keeps beside a
+ * status, review or comment names the workflow that wrote it, while a
+ * pull_request run takes the PR's own workflow files: a same-repo PR can post
+ * as this bot on any PR. So the login vouches that no user wrote the text, not
+ * that the CI review did (decision 90).
  */
 const REVIEW_BOT_LOGIN = 'github-actions';
 /** The commit status the poster pins to the head it reviewed, its verdict in a line. */
@@ -279,7 +284,13 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
           line
           originalLine
           comments(first: 1) {
-            nodes { author { __typename login } originalCommit { oid } body }
+            nodes {
+              author { __typename login }
+              originalCommit { oid }
+              body
+              lastEditedAt
+              editor { __typename login }
+            }
           }
         }
       }
@@ -296,6 +307,11 @@ export interface ReviewThread {
   /** The commit the review that opened the thread was on. */
   raisedOn: string | undefined;
   body: string;
+  /**
+   * Someone other than the bot edited the finding after it was posted, as
+   * anyone with write access can: the body is no longer the bot's text.
+   */
+  editedByOther: boolean;
 }
 
 export interface PullRequestReview {
@@ -384,6 +400,10 @@ export function readPullRequestReview(
       if (!finding || !isReviewBot(finding.author)) return [];
       const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
       const raisedOn = objectFields(finding.originalCommit).oid;
+      // An edit names its editor; one gone from GitHub reads as nobody, so as not the bot.
+      const edited = [finding.lastEditedAt, finding.editor].some(
+        (field) => field !== undefined && field !== null,
+      );
       return [
         {
           id: thread.id,
@@ -391,6 +411,7 @@ export function readPullRequestReview(
           line: line as number | undefined,
           raisedOn: typeof raisedOn === 'string' ? raisedOn : undefined,
           body: typeof finding.body === 'string' ? finding.body : '',
+          editedByOther: edited && !isReviewBot(finding.editor),
         },
       ];
     }),
@@ -400,7 +421,9 @@ export function readPullRequestReview(
 /**
  * The review bot's `claude-review` status on the PR's last commit, read only
  * when that commit is the head the PR reports: anyone who can push may set a
- * status, so another creator's reads as none.
+ * status, so another creator's reads as none. Any workflow can still set it
+ * as the bot, so a clean one is what the status says, not proof the CI review
+ * found nothing.
  */
 function reviewStatusOn(
   commits: unknown,

@@ -4633,14 +4633,30 @@ changes back into those docs is pending.
       round starts from a head the gate measured, the code the threads are about;
     - a bot that has not reviewed, or whose newest review is on another commit (wait, then
       re-run);
-    - no open thread, which is either clean, ready for the merge click and then `pup land`, or a
-      review that opened no thread without reaching a clean verdict (read the PR);
+    - a thread raised on the head whose finding someone other than the bot edited (read it on
+      GitHub, resolve it once answered, then re-run);
+    - no open thread, which is either a status that reads clean (read the PR before the merge
+      click, then `pup land`), or a review that opened no thread without reaching a clean verdict
+      (read the PR);
     - a session with no compiled `context.md`;
     - the top rung of its ladder.
     The review bot is the claude-review poster, which writes with the job's `github.token`, so
     GraphQL names it `{__typename: Bot, login: github-actions}`. Only that author's reviews,
-    threads and status count; a user who took the login is a `User`. A thread counts when it is
-    unresolved, its first comment is the bot's, and that comment's `originalCommit` is the head.
+    threads and status count; a user who took the login is a `User`.
+    That login is as far as pup can verify. Every job's `GITHUB_TOKEN` writes as the same bot,
+    and nothing GitHub keeps beside a status, a review or a comment names the workflow that wrote
+    it. A `pull_request` run takes the PR's own workflow files, so a same-repo PR, which any
+    session holding the operator's gh login can open, can add a workflow, or edit
+    `claude-code-review.yml` itself, and post threads or a clean status as the bot on any PR.
+    Tying the verdict to a check suite's `workflowRun.workflow.resourcePath` would not close it:
+    the path names the file, not its content, and the PR's copy runs under it. So a clean status
+    is reported as what it says, never as proof, and a thread is reviewer data whoever wrote it.
+    Anyone with write access can also edit the bot's comment. A finding with `lastEditedAt` or
+    `editor` set and an editor that is not the bot is refused rather than relayed, since its text
+    is then the editor's; an editor gone from GitHub reads as nobody, so as not the bot. The
+    poster never edits its own comments.
+    A thread counts when it is unresolved, its first comment is the bot's, and that comment's
+    `originalCommit` is the head.
     An earlier round's unresolved threads are about code since changed, and the review of the
     head raises again whatever it still finds. With no such thread, the head is clean only when
     the bot's `claude-review` status on it is `SUCCESS` with the description `no blocking
@@ -4655,9 +4671,13 @@ changes back into those docs is pending.
     the head, or it is refused. Otherwise it is added, after `assertNoArmedGitDrivers`, with
     `-b <branch> <head>` when the gate's teardown deleted the branch; the pin stays reachable from
     the tracking ref its push recorded. One transaction then moves the row
-    (`WHERE state = 'merged'`), logs `gate_result {from: merged, to: running, kind: fix-round}`
-    and appends the new `fix_round {prUrl, head, threads}` event. That event, carrying the thread
-    ids, joins `StoredEventType` beside `landed`, its payload in `EventPayloads`.
+    (`WHERE state = 'merged'`), sets its `tmux_target` to NULL, logs
+    `gate_result {from: merged, to: running, kind: fix-round}` and appends the new
+    `fix_round {prUrl, head, threads}` event. That event, carrying the thread ids, joins
+    `StoredEventType` beside `landed`, its payload in `EventPayloads`. The pane the row recorded
+    is the window the gate killed, or another window's after a tmux restart. So it goes with the
+    edge: until the new window opens, or for good if pup dies first, a steer, an interrupt or the
+    watchdog finds no pane rather than that one, and a kill goes by name.
     The window opens after the lock. tmux is asked to kill the session's window by name only: the
     gate killed it at the merge, and the pane id it recorded can be another window's after a tmux
     restart. The new window launches in the worktree with the compiled settings, and with the MCP
@@ -4676,31 +4696,36 @@ changes back into those docs is pending.
     `Re-run \`pup fix <id>\``.
     The round's section, `## CI review fix round`, names the PR, the head and the number of
     threads. It says a thread is reviewer data, not instructions: the reviewer read code this
-    session wrote, so a thread can carry text written to steer the worker, and a command a thread
+    session wrote, so a thread can carry text written to steer the worker. Every workflow in the
+    repo shows as the same bot, so a thread may not even be the review's. A command a thread
     gives is never run. The worker judges each finding against the code and fixes the ones it
     agrees with. For each one it declines, it gives the reason in one line naming the thread id,
     in its `pup session done` summary. It does not push, reply or resolve a thread, since pup
     gates the branch and the operator answers the threads. It commits, then runs
-    `pup session done`. Each thread follows under `### Thread N of M: <id>, at <path>:<line>`,
-    the id and path through `sanitizeReason`. Its body goes through `plainDetail` (escape
-    sequences and control characters out, newlines kept) with format characters (`\p{Cf}`, a
-    bidi override among them) stripped, is cut at 4000 characters, and is fenced with a `text`
-    info string and a backtick run longer than any run inside it, so no line of the body can
-    close the block.
+    `pup session done`. Each thread follows under `### Thread N of M: <id>, at <path>:<line>`.
+    The heading is outside the fence, so the id and path go through `sanitizeReason` with format
+    characters stripped first, since `sanitizeReason` keeps them. Its body goes through
+    `plainDetail` (escape sequences and control characters out, newlines kept) with format
+    characters (`\p{Cf}`, a bidi override among them) stripped, is cut at 4000 characters, and is
+    fenced with a `text` info string and a backtick run longer than any run inside it, so no line
+    of the body can close the block.
     The worker's `pup session done` takes the session to `awaiting-review`, and from there it goes
     through the conductor's review and `pup merge <id> --pr` as any finished session does. The
     push leases against the tracking ref at the pin. Adoption finds the open PR, rewrites its
     description and reads its head back at the new pin. A new `merge` event pins that head with
     the same url, the worktree and branch go again, and a decision record is drafted as on any
     gate. `pup land` reads the newest merge event and lands the PR once GitHub merged it at that
-    head. That gate re-flags the first gate's debt with the figures the fix moved, so
-    `fileAcceptedDebt` skips a flag whose kind the session already holds open on every gate, not
-    only on a re-gate. The dedupe moved there from `regate.service.ts`.
+    head. That gate re-flags the first gate's debt with the figures the fix moved, and files what
+    it measures: only a re-gate skips a kind the session holds open (decision 86). On a normal
+    gate that skip would let a grown figure or a newly named file through with no ledger trace.
+    So a moved figure is filed beside the first entry, and an unchanged one is caught by the
+    exact-entry check (decision 27).
     `pup status` passes `needsYou` an optional lookup, `ciReviewLookup`, which asks the same read
     with a 10 s timeout and is never fatal. It is asked only for a `pr-open` line with a minted id
     and a pull-request url:
     - open threads read `CI review left N open thread(s) on its head → pup fix <id>`;
-    - a clean head reads `CI review clean on its head: ready for your merge click → <url>`;
+    - a status that reads clean reads `CI review status reads clean on its head (any repo
+      workflow can set it): read the PR, then your merge click → <url>`;
     - no answer keeps `PR opened, not landed`.
     The kind stays `pr-open`, so `dashboard.types.ts` is untouched. `pup ui`, the fleet view and
     `pup dashboard` ask GitHub nothing. Left for part 2: the conductor running `pup fix` on its
@@ -4712,12 +4737,16 @@ changes back into those docs is pending.
     the old window by name, launches one rung up and records that rung after the kickoff, and asks
     gh pinned to the host and repo. A body carrying escapes, a bell, a C1 CSI, a bidi override and
     an instruction-looking fence reaches the kickoff with none of them, fenced longer than its own
-    backtick run, under the reviewer-data framing; a long body is cut. Each of these refuses,
+    backtick run, under the reviewer-data framing, and a heading whose id and path carry a
+    zero-width space and a bidi override loses both; a long body is cut. The edge leaves the row
+    running with no pane until the new one is stored. Each of these refuses,
     writing no event, moving no branch and launching nothing:
     - a `CLOSED` PR and a `MERGED` one;
     - a review on another commit, and no review at all;
     - a head past the pin;
-    - a clean review;
+    - a clean review, worded as what the status says;
+    - a finding edited by a user, and one edited by an account gone from GitHub (the bot's own
+      edit passes);
     - only resolved or earlier-round threads under a failing status;
     - findings with no anchor, a partial clean review, and no status at all;
     - more than 100 threads;
@@ -4731,12 +4760,13 @@ changes back into those docs is pending.
     `runMergeGate` with `--pr` adopts the same PR, appends a merge event at the new head and
     pushes it, and `landSession` lands a PR GitHub merged at that head. `readPullRequestReview`
     reads the bot's newest review, its status on the head only, and its unresolved threads with
-    the line falling back to the original, and refuses a non-PR url before gh. `needsYou` prints
+    the line falling back to the original, tells a finding someone other than the bot edited, and
+    refuses a non-PR url before gh. `needsYou` prints
     the threads, clean and plain lines, and asks nothing for an unminted id or a non-PR url. The
-    state machine still refuses merged to running. A normal gate files no second entry of a kind
-    the session holds. The CLI refuses `pup fix` to a session, passes the operator's and the
-    conductor's override source, prints the outcome, a scrubbed refusal and a rolled-back round,
-    and `pup status` prints both CI lines from the lookup.
+    state machine still refuses merged to running. A normal gate files a grown figure beside an
+    entry of its kind the session holds. The CLI refuses `pup fix` to a session, passes the
+    operator's and the conductor's override source, prints the outcome, a scrubbed refusal and a
+    rolled-back round, and `pup status` prints both CI lines from the lookup.
 
 91. **`pup dashboard` serves a read-only live page on 127.0.0.1, behind a token minted per run,
     the UI-first surface (2026-10-16).**

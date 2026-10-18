@@ -1336,7 +1336,10 @@ describe('needsYou', () => {
             kind: 'pr-open',
             sessionId: 's-clean',
             label: 's-clean',
-            reason: 'CI review clean on its head: ready for your merge click',
+            // Any workflow in the repo can set the status as the bot (decision 90).
+            reason:
+              'CI review status reads clean on its head (any repo workflow can set it): ' +
+              'read the PR, then your merge click',
             answer: PR(9),
           },
           {

@@ -5642,7 +5642,8 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs).toContain(
-        `  s1  CI review clean on its head: ready for your merge click  → ${PR}`,
+        '  s1  CI review status reads clean on its head (any repo workflow can set it): read ' +
+          `the PR, then your merge click  → ${PR}`,
       );
     });
   });

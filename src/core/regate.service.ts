@@ -11,6 +11,7 @@ import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertPullRequestOf,
   commitSubjectsBetween,
+  debtKind,
   fileAcceptedDebt,
   isAncestor,
   measureBranch,
@@ -198,7 +199,15 @@ export async function regateMerged(
   const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
   if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
-  const ledgerKept = fileAcceptedDebt(db, req, session.id, measured);
+  // The stages measure the whole branch again, so the flags the first gate
+  // filed come back with figures the fix round moved: a kind this session
+  // already holds open is not filed twice.
+  const held = new Set(
+    measured.openEntries.flatMap((entry) => debtKind(entry.description, session.id) ?? []),
+  );
+  const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, measured.flaggedDebt, (flag) =>
+    held.has(debtKind(flag.description, session.id) as string),
+  );
 
   const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
   try {

@@ -354,8 +354,9 @@ const NEED_ORDER: DashboardNeed['kind'][] = [
 
 /**
  * What the CI review says on a merged session's open PR (decision 90): the
- * review bot's unresolved threads on the PR's head, zero when it reviewed that
- * head clean.
+ * review bot's unresolved threads on the PR's head, zero when its status reads
+ * clean on that head. Any workflow in the repo writes as that bot, so a clean
+ * line is what the status says, never proof.
  */
 export interface CiReview {
   openThreads: number;
@@ -454,7 +455,8 @@ function needOf(
       'pr-open',
       review === undefined
         ? 'PR opened, not landed'
-        : 'CI review clean on its head: ready for your merge click',
+        : 'CI review status reads clean on its head (any repo workflow can set it): ' +
+            'read the PR, then your merge click',
       url ?? '(PR url outside the pull-request shape; inspect the store)',
     );
   }

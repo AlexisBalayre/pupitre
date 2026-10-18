@@ -140,10 +140,53 @@ describe('readPullRequestReview', () => {
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
       openThreads: [
-        { id: 'PRRT_open', path: 'src/a.ts', line: 4, raisedOn: HEAD, body: 'finding' },
-        { id: 'PRRT_moved', path: undefined, line: 2, raisedOn: 'd'.repeat(40), body: 'finding' },
+        {
+          id: 'PRRT_open',
+          path: 'src/a.ts',
+          line: 4,
+          raisedOn: HEAD,
+          body: 'finding',
+          editedByOther: false,
+        },
+        {
+          id: 'PRRT_moved',
+          path: undefined,
+          line: 2,
+          raisedOn: 'd'.repeat(40),
+          body: 'finding',
+          editedByOther: false,
+        },
       ],
     });
+  });
+
+  // Anyone with write access can edit the bot's comment (decision 90).
+  it('tells a finding someone other than the bot edited', () => {
+    const edited = (editor: unknown, lastEditedAt: unknown = '2026-10-18T09:00:00Z') =>
+      thread({ id: `PRRT_${String(lastEditedAt)}` }, { editor, lastEditedAt });
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviewThreads: {
+        pageInfo: { hasNextPage: false },
+        nodes: [
+          edited(null, null),
+          edited(BOT),
+          edited({ __typename: 'User', login: 'github-actions' }),
+          // An editor gone from GitHub reads as nobody, so as not the bot.
+          edited(null),
+          edited({ __typename: 'User', login: 'alexis' }, null),
+        ],
+      },
+    });
+
+    expect(read().openThreads.map((open) => open.editedByOther)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+    ]);
   });
 
   it('reads no status set by another creator, or on a commit that is not the head', () => {
