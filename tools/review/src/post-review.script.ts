@@ -57,10 +57,28 @@ function fileDiff(mergeBase: string, file: string): string {
     // quietly send every finding to the summary instead of the diff.
     // Two-dot from the resolved merge base, never three-dot from `origin/main`,
     // which the action's depth-1 base fetch grafts parentless.
-    return execFileSync("git", ["diff", `${mergeBase}..HEAD`, "--unified=0", "--", `:/${file}`], {
-      encoding: "utf8",
-      cwd: process.env.GITHUB_WORKSPACE,
-    });
+    // The model has had the checkout by now, and this runs with the job's
+    // token: nothing the head or the model could have configured may run a
+    // command here (fsmonitor, hooks, an external diff or a textconv driver).
+    return execFileSync(
+      "git",
+      [
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "diff.external=",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        `${mergeBase}..HEAD`,
+        "--unified=0",
+        "--",
+        `:/${file}`,
+      ],
+      { encoding: "utf8", cwd: process.env.GITHUB_WORKSPACE },
+    );
   } catch {
     warn(`could not diff ${file}; its findings go in the review body`);
     return "";

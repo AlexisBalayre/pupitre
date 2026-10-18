@@ -88,10 +88,13 @@ jobs:
       # silently reviews only the last commit of a multi-commit PR.
       - name: Checkout repository
         uses: actions/checkout@v7
+        # persist-credentials off: the checkout would leave this job's token in
+        # .git for the rest of the job, where the model reads it. gh lends its
+        # own credential to the few git calls that reach the network.
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      # Toolchain ahead of the PR-head checkout: the metrics step runs on
       # Toolchain ahead of the PR-head checkout: the metrics step runs on
       # `always()` but still needs pnpm and the installed tooling. The tooling
       # itself is installed from the merge base once the head is checked out,
@@ -166,6 +169,10 @@ jobs:
           mkdir -p "$REVIEW_TOOLING"
           git archive "$merge_base" tools/review | tar -x --strip-components=2 -C "$REVIEW_TOOLING"
           pnpm install --dir "$REVIEW_TOOLING" --ignore-workspace --frozen-lockfile
+          # Belt and braces behind the sandbox: nothing writes here after the
+          # install (tsx caches under the system temp, the scripts write to
+          # runner.temp), so a write that reaches the copy fails.
+          chmod -R a-w "$REVIEW_TOOLING"
 
       # Deterministic preflight: head freshness, tree cleanliness, the merge
       # base, and the full/incremental mode decision, all run as a plain step so
@@ -211,13 +218,17 @@ jobs:
       # would execute unreviewed. Apply the action's own treatment first:
       # snapshot the head's copy for reviewers under .claude-pr/, then take the
       # merge base's. Drop this step once upstream restores AGENTS.md itself.
+      # The snapshot is written from the object store into a directory made
+      # fresh here, never copied through a path: the head can commit
+      # .claude-pr/AGENTS.md as a symlink into the tooling copy, and a `cp`
+      # onto it overwrites the poster that later runs with the job's token.
       - name: Restore AGENTS.md from base
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         env:
           MERGE_BASE: ${{ steps.preflight.outputs.merge_base }}
         run: |
-          mkdir -p .claude-pr
-          if [ -f AGENTS.md ]; then cp AGENTS.md .claude-pr/AGENTS.md; fi
+          rm -rf .claude-pr && mkdir .claude-pr
+          if git cat-file -e HEAD:AGENTS.md 2>/dev/null; then git show HEAD:AGENTS.md > .claude-pr/AGENTS.md; fi
           if git cat-file -e "${MERGE_BASE}:AGENTS.md" 2>/dev/null; then
             git checkout "${MERGE_BASE}" -- AGENTS.md
             git restore --staged AGENTS.md
