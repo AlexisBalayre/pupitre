@@ -254,6 +254,50 @@ export function respawnRoute(
   session: SessionRow,
   override: RouteOverride = {},
 ): SessionRoute {
+  return sessionWindowRoute(
+    db,
+    session,
+    () => windowFailureOf(db, paths, session, Date.now()),
+    override,
+    true,
+  );
+}
+
+/**
+ * The route a CI fix round's window runs on (decision 90): one rung above the
+ * window that finished the work the review left threads on, the climb decision
+ * 92 counts a fix round for, with an override kept or named as on a respawn.
+ * The conductor runs `pup fix` too, and an override it names never lifts a
+ * top-rung refusal, as on its launches.
+ */
+export function fixRoundRoute(
+  db: Database,
+  session: SessionRow,
+  override: RouteOverride,
+  overrideVia: 'operator' | 'conductor',
+): SessionRoute {
+  return sessionWindowRoute(
+    db,
+    session,
+    () => 'ci-fix-round',
+    override,
+    overrideVia === 'operator',
+  );
+}
+
+/**
+ * What a session's next window runs on, climbed from the one it replaces as
+ * `failureOf` says. An override the session was launched or respawned with
+ * stays its model and effort, the rung still climbing under it, unless new ones
+ * are named; only a named one the operator chose lifts the top-rung refusal.
+ */
+function sessionWindowRoute(
+  db: Database,
+  session: SessionRow,
+  failureOf: () => ClimbReason | 'blocked' | undefined,
+  override: RouteOverride,
+  isOperator: boolean,
+): SessionRoute {
   const named = override.model !== undefined || override.effort !== undefined;
   const kept =
     session.route_override === 1
@@ -267,9 +311,9 @@ export function respawnRoute(
     { session: session.id },
     tier,
     session,
-    () => windowFailureOf(db, paths, session, Date.now()),
+    failureOf,
     named ? override : kept,
-    named,
+    named && isOperator,
   );
 }
 

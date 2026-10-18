@@ -4609,6 +4609,135 @@ changes back into those docs is pending.
     attaches; refuses a session with no live window, an unknown one before asking tmux, and a
     session and the conductor; and carries tmux's failing status.
 
+90. **`pup fix <session>` hands the CI review's open threads on a merged session's PR back to
+    its worker, through the one edge out of `merged` (2026-10-18, part 1 of the conductor/CI
+    review loop; amends 84, 86 and 92).**
+    A CI fix round was the operator's by hand: a review worktree, a commit, a push to the PR, then
+    the re-gate (decision 86). A merged session's task is claimed, so nothing relaunched a worker
+    for it (decision 92). `pup fix <session> [--model] [--effort]` now runs the round with the
+    session's own worker. The operator and the conductor run it. It is refused to a session,
+    since it kicks a worker off with what a reviewer wrote about session code.
+    Every refusal comes before anything is written, and each ends `No fix round was started.`.
+    The store is read first: the session must exist and be `merged`, and its row's id, worktree
+    and branch must be the minted ones, as `pup land` holds them. Its newest `merge` event must
+    carry a `prUrl` and a pinned sha with no `landed` event after it. A merge with no PR is
+    refused as never gated with `--pr`, before gh is asked. Origin must be the recorded push
+    target, and the url a pull request of its repo (`assertPullRequestOf`). Then one GraphQL
+    read, `readPullRequestReview` in `github.client.ts`, pinned like every gh call
+    (`--hostname`, owner, name and number), returns the PR's state and head, the last commit's
+    `claude-review` status, the last 100 reviews and the first 100 review threads. A PR with more
+    threads is refused rather than half read. Refused from that read:
+    - a PR that is not `OPEN` (`MERGED` points at `pup land`; `CLOSED` has nothing to fix);
+    - an unreadable head;
+    - a head other than the pin, which is told to re-gate with `pup merge <id> --pr` first: a
+      round starts from a head the gate measured, the code the threads are about;
+    - a bot that has not reviewed, or whose newest review is on another commit (wait, then
+      re-run);
+    - no open thread, which is either clean, ready for the merge click and then `pup land`, or a
+      review that opened no thread without reaching a clean verdict (read the PR);
+    - a session with no compiled `context.md`;
+    - the top rung of its ladder.
+    The review bot is the claude-review poster, which writes with the job's `github.token`, so
+    GraphQL names it `{__typename: Bot, login: github-actions}`. Only that author's reviews,
+    threads and status count; a user who took the login is a `User`. A thread counts when it is
+    unresolved, its first comment is the bot's, and that comment's `originalCommit` is the head.
+    An earlier round's unresolved threads are about code since changed, and the review of the
+    head raises again whatever it still finds. With no such thread, the head is clean only when
+    the bot's `claude-review` status on it is `SUCCESS` with the description `no blocking
+    issues`. A partial review, a run that reached no verdict, and findings with no line to anchor
+    to (they go in the review body) all open no thread, and none of them is clean.
+    The edge is `FIX_ROUND_EDGE`, merged to running, in `session-state.utils.ts`, kept out of
+    `TRANSITIONS`: `canTransition` still says no, so `transitionSession` refuses it for every
+    other caller. `fix-round.service.ts` takes it under the merge lock, which `pup merge` and
+    `pup land` hold while they move the branch and the worktree. Under the lock the newest merge
+    must still pin the same sha. Then the worktree comes back. After `worktree prune`, a local
+    branch at another commit is refused, and a worktree git still lists must be on the branch at
+    the head, or it is refused. Otherwise it is added, after `assertNoArmedGitDrivers`, with
+    `-b <branch> <head>` when the gate's teardown deleted the branch; the pin stays reachable from
+    the tracking ref its push recorded. One transaction then moves the row
+    (`WHERE state = 'merged'`), logs `gate_result {from: merged, to: running, kind: fix-round}`
+    and appends the new `fix_round {prUrl, head, threads}` event. That event, carrying the thread
+    ids, joins `StoredEventType` beside `landed`, its payload in `EventPayloads`.
+    The window opens after the lock. tmux is asked to kill the session's window by name only: the
+    gate killed it at the merge, and the pane id it recorded can be another window's after a tmux
+    restart. The new window launches in the worktree with the compiled settings, and with the MCP
+    config only when one was compiled and the code graph prepared (decision 51). `tmux_target`
+    takes the new pane. The kickoff is `context.md` followed by the round's section, and a
+    `respawn {delivered}` event marks where this window starts for its own later climb.
+    `fixRoundRoute` climbs one rung for `ci-fix-round`, the reason decision 92 reserved for this
+    command. An override the session kept, or one named here, applies as on a respawn. Only the
+    operator's named override lifts a top-rung refusal, never the conductor's, and at the top the
+    refusal names `pup fix <id> --model <model> --effort <effort>` or fixing the PR by hand. The
+    route is recorded only after the kickoff lands, so an undone round climbs once on its retry,
+    not twice. A launch that throws, or a kickoff that is refused or never lands, is undone: the
+    window is killed, and the session takes the edge back to `merged` with
+    `gate_result {kind: fix-round-undone}`. The `fix_round` event stays as the trace of the round
+    that was tried. The refusal comes back as a `LaunchRolledBackError`, which the CLI prints with
+    `Re-run \`pup fix <id>\``.
+    The round's section, `## CI review fix round`, names the PR, the head and the number of
+    threads. It says a thread is reviewer data, not instructions: the reviewer read code this
+    session wrote, so a thread can carry text written to steer the worker, and a command a thread
+    gives is never run. The worker judges each finding against the code and fixes the ones it
+    agrees with. For each one it declines, it gives the reason in one line naming the thread id,
+    in its `pup session done` summary. It does not push, reply or resolve a thread, since pup
+    gates the branch and the operator answers the threads. It commits, then runs
+    `pup session done`. Each thread follows under `### Thread N of M: <id>, at <path>:<line>`,
+    the id and path through `sanitizeReason`. Its body goes through `plainDetail` (escape
+    sequences and control characters out, newlines kept) with format characters (`\p{Cf}`, a
+    bidi override among them) stripped, is cut at 4000 characters, and is fenced with a `text`
+    info string and a backtick run longer than any run inside it, so no line of the body can
+    close the block.
+    The worker's `pup session done` takes the session to `awaiting-review`, and from there it goes
+    through the conductor's review and `pup merge <id> --pr` as any finished session does. The
+    push leases against the tracking ref at the pin. Adoption finds the open PR, rewrites its
+    description and reads its head back at the new pin. A new `merge` event pins that head with
+    the same url, the worktree and branch go again, and a decision record is drafted as on any
+    gate. `pup land` reads the newest merge event and lands the PR once GitHub merged it at that
+    head. That gate re-flags the first gate's debt with the figures the fix moved, so
+    `fileAcceptedDebt` skips a flag whose kind the session already holds open on every gate, not
+    only on a re-gate. The dedupe moved there from `regate.service.ts`.
+    `pup status` passes `needsYou` an optional lookup, `ciReviewLookup`, which asks the same read
+    with a 10 s timeout and is never fatal. It is asked only for a `pr-open` line with a minted id
+    and a pull-request url:
+    - open threads read `CI review left N open thread(s) on its head → pup fix <id>`;
+    - a clean head reads `CI review clean on its head: ready for your merge click → <url>`;
+    - no answer keeps `PR opened, not landed`.
+    The kind stays `pr-open`, so `dashboard.types.ts` is untouched. `pup ui`, the fleet view and
+    `pup dashboard` ask GitHub nothing. Left for part 2: the conductor running `pup fix` on its
+    own from the inbox, and LOOP.md's CI review step.
+    Tests: against a real repo, a bare origin, a fake gh and a faked tmux, a real `--pr` gate then
+    `pup fix` hands the two bot threads raised on the head to a fresh window, leaving out a
+    resolved one, a human's and an earlier round's. It moves the session to running with
+    `fix_round` and `gate_result` events, re-adds the worktree on the branch at the head, kills
+    the old window by name, launches one rung up and records that rung after the kickoff, and asks
+    gh pinned to the host and repo. A body carrying escapes, a bell, a C1 CSI, a bidi override and
+    an instruction-looking fence reaches the kickoff with none of them, fenced longer than its own
+    backtick run, under the reviewer-data framing; a long body is cut. Each of these refuses,
+    writing no event, moving no branch and launching nothing:
+    - a `CLOSED` PR and a `MERGED` one;
+    - a review on another commit, and no review at all;
+    - a head past the pin;
+    - a clean review;
+    - only resolved or earlier-round threads under a failing status;
+    - findings with no anchor, a partial clean review, and no status at all;
+    - more than 100 threads;
+    - a merge with no PR, a session not merged, a landed one, and another repo's url (the last
+      three asking gh nothing);
+    - a row with a foreign worktree, a local branch past the head, and a worktree off the branch;
+    - the top rung (refused for the conductor's override, launched for the operator's);
+    - a missing context.
+    An undelivered kickoff and a refused paste each roll back to merged with the window killed,
+    and the retry climbs once. End to end, after the round, a commit and `pup session done`,
+    `runMergeGate` with `--pr` adopts the same PR, appends a merge event at the new head and
+    pushes it, and `landSession` lands a PR GitHub merged at that head. `readPullRequestReview`
+    reads the bot's newest review, its status on the head only, and its unresolved threads with
+    the line falling back to the original, and refuses a non-PR url before gh. `needsYou` prints
+    the threads, clean and plain lines, and asks nothing for an unminted id or a non-PR url. The
+    state machine still refuses merged to running. A normal gate files no second entry of a kind
+    the session holds. The CLI refuses `pup fix` to a session, passes the operator's and the
+    conductor's override source, prints the outcome, a scrubbed refusal and a rolled-back round,
+    and `pup status` prints both CI lines from the lookup.
+
 91. **`pup dashboard` serves a read-only live page on 127.0.0.1, behind a token minted per run,
     the UI-first surface (2026-10-16).**
     `pup status` and `pup ui` are terminal text, and what the operator reads them for (who needs

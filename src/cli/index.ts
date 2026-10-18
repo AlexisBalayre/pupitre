@@ -49,6 +49,7 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
@@ -1285,6 +1286,7 @@ export function buildProgram(): Command {
           own.db,
           buildDashboardSnapshot(own.db, own.repoPath, Date.now()),
           shouldShowHistory,
+          ciReviewLookup(own.db, own.repoPath),
         );
         return;
       }
@@ -1294,7 +1296,12 @@ export function buildProgram(): Command {
         return;
       }
       const { repoPath, db } = project();
-      printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()), shouldShowHistory);
+      printDashboard(
+        db,
+        buildDashboardSnapshot(db, repoPath, Date.now()),
+        shouldShowHistory,
+        ciReviewLookup(db, repoPath),
+      );
     });
 
   program
@@ -1418,14 +1425,17 @@ export function buildProgram(): Command {
    *
    * What needs the operator leads, each line with the command that answers
    * it, and a finished session is history the table leaves to `--history`
-   * (decision 83).
+   * (decision 83). `ciReview` is GitHub's word on each open PR's CI review,
+   * which only `pup status` asks for (decision 90): it is a gh call per PR,
+   * a wait the store-only readings never take.
    */
   function printDashboard(
     db: Database,
     snapshot: DashboardSnapshot,
     shouldShowHistory: boolean,
+    ciReview?: Parameters<typeof needsYou>[1],
   ): void {
-    const needs = needsYou(snapshot);
+    const needs = needsYou(snapshot, ciReview);
     if (needs.length > 0) {
       console.log('Needs you');
       for (const need of needs) console.log(`  ${needLine(need)}`);
@@ -2079,6 +2089,48 @@ export function buildProgram(): Command {
         );
       }
       printAuditOutcome(db, outcome.audit, repoPath);
+    });
+  program
+    .command('fix <session>')
+    .description(
+      "Hand the CI review's open threads on a merged session's PR back to its worker, in a fresh window",
+    )
+    .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
+    .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
+    .action(async (session: string, opts: RouteOverride) => {
+      const { repoPath, db } = project();
+      // A fix round kicks a worker off with what a reviewer wrote about
+      // session code, and takes the one edge out of `merged`; the operator and
+      // the conductor run it, as they run the gate that follows (decision 90).
+      if (callingSession(db)) {
+        return refuse('`pup fix` is refused to sessions; the operator or the conductor runs it.');
+      }
+      let outcome: FixRoundOutcome;
+      try {
+        outcome = await startFixRound(db, {
+          repoPath,
+          sessionId: session,
+          override: { model: opts.model, effort: opts.effort },
+          overrideVia: callingConductor() ? 'conductor' : 'operator',
+        });
+      } catch (error) {
+        if (error instanceof LaunchRolledBackError) {
+          return reportRolledBack(error, `Re-run \`pup fix ${sanitizeReason(session)}\`.`);
+        }
+        return refuseScrubbed(error);
+      }
+      const threads = `${outcome.threads} open thread${outcome.threads === 1 ? '' : 's'}`;
+      console.log(
+        `Fix round started for ${sanitizeReason(session)}: the ${threads} the CI review left on ` +
+          `${outcome.prUrl} at ${outcome.head} went to a fresh window.`,
+      );
+      if (outcome.recreatedWorktree) {
+        console.log(`Recreated its worktree on its branch at ${outcome.head}.`);
+      }
+      console.log(
+        `When it is done: \`pup review ${sanitizeReason(session)}\`, then ` +
+          `\`pup merge ${sanitizeReason(session)} --pr\`.`,
+      );
     });
   program
     .command('map [module]')

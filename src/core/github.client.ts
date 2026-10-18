@@ -43,11 +43,11 @@ interface ListedPullRequest {
   autoMergeRequest?: unknown;
 }
 
-function ghJson(repoPath: string, args: string[]): unknown {
+function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_MS): unknown {
   const output = execFileSync('gh', args, {
     cwd: repoPath,
     encoding: 'utf8',
-    timeout: GH_COMMAND_TIMEOUT_MS,
+    timeout,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: scrubbedGitEnv(),
   });
@@ -237,4 +237,181 @@ export function readPullRequestLanding(
     base: typeof fields.baseRefName === 'string' ? fields.baseRefName : undefined,
     mergeCommit: typeof commit === 'string' ? commit : undefined,
   };
+}
+
+/**
+ * The claude-review workflow's poster writes with the job's own token, so
+ * GitHub names the Actions bot as the author of its reviews and threads
+ * (`tools/review/src/post-review.script.ts`); GraphQL drops the `[bot]`.
+ */
+const REVIEW_BOT_LOGIN = 'github-actions';
+/** The commit status the poster pins to the head it reviewed, its verdict in a line. */
+const REVIEW_STATUS_CONTEXT = 'claude-review';
+/** GraphQL's page cap: a PR with more threads is refused rather than half read. */
+const REVIEW_PAGE = 100;
+
+const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      state
+      headRefOid
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            status {
+              context(name: "${REVIEW_STATUS_CONTEXT}") {
+                state
+                description
+                creator { __typename login }
+              }
+            }
+          }
+        }
+      }
+      reviews(last: ${REVIEW_PAGE}) { nodes { author { __typename login } commit { oid } } }
+      reviewThreads(first: ${REVIEW_PAGE}) {
+        pageInfo { hasNextPage }
+        nodes {
+          id
+          isResolved
+          path
+          line
+          originalLine
+          comments(first: 1) {
+            nodes { author { __typename login } originalCommit { oid } body }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/** One unresolved thread the review bot opened: its first comment is the finding. */
+export interface ReviewThread {
+  id: string;
+  path: string | undefined;
+  /** The line on the head, or the one it was left on once the code moved under it. */
+  line: number | undefined;
+  /** The commit the review that opened the thread was on. */
+  raisedOn: string | undefined;
+  body: string;
+}
+
+export interface PullRequestReview {
+  state: string | undefined;
+  head: string | undefined;
+  /** The commit the bot's newest review is on; undefined when it has not reviewed. */
+  reviewedHead: string | undefined;
+  /** The bot's `claude-review` status on the head: its verdict, or why it reached none. */
+  headStatus: { state: string; description: string } | undefined;
+  /** The bot's unresolved threads, in GitHub's order. */
+  openThreads: ReviewThread[];
+}
+
+function isReviewBot(author: unknown): boolean {
+  const fields = objectFields(author);
+  return fields.__typename === 'Bot' && fields.login === REVIEW_BOT_LOGIN;
+}
+
+function nodesOf(connection: unknown): Record<string, unknown>[] {
+  const nodes = objectFields(connection).nodes;
+  return Array.isArray(nodes) ? nodes.map(objectFields) : [];
+}
+
+/**
+ * What the CI review said on the PR at `url` (decision 90): its state and
+ * head, the commit the review bot last reviewed, the status it pinned to the
+ * head, and the threads the bot opened that nobody resolved. One GraphQL read,
+ * so all of it describes the same moment, pinned to `repo`'s host and name
+ * like every other call here. Every
+ * string in it is GitHub's copy of text a session's code shaped — a path, a
+ * finding quoting that code — so it is data for the caller to scrub, and a
+ * field outside its shape reads as absent.
+ */
+export function readPullRequestReview(
+  repoPath: string,
+  url: string,
+  repo: string,
+  timeoutMs?: number,
+): PullRequestReview {
+  const [host, owner, name] = repo.split('/');
+  const number = /\/pull\/(\d+)$/.exec(url)?.[1];
+  if (!host || !owner || !name || number === undefined) {
+    throw new Error(`Cannot read a review of ${url} as a pull request of ${repo}.`);
+  }
+  const parsed = ghJson(
+    repoPath,
+    [
+      'api',
+      'graphql',
+      '--hostname',
+      host,
+      '-f',
+      `query=${PULL_REQUEST_REVIEW_QUERY}`,
+      '-f',
+      `owner=${owner}`,
+      '-f',
+      `name=${name}`,
+      '-F',
+      `number=${number}`,
+    ],
+    timeoutMs,
+  );
+  const pr = objectFields(
+    objectFields(objectFields(objectFields(parsed).data).repository).pullRequest,
+  );
+  const threads = objectFields(pr.reviewThreads);
+  if (objectFields(threads.pageInfo).hasNextPage === true) {
+    throw new Error(
+      `${url} has more than ${REVIEW_PAGE} review threads, more than one read returns; ` +
+        'resolve some on GitHub, then re-run.',
+    );
+  }
+  const reviewed = nodesOf(pr.reviews)
+    .filter((review) => isReviewBot(review.author))
+    .at(-1);
+  const reviewedHead = objectFields(reviewed?.commit).oid;
+  const head = typeof pr.headRefOid === 'string' ? pr.headRefOid : undefined;
+  return {
+    state: typeof pr.state === 'string' ? pr.state : undefined,
+    head,
+    reviewedHead: typeof reviewedHead === 'string' ? reviewedHead : undefined,
+    headStatus: reviewStatusOn(pr.commits, head),
+    openThreads: nodesOf(threads).flatMap((thread): ReviewThread[] => {
+      const [finding] = nodesOf(thread.comments);
+      if (thread.isResolved !== false || typeof thread.id !== 'string') return [];
+      if (!finding || !isReviewBot(finding.author)) return [];
+      const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
+      const raisedOn = objectFields(finding.originalCommit).oid;
+      return [
+        {
+          id: thread.id,
+          path: typeof thread.path === 'string' ? thread.path : undefined,
+          line: line as number | undefined,
+          raisedOn: typeof raisedOn === 'string' ? raisedOn : undefined,
+          body: typeof finding.body === 'string' ? finding.body : '',
+        },
+      ];
+    }),
+  };
+}
+
+/**
+ * The review bot's `claude-review` status on the PR's last commit, read only
+ * when that commit is the head the PR reports: anyone who can push may set a
+ * status, so another creator's reads as none.
+ */
+function reviewStatusOn(
+  commits: unknown,
+  head: string | undefined,
+): PullRequestReview['headStatus'] {
+  const commit = objectFields(nodesOf(commits).at(-1)?.commit);
+  if (head === undefined || commit.oid !== head) return undefined;
+  const status = objectFields(objectFields(commit.status).context);
+  if (!isReviewBot(status.creator)) return undefined;
+  const { state, description } = status;
+  return typeof state === 'string'
+    ? { state, description: typeof description === 'string' ? description : '' }
+    : undefined;
 }

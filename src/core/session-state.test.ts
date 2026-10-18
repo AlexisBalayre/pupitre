@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionState } from './db.client.js';
-import { canTransition, claimedStates, holdingStates, isTerminal } from './session-state.utils.js';
+import {
+  canTransition,
+  claimedStates,
+  FIX_ROUND_EDGE,
+  holdingStates,
+  isTerminal,
+} from './session-state.utils.js';
 
 describe('session state machine', () => {
   it('permits the documented happy path', () => {
@@ -30,6 +36,13 @@ describe('session state machine', () => {
     expect(canTransition('running', 'merged')).toBe(false);
     expect(canTransition('merged', 'running')).toBe(false);
     expect(canTransition('killed', 'running')).toBe(false);
+  });
+
+  // `pup fix` takes merged -> running in its own transaction (decision 90);
+  // the table keeps refusing it, so no other caller can.
+  it('keeps the fix round edge out of the table', () => {
+    expect(FIX_ROUND_EDGE).toEqual({ from: 'merged', to: 'running' });
+    expect(canTransition(FIX_ROUND_EDGE.from, FIX_ROUND_EDGE.to)).toBe(false);
   });
 
   it('marks only merged and killed as terminal', () => {

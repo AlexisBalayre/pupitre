@@ -353,13 +353,28 @@ const NEED_ORDER: DashboardNeed['kind'][] = [
 ];
 
 /**
+ * What the CI review says on a merged session's open PR (decision 90): the
+ * review bot's unresolved threads on the PR's head, zero when it reviewed that
+ * head clean.
+ */
+export interface CiReview {
+  openThreads: number;
+}
+
+/**
  * The needs-you inbox (decision 83), read off a snapshot like `fleetSummary`
  * so `pup status`, the fleet view and the conductor that reads `pup status`
  * cannot disagree about what waits on the operator. One line per session, its
  * first reason in `NEED_ORDER`; within a kind, the snapshot's own row order.
+ * `ciReview` is GitHub's answer for an open PR, asked only by `pup status`,
+ * the one reader that may wait on gh; without it, or without an answer, an
+ * open PR keeps its plain line.
  */
-export function needsYou(snapshot: DashboardSnapshot): DashboardNeed[] {
-  const needs = snapshot.sessions.flatMap((session) => needOf(session) ?? []);
+export function needsYou(
+  snapshot: DashboardSnapshot,
+  ciReview?: (session: DashboardSession) => CiReview | undefined,
+): DashboardNeed[] {
+  const needs = snapshot.sessions.flatMap((session) => needOf(session, ciReview) ?? []);
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
 
@@ -372,7 +387,10 @@ export function needsYou(snapshot: DashboardSnapshot): DashboardNeed[] {
 const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
-function needOf(session: DashboardSession): DashboardNeed | undefined {
+function needOf(
+  session: DashboardSession,
+  ciReview?: (session: DashboardSession) => CiReview | undefined,
+): DashboardNeed | undefined {
   const { id } = session;
   const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
     kind,
@@ -424,10 +442,20 @@ function needOf(session: DashboardSession): DashboardNeed | undefined {
     );
   }
   if (session.openPr !== undefined) {
+    const { url } = session.openPr;
+    // Asked only where the answer can be acted on: `pup fix` takes a minted id
+    // and gh a pull-request url.
+    const review = url !== undefined && session.isMintedId ? ciReview?.(session) : undefined;
+    if (review !== undefined && review.openThreads > 0) {
+      const threads = `${review.openThreads} open thread${review.openThreads === 1 ? '' : 's'}`;
+      return need('pr-open', `CI review left ${threads} on its head`, command(`pup fix ${id}`));
+    }
     return need(
       'pr-open',
-      'PR opened, not landed',
-      session.openPr.url ?? '(PR url outside the pull-request shape; inspect the store)',
+      review === undefined
+        ? 'PR opened, not landed'
+        : 'CI review clean on its head: ready for your merge click',
+      url ?? '(PR url outside the pull-request shape; inspect the store)',
     );
   }
   return undefined;

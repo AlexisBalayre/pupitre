@@ -145,7 +145,7 @@ const CONTROL_CHARS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
  * says, `quotePath` already sanitizes the scope audit's, and an adapter's own
  * text reaches flagged stages only, which are refused and never steered.
  */
-function plainDetail(detail: string): string {
+export function plainDetail(detail: string): string {
   return detail.replace(CSI_ESCAPE, '').replace(CONTROL_CHARS, ' ').trimEnd();
 }
 
@@ -963,7 +963,7 @@ async function gateAndMerge(
   if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
   // What `--accept-debt` filed, for the refusals that must stay after it.
-  const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, flaggedDebt);
+  const ledgerKept = fileAcceptedDebt(db, req, session.id, measured);
 
   const report: GateReport = { sessionId: session.id, passed: true, sandbox, stages };
   let prUrl: string | undefined;
@@ -1541,18 +1541,24 @@ export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: 
 }
 
 /**
- * File one ledger entry per flag under `--accept-debt`, none for a flag `held`
- * says the session already carries; the count is every flag the accepted debt
- * covers, for the refusals that must stay after the write.
+ * File one ledger entry per flag under `--accept-debt`, none for a kind the
+ * session already holds open; the count is every flag the accepted debt
+ * covers, for the refusals that must stay after the write. The stages measure
+ * the whole branch, so after a fix round, re-gated (decision 86) or worked by
+ * `pup fix` (decision 90), the flags the first gate filed come back with the
+ * figures the round moved, and are not filed twice.
  */
 export function fileAcceptedDebt(
   db: Database,
   req: MergeRequest,
-  projectId: string,
-  flaggedDebt: FlaggedDebt[],
-  held: (flag: FlaggedDebt) => boolean = () => false,
+  sessionId: string,
+  measured: Pick<BranchMeasurement, 'projectId' | 'flaggedDebt' | 'openEntries'>,
 ): number {
   if (!req.acceptDebt) return 0;
+  const { projectId, flaggedDebt } = measured;
+  const held = new Set(
+    measured.openEntries.flatMap((entry) => debtKind(entry.description, sessionId) ?? []),
+  );
   for (const flag of flaggedDebt) {
     const entry = {
       projectId,
@@ -1568,7 +1574,10 @@ export function fileAcceptedDebt(
     // gate with the same flags — the same debt must not be counted twice.
     // Safe because every description above embeds the session id, so this can
     // only ever match this session's own earlier attempt.
-    if (!held(flag) && !hasOpenLedgerEntry(db, entry)) insertLedgerEntry(db, entry);
+    const kind = debtKind(flag.description, sessionId);
+    if (!(kind !== undefined && held.has(kind)) && !hasOpenLedgerEntry(db, entry)) {
+      insertLedgerEntry(db, entry);
+    }
   }
   return flaggedDebt.length;
 }

@@ -63,6 +63,7 @@ import {
 } from './session-lifecycle.errors.js';
 import {
   createSession,
+  fixRoundRoute,
   interruptSession,
   killSession,
   launchTask,
@@ -949,6 +950,32 @@ describe('launchTask model routing (decision 92)', () => {
       model: 'claude-sonnet-5-5',
       effort: 'xhigh',
       route_override: 1,
+    });
+  });
+
+  // A CI fix round is the climb decision 92 counts for `pup fix` (decision 90).
+  it('climbs a fix round one rung, and only the operator lifts the top rung', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const sessionId = launch();
+    const session = () => getSession(db, sessionId) as SessionRow;
+    const named = { model: 'claude-opus-5-5', effort: 'max' };
+
+    expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
+      tier: 'standard',
+      rung: 1,
+      model: 'claude-sonnet-5-5',
+      effort: 'high',
+      reason: 'ci-fix-round',
+      override: false,
+    });
+
+    db.prepare('UPDATE sessions SET rung = 3 WHERE id = ?').run(sessionId);
+    expect(() => fixRoundRoute(db, session(), {}, 'operator')).toThrow(TopRungReachedError);
+    expect(() => fixRoundRoute(db, session(), named, 'conductor')).toThrow(TopRungReachedError);
+    expect(fixRoundRoute(db, session(), named, 'operator')).toMatchObject({
+      rung: 3,
+      ...named,
+      override: true,
     });
   });
 });
