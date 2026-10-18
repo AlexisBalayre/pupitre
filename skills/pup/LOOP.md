@@ -58,7 +58,7 @@ filed twice.
 
 ```
 git pull --ff-only
-pnpm worktree:clean      # or the project's equivalent
+pnpm worktree:remove --merged   # or the project's equivalent
 pup audit                # re-stamps the baseline; run from main, it measures main
 pup debt close <n>       # for ledger entries whose review-by names the merged task
 ```

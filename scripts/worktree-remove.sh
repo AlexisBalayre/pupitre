@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Remove worktrees made by worktree-create.sh, and their branches when no work is lost.
 #   pnpm worktree:remove <name>...   ->  removes .worktrees/<name> and its branch
+#   pnpm worktree:remove --merged    ->  the same for every worktree whose PR merged
 # A worktree with uncommitted or untracked files, a detached HEAD, or a branch
 # outside <prefix>/ is kept; ignored files (.env, node_modules) go with it. Its
 # branch is deleted once a PR merged into the trunk shipped its tip (and
@@ -16,12 +17,32 @@ cd "$ROOT"
 command -v load_project_env >/dev/null && load_project_env .claude/project.env
 PREFIX="${WORKTREE_BRANCH_PREFIX:-feature}"
 
-[ $# -gt 0 ] || { echo "Usage: pnpm worktree:remove <name>..." >&2; exit 1; }
+USAGE="Usage: pnpm worktree:remove <name>... | --merged"
+[ $# -gt 0 ] || { echo "$USAGE" >&2; exit 1; }
+MERGED_ONLY=0
+if [ "$1" = "--merged" ]; then
+  [ $# -eq 1 ] || { echo "$USAGE" >&2; exit 1; }
+  MERGED_ONLY=1
+fi
 
 # A stale origin ref could vouch for commits the remote no longer has, so
 # without a fresh fetch every branch is kept.
 FETCHED=1
 git fetch --prune --quiet origin || { FETCHED=0; echo "Fetch failed: keeping every branch" >&2; }
+[ "$FETCHED" = 1 ] || [ "$MERGED_ONLY" = 0 ] || exit 1
+
+# A squash merge leaves the tip off the trunk, so only GitHub knows it shipped.
+shipped() {
+  gh pr list --head "$1" --base "${GIT_TRUNK:-main}" --state merged --json headRefOid --jq '.[].headRefOid' 2>/dev/null |
+    grep -Fx "$2" >/dev/null
+}
+
+if [ "$MERGED_ONLY" = 1 ]; then
+  set --
+  for DIR in .worktrees/*/; do
+    [ -d "$DIR" ] && set -- "$@" "$(basename "$DIR")"
+  done
+fi
 
 for NAME in "$@"; do
   case "$NAME" in
@@ -46,6 +67,13 @@ for NAME in "$@"; do
     "$PREFIX"/*) ;;
     *) echo "Kept $WORKTREE_DIR: $BRANCH is not a $PREFIX/ branch" >&2; continue ;;
   esac
+  TIP=$(git rev-parse "refs/heads/$BRANCH")
+  SHIPPED=0
+  [ "$FETCHED" = 1 ] && shipped "$BRANCH" "$TIP" && SHIPPED=1
+  if [ "$MERGED_ONLY" = 1 ] && [ "$SHIPPED" = 0 ]; then
+    echo "Kept $WORKTREE_DIR: no PR merged into the trunk shipped its tip" >&2
+    continue
+  fi
   # No --force: git refuses a worktree with uncommitted or untracked files.
   if ! git worktree remove "$WORKTREE_DIR"; then
     echo "Kept $WORKTREE_DIR" >&2
@@ -54,11 +82,11 @@ for NAME in "$@"; do
   echo "Removed $WORKTREE_DIR"
   [ "$FETCHED" = 1 ] || continue
 
-  TIP=$(git rev-parse "refs/heads/$BRANCH")
+  # A commit made in the worktree since the check above is the branch's too.
+  NOW=$(git rev-parse "refs/heads/$BRANCH")
+  [ "$NOW" = "$TIP" ] || { TIP=$NOW; SHIPPED=0; }
   REMOTE_TIP=$(git rev-parse -q --verify "refs/remotes/origin/$BRANCH" || true)
-  # A squash merge leaves the tip off the trunk, so only GitHub knows it shipped.
-  if gh pr list --head "$BRANCH" --base "${GIT_TRUNK:-main}" --state merged --json headRefOid --jq '.[].headRefOid' 2>/dev/null |
-    grep -Fx "$TIP" >/dev/null; then
+  if [ "$SHIPPED" = 1 ]; then
     git branch -D "$BRANCH"
     if [ "$REMOTE_TIP" = "$TIP" ]; then
       # The lease has origin refuse the delete if the branch moved since the fetch.

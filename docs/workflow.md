@@ -33,7 +33,7 @@ pnpm worktree:create my-feature         # .worktrees/my-feature on branch featur
        ├─ commit (pre-commit runs TEST_CMD; lands on feature/ branch, never main)
        └─ open PR  →  /pr-description  →  /pr-ci-review
 pnpm worktree:remove my-feature         # the worktree, then its branch once no work is lost
-pnpm worktree:clean                     # force-remove worktrees whose remote branch is gone
+pnpm worktree:remove --merged           # the same for every worktree whose PR merged
 ```
 
 ## What enforces it
@@ -42,8 +42,7 @@ pnpm worktree:clean                     # force-remove worktrees whose remote br
 | :-------- | :--- | :----------------- |
 | Branch protection | `.claude/hooks/git-safety.sh` | Blocks `git checkout -b` on the trunk, blocks pushes to the trunk, blocks `git reset --hard` and `rm -rf`. |
 | Worktree creation | `scripts/worktree-create.sh` | `pnpm worktree:create <name>` always makes `.worktrees/<name>` on `feature/<name>` and runs `INSTALL_CMD`. |
-| Worktree removal | `scripts/worktree-remove.sh` | `pnpm worktree:remove <name>...` keeps a worktree with uncommitted or untracked files (ignored ones go with it), a detached HEAD, or a branch outside `<prefix>/` (`WORKTREE_BRANCH_PREFIX`), so pup's session worktrees are never touched. It deletes the branch once a PR merged into `GIT_TRUNK` shipped its tip, along with `origin`'s copy while that is still at the tip, or once `origin`'s copy holds every commit. |
-| Worktree cleanup | `scripts/worktree-clean.sh` | Force-removes worktrees whose remote branch is gone (e.g. after merge), uncommitted files included. |
+| Worktree removal | `scripts/worktree-remove.sh` | `pnpm worktree:remove <name>...` (or `--merged`: every worktree whose tip a PR merged into `GIT_TRUNK` shipped) keeps a worktree with uncommitted or untracked files (ignored ones go with it), a detached HEAD, or a branch outside `<prefix>/` (`WORKTREE_BRANCH_PREFIX`), so pup's session worktrees are never touched. It deletes the branch once a PR merged into `GIT_TRUNK` shipped its tip, along with `origin`'s copy while that is still at the tip, or once `origin`'s copy holds every commit. |
 | Quality gate | `.claude/hooks/quality-checks.sh` | On every `Stop`, runs `FORMAT_FIX_CMD` and `LINT_CMD` on the dirty files and `TYPECHECK_CMD` on the repo (all from `.claude/project.env`); blocks on failure. An empty key skips that check. |
 | Test gate | `scripts/pre-commit` | Runs `TEST_CMD` from `.claude/project.env` before every commit. |
 | Context survival | `.claude/hooks/pre-compact-preserve.sh` | Preserves the current branch + worktree path + test results across compaction. |
