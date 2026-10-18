@@ -1,0 +1,151 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T13:06:50.560Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39129717163",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39129717163",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d70cb8e6cc3898258c6e4612f47934f751d8c0aa",
+  "source": "pr",
+  "pr_number": 162,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "24",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The hook's git calls in the main checkout read the shared common-dir config, which a worker can write (decisions 41, 50). `-c core.fsmonitor=` doesn't cover what decisions 50 and 73 require, and there's no armed-driver check before git runs.",
+      "body": "**The `git status` in the main checkout can still run a filter a worker planted.**\n\nThe comment at lines 11–15 says the threat lives in \"a pup worker's worktree\", so running status only in `$CLAUDE_PROJECT_DIR`'s checkout keeps it safe. `docs/09-decisions.md` says otherwise:\n\n- **Decision 41:** a session can write the shared, untracked `$GIT_COMMON_DIR/config` from its worktree with a plain `git config`.\n- **Decision 50:** `$GIT_COMMON_DIR/info/attributes` (e.g. `* filter=pwn`) and the matching `filter.<x>.clean`/`process` driver key are \"all three writable from a worktree\", and \"the config and the attributes file are shared, so a worktree reports everything the main checkout does\". Because the attacker picks the filter key's name, there is \"no command line that outranks it\". The prescribed answer is to refuse while armed (`assertNoArmedGitDrivers`).\n\n```sh\nCHANGES=$(git -c core.fsmonitor= --no-optional-locks status --short 2>/dev/null | head -20)\n```\n\n`-c core.fsmonitor=` disarms only fsmonitor. `--no-optional-locks` only skips writing the refreshed index back. When a file is stat-dirty or racily clean, `status` still compares its content, and that comparison runs the shared clean/process filter. git-lfs's `clean` firing on `git status` is this same path. So a worker can make this hook execute code as the operator when the console compacts, which is the outcome the PR body says these departures prevent. (This rests on git internals; it was not spiked under static CI.)\n\nThe other git calls (`rev-parse --show-toplevel`, `branch --show-current`, `worktree list --porcelain`) read only refs and HEAD, never the index, so they are not exposed.\n\n**Fix direction:** either check for armed drivers the way decision 50 does (local and worktree config scopes for `filter.*`/`diff.*`/`merge.*` drivers, plus `$GIT_COMMON_DIR/info/attributes`) and skip the status line when anything is armed, or drop the uncommitted-files probe. Then correct the comment at lines 11–15.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9b564545349dff17d52c526b43face4c65b05d03/.claude/hooks/post-compact-state.sh#L11-L24",
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "24-25",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`head -20` cuts the uncommitted-files list without saying so. Under the \"trust it over the summary\" header, Claude will take a 20-line list as every change in a larger change set; one line such as \"(first 20 shown)\" when the cap is hit would prevent that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "25",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Filenames from `git status --short` go into model context unsanitized. Git quotes unusual characters by default (`core.quotePath`), but that setting is itself config in the shared, worker-writable file. Consider adding `-c core.quotePath=true`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "22-24",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above the `git status` call explains only `--no-optional-locks`. Nothing says why `-c core.fsmonitor=` is also passed in the session's own checkout, which lines 11-15 present as trusted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "11-15",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment runs five lines to carry one WHY: git status runs only in the session's own checkout, because a worker's worktree can plant an fsmonitor or filter (decision 50). The last clause, about the hook's `.cwd` and branch names, is the part worth keeping; the rest repeats the `.claude/hooks/README.md` row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "32",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The awk one-liner hard-codes the porcelain prefix lengths as `substr($0,10)` for 'worktree ' and `substr($0,19)` for 'branch refs/heads/'. Nothing documents the offsets, so a reader has to count characters to check them; stripping the prefixes with `sub(/^worktree /, \"\")` would make them self-evident.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "29",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Branch names are masked twice, with different mechanisms and different allowed sets. `safe()` (line 29) uses `tr` and allows space and `()`, with no length cap. The jq `gsub(\"[^A-Za-z0-9._/-]\"; \"?\")` on line 38 allows neither and caps at 60 characters. Nothing ties the two together, so a later edit to one can silently drift from the other.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "A safety classifier withheld part of the security reviewer's response, so the reviewer stopped early. It did not finish checking the `gh pr list` headRefName handling, whether `CLAUDE_PROJECT_DIR` could point at a worker's tree, or submodule-related status behavior. Its returned findings were consolidated."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The PR head moved during the review: the checkout was d70cb8e6, and the head after the reviewers returned was 9b564545. Findings were re-checked against `gh pr diff` at the new head. One nit (worktree path printed unmasked, raised by both correctness and security) was dropped because the new `safe()` helper fixes it. The remaining line anchors and the permalink were moved to the new head. Reviewers read the d70cb8e copy of the hook."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9192548999999999,
+  "duration_ms": 291564,
+  "num_turns": 16,
+  "tokens": {
+    "input": 16,
+    "output": 13753,
+    "cache_read": 360174,
+    "cache_creation": 53130,
+    "total": 427073
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 39234,
+      "cache_read": 675743,
+      "cache_creation": 122373,
+      "cost_usd": 1.6912995999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 7722,
+      "cache_read": 199788,
+      "cache_creation": 52277,
+      "cost_usd": 0.2279553
+    }
+  ],
+  "permission_denials": []
+}
