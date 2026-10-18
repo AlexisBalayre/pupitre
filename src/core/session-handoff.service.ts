@@ -249,7 +249,7 @@ export function hardRespawnSession(
  * since, so a window is never pointed at a server that cannot start
  * (decision 51).
  */
-function graphForRespawn(
+export function graphForRespawn(
   repoPath: string,
   worktreePath: string,
   compiledDir: string,

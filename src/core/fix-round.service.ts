@@ -8,9 +8,7 @@ import {
   launchSession,
   type SessionPane,
 } from '../claude/session-runtime.service.js';
-import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import type { CiReview } from './dashboard.service.js';
-import type { SessionState } from './db.client.js';
+import type { CiReviewLookup } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -21,15 +19,15 @@ import {
 } from './github.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
+  assertMintedRow,
   assertPullRequestOf,
   newestMerge,
   type OriginUse,
   plainDetail,
   pushTarget,
-  resolveCommit,
+  resolveCommitIfPresent,
   withMergeLock,
 } from './merge-gate.service.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectPaths } from './paths.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
@@ -38,7 +36,9 @@ import {
   recordSessionRoute,
   type SessionRoute,
   type SessionRow,
+  transitionSessionAlong,
 } from './session.repository.js';
+import { graphForRespawn } from './session-handoff.service.js';
 import {
   isRefusedSteer,
   rollBackRefusedLaunch,
@@ -46,7 +46,7 @@ import {
 } from './session-lifecycle.errors.js';
 import { fixRoundRoute } from './session-lifecycle.service.js';
 import { FIX_ROUND_EDGE } from './session-state.utils.js';
-import type { EventPayloads, TransitionPayload } from './types/session-event.types.js';
+import type { EventPayloads } from './types/session-event.types.js';
 import type { RouteOverride } from './types/session-lifecycle.types.js';
 
 const FIX_USE: OriginUse = { command: '`pup fix`', untouched: 'No fix round was started.' };
@@ -60,7 +60,7 @@ const THREAD_BODY_MAX_CHARS = 4_000;
 /** `pup status` asks GitHub once per open PR each time it prints: a slow answer reads as none. */
 const CI_REVIEW_LOOKUP_TIMEOUT_MS = 10_000;
 
-export interface FixRoundRequest {
+interface FixRoundRequest {
   repoPath: string;
   sessionId: string;
   /** `--model`/`--effort` over the climbed rung's (decision 92). */
@@ -109,19 +109,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
         `\`--pr\` takes a fix round. ${NOT_STARTED}`,
     );
   }
-  // The row is store text: the worktree and branch it names are checked out
-  // and handed to a worker, so they must be the ones the launch minted for
-  // this session, as `pup land` holds them (decision 84).
-  if (
-    !SESSION_ID_PATTERN.test(session.id) ||
-    session.worktree_path !== join(req.repoPath, '.worktrees', session.id) ||
-    session.branch !== `pup/${session.id}`
-  ) {
-    throw new Error(
-      `Session ${id}'s row names a worktree or branch that is not its own; inspect the store. ` +
-        NOT_STARTED,
-    );
-  }
+  assertMintedRow(req.repoPath, session, NOT_STARTED);
   const reviewed = readReviewedPullRequest(db, req.repoPath, session, () =>
     assertGhAvailable(FIX_USE.command),
   );
@@ -170,10 +158,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
  * clean verdict, the PR no longer open, the head moved past the pin. Never
  * fatal: the inbox then prints its plain open-PR line.
  */
-export function ciReviewLookup(
-  db: Database,
-  repoPath: string,
-): (shown: { id: string }) => CiReview | undefined {
+export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
   return (shown) => {
     const session = getSession(db, shown.id);
     if (session?.state !== FIX_ROUND_EDGE.from) return undefined;
@@ -226,7 +211,19 @@ function readReviewedPullRequest(
   const repo = originRepoSlug(pushTarget(db, session, repoPath, FIX_USE));
   assertPullRequestOf(prUrl, repo, NOT_STARTED);
   beforeGh();
-  return { prUrl, pinned: sha, review: readPullRequestReview(repoPath, prUrl, repo, timeoutMs) };
+  const review = orNotStarted(() => readPullRequestReview(repoPath, prUrl, repo, timeoutMs));
+  return { prUrl, pinned: sha, review };
+}
+
+/** `run`, its refusal ending as every refusal of `pup fix` does; a Ctrl-C passes as it was. */
+function orNotStarted<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    rethrowIfKilled(error);
+    if (!(error instanceof Error)) throw error;
+    throw new Error(`${error.message} ${NOT_STARTED}`, { cause: error });
+  }
 }
 
 /**
@@ -284,7 +281,7 @@ function reviewVerdict(
             'review of the head, then re-run.',
     };
   }
-  const threads = review.openThreads.filter((thread) => thread.raisedOn === head);
+  const threads = review.openThreads;
   const edited = threads.find((thread) => thread.editedByOther);
   if (edited !== undefined) {
     return {
@@ -343,14 +340,7 @@ function routeOrRefuse(db: Database, session: SessionRow, req: FixRoundRequest):
 function restoreWorktree(repoPath: string, session: SessionRow, head: string): boolean {
   runGit(repoPath, ['worktree', 'prune']);
   const branchRef = `refs/heads/${session.branch}`;
-  let tip: string | undefined;
-  try {
-    tip = resolveCommit(repoPath, branchRef);
-  } catch (error) {
-    rethrowIfKilled(error);
-    // A symref keeps the gate's own refusal; anything else is a branch that is gone.
-    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
-  }
+  const tip = resolveCommitIfPresent(repoPath, branchRef);
   if (tip !== undefined && tip !== head) {
     throw new Error(
       `${session.branch} is at ${tip} in this repo, but the PR's head is ${head}; a fix round ` +
@@ -407,35 +397,23 @@ function assertStillPinned(db: Database, sessionId: string, pinned: string): voi
  * the row has left `merged`. That pane is the window the gate killed, or
  * another window's after a tmux restart: until the round's window opens, or
  * for good if pup dies first, a steer, an interrupt or the watchdog finds no
- * pane rather than that one, and a kill goes by name.
+ * pane rather than that one, and a kill goes by name. The event keeps the
+ * rejection count the round starts from, which the gate's cap counts from.
  */
 function takeFixRoundEdge(
   db: Database,
   sessionId: string,
-  round: EventPayloads['fix_round'],
+  round: Omit<EventPayloads['fix_round'], 'rejectBase'>,
 ): void {
-  db.transaction(() => {
-    moveState(db, sessionId, FIX_ROUND_EDGE.from, FIX_ROUND_EDGE.to, { kind: 'fix-round' });
-    db.prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ?').run(sessionId);
-    appendEvent(db, sessionId, 'fix_round', round);
-  })();
-}
-
-/** The fix round's edge, logged as every transition is, refused when the row moved. */
-function moveState(
-  db: Database,
-  sessionId: string,
-  from: SessionState,
-  to: SessionState,
-  payload: TransitionPayload,
-): void {
-  const moved = db
-    .prepare('UPDATE sessions SET state = ? WHERE id = ? AND state = ?')
-    .run(to, sessionId, from);
-  if (moved.changes === 0) {
-    throw new Error(`Session ${sanitizeReason(sessionId)} is no longer ${from}. ${NOT_STARTED}`);
-  }
-  appendEvent(db, sessionId, 'gate_result', { from, to, ...payload });
+  orNotStarted(
+    db.transaction(() => {
+      transitionSessionAlong(db, sessionId, FIX_ROUND_EDGE, { kind: 'fix-round' });
+      const { reject_count: rejectBase } = db
+        .prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ? RETURNING reject_count')
+        .get(sessionId) as { reject_count: number };
+      appendEvent(db, sessionId, 'fix_round', { ...round, rejectBase });
+    }),
+  );
 }
 
 /**
@@ -455,25 +433,31 @@ function relaunchWorker(
 ): void {
   let pane: SessionPane | undefined;
   let delivered = false;
+  let rowMoved = false;
   try {
     // By name only: the gate killed the window at the merge, and the pane id
     // it recorded can be another window's once tmux has restarted. A window
     // of this name is one a failed teardown left, and would refuse the new one.
     killTmux(session.id);
-    const mcpConfig = join(compiledDir, 'mcp.json');
     pane = launchSession({
       sessionId: session.id,
       worktreePath: session.worktree_path,
       settingsPath: join(compiledDir, 'settings.json'),
       route: routeFor(route.tier, route.rung, route),
-      // The restored worktree indexed afresh, as a respawn's is (decision 51).
-      mcpConfigPath:
-        existsSync(mcpConfig) &&
-        prepareGraph(codegraphBinary(repoPath), repoPath, session.worktree_path)
-          ? mcpConfig
-          : undefined,
+      mcpConfigPath: graphForRespawn(repoPath, session.worktree_path, compiledDir),
     });
-    db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, session.id);
+    // A `pup kill` while the window opened took the row back to merged: a
+    // pane stored on it would be a live window on a session that has none.
+    const stored = db
+      .prepare('UPDATE sessions SET tmux_target = ? WHERE id = ? AND state = ?')
+      .run(pane.paneId, session.id, FIX_ROUND_EDGE.to);
+    if (stored.changes === 0) {
+      rowMoved = true;
+      throw new Error(
+        `Session ${sanitizeReason(session.id)} left ${FIX_ROUND_EDGE.to} while its window ` +
+          `opened, so the window was killed. ${NOT_STARTED}`,
+      );
+    }
     try {
       delivered = kickoff(pane, prompt.join('\n\n'));
     } finally {
@@ -481,6 +465,10 @@ function relaunchWorker(
     }
   } catch (error) {
     const opened = pane;
+    if (rowMoved) {
+      killTmux(session.id, opened?.paneId);
+      throw error;
+    }
     if (!isRefusedSteer(error)) {
       undoFixRound(db, session.id, opened);
       throw error;
@@ -509,9 +497,12 @@ function relaunchWorker(
  */
 function undoFixRound(db: Database, sessionId: string, pane: SessionPane | undefined): void {
   killTmux(sessionId, pane?.paneId);
-  db.transaction(() =>
-    moveState(db, sessionId, FIX_ROUND_EDGE.to, FIX_ROUND_EDGE.from, { kind: 'fix-round-undone' }),
-  )();
+  transitionSessionAlong(
+    db,
+    sessionId,
+    { from: FIX_ROUND_EDGE.to, to: FIX_ROUND_EDGE.from },
+    { kind: 'fix-round-undone' },
+  );
 }
 
 /**

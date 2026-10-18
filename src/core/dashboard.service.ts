@@ -362,19 +362,20 @@ export interface CiReview {
   openThreads: number;
 }
 
+/** GitHub's answer on a shown session's open PR, undefined when there is none. */
+export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview | undefined;
+
 /**
  * The needs-you inbox (decision 83), read off a snapshot like `fleetSummary`
  * so `pup status`, the fleet view and the conductor that reads `pup status`
- * cannot disagree about what waits on the operator. One line per session, its
- * first reason in `NEED_ORDER`; within a kind, the snapshot's own row order.
- * `ciReview` is GitHub's answer for an open PR, asked only by `pup status`,
- * the one reader that may wait on gh; without it, or without an answer, an
- * open PR keeps its plain line.
+ * cannot disagree about which kind of need waits on the operator, nor in what
+ * order. One line per session, its first reason in `NEED_ORDER`; within a
+ * kind, the snapshot's own row order. `ciReview` is GitHub's answer for an
+ * open PR, asked only by `pup status`, the one reader that may wait on gh, so
+ * the CI line appears there alone; without it, or without an answer, an open
+ * PR keeps its plain line.
  */
-export function needsYou(
-  snapshot: DashboardSnapshot,
-  ciReview?: (session: DashboardSession) => CiReview | undefined,
-): DashboardNeed[] {
+export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup): DashboardNeed[] {
   const needs = snapshot.sessions.flatMap((session) => needOf(session, ciReview) ?? []);
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
@@ -388,10 +389,7 @@ export function needsYou(
 const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
-function needOf(
-  session: DashboardSession,
-  ciReview?: (session: DashboardSession) => CiReview | undefined,
-): DashboardNeed | undefined {
+function needOf(session: DashboardSession, ciReview?: CiReviewLookup): DashboardNeed | undefined {
   const { id } = session;
   const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
     kind,

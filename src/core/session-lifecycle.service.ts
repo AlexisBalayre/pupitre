@@ -36,12 +36,14 @@ import {
   getTask,
   insertSession,
   insertTask,
+  listEvents,
   listTaskSessions,
   readTaskSpec,
   type SessionRoute,
   type SessionRow,
   taskSpecForDisplay,
   transitionSession,
+  transitionSessionAlong,
 } from './session.repository.js';
 import {
   isRefusedSteer,
@@ -52,7 +54,7 @@ import {
   UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
-import { isTerminal } from './session-state.utils.js';
+import { FIX_ROUND_EDGE, isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { ScopeConflict } from './types/overlap.types.js';
 import type { SessionId, TaskSpec } from './types/profile.types.js';
@@ -547,12 +549,32 @@ export function interruptSession(
   if (message) appendEvent(db, sessionId, 'steer', { kind: 'interrupt', by });
 }
 
-export function killSession(db: Database, sessionId: string): void {
+/**
+ * Stop a session's window and end it as `killed`, its task back in the
+ * backlog (decision 40), or, in a CI fix round, back to `merged` (decision
+ * 90): the round's work is abandoned, but the PR it was for is still open, so
+ * the session stays landable by `pup land` and in the inbox, its task claimed.
+ * Returns the state the session ended in.
+ */
+export function killSession(db: Database, sessionId: string): 'killed' | 'merged' {
   const row = requireSession(db, sessionId);
   // The pane too, not the name alone: a rename from inside the session would
   // leave the name pointing at nothing while the window ran on.
   killTmux(sessionId, row.tmux_target);
+  const newest = listEvents(db, sessionId)
+    .reverse()
+    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
+  if (!isTerminal(row.state) && newest?.type === 'fix_round') {
+    transitionSessionAlong(
+      db,
+      sessionId,
+      { from: row.state, to: FIX_ROUND_EDGE.from },
+      { kind: 'fix-round-killed' },
+    );
+    return FIX_ROUND_EDGE.from;
+  }
   transitionSession(db, sessionId, 'killed');
+  return 'killed';
 }
 
 function requireSession(db: Database, sessionId: string): SessionRow {

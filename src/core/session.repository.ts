@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
@@ -501,10 +502,41 @@ export function transitionSession(
     if (row.state === target) return row;
     if (!canTransition(row.state, target)) throw new InvalidTransitionError(row.state, target);
     db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(target, sessionId);
-    appendEvent(db, sessionId, 'gate_result', { from: row.state, to: target, ...eventPayload });
+    logTransition(db, sessionId, { from: row.state, to: target }, eventPayload);
     return { ...row, state: target };
   });
   return tx(id, to);
+}
+
+/**
+ * Move a session along an edge `canTransition` refuses, the CI fix round's
+ * (decision 90), logged as every transition is in the same write. Refused,
+ * with nothing written, when the row is no longer at `edge.from`.
+ */
+export function transitionSessionAlong(
+  db: Database,
+  id: string,
+  edge: { from: SessionState; to: SessionState },
+  eventPayload: TransitionPayload,
+): void {
+  db.transaction(() => {
+    const moved = db
+      .prepare('UPDATE sessions SET state = ? WHERE id = ? AND state = ?')
+      .run(edge.to, id, edge.from);
+    if (moved.changes === 0) {
+      throw new Error(`Session ${sanitizeReason(id)} is no longer ${edge.from}.`);
+    }
+    logTransition(db, id, edge, eventPayload);
+  })();
+}
+
+function logTransition(
+  db: Database,
+  sessionId: string,
+  { from, to }: { from: SessionState; to: SessionState },
+  eventPayload: TransitionPayload,
+): void {
+  appendEvent(db, sessionId, 'gate_result', { from, to, ...eventPayload });
 }
 
 export function appendEvent<TType extends StoredEventType>(

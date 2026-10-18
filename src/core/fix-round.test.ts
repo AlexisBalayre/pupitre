@@ -45,13 +45,14 @@ import {
   getSession,
   insertSession,
   insertTask,
+  listBacklogTasks,
   listEvents,
   recordSessionRoute,
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
 import { LaunchRolledBackError } from './session-lifecycle.errors.js';
-import { markSessionDone } from './session-lifecycle.service.js';
+import { killSession as killPupSession, markSessionDone } from './session-lifecycle.service.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR &
 // co., which a pre-commit hook run would aim at the pupitre repo instead.
@@ -84,6 +85,12 @@ const PR_URL = 'https://github.com/owner/repo/pull/7';
 const BOT = { __typename: 'Bot', login: 'github-actions' };
 const OTHER_SHA = 'a'.repeat(40);
 
+const failingAdapter: Adapter = {
+  id: 'fake',
+  detect: () => true,
+  gateCommands: () => [{ stage: 'test', command: 'false', args: [] }],
+};
+
 const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
@@ -102,7 +109,8 @@ interface ThreadSeed {
   originalLine?: number | null;
   isResolved?: boolean;
   author?: unknown;
-  raisedOn?: string;
+  /** Opened by the bot's review before its newest one, on another commit. */
+  earlier?: boolean;
   /** Who last edited the finding, with `lastEditedAt`; unedited when absent. */
   editor?: unknown;
 }
@@ -209,8 +217,10 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       description: string;
     } | null,
     threads = [] as ThreadSeed[],
-    hasNextPage = false,
+    /** Threads the newest review opened that are older than the page read. */
+    unread = 0,
   } = {}): void {
+    const opened = threads.filter((thread) => !thread.earlier).length + unread;
     const answer = {
       data: {
         repository: {
@@ -230,11 +240,21 @@ describe('startFixRound', { timeout: 30_000 }, () => {
             reviews: {
               nodes: [
                 { author: { __typename: 'User', login: 'alexis' }, commit: { oid: head } },
-                ...(reviewedOn === null ? [] : [{ author: BOT, commit: { oid: reviewedOn } }]),
+                ...(reviewedOn === null
+                  ? []
+                  : [
+                      { id: 'PRR_earlier', author: BOT, commit: { oid: OTHER_SHA } },
+                      {
+                        id: 'PRR_newest',
+                        author: BOT,
+                        commit: { oid: reviewedOn },
+                        comments: { totalCount: opened },
+                      },
+                    ]),
               ],
             },
             reviewThreads: {
-              pageInfo: { hasNextPage },
+              pageInfo: { hasPreviousPage: unread > 0 },
               nodes: threads.map((thread) => ({
                 id: thread.id,
                 isResolved: thread.isResolved ?? false,
@@ -245,7 +265,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
                   nodes: [
                     {
                       author: thread.author ?? BOT,
-                      originalCommit: { oid: thread.raisedOn ?? head },
+                      pullRequestReview: { id: thread.earlier ? 'PRR_earlier' : 'PRR_newest' },
                       body: thread.body,
                       lastEditedAt: thread.editor === undefined ? null : '2026-10-18T09:00:00Z',
                       editor: thread.editor ?? null,
@@ -284,6 +304,41 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     });
     expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL, prWasAdopted: true });
   }
+
+  /** GitHub merging PR #7 at `head` onto origin's main, as `pup land` then reads it. */
+  function mergeOnGitHub(head: string): string {
+    const base = sh(origin, 'git', 'rev-parse', 'main');
+    const mergeCommit = sh(
+      origin,
+      'git',
+      '-c',
+      'user.email=gh@test',
+      '-c',
+      'user.name=github',
+      'commit-tree',
+      `${head}^{tree}`,
+      '-p',
+      base,
+      '-p',
+      head,
+      '-m',
+      'Merge pull request #7',
+    );
+    sh(origin, 'git', 'update-ref', 'refs/heads/main', mergeCommit);
+    writeFileSync(
+      join(ghDir, 'view.json'),
+      JSON.stringify({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: head,
+        mergeCommit: { oid: mergeCommit },
+      }),
+    );
+    return mergeCommit;
+  }
+
+  const land = () =>
+    landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
 
   const fix = (override = {}, overrideVia: 'operator' | 'conductor' = 'operator') =>
     startFixRound(db, {
@@ -325,7 +380,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         },
         { id: 'PRRT_resolved', body: 'Already answered.', isResolved: true },
         { id: 'PRRT_human', body: 'A human note.', author: { __typename: 'User', login: 'a' } },
-        { id: 'PRRT_stale', body: 'From an earlier round.', raisedOn: OTHER_SHA },
+        { id: 'PRRT_stale', body: 'From an earlier round.', earlier: true },
       ],
     });
     vi.mocked(killSession).mockClear();
@@ -337,7 +392,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     expect(sh(worktree, 'git', 'rev-parse', 'HEAD')).toBe(pinned);
     expect(sh(worktree, 'git', 'symbolic-ref', 'HEAD')).toBe(`refs/heads/${BRANCH}`);
     expect(payloads('fix_round')).toEqual([
-      { prUrl: PR_URL, head: pinned, threads: ['PRRT_open1', 'PRRT_open2'] },
+      { prUrl: PR_URL, head: pinned, threads: ['PRRT_open1', 'PRRT_open2'], rejectBase: 0 },
     ]);
     expect(payloads('gate_result').at(-1)).toEqual({
       from: 'merged',
@@ -521,7 +576,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         status: { state: 'FAILURE', description: 'the review could not be posted' },
         threads: [
           { id: 'PRRT_done', body: 'fixed', isResolved: true },
-          { id: 'PRRT_old', body: 'old', raisedOn: OTHER_SHA },
+          { id: 'PRRT_old', body: 'old', earlier: true },
         ],
       },
       /opened no thread on .*set its status to FAILURE \(the review could not be posted\), not a clean review/,
@@ -539,8 +594,8 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     ['no status and no thread', { status: null }, /set no status on it, not a clean review/],
     [
       'more threads than one read returns',
-      { threads: OPEN_THREAD, hasNextPage: true },
-      /more than 100 review threads/,
+      { threads: OPEN_THREAD, unread: 1 },
+      /more than 100 review threads, .*fix the PR by hand\. No fix round was started\./,
     ],
   ])('refuses %s, writing nothing', async (_, review, refusal) => {
     seedPrMerge();
@@ -679,6 +734,111 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     });
   });
 
+  // The round's work is abandoned, not the PR it was for (decision 90).
+  describe('a fix round ended by pup kill', () => {
+    it.each([
+      ['running', () => undefined],
+      ['blocked', () => transitionSession(db, SESSION_ID, 'blocked')],
+      ['awaiting-review', () => transitionSession(db, SESSION_ID, 'awaiting-review')],
+      [
+        'rejected',
+        () => {
+          transitionSession(db, SESSION_ID, 'awaiting-review');
+          transitionSession(db, SESSION_ID, 'rejected');
+        },
+      ],
+    ])(
+      'takes a %s session back to merged, its PR landable and its task claimed',
+      async (_, park) => {
+        await gateWithPr();
+        reviewOnGitHub({ threads: OPEN_THREAD });
+        await fix();
+        park();
+        const from = getSession(db, SESSION_ID)?.state;
+        vi.mocked(killSession).mockClear();
+
+        expect(killPupSession(db, SESSION_ID)).toBe('merged');
+
+        expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+        expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID, '%9']]);
+        expect(payloads('gate_result').at(-1)).toEqual({
+          from,
+          to: 'merged',
+          kind: 'fix-round-killed',
+        });
+        expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).not.toContain(
+          'task-s1',
+        );
+
+        const mergeCommit = mergeOnGitHub(pinned);
+        expect(await land()).toMatchObject({ prUrl: PR_URL, mergeCommit });
+      },
+    );
+
+    it('refuses, writing nothing, when the gate moved the row first', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      await fix();
+      transitionSession(db, SESSION_ID, 'awaiting-review');
+      const events = listEvents(db, SESSION_ID).length;
+      vi.mocked(killSession).mockImplementationOnce(() => {
+        db.prepare("UPDATE sessions SET state = 'merged' WHERE id = ?").run(SESSION_ID);
+      });
+
+      expect(() => killPupSession(db, SESSION_ID)).toThrow(
+        'Session s1 is no longer awaiting-review.',
+      );
+
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+    });
+
+    it('kills a session outside a round as before, its task back in the backlog', () => {
+      transitionSession(db, SESSION_ID, 'running');
+
+      expect(killPupSession(db, SESSION_ID)).toBe('killed');
+
+      expect(getSession(db, SESSION_ID)?.state).toBe('killed');
+      expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).toContain('task-s1');
+    });
+  });
+
+  // The count stays the lifetime one; the cap counts from the round's base.
+  it("caps a round's rejections from the count it started at, not the first run's", async () => {
+    seedPrMerge();
+    db.prepare('UPDATE sessions SET reject_count = 2 WHERE id = ?').run(SESSION_ID);
+    reviewOnGitHub({ threads: OPEN_THREAD });
+    await fix();
+    expect(payloads('fix_round').at(-1)).toMatchObject({ rejectBase: 2 });
+    markSessionDone(db, SESSION_ID, 'fixed');
+
+    const outcome = await runMergeGate(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [failingAdapter],
+    });
+
+    expect(outcome).toMatchObject({ status: 'rejected', rejectCount: 3 });
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', reject_count: 3 });
+  });
+
+  // A `pup kill` while the window opened took the row back to merged.
+  it('kills the new window and stores no pane when the row left running first', async () => {
+    seedPrMerge();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+    vi.mocked(launchSession).mockImplementationOnce(() => {
+      db.prepare("UPDATE sessions SET state = 'merged' WHERE id = ?").run(SESSION_ID);
+      return { sessionId: SESSION_ID, paneId: '%9' };
+    });
+
+    await expect(fix()).rejects.toThrow(
+      /Session s1 left running while its window opened, so the window was killed\. No fix round was started\./,
+    );
+
+    expect(vi.mocked(killSession).mock.calls.at(-1)).toEqual([SESSION_ID, '%9']);
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'merged', tmux_target: null });
+    expect(kickoff).not.toHaveBeenCalled();
+  });
+
   // Acceptance 4: the session goes through the gate as any finished session
   // does, which adopts the open PR and pins the new head, and `pup land`
   // lands the PR GitHub merged at that head.
@@ -705,39 +865,9 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     expect(ghCalls().filter((call) => call.startsWith('pr create'))).toEqual([]);
     expect(existsSync(worktree)).toBe(false);
 
-    const base = sh(origin, 'git', 'rev-parse', 'main');
-    const mergeCommit = sh(
-      origin,
-      'git',
-      '-c',
-      'user.email=gh@test',
-      '-c',
-      'user.name=github',
-      'commit-tree',
-      `${fixed}^{tree}`,
-      '-p',
-      base,
-      '-p',
-      fixed,
-      '-m',
-      'Merge pull request #7',
-    );
-    sh(origin, 'git', 'update-ref', 'refs/heads/main', mergeCommit);
-    writeFileSync(
-      join(ghDir, 'view.json'),
-      JSON.stringify({
-        state: 'MERGED',
-        baseRefName: 'main',
-        headRefOid: fixed,
-        mergeCommit: { oid: mergeCommit },
-      }),
-    );
+    const mergeCommit = mergeOnGitHub(fixed);
 
-    const landed = await landSession(db, {
-      repoPath: repo,
-      sessionId: SESSION_ID,
-      adapters: [passingAdapter],
-    });
+    const landed = await land();
 
     expect(landed).toMatchObject({ prUrl: PR_URL, mergeCommit, fastForwarded: true });
     expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mergeCommit);
@@ -809,16 +939,16 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
                 },
               ],
             },
-            reviews: { nodes: [{ author: BOT, commit: { oid: HEAD } }] },
+            reviews: { nodes: [{ id: 'PRR_1', author: BOT, commit: { oid: HEAD } }] },
             reviewThreads: {
-              pageInfo: { hasNextPage: false },
+              pageInfo: { hasPreviousPage: false },
               nodes: Array.from({ length: threads }, (_, index) => ({
                 id: `PRRT_${index}`,
                 isResolved: false,
                 path: 'src/a.ts',
                 line: 1,
                 comments: {
-                  nodes: [{ author: BOT, originalCommit: { oid: HEAD }, body: 'finding' }],
+                  nodes: [{ author: BOT, pullRequestReview: { id: 'PRR_1' }, body: 'finding' }],
                 },
               })),
             },

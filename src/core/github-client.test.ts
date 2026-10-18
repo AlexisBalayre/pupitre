@@ -28,6 +28,15 @@ describe('readPullRequestReview', () => {
   let originalPath: string | undefined;
   const HEAD = 'c'.repeat(40);
   const BOT = { __typename: 'Bot', login: 'github-actions' };
+  /** The bot's review of the head that opened `opened` threads. */
+  const review = (id: string, opened = 1, oid = HEAD, body = 'summary') => ({
+    id,
+    body,
+    author: BOT,
+    commit: { oid },
+    comments: { totalCount: opened },
+  });
+  const NEWEST = 'PRR_newest';
 
   beforeEach(() => {
     ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-review-gh-')));
@@ -66,7 +75,7 @@ describe('readPullRequestReview', () => {
     line: 4,
     originalLine: 2,
     comments: {
-      nodes: [{ author: BOT, originalCommit: { oid: HEAD }, body: 'finding', ...comment }],
+      nodes: [{ author: BOT, pullRequestReview: { id: NEWEST }, body: 'finding', ...comment }],
     },
     ...fields,
   });
@@ -111,22 +120,21 @@ describe('readPullRequestReview', () => {
       },
       reviews: {
         nodes: [
-          { author: BOT, commit: { oid: 'd'.repeat(40) } },
-          { author: BOT, commit: { oid: HEAD } },
+          review('PRR_older', 1, 'd'.repeat(40)),
+          review(NEWEST, 5),
           {
+            id: 'PRR_user',
             author: { __typename: 'User', login: 'github-actions' },
             commit: { oid: 'e'.repeat(40) },
           },
         ],
       },
       reviewThreads: {
-        pageInfo: { hasNextPage: false },
+        pageInfo: { hasPreviousPage: false },
         nodes: [
+          thread({ id: 'PRRT_older' }, { pullRequestReview: { id: 'PRR_older' } }),
           thread({ id: 'PRRT_open' }),
-          thread(
-            { id: 'PRRT_moved', path: null, line: null },
-            { originalCommit: { oid: 'd'.repeat(40) } },
-          ),
+          thread({ id: 'PRRT_moved', path: null, line: null }),
           thread({ id: 'PRRT_resolved', isResolved: true }),
           thread({ id: 'PRRT_human' }, { author: { __typename: 'User', login: 'github-actions' } }),
           thread({ id: 7 }),
@@ -140,22 +148,8 @@ describe('readPullRequestReview', () => {
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
       openThreads: [
-        {
-          id: 'PRRT_open',
-          path: 'src/a.ts',
-          line: 4,
-          raisedOn: HEAD,
-          body: 'finding',
-          editedByOther: false,
-        },
-        {
-          id: 'PRRT_moved',
-          path: undefined,
-          line: 2,
-          raisedOn: 'd'.repeat(40),
-          body: 'finding',
-          editedByOther: false,
-        },
+        { id: 'PRRT_open', path: 'src/a.ts', line: 4, body: 'finding', editedByOther: false },
+        { id: 'PRRT_moved', path: undefined, line: 2, body: 'finding', editedByOther: false },
       ],
     });
   });
@@ -167,8 +161,9 @@ describe('readPullRequestReview', () => {
     ghAnswers({
       state: 'OPEN',
       headRefOid: HEAD,
+      reviews: { nodes: [review(NEWEST, 5)] },
       reviewThreads: {
-        pageInfo: { hasNextPage: false },
+        pageInfo: { hasPreviousPage: false },
         nodes: [
           edited(null, null),
           edited(BOT),
@@ -216,10 +211,84 @@ describe('readPullRequestReview', () => {
     });
   });
 
-  it('refuses a PR with more threads than one read returns', () => {
-    ghAnswers({ state: 'OPEN', reviewThreads: { pageInfo: { hasNextPage: true }, nodes: [] } });
+  // Two runs on one head: the newest run's verdict is the review's (decision 90).
+  it('reads only the threads the newest review opened, so a clean newest run reads clean', () => {
+    const twoRuns = (newestOpened: string[]) => ({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review('PRR_first'), review(NEWEST, newestOpened.length)] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          thread({ id: 'PRRT_first' }, { pullRequestReview: { id: 'PRR_first' } }),
+          ...newestOpened.map((id) => thread({ id })),
+        ],
+      },
+    });
 
-    expect(read).toThrow(/more than 100 review threads/);
+    ghAnswers(twoRuns(['PRRT_again']));
+    expect(read().openThreads.map((open) => open.id)).toEqual(['PRRT_again']);
+
+    ghAnswers(twoRuns([]));
+    expect(read().openThreads).toEqual([]);
+  });
+
+  // The poster's fallback when GitHub refuses its batch review: one bodiless
+  // review per finding, then the summary with no thread (decision 90).
+  it('reads the threads of a run the poster posted one finding at a time', () => {
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: {
+        nodes: [
+          review('PRR_before', 1, HEAD),
+          review('PRR_one', 1, HEAD, ''),
+          review('PRR_two', 1, HEAD, ''),
+          review(NEWEST, 0),
+        ],
+      },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: true },
+        nodes: [
+          thread({ id: 'PRRT_before' }, { pullRequestReview: { id: 'PRR_before' } }),
+          thread({ id: 'PRRT_one' }, { pullRequestReview: { id: 'PRR_one' } }),
+          thread({ id: 'PRRT_two' }, { pullRequestReview: { id: 'PRR_two' } }),
+        ],
+      },
+    });
+
+    expect(read()).toMatchObject({
+      reviewedHead: HEAD,
+      openThreads: [{ id: 'PRRT_one' }, { id: 'PRRT_two' }],
+    });
+  });
+
+  it("refuses a PR whose newest review's threads reach past the newest page", () => {
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review(NEWEST, 2)] },
+      reviewThreads: { pageInfo: { hasPreviousPage: true }, nodes: [thread({ id: 'PRRT_1' })] },
+    });
+
+    expect(read).toThrow(
+      /more than 100 review threads, and the CI review's newest run opened some of them before the newest 100 one read returns; fix the PR by hand\./,
+    );
+  });
+
+  // Older threads, resolved or an earlier review's, do not count toward the cap.
+  it('reads a PR past the page whose newest review opened only threads on it', () => {
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review(NEWEST, 2)] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: true },
+        nodes: [thread({ id: 'PRRT_1', isResolved: true }), thread({ id: 'PRRT_2' })],
+      },
+    });
+
+    expect(read().openThreads.map((open) => open.id)).toEqual(['PRRT_2']);
   });
 
   it('refuses a url that is not a pull request before asking gh', () => {

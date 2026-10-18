@@ -37,6 +37,7 @@ import {
 import {
   blockedReason,
   buildDashboardSnapshot,
+  type CiReviewLookup,
   findStalledSessions,
   goalHeadline,
   needsYou,
@@ -1433,7 +1434,7 @@ export function buildProgram(): Command {
     db: Database,
     snapshot: DashboardSnapshot,
     shouldShowHistory: boolean,
-    ciReview?: Parameters<typeof needsYou>[1],
+    ciReview?: CiReviewLookup,
   ): void {
     const needs = needsYou(snapshot, ciReview);
     if (needs.length > 0) {
@@ -1697,7 +1698,13 @@ export function buildProgram(): Command {
         );
         return;
       }
-      killSession(db, session);
+      if (killSession(db, session) === 'merged') {
+        console.log(
+          `Killed session ${session}'s fix round; it is merged again, its PR open for \`pup land\`. ` +
+            `If its branch carries the round's commits, reset it to the PR's head before another \`pup fix\` or re-gate.`,
+        );
+        return;
+      }
       console.log(`Killed session ${session}.`);
     });
 

@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
@@ -14,6 +13,7 @@ import {
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
+  assertMintedRow,
   assertPullRequestOf,
   assertTargetName,
   COMMIT_SHA,
@@ -86,19 +86,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         'Nothing was landed.',
     );
   }
-  // The row is store text too: the worktree and branch it names are what get
-  // removed, so they must be the ones the launch minted for this session and
-  // no other's; the id's shape first, so no `..` in it can reach a sibling.
-  if (
-    !SESSION_ID_PATTERN.test(session.id) ||
-    session.worktree_path !== join(req.repoPath, '.worktrees', session.id) ||
-    session.branch !== `pup/${session.id}`
-  ) {
-    throw new Error(
-      `Session ${id}'s row names a worktree or branch that is not its own; inspect the store. ` +
-        'Nothing was landed.',
-    );
-  }
+  assertMintedRow(req.repoPath, session, 'Nothing was landed.');
   const originUrl = pushTarget(db, session, req.repoPath, LAND_USE);
   const repo = originRepoSlug(originUrl);
   // Store text: a pull request of another repo would land on its word.

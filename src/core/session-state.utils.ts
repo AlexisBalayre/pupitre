@@ -25,10 +25,11 @@ export function canTransition(from: SessionState, to: SessionState): boolean {
 
 /**
  * The one way back out of `merged` (decision 90): `pup fix` hands a session
- * whose open PR the CI review left threads on back to a worker, and undoes it
- * the same way when the worker's kickoff never lands. Kept out of
+ * whose open PR the CI review left threads on back to a worker, and takes it
+ * back (running to merged) when the worker's kickoff never lands; `pup kill`
+ * takes it back from running or blocked, so the PR stays landable. Kept out of
  * `TRANSITIONS`, so `canTransition` refuses it and no `transitionSession`
- * caller can take it: only the fix round's own transaction does.
+ * caller can take it: only `transitionSessionAlong` does.
  */
 export const FIX_ROUND_EDGE = { from: 'merged', to: 'running' } as const satisfies {
   from: SessionState;

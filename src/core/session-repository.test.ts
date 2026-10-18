@@ -131,7 +131,12 @@ describe('session repository', () => {
     expect(() => transitionSession(db, 's1', 'running')).toThrow(InvalidTransitionError);
     expect(getSession(db, 's1')?.state).toBe('merged');
 
-    const round = { prUrl: 'https://github.com/o/r/pull/1', head: 'abc', threads: ['PRRT_1'] };
+    const round = {
+      prUrl: 'https://github.com/o/r/pull/1',
+      head: 'abc',
+      threads: ['PRRT_1'],
+      rejectBase: 0,
+    };
     appendEvent(db, 's1', 'fix_round', round);
     expect(listEvents(db, 's1').at(-1)).toMatchObject({
       type: 'fix_round',
