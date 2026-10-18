@@ -27,7 +27,7 @@ interface SessionStatus {
   detail: string;
 }
 
-export interface TerminalStatus {
+interface TerminalStatus {
   title: string;
   session: SessionStatus;
 }
@@ -40,7 +40,7 @@ export interface TerminalStatus {
  * choosing. Control characters are removed, not spaced, so a split sequence
  * cannot be put back together.
  */
-export function scrubValue(value: string): string {
+function scrubValue(value: string): string {
   const clean = value
     // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
@@ -51,7 +51,7 @@ export function scrubValue(value: string): string {
 }
 
 /** What the tab says about one reading: running count, what needs the operator, the top item. */
-export function readTerminalStatus(reading: DashboardReading): TerminalStatus {
+function readTerminalStatus(reading: DashboardReading): TerminalStatus {
   const { projects } = reading;
   const running = projects.reduce(
     (sum, { snapshot }) =>
@@ -89,10 +89,7 @@ function isITerm(env: NodeJS.ProcessEnv): boolean {
  * Nothing is written off a terminal, under tmux (which drops these sequences
  * and would print some of them) or when the operator opted out.
  */
-export function terminalStatusEnabled(
-  stream: { isTTY?: boolean },
-  env: NodeJS.ProcessEnv,
-): boolean {
+function terminalStatusEnabled(stream: { isTTY?: boolean }, env: NodeJS.ProcessEnv): boolean {
   return stream.isTTY === true && !env.TMUX && env.PUP_DISABLE_TERMINAL_TITLE !== '1';
 }
 
