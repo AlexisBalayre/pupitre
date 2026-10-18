@@ -1,0 +1,164 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T16:18:34.175Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39144035027",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39144035027",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3389f45d6db4801fe818a566c30bb78360a79882",
+  "source": "pr",
+  "pr_number": 161,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "38ca7e60432cbed499be6265c328fc2f0aea7585",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "134-143",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "425-430",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new refusal always says \"(pup land is finishing)\". But a `pup land` that died after its `update-ref` (Ctrl-C or a throw during the audit, so `landed` was never written), or a fetch after the GitHub merge, leaves no land running. Every later `pup fix` then shows this message with no next step, when the right action is to re-run `pup land <id>`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "425",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When `refs/remotes/origin/<target>` does not exist, `isAncestor` runs `git merge-base --is-ancestor` through `runGit` without piped stdio, so `pup fix` likely prints git's `fatal: Not a valid object name …` to the terminal even though the check correctly fails open.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.test.ts",
+      "line": "963",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In \"undoes a round a pup kill took back to merged during the kickoff wait\", the assertion that `killSession.mock.calls.at(-1)` is `[SESSION_ID, '%9']` is already met by the test's own `killPupSession` call inside the mocked `kickoff`. Deleting undoRound's new `killTmux(session.id, pane?.paneId)` branch would not fail it. Clear the mock after `killPupSession` and expect exactly `[[SESSION_ID, '%9']]`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "455-456",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`takeFixRoundEdge` gets the id of the event it just appended by re-reading and scanning every event through `(currentFixRound(db, sessionId) as EventRow).id`, and the cast hides a possibly-undefined result. Returning `lastInsertRowid` from `appendEvent`, or using `INSERT … RETURNING id`, would drop both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "483-566",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`relaunchWorker` checks `!isOwnRound()` at two exits, each with its own message, and the `catch` now has four ordered exits. `undoRound` also branches on the row's state to pick `killTmux` or `killSession`, and appends to the caught `error.message`. Folding the ownership guard into `undoRound`, and making the kill tolerate an already-merged row, would remove the extra branches.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "422-431",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertStillPinned` uses `merge.target as string` inside the `orNotStarted` closure. Binding `const target = merge.target` before the undefined check removes the cast. The function also now mixes the store re-check with the git landed-check, which a named helper would separate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "460",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`startSession` keeps both `compile` and a destructured `const { compiled } = compile;`. Reading `compile.compiled.*` directly, as fix-round.service.ts does, would drop the extra binding.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.test.ts",
+      "line": "1102-1114",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The full `rm -r .worktrees/s1 … git worktree prune … (do not run git inside it)` wording is asserted in more than one test, so a change to `worktreeCleanup` breaks several tests. Pin the sentence once and use `toContain(worktreeCleanup(SESSION_ID))` elsewhere.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.5746391,
+  "duration_ms": 256164,
+  "num_turns": 20,
+  "tokens": {
+    "input": 14,
+    "output": 14882,
+    "cache_read": 389600,
+    "cache_creation": 82434,
+    "total": 486930
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 118,
+      "output": 48487,
+      "cache_read": 2245702,
+      "cache_creation": 281148,
+      "cost_usd": 3.0723943999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 12293,
+      "cache_read": 400072,
+      "cache_creation": 135691,
+      "cost_usd": 0.5022447
+    }
+  ],
+  "permission_denials": []
+}
