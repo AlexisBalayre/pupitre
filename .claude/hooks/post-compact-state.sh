@@ -24,11 +24,14 @@ echo "- checkout: $SELF on ${BRANCH:-a detached HEAD}"
 CHANGES=$(git -c core.fsmonitor= --no-optional-locks status --short 2>/dev/null | head -20)
 [ -n "$CHANGES" ] && printf -- '- uncommitted here:\n%s\n' "$(printf '%s\n' "$CHANGES" | sed 's/^/    /')"
 
+# Another session names its worktree's path and branch, and both land in this
+# session's context, so anything outside a plain path's characters is masked.
+safe() { printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/() -' '?'; }
 echo "- other worktrees (path, branch):"
 git worktree list --porcelain 2>/dev/null |
   awk '/^worktree /{p=substr($0,10)} /^branch /{print p"\t"substr($0,19)} /^detached/{print p"\t(detached)"}' |
   while IFS=$'\t' read -r path branch; do
-    [ "$path" = "$SELF" ] || printf '    %s  %s\n' "$path" "$(printf '%s' "$branch" | LC_ALL=C tr -c 'A-Za-z0-9._/()-' '?')"
+    [ "$path" = "$SELF" ] || printf '    %s  %s\n' "$(safe "$path")" "$(safe "$branch")"
   done
 
 # The claude-review commit status sits on the PR's head commit, so "none" means
