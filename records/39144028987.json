@@ -1,0 +1,177 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T16:20:30.409Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39144028987",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39144028987",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2414f47cbf393774bd642c86f7f05abf508efcba",
+  "source": "pr",
+  "pr_number": 163,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "537-547",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`endSandboxRun` only waits its 200 ms when `liveChildren` is non-empty. A straggler that `settle` SIGKILLs is untracked straight away, so its in-flight write can still land after `endSandboxRun` removes the scratch dir without waiting.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/test/temp-dir.mock.ts",
+      "line": "21",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Exporting `TOOLCHAIN_CACHE_DIRNAME` lets the new test helper and `fakeCheckout` rebuild the cache path themselves. That copies the layout the private `toolchainCacheDir` owns (sandbox.utils.ts:567-572, `projectId(resolvePath(repoPath))` under `join(resolvePath(tmpdir()), TOOLCHAIN_CACHE_DIRNAME)`). A change to the layout or the key now means editing three files (Shotgun Surgery). The copies have already drifted: `fakeCheckout` keys on the unresolved `mkdtempSync(homedir()…)` path, while production resolves it first.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-utils.test.ts",
+      "line": null,
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "For the HOME branch, the change rewrites `fakeCheckout` to repeat `tempDir`'s whole cleanup: compute the cache path, register `onTestFinished`, remove the dir and the cache. Only the base directory differs. The two copies already differ (`maxRetries: 3` and a resolved key in `tempDir`, neither in the copy). Letting `tempDir` take an optional base directory (`tempDir(prefix, base = tmpdir())`) would remove the copy, so the cleanup a test needs lives in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.test.ts",
+      "line": "84-89",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same `afterAll(() => { endSandboxRun(); })` block and its 3-line decision-100 comment are pasted into six test files (custom-adapter, python-adapter, cli/index, audit, init, land); since `endSandboxRun` is a no-op without a run, one vitest `setupFiles` entry (or a shared export in src/test/) would replace them and cover future files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "80-88",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new afterAll(endSandboxRun) block was inserted under the existing describe-header comment, so \"Real git repos, a bare origin and a sandboxed audit per test.\" now runs into the decision-100 comment and sits over the afterAll instead of over describe('landSession'); the new `endSandboxRun` import at line 6 also sits above the vi.mock calls, outside the project-import group.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/testing.md",
+      "line": "19-22",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"Prefer the real dependency\" section of testing.md still teaches `realpathSync(mkdtempSync(join(tmpdir(), 'pup-test-')))`, while decision 100 makes `tempDir(prefix)` the one way a test makes a temp directory; new tests that follow the convention doc will leak again.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1700-1703",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The parenthetical added to `withScratchGitDir`'s JSDoc is spliced mid-sentence (two colons in one sentence) and restates `removeGateDir`'s own JSDoc (reports, never throws: decision 95), which AGENTS.md's comment rule calls a duplicate; drop it or give it its own sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 100 says `endSandboxRun` first SIGKILLs every live child's group and then waits 200 ms, but in the code the kill and the wait both sit inside `if (liveChildren.size > 0)`; say \"if any child is live\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "366-367",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new finally comment \"…and before this process goes on to anything else (decision 100)\" is vague and carries no why; the real reason (a vitest worker or the long-lived conductor never emits `exit`) is what a reader needs, or a bare pointer to `endSandboxRun`'s JSDoc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1295",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The describe comment \"The scratch TMPDIR went with the process, which a test worker… outlives or leaves without an `exit`\" describes the old behaviour in past tense; state the invariant under test instead (a gate removes its scratch TMPDIR itself, because a test worker or the conductor never emits `exit`).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.9054193999999995,
+  "duration_ms": 375265,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 11877,
+    "cache_read": 204746,
+    "cache_creation": 52541,
+    "total": 269174
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 208,
+      "output": 81779,
+      "cache_read": 4817899,
+      "cache_creation": 395465,
+      "cost_usd": 4.7349398
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 5955,
+      "cache_read": 128996,
+      "cache_creation": 39196,
+      "cost_usd": 0.1704796
+    }
+  ],
+  "permission_denials": []
+}
