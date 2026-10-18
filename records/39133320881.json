@@ -1,0 +1,247 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T13:58:00.587Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39133320881",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39133320881",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b71a5a75ed59f914fed4f11e085d1ce6358b168a",
+  "source": "pr",
+  "pr_number": 161,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "27cf7ceb058f7bfe09a404753882d57a515eaacf",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/session-state.utils.ts",
+      "line": "26-36",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "356-365",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A fix round killed mid-work goes back to `merged` with its worktree still on disk, uncommitted edits included. The next `pup fix` then reuses that worktree after checking only HEAD and branch, so the abandoned round's partial edits reach the new worker.",
+      "body": "**A killed fix round's uncommitted edits reach the next round's worker**\n\n`pup kill` on a session in a fix round now goes back to `merged` instead of `killed`. It stops the tmux window, but the worktree that `restoreWorktree` brought back stays registered on `pup/<id>`, along with anything the dead worker left uncommitted (edited or untracked files):\n\n```ts\nif (!isTerminal(row.state) && newest?.type === 'fix_round') {\n  transitionSessionAlong(db, sessionId, { from: row.state, to: FIX_ROUND_EDGE.from }, { kind: 'fix-round-killed' });\n  return FIX_ROUND_EDGE.from;\n}\n```\n[session-lifecycle.service.ts#L559-L578](https://github.com/AlexisBalayre/pupitre/blob/b71a5a75ed59f914fed4f11e085d1ce6358b168a/src/core/session-lifecycle.service.ts#L559-L578)\n\nIf the worker committed nothing, the branch tip is still the PR head, and `pup fix` accepts the session again: it only requires `state === 'merged'` plus the merge, pin and review checks, none of which look at the kill. `restoreWorktree` then takes the surviving-worktree branch, which checks only HEAD and branch and never runs `git status`:\n\n```ts\nif (registered) {\n  if (!registered.includes(`HEAD ${head}`) || !registered.includes(`branch ${branchRef}`)) { ...throw }\n  return false;\n}\n```\n[fix-round.service.ts#L356-L365](https://github.com/AlexisBalayre/pupitre/blob/b71a5a75ed59f914fed4f11e085d1ce6358b168a/src/core/fix-round.service.ts#L356-L365)\n\nSo the new round's worker opens in a dirty tree that holds the killed round's half-made edits. Its brief frames that tree as the PR head the review read, and tells it to \"Commit the fixes on this branch\". Three things contradict this:\n- Decision 90 says a kill means the round's work is abandoned.\n- `restoreWorktree`'s own JSDoc says a surviving worktree that \"may hold work the gate never measured\" is refused, not reused.\n- The kill message in `src/cli/index.ts` warns only about the round's *commits*.\n\nBefore this delta the path could not happen: a killed round ended as `killed`, and `pup fix` refuses that state. The gate's `worktree-clean` stage limits the damage, since nothing ungated lands, but abandoned work is easily committed into the next round. The kill test in fix-round.test.ts never runs `pup fix` again after the kill.\n\nPossible fixes:\n- Refuse a registered worktree that has local changes: a `status --porcelain` check inside the `if (registered)` branch, after `assertNoArmedGitDrivers`, since status can run filters.\n- Or have the kill path remove the worktree, as `pup land` does.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1755-1757",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup unblock` still decides whether \"the next gate failure parks it again\" from the lifetime `reject_count`. The gate now blocks a fix-round session on `rejectCount - fixRoundRejectBase(...) > MAX_REJECTS_BEFORE_BLOCKED`. So a fix-round session with a high `rejectBase` gets a wrong \"Its N rejections are kept, so the next gate failure parks it again\" message. The check should subtract the same base the gate uses.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "399",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `k` confirm prompt in `pup ui` still says `Kill ${id}? Its window goes and its task returns to the backlog.`. On a fix-round session the kill now returns it to merged, with its task still claimed. The operator agrees to one outcome and gets another. Branch the prompt the way `killSelected`'s result text does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "461-488",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `rowMoved` guard covers a `pup kill` only while `launchSession` runs. It does not cover the kickoff wait, which can last up to 45 s. A kill there moves the row back to merged. `undoFixRound`'s `transitionSessionAlong(running → merged)` then throws a bare `Session <id> is no longer running.`, either as a stack trace or masking the original error. The final state is correct. Treat \"already back at merged\" as done in `undoFixRound`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "280-282, 447-458",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`reviews(last: 100)` is read with no `pageInfo`, and `newestReviewRun` stops silently at the window's start. If 100 or more later reviews push a fallback run's oldest one-thread reviews out of the window, `pup fix` relays only the threads still in it and refuses nothing. Those later reviews can be plain COMMENT reviews, which any user can post on a public repo. The `newest.length === opened` cap check cannot notice, because the dropped reviews are missing from both sides. Add `pageInfo { hasPreviousPage }` to `reviews`, and refuse when the run's scan reached the window's start.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "567-574",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup kill` does not take the merge lock, so killing a fix-round session in `awaiting-review` can succeed while that session's gate runs. On a pass, the gate pushes the round's commits and records a merge, but its report-less `transitionSession(..., 'merged', { report })` hits the same-state early return, so no gate_result row is written. That contradicts the \"merged again\" kill message. On a fail, `rejectOrBlock` bumps `reject_count`, then throws InvalidTransitionError. This is not a gate bypass, since land pins the gated sha.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1832-1842",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This delta adds the same \"newest of fix_round/merge/landed is a fix_round\" scan twice: `listEvents(...).reverse().find((event) => ['fix_round', 'merge', 'landed'].includes(event.type))` appears in `fixRoundRejectBase` and in `killSession` (session-lifecycle.service.ts:564-566). The rule for \"in a fix round\" now lives in two modules, so if one copy misses a new boundary event, `pup kill` and the reject cap disagree. Put it in one helper in session.repository.ts or session-state.utils.ts: `killSession` can't import from merge-gate without inverting layering.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1838-1840",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`fixRoundRejectBase` reads the newly typed `EventPayloads['fix_round'].rejectBase` back untyped: `event.type === 'other' ? event.fields.rejectBase` plus two `as number` casts. That is because `decodeEvent` has no `fix_round` arm. If the field is renamed, the writer still compiles and the cap silently reads 0. Add a typed `fix_round` case to `decodeEvent`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "219",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`function orNotStarted<T>(run: () => T): T` uses a bare `T`, against docs/conventions/general.md §Type safety (\"Generics are descriptive — `TConfig`, `TResponse`. Never bare `T` / `U`.\"). Rename it, e.g. to `TResult`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-state.utils.ts",
+      "line": "29-30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`FIX_ROUND_EDGE`'s JSDoc says \"`pup kill` takes it back from running or blocked\". But `killSession` takes it back from any non-terminal state (`!isTerminal(row.state) && newest?.type === 'fix_round'`), and decision 90 and the tests include awaiting-review and rejected. Say \"from any non-terminal state\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new cap-exceeded error in `readPullRequestReview` contains the garbled clause \"…opened some of them before the newest 100 one read returns; fix the PR by hand\". Reword it to \"…before the newest 100, which is all one read returns; …\", and update the test regex and decision 90 to match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90's \"…each ends `No fix round was started.`, a failing gh read's too.\" ends on a dangling fragment. Reword it to \"…including the refusal of a failing gh read.\". The edited `fix_round` paragraph and its Tests paragraph also have uneven line wraps.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `takeFixRoundEdge` JSDoc addition \"The event keeps the rejection count the round starts from, which the gate's cap counts from.\" says \"from\" twice. It also repeats what the `fix_round` payload doc and `fixRoundRejectBase` already say. Cut it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": null,
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`reviewThreads(last: 100)` and the \"Threads come oldest first\" comment assume GitHub returns threads in creation order. GitHub's GraphQL docs promise no order for `PullRequest.reviewThreads`, and it has no `orderBy`. A different order fails safe, because the `newest.length !== opened` check throws. Still, name the assumption as undocumented rather than baking it into the comment and fixtures.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": null,
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The over-cap check compares `opened`, the sum of the run reviews' `comments.totalCount`, with the surviving threads on the page, using strict equality. Deleted bot comments are among the cases that can make the two numbers differ. When they do, a PR with more than 100 threads is refused with \"fix the PR by hand\" even though every run thread is on the page. It fails safe, but it is stricter than needed.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The second freshness assertion found the checkout at b71a5a75ed59f914fed4f11e085d1ce6358b168a while the PR head had moved to 16041853144c3fec680a4497a5c69a684641b425 (\"Merge main into pup/t-mvb0o4uc-1\"), which is not available locally. Both important candidates were re-checked against `gh pr diff 161` and their flagged code is unchanged at the true head. The nits were not individually re-checked against the merge commit."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer only grepped docs/09-decisions.md for decision 90's key terms and did not check decisions 40, 51, 84 or 86 line by line against their edited text."
+    },
+    {
+      "component": "context",
+      "description": "gh api is blocked under CI, so the context reviewer could not check the live GraphQL schema, GitHub's reviewThreads ordering, or whether REST standalone review comments get their own bodiless review. Those claims stay at medium confidence."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.9997991000000015,
+  "duration_ms": 397527,
+  "num_turns": 21,
+  "tokens": {
+    "input": 14,
+    "output": 21315,
+    "cache_read": 363555,
+    "cache_creation": 77808,
+    "total": 462692
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 180,
+      "output": 85429,
+      "cache_read": 3473565,
+      "cache_creation": 354904,
+      "cost_usd": 4.411957
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 16984,
+      "cache_read": 446511,
+      "cache_creation": 149294,
+      "cost_usd": 0.5878420999999999
+    }
+  ],
+  "permission_denials": []
+}
