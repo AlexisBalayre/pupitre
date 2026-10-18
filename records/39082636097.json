@@ -1,0 +1,234 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T00:36:06.464Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39082636097",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39082636097",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4393901bcc00788c2759324d7366b0d5b2cd49e1",
+  "source": "pr",
+  "pr_number": 156,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "431-454",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The fold swaps the test stage's `pm run test` for `npx --no-install vitest run …`. A Yarn Berry Plug'n'Play repo (`\"test\": \"vitest run\"`, vitest and `@vitest/coverage-v8` declared) has no `node_modules/.bin/vitest`, so its test stage, which used to pass, now hard-fails in the gate and in init/audit/land.",
+      "body": "The fold replaces the test stage's `<pm> run test` with a hardcoded `npx --no-install vitest run …` ([typescript.adapter.ts#L239-L254](https://github.com/AlexisBalayre/pupitre/blob/4393901bcc00788c2759324d7366b0d5b2cd49e1/src/adapters/typescript.adapter.ts#L239-L254)). `coveredTest` checks the script's text, but it never checks that this launcher can start vitest in places where `<pm> run test` can ([#L431-L454](https://github.com/AlexisBalayre/pupitre/blob/4393901bcc00788c2759324d7366b0d5b2cd49e1/src/adapters/typescript.adapter.ts#L431-L454); compare `packageManager` at [#L175-L179](https://github.com/AlexisBalayre/pupitre/blob/4393901bcc00788c2759324d7366b0d5b2cd49e1/src/adapters/typescript.adapter.ts#L175-L179)).\n\nTake a Yarn Berry Plug'n'Play repo (Plug'n'Play is Yarn's default linker) with `\"test\": \"vitest run\"` and `@vitest/coverage-v8` declared. It has no `node_modules/.bin/vitest`, so `npx --no-install` can't find the binary. Nothing in `src/` detects or refuses PnP.\n\nBefore this PR, the same npx launcher failed only inside `coverage()`. That reported coverage as \"not measured\", and `yarn run test` still decided the test stage. Now that failure becomes the test stage's result:\n- **`pup init`, `pup audit` and `pup land`:** the stage runs in the installed main checkout ([init.service.ts#L259-L266](https://github.com/AlexisBalayre/pupitre/blob/4393901bcc00788c2759324d7366b0d5b2cd49e1/src/core/init.service.ts#L259-L266)). The baseline stores test FAIL and reports that the gate will hard-fail the stage.\n- **The gate** ([merge-gate.service.ts#L1240-L1253](https://github.com/AlexisBalayre/pupitre/blob/4393901bcc00788c2759324d7366b0d5b2cd49e1/src/core/merge-gate.service.ts#L1240-L1253)): in a zero-install PnP repo where `yarn run test` used to pass, the test stage now fails on every session.\n\nThere are two possible fixes:\n- Fold only when `node_modules/.bin/vitest` exists in the checkout.\n- Launch the folded run through the detected package manager (`yarn vitest run …`, `pnpm exec vitest …`), so vitest starts the same way the test script starts it.\n\n(The npx lookup behaviour comes from what we know of npm; npm's source isn't in-tree, hence medium confidence.)",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "233-240, 455-456",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The SIGKILL grace timer is cancelled when the direct child's `'close'` fires (`settle` → `untrack` → `clearTimeout(live.killTimer)`), not when the whole group is gone. A group member that ignores or delays SIGTERM/SIGINT and doesn't hold the stdout/stderr pipes therefore outlives a timed-out, flooding or interrupted stage and is never SIGKILLed. The timeout and ENOBUFS paths close the pipes up front, so `'close'` fires as soon as the direct child exits. Such a survivor keeps writing into the checkout or scratch dir, which is the ENOTEMPTY case `removeGateDir`'s doc describes. Possible fix: in `settle`, when `failure !== undefined || live.interruptedBy`, call `signalGroup(child, 'SIGKILL')` before clearing the timer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "265-269",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`measureStaticDebt` now runs alongside the test run. The TypeScript adapter's in-process `readSources` lists the checkout's source files and then reads each one, and the sandbox lets the test run write anywhere in that checkout. A suite that creates and deletes `.ts` fixtures in the repo can make the read fail with ENOENT, which rejects the whole init/gate, or put transient files into the stored dead-code/duplication baseline. Before, these capabilities ran only after the suite finished.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "257-274",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Duplicated Code: the 'which run gets folded coverage' choice and the 'wait for all, then rethrow any GateInterruptedError' block were added twice, in init's measureStages and the gate's measureBranch (src/core/merge-gate.service.ts:1236-1241 and 1306-1316), and the two copies already differ. Decision 72 is about init and the gate setting coverage the same way, and this is the logic that can drift between them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1131-1134, 1170",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Data Clumps: the same command shape `{ command; args; writablePaths? }` is written out inline in four new places in two files (merge-gate runCommand and commandStage, init runBaselineStage at src/core/init.service.ts:144, and init's `run` at :247 as `Omit<GateCommand,'stage'> & { writablePaths?: string[] }`). CoveredTestRun in src/adapters/types/adapter.types.ts:123-127 already declares command, args and writablePaths.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "263",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Duplicated Code: the new `report()` closure in `instrumentedRun` repeats the same \"instrumented vitest run failed\" message that `coverage()`'s catch already builds at line 425 (an unchanged context line in the diff).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4774-4863",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 84 (lines 4368-4374) still says the `withMergeLock` listener's body \"never runs, since a synchronous body never yields to the event loop\". Decision 95 makes that body async and moves the lock release into the gate's `finally`, but never says it refines or supersedes 84, so 84's text now contradicts the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "147-148",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`CONFIG_READ_MAX_BYTES` is a byte threshold defined in the adapter file, while general.md §No hardcoded values puts thresholds in the area's `*.constants.ts` (here `typescript-debt.constants.ts`) as a named export with a JSDoc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "366, 387",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`EXEC_MAX_BUFFER_BYTES` and `INTERRUPT_GRACE_MS` are new file-local numeric thresholds. general.md §No hardcoded values puts these in a `*.constants.ts`, and `merge-gate.constants.ts` already holds the neighbouring gate timeouts such as `GATE_COMMAND_TIMEOUT_MS`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "43-60",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `vi.mock('node:fs', …)` and `vi.mock('./merge-gate.constants.js', …)` mock in-scope modules to force a removal failure and a short timeout. testing.md §When `vi.mock` is right reserves `vi.mock` for out-of-process concerns such as tmux or `claude -p`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "193-200",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`initProject` (and `auditProject`, src/core/audit.service.ts:164-168) carry a call-site comment, \"Not async, so measureBaseline's refusals still throw (see there)\", that repeats `measureBaseline`'s JSDoc. AGENTS.md §Comments says to delete such call-site copies.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "431-440",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The opening sentences of the new `coveredTest` comment block restate `CoveredTestRun`/`coveredTest`'s JSDoc in adapter.types.ts (AGENTS.md §Comments, duplicated seam docs). Only the two-checkout and threshold reasoning is specific to this adapter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4774-4796",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 95's \"One run\" paragraph says the fold checks only the trusted `test` script and the trusted root's vitest/vite config. `coveredTest` applies the script, pre/post and thresholds checks to both the trusted and the measured checkout. Say \"in the trusted checkout and the measured one\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4774-4863",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 95's \"Interrupts\" paragraph ties the SIGKILL escalation only to forwarded signals. It omits that a timed-out or ENOBUFS-flooded stage also has its pipes closed and is SIGKILLed after the grace, as the final commit's `stop()` does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "103, 258-260, 360",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`readSources`, `complexity` and the coverage `report()` read session-controlled paths with plain `readFileSync`. A FIFO left there by the build or the test child blocks pup's main thread while it holds the merge lock (python.adapter.ts:~378 has the same pattern). Now that these reads overlap running children, a blocked loop also stops their timeouts and interrupt forwarding. Reusing the PR's own `readPlainFile` would close this.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 9.5491479,
+  "duration_ms": 642637,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 20650,
+    "cache_read": 353658,
+    "cache_creation": 71756,
+    "total": 446078
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 304,
+      "output": 180663,
+      "cache_read": 8555001,
+      "cache_creation": 660355,
+      "cost_usd": 8.842519199999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 13365,
+      "cache_read": 1113486,
+      "cache_creation": 140071,
+      "cost_usd": 0.7066287000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 156 -- src/core/sandbox.utils.ts"
+    }
+  ]
+}
