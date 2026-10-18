@@ -1,0 +1,293 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T14:07:30.280Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39133372337",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39133372337",
+  "actor": "AlexisBalayre",
+  "commit_sha": "16041853144c3fec680a4497a5c69a684641b425",
+  "source": "pr",
+  "pr_number": 161,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "273-294",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`pup fix` and the inbox treat 'the bot's newest review is on the head' as proof its threads review the head, but the poster sends no `commit_id`, so a review of an earlier head that posts after a re-gate push lands on the new head and its threads are relayed as the new head's review.",
+      "body": "**A review of an earlier head can pass as the review of the current one.**\n\n`reviewVerdict` takes `review.reviewedHead === head` as proof that the open threads are about the head. In the threads case it then returns right away:\n\n```ts\nif (threads.length > 0) return { head, threads };\n```\n\nThe poster never pins the review to the sha it checked out. In `tools/review/src/post-review.script.ts`, `postReview` sends only `{ event: \"COMMENT\", body, comments? }`, and GitHub files a review with no `commit_id` on the PR's latest commit at post time. Only the commit status is pinned to `REVIEW_COMMIT_SHA`. The workflow's concurrency group queues runs and never cancels them (`claude-code-review.yml`, \"Queue, never cancel\").\n\nHow it happens:\n1. A review of A is in flight.\n2. `pup merge <id> --pr` re-gates and pushes B.\n3. A's run finishes, and its batch review lands with `commit.oid === B`. `newestReviewRun` reads `reviewedHead` as B. `head === pinned === B`.\n4. `pup status` shows `CI review left N open threads on its head → pup fix <id>`, and `pup fix` starts a paid round on A's findings, with line anchors from A's diff.\n\nThe fallback path is safe, because `postEach` pins `commit_id`. The batch path posts whenever A's anchors are still valid lines in B's diff, which is common after a rebase.\n\nThe clean case already fails closed because it checks the head's status. The threads case needs the same anchor: relay threads only once the bot has set a status on the head, since the poster writes that status only after its own review of the head is posted. One edge remains: a FAILURE status from a run that could not post (\"the review could not be posted\") would still let A's threads through. Excluding that description closes it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/16041853144c3fec680a4497a5c69a684641b425/src/core/fix-round.service.ts#L273-L294\nhttps://github.com/AlexisBalayre/pupitre/blob/16041853144c3fec680a4497a5c69a684641b425/src/core/github.client.ts#L383-L394",
+      "suggestion": "  if (threads.length > 0) {\n    // The poster files its review on whatever the head is when it posts, but\n    // pins its status to the sha it reviewed: no status here means the threads\n    // may be an earlier head's review.\n    if (review.headStatus === undefined || review.headStatus.state === 'PENDING') {\n      return {\n        refusal:\n          `The review bot's threads on ${prUrl} sit on ${head}, but it set no verdict ` +\n          'status on that head, so the run that wrote them may have reviewed an earlier one; ' +\n          'wait for the review of the head, then re-run.',\n      };\n    }\n    return { head, threads };\n  }"
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "127-149",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The conductor may run `pup fix`, which relaunches a worker from `context.md`/`settings.json` in the store's compiled dir, the same conductor-writable kickoff decision 47 refuses it for `pup kill --respawn`.",
+      "body": "**`pup fix` gives the conductor back the kickoff decision 47 took away.**\n\n`pup fix` relaunches the worker from the session's compiled dir in the store, without verifying or recompiling it:\n\n```ts\nconst compiledDir = projectPaths(req.repoPath, req.pathsBase).compiledDir(session.id);\nconst contextPath = join(compiledDir, 'context.md');\n...\nrelaunchWorker(db, req.repoPath, session, compiledDir, route, [\n  context,\n  fixRoundBrief(prUrl, head, threads),\n]);\n```\n\n`relaunchWorker` also launches with `settingsPath: join(compiledDir, 'settings.json')`.\n\nThe CLI refuses only sessions, so the conductor gets through (`index.ts` L2112-2121, `overrideVia: callingConductor() ? 'conductor' : 'operator'`).\n\nDecision 47 (docs/09-decisions.md L1772-1775) refuses `kill --respawn` to the conductor for exactly this reason: *\"its kickoff is the `context.md` under the store's compiled dir, the same directory; the security review found the plain `kill` guard covering it and the conductor walking through.\"* The `kill --respawn` guard at `index.ts` L1673-1681 says the same. Ordinary launch never has this problem, because it recompiles the profile before opening the window.\n\nA prompt-injected conductor (it reads session output) can therefore:\n1. rewrite `context.md`, or `settings.json` to drop the scope hooks;\n2. run `pup fix` on any merged session with open bot threads, which is the inbox's normal case;\n3. get a bypass-permissions worker that starts on its own text, framed as pup's kickoff and placed above the round's untrusted-data fence.\n\nDecision 90 says \"the operator and the conductor run it\" but does not reconcile this with decision 47.\n\nTwo ways to fix it:\n- Refuse `pup fix` to the conductor, as `kill --respawn` is refused.\n- Or recompile the profile, or check it against a hash recorded at launch, before relaunching. This keeps decision 90's part 2 workable.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/16041853144c3fec680a4497a5c69a684641b425/src/core/fix-round.service.ts#L127-L149\nhttps://github.com/AlexisBalayre/pupitre/blob/16041853144c3fec680a4497a5c69a684641b425/src/cli/index.ts#L2112-L2121",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "223-238",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup kill --respawn` accepts a session in a fix round, but `relaunchWindow` rebuilds the kickoff from `context.md` alone, so the fresh worker never sees the review threads and is told to 'continue the task' that is already gated.",
+      "body": "**A hard respawn during a fix round drops the review threads.**\n\nThe round's threads reach the worker only through the kickoff that `relaunchWorker` types (`fix-round.service.ts` L146-149: `[context, fixRoundBrief(prUrl, head, threads)]`). The `fix_round` event stores only the thread ids, not their text.\n\nA session in a fix round is `running`, so `pup kill --respawn` passes `requireRunning` and calls `hardRespawnSession` directly. It never reaches `killSession`'s new fix-round branch. `relaunchWindow` then builds the kickoff as `context.md` plus:\n\n```ts\npromptSuffix:\n  '\\n\\n## Fresh start after a kill\\n' +\n  ...\n  'and `git log` before doing anything, keep what is sound, and continue the task.',\n```\n\nThe fresh worker gets the original task, which is already implemented and gated, and never sees the CI findings. The likely outcome:\n1. It runs `pup session done` with nothing fixed.\n2. The `--pr` gate pins the same head again; nothing refuses a branch that has not moved.\n3. A new `merge` event drops the PR back in the inbox as if the round had run.\n\nDecision 90 covers a plain `pup kill` during a round, but not `kill --respawn` or `pup respawn`.\n\nTwo ways to fix it:\n- In a round (a `fix_round` after the newest `merge`), have `relaunchWindow` re-append the round's section, either stored or re-read from GitHub by the event's thread ids.\n- Or refuse the hard respawn of a session in a round and point the operator at `pup kill` + `pup fix`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/16041853144c3fec680a4497a5c69a684641b425/src/core/session-handoff.service.ts#L223-L238",
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4612-4620",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90 says it amends 84, 86 and 92 but also changes decision 83's inbox guarantee (pup status now differs from the fleet view and pup ui), decision 7's reject cap and decision 40's kill outcome; list them in the amends clause and note the CI line in 83.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "297-354",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Nothing stops a session in a fix round from being gated with plain `pup merge <id>` (no `--pr`). The gate then fast-forwards the round onto the local target and records a merge with no prUrl, and the open PR falls out of the inbox; `pup land` then refuses it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "60-65",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`landSession` checks `state === 'merged'` only before taking the merge lock. Now that `pup fix` can move a row out of merged, a fix round started between land's gh read and its lock would have its worktree force-removed and a `landed` event appended; re-check the state under the lock.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1845-1878",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`rejectOrBlock` caps on `rejectCount - rejectBase` but still returns the lifetime count, so the CLI prints e.g. 'rejection 3/2' (src/cli/index.ts:2040) on a fix round's first rejection while the session is correctly re-steered.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "498-506",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`undoFixRound` kills the round's pane and moves the row back to merged but leaves `tmux_target` set to the dead pane id, the stale-pane hazard `takeFixRoundEdge` nulls the column to avoid; clear it in the undo.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "498-506",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`undoFixRound` re-implements the new fix-round branch of `killSession` (kill pane, `transitionSessionAlong` back to merged); `killSession(db, session.id)` behaves the same at every call site, as `deliverKickoff`'s rollback already uses it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "273-283",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When the preflight skips a comment/prose-only push it only sets a pending 'Not reviewed: …' status and posts no review, so the 'wait for the review of the head, then re-run' refusal never clears on its own; quote the pending status and point to `@claude review`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "284-294",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The poster puts important findings it cannot anchor in the review body, and `pup fix` relays only threads, so a round silently omits them. The status description's importants count would show the mismatch against the open threads.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "263-280",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The thread query never reads `isMinimized`, so a bot finding the operator hid on GitHub (e.g. as an injection attempt) without resolving it is still relayed to the worker; skip or refuse minimized findings as `editedByOther` is.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "57",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`FORMAT_CHARS = /\\p{Cf}/gu` misses variation selectors (U+FE00–FE0F, U+E0100–E01EF), the known invisible-text smuggling channel, so they survive the kickoff's 'cannot see' scrub; widen the pattern.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/actions.service.ts",
+      "line": "141-147",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new 'Killed <id>'s fix round; it is merged again…' two-sentence operator message is duplicated word for word in src/cli/index.ts:1701-1707; return it from `killSession` or export one string so the reset advice changes in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "519",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `N open thread(s)` plural is spelled out in three new places (here, dashboard.service.ts:449, cli/index.ts:2129); the third use is this PR's, so one shared helper is due.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "187-193",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readReviewedPullRequest` takes a `beforeGh` callback that `ciReviewLookup` fills with `() => undefined`; returning the validated `{ prUrl, sha, repo }` and letting each caller do its own gh read removes the hook.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "79",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "New booleans `recreatedWorktree`, `rowMoved` (L436) and `editedByOther` (github.client.ts:317) break docs/conventions/general.md §Type safety ('Boolean names start with is / has / should / can'); e.g. `hasRecreatedWorktree`, `hasRowMoved`, `isEditedByOther`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "92",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `startFixRound` JSDoc and decision 90 (docs/09-decisions.md:4620) say every refusal comes before anything is written, but `relaunchWorker`'s pane-store race refusal fires after the edge and the `fix_round` event are written; scope the claim to refusals before the edge.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4688-4694",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 90 gives the same reason twice in back-to-back sentences: the recorded pane can be another window's after a tmux restart. The `takeFixRoundEdge` JSDoc and the `relaunchWorker` comment repeat it too; merge the two sentences.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "252",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'any workflow can set the status as the bot, so clean is not proof' argument is restated in about six places (REVIEW_BOT_LOGIN block, reviewStatusOn JSDoc, CiReview JSDoc, a dashboard test comment, decision 90). Keep it once and point to decision 90 elsewhere.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2109-2111",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `fix` action's comment repeats the refusal message under it and decision 90, and 'takes the one edge out of merged' narrates WHAT. Keep only the why: a session must not trigger a worker kickoff from reviewer text.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.373654700000003,
+  "duration_ms": 519431,
+  "num_turns": 20,
+  "tokens": {
+    "input": 14,
+    "output": 21540,
+    "cache_read": 428925,
+    "cache_creation": 73157,
+    "total": 523636
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 316,
+      "output": 140035,
+      "cache_read": 7774478,
+      "cache_creation": 611658,
+      "cost_usd": 7.634620600000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 22472,
+      "cache_read": 1155556,
+      "cache_creation": 159457,
+      "cost_usd": 0.7390341000000002
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Grep",
+      "input": "{\"pattern\":\"pup land|land\\\\.service\",\"path\":\"/home/runner/work/pupitre\",\"glob\":\"!{docs/09-decisions.md,src/**,node_modules/**,.worktrees/**}\",\"output_mode\":\"content\",\"-n\":true,\"head_limit\":30}"
+    }
+  ]
+}
