@@ -40,6 +40,13 @@ export interface EventPayloads {
    * `sha` is the merge commit GitHub made (decision 84).
    */
   landed: { sha: string; target: string; prUrl: string };
+  /**
+   * `pup fix` handed the PR's CI review back to the session's worker
+   * (decision 90): the head the bot reviewed, the ids of the open threads the
+   * kickoff listed, and the session's rejection count as the round started,
+   * which the gate's cap counts the round's rejections from.
+   */
+  fix_round: { prUrl: string; head: string; threads: string[]; rejectBase: number };
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };

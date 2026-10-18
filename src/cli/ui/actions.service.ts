@@ -19,6 +19,7 @@ import {
 import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
   interruptSession,
+  killedFixRoundMessage,
   killSession,
   launchTask,
   steerSession,
@@ -134,12 +135,16 @@ export function interruptSelected(deps: ActionDeps, sessionId: string): ActionRe
   });
 }
 
-/** `pup kill`: the window goes and the task returns to the backlog (decision 40). */
+/**
+ * `pup kill`: the window goes and the task returns to the backlog (decision
+ * 40), or a fix round's session is merged again, its PR still open (decision 90).
+ */
 export function killSelected(deps: ActionDeps, sessionId: string): ActionResult {
-  return attempt(() => {
-    killSession(deps.db, sessionId);
-    return `Killed ${sessionId}; its task is back in the backlog.`;
-  });
+  return attempt(() =>
+    killSession(deps.db, sessionId) === 'merged'
+      ? killedFixRoundMessage(sessionId)
+      : `Killed ${sessionId}; its task is back in the backlog.`,
+  );
 }
 
 /** What the gate recorded when it parked a session, for the `u` confirmation. */

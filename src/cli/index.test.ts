@@ -95,6 +95,11 @@ vi.mock('../core/merge-gate.service.js', () => ({
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+// So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
+vi.mock('../core/fix-round.service.js', () => ({
+  ciReviewLookup: vi.fn(),
+  startFixRound: vi.fn(),
+}));
 // The server and its socket are web-dashboard.test.ts's; here it binds nothing.
 vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
 // The browser opener is `pup dashboard --open`'s one boundary; every other
@@ -150,6 +155,7 @@ import {
 import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
 import { landSession } from '../core/land.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
@@ -5501,6 +5507,142 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.join('\n')).not.toContain('PR opened');
+    });
+  });
+
+  describe('fix', () => {
+    const PR = 'https://github.com/o/r/pull/7';
+    const HEAD = 'c'.repeat(40);
+
+    /** A session merged with --pr, its PR open. */
+    function seedOpenPr(repo: string): void {
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', 'merged');
+      appendEvent(db, 's1', 'merge', {
+        branch: 'pup/s1',
+        sha: 'f'.repeat(40),
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
+      db.close();
+    }
+
+    // A fix round kicks a worker off with what a reviewer wrote about session
+    // code (decision 90): a session does not start one.
+    it('refuses when a session is calling, starting nothing', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedOpenPr(repo);
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      await buildProgram().parseAsync(['fix', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup fix` is refused to sessions; the operator or the conductor runs it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(startFixRound).not.toHaveBeenCalled();
+    });
+
+    it("starts the operator's round with its route and says what is next", async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(startFixRound).mockResolvedValue({
+        prUrl: PR,
+        head: HEAD,
+        threads: 2,
+      });
+
+      await buildProgram().parseAsync(
+        ['fix', 's1', '--model', 'claude-opus-5-5', '--effort', 'xhigh'],
+        { from: 'user' },
+      );
+
+      expect(firstCall(startFixRound)[1]).toEqual({
+        repoPath: repo,
+        sessionId: 's1',
+        override: { model: 'claude-opus-5-5', effort: 'xhigh' },
+        overrideVia: 'operator',
+        base: DEFAULT_BASE_PROFILE,
+        claudeUserDir: join(home, '.claude'),
+      });
+      expect(logs).toEqual([
+        `Fix round started for s1: the 2 open threads the CI review left on ${PR} at ${HEAD} went to a fresh window.`,
+        'When it is done: `pup review s1`, then `pup merge s1 --pr`.',
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('runs from the conductor, whose override never lifts a top-rung refusal', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+      vi.mocked(startFixRound).mockResolvedValue({
+        prUrl: PR,
+        head: HEAD,
+        threads: 1,
+      });
+
+      await buildProgram().parseAsync(['fix', 's1'], { from: 'user' });
+
+      expect(firstCall(startFixRound)[1]).toMatchObject({ overrideVia: 'conductor' });
+      expect(logs[0]).toContain('the 1 open thread the CI review left');
+    });
+
+    it('prints a refusal on one line with its control characters gone', async () => {
+      useCwd(initRepo());
+      vi.mocked(startFixRound).mockRejectedValue(
+        new Error('PR is CLOSED\u001b[2J on GitHub, not OPEN. No fix round was started.'),
+      );
+
+      await buildProgram().parseAsync(['fix', 's1'], { from: 'user' });
+
+      expect(errors).toEqual(['PR is CLOSED [2J on GitHub, not OPEN. No fix round was started.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('prints a rolled-back round with its refusal and the command to retry', async () => {
+      useCwd(initRepo());
+      vi.mocked(startFixRound).mockRejectedValue(
+        new LaunchRolledBackError(
+          'Fix round rolled back (session s1 merged again, its window and worktree gone)',
+          new Error('The paste never landed.'),
+        ),
+      );
+
+      await buildProgram().parseAsync(['fix', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        'The paste never landed.',
+        'Fix round rolled back (session s1 merged again, its window and worktree gone). Re-run `pup fix s1`.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // Decision 90: only `pup status` asks GitHub, and the line answers with `pup fix`.
+    it('shows what the CI review left in the status inbox', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedOpenPr(repo);
+      vi.mocked(ciReviewLookup).mockReturnValue(() => ({ openThreads: 2 }));
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(vi.mocked(ciReviewLookup).mock.calls[0]?.[1]).toBe(repo);
+      expect(logs).toContain('  s1  CI review left 2 open threads on its head  → pup fix s1');
+
+      logs.length = 0;
+      vi.mocked(ciReviewLookup).mockReturnValue(() => ({ openThreads: 0 }));
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).toContain(
+        '  s1  CI review status reads clean on its head (any repo workflow can set it): read ' +
+          `the PR, then your merge click  → ${PR}`,
+      );
     });
   });
 

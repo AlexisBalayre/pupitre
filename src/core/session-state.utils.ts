@@ -7,6 +7,7 @@ import type { SessionState } from './db.client.js';
  *   awaiting-review -> rejected -> running   (gate report injected; capped at 2)
  *   rejected|running -> blocked              (cap reached; needs a human)
  *   blocked -> running                       (`pup unblock`: a human dealt with it)
+ * and, outside this table, `FIX_ROUND_EDGE`'s merged -> running (`pup fix`, decision 90).
  */
 const TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
   queued: ['running', 'killed'],
@@ -21,6 +22,19 @@ const TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
 export function canTransition(from: SessionState, to: SessionState): boolean {
   return TRANSITIONS[from].includes(to);
 }
+
+/**
+ * The one way back out of `merged` (decision 90): `pup fix` hands a session
+ * whose open PR the CI review left threads on back to a worker, and takes it
+ * back (running to merged) when the worker's kickoff never lands; `pup kill`
+ * takes it back from running or blocked, so the PR stays landable. Kept out of
+ * `TRANSITIONS`, so `canTransition` refuses it and no `transitionSession`
+ * caller can take it: only `transitionSessionAlong` does.
+ */
+export const FIX_ROUND_EDGE = { from: 'merged', to: 'running' } as const satisfies {
+  from: SessionState;
+  to: SessionState;
+};
 
 /**
  * States meaning a task is spoken for, so it is out of the backlog and its spec

@@ -13,6 +13,7 @@ import { type ProjectPaths, projectPaths } from './paths.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
+  currentFixRound,
   decodeEvent,
   getSession,
   listEvents,
@@ -64,6 +65,15 @@ function requireRunning(db: Database, sessionId: string): SessionRow {
   if (!session) throw new Error(`No session ${sessionId}.`);
   if (session.state !== 'running') {
     throw new Error(`Session ${sessionId} is ${session.state}; only running sessions respawn.`);
+  }
+  // A respawn kicks off from the compiled context alone, without the round's
+  // threads, so the worker would carry on with no idea what it was fixing.
+  if (currentFixRound(db, sessionId) !== undefined) {
+    throw new Error(
+      `Session ${sessionId} is in a CI fix round, which a respawn would relaunch without the ` +
+        `review's threads. Run \`pup kill ${sessionId}\` (back to merged), then ` +
+        `\`pup fix ${sessionId}\`.`,
+    );
   }
   return session;
 }

@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
@@ -105,10 +106,11 @@ export interface TaskRow {
 }
 
 /**
- * Every type the store holds: the schema's, and `landed`, which `pup land`
- * writes (decision 84) and `EventType` has yet to join.
+ * Every type the store holds: the schema's, `landed`, which `pup land` writes
+ * (decision 84), and `fix_round`, which `pup fix` writes (decision 90), the
+ * two `EventType` has yet to join.
  */
-type StoredEventType = EventType | 'landed';
+type StoredEventType = EventType | 'landed' | 'fix_round';
 
 export interface EventRow {
   id: number;
@@ -500,10 +502,41 @@ export function transitionSession(
     if (row.state === target) return row;
     if (!canTransition(row.state, target)) throw new InvalidTransitionError(row.state, target);
     db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(target, sessionId);
-    appendEvent(db, sessionId, 'gate_result', { from: row.state, to: target, ...eventPayload });
+    logTransition(db, sessionId, { from: row.state, to: target }, eventPayload);
     return { ...row, state: target };
   });
   return tx(id, to);
+}
+
+/**
+ * Move a session along an edge `canTransition` refuses, the CI fix round's
+ * (decision 90), logged as every transition is in the same write. Refused,
+ * with nothing written, when the row is no longer at `edge.from`.
+ */
+export function transitionSessionAlong(
+  db: Database,
+  id: string,
+  edge: { from: SessionState; to: SessionState },
+  eventPayload: TransitionPayload,
+): void {
+  db.transaction(() => {
+    const moved = db
+      .prepare('UPDATE sessions SET state = ? WHERE id = ? AND state = ?')
+      .run(edge.to, id, edge.from);
+    if (moved.changes === 0) {
+      throw new Error(`Session ${sanitizeReason(id)} is no longer ${edge.from}.`);
+    }
+    logTransition(db, id, edge, eventPayload);
+  })();
+}
+
+function logTransition(
+  db: Database,
+  sessionId: string,
+  { from, to }: { from: SessionState; to: SessionState },
+  eventPayload: TransitionPayload,
+): void {
+  appendEvent(db, sessionId, 'gate_result', { from, to, ...eventPayload });
 }
 
 export function appendEvent<TType extends StoredEventType>(
@@ -524,6 +557,18 @@ export function listEvents(db: Database, sessionId: string): EventRow[] {
   return db
     .prepare('SELECT * FROM events WHERE session_id = ? ORDER BY id')
     .all(sessionId) as EventRow[];
+}
+
+/**
+ * The `fix_round` event of the CI fix round a session is in (decision 90):
+ * the newest of its `fix_round`, `merge` and `landed` events, when that is a
+ * `fix_round`. A round ends at the merge its re-gate records.
+ */
+export function currentFixRound(db: Database, sessionId: string): EventRow | undefined {
+  const newest = listEvents(db, sessionId)
+    .reverse()
+    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
+  return newest?.type === 'fix_round' ? newest : undefined;
 }
 
 /**

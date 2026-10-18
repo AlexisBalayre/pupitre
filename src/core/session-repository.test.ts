@@ -121,6 +121,29 @@ describe('session repository', () => {
     expect(rows[0]?.spec).toBe('{}');
   });
 
+  // The fix round's edge is `pup fix`'s alone (decision 90).
+  it('refuses merged -> running, and stores the fix round event pup fix writes', () => {
+    seedSession(db, 's1');
+    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', 'awaiting-review');
+    transitionSession(db, 's1', 'merged');
+
+    expect(() => transitionSession(db, 's1', 'running')).toThrow(InvalidTransitionError);
+    expect(getSession(db, 's1')?.state).toBe('merged');
+
+    const round = {
+      prUrl: 'https://github.com/o/r/pull/1',
+      head: 'abc',
+      threads: ['PRRT_1'],
+      rejectBase: 0,
+    };
+    appendEvent(db, 's1', 'fix_round', round);
+    expect(listEvents(db, 's1').at(-1)).toMatchObject({
+      type: 'fix_round',
+      payload: JSON.stringify(round),
+    });
+  });
+
   it('lists a session events oldest first with raw JSON payloads', () => {
     seedSession(db, 's1');
     seedSession(db, 's2');

@@ -72,6 +72,7 @@ import {
   PR_TITLE_MAX_CHARS,
 } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
   GateInterruptedError,
@@ -82,6 +83,7 @@ import {
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
+  currentFixRound,
   decodeEvent,
   getProject,
   getSession,
@@ -145,7 +147,7 @@ const CONTROL_CHARS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
  * says, `quotePath` already sanitizes the scope audit's, and an adapter's own
  * text reaches flagged stages only, which are refused and never steered.
  */
-function plainDetail(detail: string): string {
+export function plainDetail(detail: string): string {
   return detail.replace(CSI_ESCAPE, '').replace(CONTROL_CHARS, ' ').trimEnd();
 }
 
@@ -300,6 +302,14 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     session.state === 'merged' && req.openPr ? mergeToRegate(db, session.id) : undefined;
   if (session.state !== 'awaiting-review' && !merged) {
     throw new SessionNotReviewableError(req.sessionId, session.state);
+  }
+  // A plain merge would fast-forward the round's commits locally and record a
+  // merge with no PR, while the PR the round answers stays behind (decision 90).
+  if (!req.openPr && currentFixRound(db, session.id) !== undefined) {
+    throw new Error(
+      `Session ${session.id} is in a CI fix round; its commits go back to its open PR. ` +
+        `Run \`pup merge ${session.id} --pr\`.`,
+    );
   }
   // First of the refusals that spawn nothing: everything below runs children,
   // and a platform with no sandbox and no operator declaration runs none of
@@ -564,20 +574,26 @@ export function resolveCommit(repoPath: string, ref: string): string {
 }
 
 /**
- * Refuse unless `target` still names `targetSha`, the only commit the
- * fast-forward's compare-and-swap will move it from. A deleted target reads as
- * moved to nowhere, not as a stack; a symref keeps its own refusal, which names
- * the compromise.
+ * `resolveCommit`, undefined when `ref` names no commit. A symbolic ref keeps
+ * its own refusal, which names the compromise, and a killed git its signal.
  */
-function assertTargetAt(repoPath: string, target: string, targetSha: string): void {
-  let now: string;
+export function resolveCommitIfPresent(repoPath: string, ref: string): string | undefined {
   try {
-    now = resolveCommit(repoPath, `refs/heads/${target}`);
+    return resolveCommit(repoPath, ref);
   } catch (error) {
     rethrowIfKilled(error);
     if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
-    now = 'nowhere';
+    return undefined;
   }
+}
+
+/**
+ * Refuse unless `target` still names `targetSha`, the only commit the
+ * fast-forward's compare-and-swap will move it from. A deleted target reads as
+ * moved to nowhere, not as a stack.
+ */
+function assertTargetAt(repoPath: string, target: string, targetSha: string): void {
+  const now = resolveCommitIfPresent(repoPath, `refs/heads/${target}`) ?? 'nowhere';
   if (now !== targetSha) {
     throw new Error(
       `${sanitizeReason(target)} moved from ${targetSha} to ${now} while the gate ran; nothing ` +
@@ -832,6 +848,24 @@ export function newestMerge(
     if (event.type === 'merge') return event;
   }
   return undefined;
+}
+
+/**
+ * Refuse a row whose worktree or branch is not the one the launch minted for
+ * the session. The row is store text, and what it names is handed to git: the
+ * id's shape first, so no `..` in it can reach a sibling (decision 84).
+ */
+export function assertMintedRow(repoPath: string, session: SessionRow, untouched: string): void {
+  if (
+    !SESSION_ID_PATTERN.test(session.id) ||
+    session.worktree_path !== join(repoPath, '.worktrees', session.id) ||
+    session.branch !== `pup/${session.id}`
+  ) {
+    throw new Error(
+      `Session ${sanitizeReason(session.id)}'s row names a worktree or branch that is not its ` +
+        `own; inspect the store. ${untouched}`,
+    );
+  }
 }
 
 /**
@@ -1801,8 +1835,24 @@ export function withLedgerKept(error: unknown, kept: number): unknown {
   return error;
 }
 
+/**
+ * The lifetime rejection count a CI fix round started from, when the session
+ * is in one (a `fix_round` after its newest merge), so the round's own
+ * rejections reach the cap and the first run's do not (decision 90); else 0.
+ * A stored base past `rejectCount` reads as none: the count only grows.
+ */
+function fixRoundRejectBase(db: Database, sessionId: string, rejectCount: number): number {
+  const round = currentFixRound(db, sessionId);
+  if (round === undefined) return 0;
+  const event = decodeEvent(round);
+  const base = event.type === 'other' ? event.fields.rejectBase : undefined;
+  return Number.isSafeInteger(base) && (base as number) <= rejectCount ? (base as number) : 0;
+}
+
 function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
-  const rejectCount = incrementRejectCount(db, report.sessionId);
+  const lifetimeRejects = incrementRejectCount(db, report.sessionId);
+  // The round's own count, so the cap and the CLI's "rejection n/2" agree.
+  const rejectCount = lifetimeRejects - fixRoundRejectBase(db, report.sessionId, lifetimeRejects);
   transitionSession(db, report.sessionId, 'rejected', { report });
   if (rejectCount > MAX_REJECTS_BEFORE_BLOCKED) {
     transitionSession(db, report.sessionId, 'blocked', {

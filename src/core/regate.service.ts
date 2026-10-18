@@ -1,6 +1,5 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { rethrowIfKilled } from './git-diff.client.js';
 import {
   assertPullRequestHead,
   findOpenPullRequest,
@@ -21,6 +20,7 @@ import {
   recordMerge,
   refuseGate,
   resolveCommit,
+  resolveCommitIfPresent,
   timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
@@ -241,13 +241,7 @@ export async function regateMerged(
  * (decision 86). Read once, under the lock; a symref keeps its own refusal.
  */
 function pinRegatedHead(repoPath: string, branch: string, head: string, prUrl: string): string {
-  let tip: string | undefined;
-  try {
-    tip = resolveCommit(repoPath, `refs/heads/${branch}`);
-  } catch (error) {
-    rethrowIfKilled(error);
-    if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
-  }
+  const tip = resolveCommitIfPresent(repoPath, `refs/heads/${branch}`);
   if (tip !== head) {
     throw new Error(
       `${sanitizeReason(branch)} is ${tip === undefined ? 'missing' : `at ${tip}`} in this ` +

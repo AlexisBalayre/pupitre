@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import {
   interruptPane,
@@ -19,6 +20,7 @@ import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { windowFailureOf } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, runGit } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
+import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import {
   compileProfile,
@@ -31,6 +33,7 @@ import { asTier, type ClimbReason, climbFrom, routeFor, taskTier } from './routi
 import {
   appendEvent,
   claimingSession,
+  currentFixRound,
   ensureProject,
   getSession,
   getTask,
@@ -42,6 +45,7 @@ import {
   type SessionRow,
   taskSpecForDisplay,
   transitionSession,
+  transitionSessionAlong,
 } from './session.repository.js';
 import {
   isRefusedSteer,
@@ -52,10 +56,10 @@ import {
   UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
-import { isTerminal } from './session-state.utils.js';
+import { FIX_ROUND_EDGE, isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { ScopeConflict } from './types/overlap.types.js';
-import type { SessionId, TaskSpec } from './types/profile.types.js';
+import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
@@ -139,17 +143,27 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   );
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
   const sessionId = startSession(db, { ...req, task }, route, conflicts.map(peerOf));
-  if (conflicts.length > 0) {
-    appendEvent(db, sessionId, 'scope_overlap', {
-      via: req.overlapVia ?? 'operator',
-      accepted: conflicts.map((conflict) => ({
-        session: conflict.sessionId,
-        files: conflict.files,
-      })),
-    });
-    introduceToPeers(db, sessionId, conflicts);
-  }
+  recordOverlaps(db, sessionId, conflicts, req.overlapVia ?? 'operator');
   return sessionId;
+}
+
+/**
+ * Record the live sessions `sessionId` shares files with, and introduce it to
+ * each (decision 99): after a launch's kickoff, and after a fix round's, whose
+ * worker edits the same files again (decision 90).
+ */
+export function recordOverlaps(
+  db: Database,
+  sessionId: string,
+  conflicts: ScopeConflict[],
+  via: 'operator' | 'conductor',
+): void {
+  if (conflicts.length === 0) return;
+  appendEvent(db, sessionId, 'scope_overlap', {
+    via,
+    accepted: conflicts.map((conflict) => ({ session: conflict.sessionId, files: conflict.files })),
+  });
+  introduceToPeers(db, sessionId, conflicts);
 }
 
 /** A live session sharing files, as the worker launched beside it is told of it. */
@@ -254,6 +268,50 @@ export function respawnRoute(
   session: SessionRow,
   override: RouteOverride = {},
 ): SessionRoute {
+  return sessionWindowRoute(
+    db,
+    session,
+    () => windowFailureOf(db, paths, session, Date.now()),
+    override,
+    true,
+  );
+}
+
+/**
+ * The route a CI fix round's window runs on (decision 90): one rung above the
+ * window that finished the work the review left threads on, the climb decision
+ * 92 counts a fix round for, with an override kept or named as on a respawn.
+ * The conductor runs `pup fix` too, and an override it names never lifts a
+ * top-rung refusal, as on its launches.
+ */
+export function fixRoundRoute(
+  db: Database,
+  session: SessionRow,
+  override: RouteOverride,
+  overrideVia: 'operator' | 'conductor',
+): SessionRoute {
+  return sessionWindowRoute(
+    db,
+    session,
+    () => 'ci-fix-round',
+    override,
+    overrideVia === 'operator',
+  );
+}
+
+/**
+ * What a session's next window runs on, climbed from the one it replaces as
+ * `failureOf` says. An override the session was launched or respawned with
+ * stays its model and effort, the rung still climbing under it, unless new ones
+ * are named; only a named one the operator chose lifts the top-rung refusal.
+ */
+function sessionWindowRoute(
+  db: Database,
+  session: SessionRow,
+  failureOf: () => ClimbReason | 'blocked' | undefined,
+  override: RouteOverride,
+  isOperator: boolean,
+): SessionRoute {
   const named = override.model !== undefined || override.effort !== undefined;
   const kept =
     session.route_override === 1
@@ -267,10 +325,107 @@ export function respawnRoute(
     { session: session.id },
     tier,
     session,
-    () => windowFailureOf(db, paths, session, Date.now()),
+    failureOf,
     named ? override : kept,
-    named,
+    named && isOperator,
   );
+}
+
+/**
+ * What a session's profile is compiled from besides its task: the base layer
+ * and the user config. A role is the launch caller's to pass, and only an API
+ * caller does: the task row keeps its name alone, which nothing resolves back.
+ */
+export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'claudeUserDir'>;
+
+/** A compiled profile and the codegraph binary it was compiled for, if any. */
+export interface SessionCompile {
+  compiled: CompiledProfile;
+  binary: string | undefined;
+}
+
+/**
+ * Compile a session's profile for its compiled dir, without writing it: the
+ * launch's compile, and the fix round's (decision 90).
+ */
+function compileSessionProfile(
+  source: ProfileSource & Pick<LaunchTaskRequest, 'role'>,
+  task: TaskSpec,
+  session: Pick<SessionRow, 'id' | 'worktree_path'>,
+  paths: ProjectPaths,
+  peers: SessionPeer[],
+): SessionCompile {
+  const compiledDir = paths.compiledDir(session.id);
+  const userConfigHash = snapshotUserConfigHash(source.claudeUserDir);
+  mkdirSync(compiledDir, { recursive: true });
+  // Before the compile, because the answer shapes the compiled files and the
+  // hash is recorded over them: which binary serves the graph is part of the
+  // session's environment, not a runtime detail (decision 51).
+  const binary = codegraphBinary(source.repoPath);
+  const compiled = compileProfile({
+    base: source.base,
+    role: source.role,
+    task,
+    sessionId: session.id as SessionId,
+    // The compiler reads the project brief through this (decision 57); the
+    // worktree is not it, and may not exist yet at this point anyway.
+    repoPath: source.repoPath,
+    worktreePath: session.worktree_path,
+    eventsFile: paths.eventsFile(session.id),
+    userConfigHash,
+    outDir: compiledDir,
+    codegraphBinary: binary,
+    peers,
+  });
+  return { compiled, binary };
+}
+
+/**
+ * A fix round's profile, compiled afresh from the task spec as a launch
+ * compiles it, with the knowledge slice and the peers sharing its files as of
+ * now, returned for `recordOverlaps` once the kickoff lands (decision 90). The
+ * compiled dir under the store is one the conductor's shell can write
+ * (decision 47), so a round never relaunches from what it holds.
+ */
+export function recompileSessionProfile(
+  db: Database,
+  source: ProfileSource,
+  session: SessionRow,
+  paths: ProjectPaths,
+): SessionCompile & { conflicts: ScopeConflict[] } {
+  const task = readTaskSpec(db, session.task_id);
+  task.knowledgeSlice = knowledgeSliceFor(
+    db,
+    source.repoPath,
+    projectId(source.repoPath),
+    task.scopeIn,
+  );
+  const conflicts = scopeConflicts(db, source.repoPath, task.scopeIn, task.scopeOut);
+  return {
+    ...compileSessionProfile(source, task, session, paths, conflicts.map(peerOf)),
+    conflicts,
+  };
+}
+
+/**
+ * Write a compile into the session's compiled dir and prepare its code graph
+ * on the worktree, which must exist by now, so the window opens on a graph of
+ * its own branch (decision 51). The MCP config is offered only from this
+ * compile's binary, never from an `mcp.json` found on disk.
+ */
+export function writeSessionProfile(
+  { compiled, binary }: SessionCompile,
+  repoPath: string,
+  worktreePath: string,
+  compiledDir: string,
+): { settingsPath: string; mcpConfigPath: string | undefined } {
+  writeCompiledProfile(compiled, compiledDir);
+  return {
+    settingsPath: join(compiledDir, 'settings.json'),
+    mcpConfigPath: prepareGraph(binary, repoPath, worktreePath)
+      ? join(compiledDir, 'mcp.json')
+      : undefined,
+  };
 }
 
 function startSession(
@@ -295,34 +450,21 @@ function startSession(
   // stored days ago by `pup plan` is not the argv the operator just typed. A
   // throw after `worktree add` would leave an orphan worktree and branch, and
   // every retry would then fail on the existing branch name (decision 40).
-  const userConfigHash = snapshotUserConfigHash(req.claudeUserDir);
-  mkdirSync(compiledDir, { recursive: true });
-  // Before the compile, because the answer shapes the compiled files and the
-  // hash is recorded over them: which binary serves the graph is part of the
-  // session's environment, not a runtime detail (decision 51).
-  const binary = codegraphBinary(req.repoPath);
-  const compiled = compileProfile({
-    base: req.base,
-    role: req.role,
-    task: req.task,
-    sessionId: sessionId as SessionId,
-    // The compiler reads the project brief through this (decision 57); the
-    // worktree is not it, and does not exist yet at this point anyway.
-    repoPath: req.repoPath,
-    worktreePath,
-    eventsFile: paths.eventsFile(sessionId),
-    userConfigHash,
-    outDir: compiledDir,
-    codegraphBinary: binary,
+  const compile = compileSessionProfile(
+    req,
+    req.task,
+    { id: sessionId, worktree_path: worktreePath },
+    paths,
     peers,
-  });
+  );
+  const { compiled } = compile;
   runGit(req.repoPath, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
-  writeCompiledProfile(compiled, compiledDir);
-  // After `worktree add`, since the files do not exist before it, and before the
-  // launch, so the window opens on a graph of its own branch (decision 51).
-  const mcpConfigPath = prepareGraph(binary, req.repoPath, worktreePath)
-    ? join(compiledDir, 'mcp.json')
-    : undefined;
+  const { settingsPath, mcpConfigPath } = writeSessionProfile(
+    compile,
+    req.repoPath,
+    worktreePath,
+    compiledDir,
+  );
 
   insertSession(db, {
     id: sessionId,
@@ -337,7 +479,7 @@ function startSession(
   const pane = launchSession({
     sessionId,
     worktreePath,
-    settingsPath: join(compiledDir, 'settings.json'),
+    settingsPath,
     route: routeFor(route.tier, route.rung, route),
     mcpConfigPath,
   });
@@ -503,12 +645,60 @@ export function interruptSession(
   if (message) appendEvent(db, sessionId, 'steer', { kind: 'interrupt', by });
 }
 
-export function killSession(db: Database, sessionId: string): void {
+/**
+ * Stop a session's window and end it as `killed`, its task back in the
+ * backlog (decision 40), or, in a CI fix round, back to `merged` (decision
+ * 90): the round's work is abandoned, but the PR it was for is still open, so
+ * the session stays landable by `pup land` and in the inbox, its task claimed.
+ * Returns the state the session ended in.
+ */
+export function killSession(db: Database, sessionId: string): 'killed' | 'merged' {
   const row = requireSession(db, sessionId);
   // The pane too, not the name alone: a rename from inside the session would
   // leave the name pointing at nothing while the window ran on.
   killTmux(sessionId, row.tmux_target);
+  if (!isTerminal(row.state) && currentFixRound(db, sessionId) !== undefined) {
+    // The pane is dead now: a row back in `merged` that kept it would hand a
+    // steer or a later kill whatever window holds that id next.
+    db.transaction(() => {
+      transitionSessionAlong(
+        db,
+        sessionId,
+        { from: row.state, to: FIX_ROUND_EDGE.from },
+        { kind: 'fix-round-killed' },
+      );
+      db.prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ?').run(sessionId);
+    })();
+    return FIX_ROUND_EDGE.from;
+  }
   transitionSession(db, sessionId, 'killed');
+  return 'killed';
+}
+
+/**
+ * How to clear a fix round's surviving worktree, which no git may run inside
+ * (decision 90). A command is named only for a minted id: the id is read from
+ * the store, and a path built from anything else is no command to hand out.
+ */
+export function worktreeCleanup(sessionId: string): string {
+  if (!SESSION_ID_PATTERN.test(sessionId)) {
+    return 'its row is not minted, so no command is named here; inspect the store';
+  }
+  const dir = `.worktrees/${sessionId}`;
+  return (
+    `remove it with \`rm -r ${dir}\` then \`git worktree prune\` from the main checkout ` +
+    '(do not run git inside it)'
+  );
+}
+
+/** What `pup kill` and `pup ui` say when a kill ended a fix round, not the session. */
+export function killedFixRoundMessage(sessionId: string): string {
+  const id = sanitizeReason(sessionId);
+  return (
+    `Killed ${id}'s fix round; it is merged again, its PR open for \`pup land\`. Before another ` +
+    `\`pup fix\`, its worktree must go: ${worktreeCleanup(sessionId)}. Reset its branch to the ` +
+    "PR's head if it carries the round's commits."
+  );
 }
 
 function requireSession(db: Database, sessionId: string): SessionRow {

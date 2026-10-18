@@ -817,6 +817,35 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(refusal).toMatch(/moved from main to elsewhere/);
       expect(refusal).not.toContain('ledger');
     });
+
+    // A fix round's session is gated again as a finished one (decision 90),
+    // holding the entry its first gate filed. Only a re-gate skips a kind the
+    // session holds (decision 86): here the figure grew, so the ledger keeps
+    // what this gate let through beside what the first one did.
+    it('files a grown figure beside an entry of its kind the session already holds', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(800));
+      const held = `Oversize diff (700 lines) merged from session ${SESSION_ID}`;
+      insertLedgerEntry(db, {
+        projectId: 'proj-1',
+        description: held,
+        files: ['src/big.ts'],
+        reason: 'older',
+        acceptedBy: 'human',
+        reviewBy: 'later',
+      });
+
+      const outcome = await merge(passingAdapter, accept);
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages.find((stage) => stage.stage === 'diff-size')?.status).toBe(
+        'flagged',
+      );
+      expect(listLedgerEntries(db, 'proj-1').map((entry) => entry.description)).toEqual([
+        held,
+        expect.stringMatching(/^Oversize diff \(8\d\d lines\) merged from session /),
+      ]);
+    });
   });
 
   // Every stage and debt capability reads a private detached checkout of the
