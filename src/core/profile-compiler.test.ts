@@ -2,16 +2,15 @@ import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
@@ -49,7 +48,7 @@ function runHook(
   payload: object,
   overrides: Partial<CompileInput> = {},
 ): { status: number | null; stderr: string } {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-hook-')));
+  const dir = tempDir('pup-hook-');
   // The generated scope hook references sidecar files by their outDir path, so
   // outDir must be the dir the hook actually runs from.
   const compiled = ProfileCompiler.compileProfile(makeInput({ outDir: dir, ...overrides }));
@@ -382,7 +381,7 @@ describe('generated bash re-check (decision 63)', () => {
 
   /** A real git worktree with one commit, and the session's profile compiled for it. */
   beforeEach(() => {
-    root = realpathSync(mkdtempSync(join(tmpdir(), 'pup-recheck-')));
+    root = tempDir('pup-recheck-');
     worktree = join(root, 'wt');
     events = join(root, 'events.jsonl');
     mkdirSync(join(worktree, 'src/net'), { recursive: true });
@@ -402,10 +401,6 @@ describe('generated bash re-check (decision 63)', () => {
       makeInput({ worktreePath: worktree, eventsFile: events, outDir }),
     );
     ProfileCompiler.writeCompiledProfile(compiled, outDir);
-  });
-
-  afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
   });
 
   /**
@@ -669,7 +664,7 @@ describe('generated hooks over a merge of the target', () => {
   }
 
   beforeEach(() => {
-    root = realpathSync(mkdtempSync(join(tmpdir(), 'pup-merge-hooks-')));
+    root = tempDir('pup-merge-hooks-');
     repo = join(root, 'repo');
     worktree = join(repo, '.worktrees', 's-1');
     events = join(root, 'events.jsonl');
@@ -684,10 +679,6 @@ describe('generated hooks over a merge of the target', () => {
       'src/cli/decoy.ts': 'one\ntwo\n',
     });
     git(repo, 'worktree', 'add', '-q', '-b', 'pup/s-1', worktree, 'main');
-  });
-
-  afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
   });
 
   function runScript(script: string, payload: object) {
@@ -1080,7 +1071,7 @@ describe('the project brief in a compiled context', () => {
   beforeEach(() => {
     // The compiler locates the brief under $HOME/.pupitre itself, so the suite
     // points HOME at a throwaway rather than read the developer's real one.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-compiler-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-compiler-home-'));
   });
 
   afterEach(() => {
@@ -1240,7 +1231,7 @@ describe('compileConductorProfile', () => {
   };
 
   function runConductorHook(script: string, payload: object): number | null {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-conductor-hook-')));
+    const dir = tempDir('pup-conductor-hook-');
     const compiled = ProfileCompiler.compileConductorProfile({ ...conductorInput, outDir: dir });
     ProfileCompiler.writeCompiledProfile(compiled, dir);
     return spawnSync('sh', [join(dir, script)], {

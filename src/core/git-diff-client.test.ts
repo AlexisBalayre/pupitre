@@ -1,16 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -37,7 +29,7 @@ function sh(cwd: string, ...args: string[]): void {
 }
 
 function makeRepo(): string {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-diff-')));
+  const repo = tempDir('pup-diff-');
   sh(repo, 'git', 'init', '-b', 'main');
   sh(repo, 'git', 'config', 'user.email', 'diff@test');
   sh(repo, 'git', 'config', 'user.name', 'diff-test');
@@ -371,7 +363,7 @@ describe('armedGitDrivers', () => {
   // git-lfs installed would otherwise be unable to launch anything.
   it('ignores a driver the operator set globally', () => {
     const repo = repoWithCommit();
-    const global = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-gitglobal-'))), 'config');
+    const global = join(tempDir('pup-gitglobal-'), 'config');
     writeFileSync(global, '[filter "lfs"]\n\tsmudge = git-lfs smudge -- %f\n');
     vi.stubEnv('GIT_CONFIG_GLOBAL', global);
 

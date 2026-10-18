@@ -1,20 +1,27 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { UndeclaredSandboxError } from '../core/sandbox.utils.js';
+import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { endSandboxRun, UndeclaredSandboxError } from '../core/sandbox.utils.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { localContext } from './capability.utils.js';
 import { loadCustomAdapter } from './custom.adapter.js';
 import { CustomAdapterCommandError, CustomAdapterConfigError } from './custom-adapter.errors.js';
 
 function makeRepo(adapterYml?: string): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-custom-')));
+  const dir = tempDir('pup-custom-');
   if (adapterYml !== undefined) {
     mkdirSync(join(dir, '.pupitre'));
     writeFileSync(join(dir, '.pupitre', 'adapter.yml'), adapterYml);
   }
   return dir;
 }
+
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
 
 describe('loadCustomAdapter', () => {
   it('returns undefined when the repo has no .pupitre/adapter.yml', () => {

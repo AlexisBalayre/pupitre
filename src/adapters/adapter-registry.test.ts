@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { detectAdapters } from './adapter.registry.js';
 
 function makeRepo(files: Record<string, string>): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-registry-')));
+  const dir = tempDir('pup-registry-');
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(dir, name), content);
   }

@@ -1,17 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { endSandboxRun } from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -25,6 +17,7 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
 
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
@@ -85,6 +78,13 @@ const passingAdapter: Adapter = {
 };
 
 // Real git repos, a bare origin and a sandboxed audit per test.
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
+
 describe('landSession', { timeout: 20_000 }, () => {
   let db: Database;
   let repo: string;
@@ -99,12 +99,12 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-repo-')));
+    repo = tempDir('pup-land-repo-');
     sh(repo, 'git', 'init', '-q', '-b', 'main');
     commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
     // GitHub-shaped origin, rewritten by the operator's global config into a
     // local bare repo so the land's real fetch stays offline.
-    const host = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-origin-')));
+    const host = tempDir('pup-land-origin-');
     origin = join(host, 'owner', 'repo.git');
     mkdirSync(origin, { recursive: true });
     sh(origin, 'git', 'init', '-q', '--bare', '-b', 'main');
@@ -178,7 +178,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   /** A gh on PATH that records its argv and answers `pr view` with this JSON. */
   function fakeGh(answer: unknown): void {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-gh-')));
+    const dir = tempDir('pup-land-gh-');
     writeFileSync(
       join(dir, 'gh'),
       `#!/bin/sh\nprintf '%s\\n' "$*" >> ${ghLog}\necho '${JSON.stringify(answer)}'\n`,
@@ -680,7 +680,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     sh(repo, 'git', 'push', '-q', origin, BRANCH);
     // gh for the re-gate: the PR open at the fix round's head, listed for the
     // branch, its description edit taken.
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-gh-')));
+    const dir = tempDir('pup-land-gh-');
     const listed = [{ url: PR_URL, baseRefName: 'main', isCrossRepository: false }];
     writeFileSync(
       join(dir, 'gh'),
@@ -930,7 +930,7 @@ describe('landSession', { timeout: 20_000 }, () => {
         mergeCommit: { oid: merge },
       });
       const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-land-git-')));
+      const dir = tempDir('pup-land-git-');
       writeFileSync(
         join(dir, 'git'),
         `#!/bin/sh\ncase " $* " in *" ${call} "*) kill -TERM $$ ;; esac\nexec ${realGit} "$@"\n`,

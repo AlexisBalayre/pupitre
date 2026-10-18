@@ -1,14 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,6 +36,7 @@ import {
   SteerNotDeliveredError,
   submitPane,
 } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   ConductorTellRefusedError,
   conductorCheckoutDir,
@@ -85,7 +77,7 @@ describe('startConductor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // projectPaths writes the compiled profile under $HOME/.pupitre.
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-conductor-home-')));
+    home = tempDir('pup-conductor-home-');
     vi.stubEnv('HOME', home);
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -280,7 +272,7 @@ describe('startConductor code graph', () => {
   }
 
   function fakeCodegraph(body: string): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-bin-')));
+    const dir = tempDir('pup-cg-bin-');
     cgLog = join(dir, 'calls.log');
     writeFileSync(
       join(dir, 'codegraph'),
@@ -315,11 +307,11 @@ describe('startConductor code graph', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-cond-home-')));
+    home = tempDir('pup-cg-cond-home-');
     vi.stubEnv('HOME', home);
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-cond-')));
+    repo = tempDir('pup-cg-cond-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');

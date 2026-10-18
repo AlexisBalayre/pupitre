@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   BRIEF_MAX_CHARS,
   BRIEF_TEMPLATE,
@@ -26,7 +26,7 @@ describe('the project brief on disk', () => {
   beforeEach(() => {
     // projectPaths resolves the brief under $HOME/.pupitre — a throwaway HOME
     // so a run never reads or writes the developer's real one.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-brief-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-brief-home-'));
   });
 
   afterEach(() => {

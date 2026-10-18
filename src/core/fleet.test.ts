@@ -1,5 +1,3 @@
-import { mkdtempSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,16 +8,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
 }));
 
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { fleetReading, readFleet } from './fleet.service.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, insertTask } from './session.repository.js';
 
 const NOW = Date.parse('2026-09-22T12:00:00Z');
-
-function tempDir(prefix: string): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
-}
 
 /** A registry row for `repoPath`, as `listRegisteredProjects` reads one back. */
 function registered(

@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore, type SessionState } from './db.client.js';
 import {
   getWatcherBeat,
@@ -87,7 +87,7 @@ describe('scanOverlaps', () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-radar-')));
+    repo = tempDir('pup-radar-');
     sh(repo, 'git', 'init', '-b', 'main');
     sh(repo, 'git', 'config', 'user.email', 't@t');
     sh(repo, 'git', 'config', 'user.name', 't');
@@ -155,7 +155,7 @@ describe('scopeConflicts', () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-scope-')));
+    repo = tempDir('pup-scope-');
     sh(repo, 'git', 'init', '-b', 'main');
     sh(repo, 'git', 'config', 'user.email', 't@t');
     sh(repo, 'git', 'config', 'user.name', 't');

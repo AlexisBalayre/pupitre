@@ -2,7 +2,6 @@ import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -59,6 +58,7 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
@@ -101,7 +101,7 @@ function sh(cwd: string, ...args: string[]): string {
 }
 
 function initRepo(): string {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-gate-')));
+  const repo = tempDir('pup-gate-');
   sh(repo, 'git', 'init', '-b', 'main');
   sh(repo, 'git', 'config', 'user.email', 'gate@test');
   sh(repo, 'git', 'config', 'user.name', 'gate-test');
@@ -214,7 +214,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     vi.mocked(steerPane).mockReset();
     db = openStore(':memory:');
     repo = initRepo();
-    ghLog = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-ghlog-'))), 'calls');
+    ghLog = join(tempDir('pup-ghlog-'), 'calls');
   });
 
   /**
@@ -577,7 +577,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const pinned = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
       const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-      const gitDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-git-')));
+      const gitDir = tempDir('pup-git-');
       writeFileSync(
         join(gitDir, 'git'),
         `#!/bin/sh\ncase " $* " in *" update-ref --no-deref -d refs/heads/${BRANCH} "*) kill -TERM $$ ;; esac\nexec ${realGit} "$@"\n`,
@@ -1321,14 +1321,48 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
+  // The scratch TMPDIR went with the process, which a test worker, the suite's
+  // own and the conductor's alike, outlives or leaves without an `exit`.
+  describe.each([
+    ['passes', () => passingAdapter, 'merged'],
+    ['refuses', () => failingBuildAdapter, 'rejected'],
+  ] as const)('a gate that %s (decision 100)', (_, adapter, status) => {
+    it("removes its checkout and its stage children's scratch TMPDIR before it returns", async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      expect((await merge(adapter())).status).toBe(status);
+
+      const spawned = vi
+        .mocked(spawn)
+        .mock.calls.map(([, , options]) => options as { cwd?: string; env?: NodeJS.ProcessEnv });
+      expect(spawned.length).toBeGreaterThan(0);
+      for (const { cwd, env } of spawned) {
+        expect(cwd).toMatch(GATE_CHECKOUT);
+        expect(existsSync(dirname(cwd as string))).toBe(false);
+        expect(env?.TMPDIR).toMatch(/\/pup-gate-[^/]+$/);
+        expect(existsSync(env?.TMPDIR as string)).toBe(false);
+      }
+    });
+  });
+
   describe('one instrumented test run (decision 95)', () => {
     /**
      * A TypeScript repo whose `vitest` is a fake that logs each run to a file
-     * of its own in the gate's TMPDIR and, asked for coverage, writes a report
-     * covering line 1 of src/feature.ts. Returns the logged runs' argv.
+     * of its own in the gate's toolchain cache, the one place a child writes
+     * that outlives the gate (its TMPDIR goes with it, decision 100), and,
+     * asked for coverage, writes a report covering line 1 of src/feature.ts.
+     * Returns the logged runs' argv.
      */
     function fakeVitest(testScript: string, passes = true): () => string[] {
       const log = `vitest-runs-${Math.random().toString(36).slice(2)}`;
+      const logPath = (): string => {
+        const call = vi.mocked(spawn).mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        return join(call?.env?.XDG_CACHE_HOME ?? '', log);
+      };
+      onTestFinished(() => {
+        rmSync(logPath(), { force: true });
+      });
       commitIn(repo, '.gitignore', 'node_modules\n');
       commitIn(
         repo,
@@ -1356,7 +1390,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         join(bin, 'vitest'),
         [
           '#!/bin/sh',
-          `echo "$*" >> "$TMPDIR/${log}"`,
+          `echo "$*" >> "$XDG_CACHE_HOME/${log}"`,
           'for arg in "$@"; do case "$arg" in',
           '  --coverage.reportsDirectory=*) dir=$(printf %s "$arg" | cut -d= -f2-) ;;',
           'esac; done',
@@ -1366,8 +1400,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         { mode: 0o755 },
       );
       return () => {
-        const call = vi.mocked(spawn).mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-        const path = join(call?.env?.TMPDIR ?? '', log);
+        const path = logPath();
         return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n') : [];
       };
     }
@@ -1745,7 +1778,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     let fired: string;
 
     beforeEach(() => {
-      fired = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-gate-fired-'))), 'fired');
+      fired = join(tempDir('pup-gate-fired-'), 'fired');
     });
 
     /** What a session can write from its worktree: both live under `.git/`. */
@@ -2684,7 +2717,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // the URL on the project row is what the operator's `pup init` would have
   // done at setup; without it the gate refuses to push anywhere (decision 56).
   const addOrigin = (): string => {
-    const host = realpathSync(mkdtempSync(join(tmpdir(), 'pup-origin-')));
+    const host = tempDir('pup-origin-');
     const bare = join(host, 'owner', 'repo.git');
     mkdirSync(bare, { recursive: true });
     sh(bare, 'git', 'init', '--bare', '-b', 'main');
@@ -2700,7 +2733,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     script: string,
     fn: () => TResult | Promise<TResult>,
   ): Promise<TResult> => {
-    const ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-gh-')));
+    const ghDir = tempDir('pup-gh-');
     writeFileSync(join(ghDir, 'gh'), script, { mode: 0o755 });
     const originalPath = process.env.PATH;
     process.env.PATH = `${ghDir}:${originalPath}`;
@@ -2780,7 +2813,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const bare = addOrigin();
-    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'pup-elsewhere-')));
+    const elsewhere = tempDir('pup-elsewhere-');
     sh(elsewhere, 'git', 'init', '--bare', '-b', 'main');
     // Written from the session's worktree into the config every checkout
     // shares. Matching the whole URL, it outranks the operator's rewrite on any
@@ -3672,7 +3705,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
 describe('withMergeLock', () => {
   it('keeps node listening for SIGINT and SIGTERM while the lock is held, and only then', async () => {
-    const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-lock-')));
+    const repo = tempDir('pup-lock-');
     mkdirSync(join(repo, '.git'));
     const before = { int: process.listeners('SIGINT'), term: process.listeners('SIGTERM') };
     let during: { int: number; term: number } | undefined;

@@ -1,14 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +13,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { hasConductorWindow, transcriptDir } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -78,7 +71,7 @@ const GIT_ENV: NodeJS.ProcessEnv = {
  * project id and the sessions directory are keyed on.
  */
 function tempRepo(): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-')));
+  return tempDir('pup-dash-');
 }
 
 function seedTask(
@@ -170,7 +163,7 @@ describe('buildDashboardSnapshot', () => {
     // projectPaths resolves the sessions directory under homedir() — point it
     // at a throwaway HOME, or the run writes into the developer's real
     // ~/.pupitre, which the merge gate's sandbox refuses outright.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-dashboard-home-'));
     db = openStore(':memory:');
     repo = tempRepo();
   });
@@ -178,7 +171,6 @@ describe('buildDashboardSnapshot', () => {
   afterEach(() => {
     db.close();
     vi.unstubAllEnvs();
-    rmSync(repo, { recursive: true, force: true });
   });
 
   it('names the project it was taken from', () => {
@@ -459,10 +451,7 @@ describe('buildDashboardSnapshot', () => {
      * the row reporting none is the proof that nothing opened it.
      */
     it('reads no transcript from a row pointing outside the directory pup stamps', () => {
-      const planted = seedTranscript(
-        realpathSync(mkdtempSync(join(tmpdir(), 'pup-dash-planted-'))),
-        90_000,
-      );
+      const planted = seedTranscript(tempDir('pup-dash-planted-'), 90_000);
       seedSession(db, repo, 's1', { transcriptPath: planted });
       transitionSession(db, 's1', 'running');
 
@@ -945,7 +934,7 @@ describe('findStalledSessions', () => {
 
   beforeEach(() => {
     // A throwaway HOME, for the reason the suite above gives.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-dashboard-home-'));
     db = openStore(':memory:');
     repo = tempRepo();
   });
@@ -953,7 +942,6 @@ describe('findStalledSessions', () => {
   afterEach(() => {
     db.close();
     vi.unstubAllEnvs();
-    rmSync(repo, { recursive: true, force: true });
   });
 
   it('ages every running session whose events file has gone quiet', () => {
@@ -1022,7 +1010,7 @@ describe('needsYou', () => {
   let repo: string;
 
   beforeEach(() => {
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-dashboard-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-dashboard-home-'));
     db = openStore(':memory:');
     repo = tempRepo();
   });
@@ -1030,7 +1018,6 @@ describe('needsYou', () => {
   afterEach(() => {
     db.close();
     vi.unstubAllEnvs();
-    rmSync(repo, { recursive: true, force: true });
   });
 
   function seedIn(sessionId: string, path: SessionState[]): void {
@@ -1475,7 +1462,6 @@ describe('blockedReason', () => {
 
   afterEach(() => {
     db.close();
-    rmSync(repo, { recursive: true, force: true });
   });
 
   function blockSession(sessionId: string, payload: Record<string, unknown>): void {

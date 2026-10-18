@@ -1,17 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   codegraphBinary,
   codegraphLabel,
@@ -36,10 +27,6 @@ function sh(cwd: string, ...args: string[]): string {
     encoding: 'utf8',
     env: GIT_ENV,
   }).trim();
-}
-
-function tempDir(prefix: string): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 function makeRepo(): string {

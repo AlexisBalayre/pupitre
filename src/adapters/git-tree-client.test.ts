@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { nestedPackageDirs } from './git-tree.client.js';
 
 const GIT_ENV: NodeJS.ProcessEnv = {
@@ -20,7 +20,7 @@ function writeFiles(dir: string, files: string[]): void {
 
 /** A git checkout with `committed` in HEAD and `staged` only in the index. */
 function makeCheckout(committed: string[], staged: string[] = []): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-source-')));
+  const dir = tempDir('pup-source-');
   const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, env: GIT_ENV });
   git('init', '-q');
   writeFiles(dir, ['package.json', ...committed]);
@@ -61,7 +61,7 @@ describe('nestedPackageDirs', () => {
   });
 
   it('names nothing in a checkout git cannot list', () => {
-    const plain = realpathSync(mkdtempSync(join(tmpdir(), 'pup-source-')));
+    const plain = tempDir('pup-source-');
     writeFiles(plain, ['tools/review/package.json']);
 
     expect(nestedPackageDirs([plain])).toEqual(new Set());

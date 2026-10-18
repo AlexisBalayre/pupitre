@@ -1,17 +1,25 @@
-import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { endSandboxRun } from '../core/sandbox.utils.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { localContext } from './capability.utils.js';
 import { pythonAdapter } from './python.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-py-')));
+  const dir = tempDir('pup-py-');
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(dir, name), content);
   }
   return dir;
 }
+
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
 
 describe('pythonAdapter', () => {
   it('detects a repo with a pyproject.toml', () => {
@@ -365,7 +373,7 @@ describe('pythonAdapter', () => {
       'app.py': 'x = 1\n',
     });
     const before = readdirSync(repo).sort();
-    const binDir = mkdtempSync(join(tmpdir(), 'pup-fake-pytest-'));
+    const binDir = tempDir('pup-fake-pytest-');
     writeFileSync(
       join(binDir, 'pytest'),
       `#!/bin/sh
@@ -393,7 +401,6 @@ printf %s data > "\${COVERAGE_FILE:-.coverage}"
       expect(readdirSync(repo).sort()).toEqual(before);
     } finally {
       vi.unstubAllEnvs();
-      rmSync(binDir, { recursive: true, force: true });
     }
   });
 

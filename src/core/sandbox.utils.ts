@@ -253,9 +253,11 @@ export async function runGateChild(
     let settled = false;
     const settle = (): boolean => {
       clearTimeout(timer);
-      // The direct child has exited, but a group member that ignored the stop
-      // and holds no pipe would outlive the grace that `untrack` cancels.
-      if (failure !== undefined || live.interruptedBy) signalGroup(child, 'SIGKILL');
+      // The direct child has exited, but a group member that ignored the stop,
+      // or one a passed stage left running, holds no pipe: it would outlive
+      // the stage, and the grace `untrack` cancels, writing into the scratch
+      // dir as it is removed (decision 100).
+      signalGroup(child, 'SIGKILL');
       untrack(live);
       if (settled) return false;
       settled = true;
@@ -485,8 +487,8 @@ export function removeGateDir(path: string): void {
   }
 }
 
-/** Cache reused across runs; a run's scratch and profile go with the process. */
-const TOOLCHAIN_CACHE_DIRNAME = 'pup-toolchain-cache';
+/** Cache reused across runs; a run's scratch and profile go with the run. */
+export const TOOLCHAIN_CACHE_DIRNAME = 'pup-toolchain-cache';
 
 interface SandboxRun {
   /** The child's TMPDIR, and everything a run leaves behind. Per run. */
@@ -499,24 +501,49 @@ interface SandboxRun {
 }
 
 let run: SandboxRun | undefined;
+let exitListening = false;
 
 /**
- * Created on the first child. One pup process is one gate run, so process scope
- * is run scope for the scratch and the profile — both go when it exits.
+ * Created on the first child, and ended by `endSandboxRun`: by the gate when
+ * it unwinds, and by the exit of a process that ran children without one,
+ * such as `pup init` and `pup audit`.
  */
 function sandboxRun(): SandboxRun {
   if (run) return run;
   const base = resolvePath(tmpdir());
-  const created: SandboxRun = {
+  if (!exitListening) process.on('exit', endSandboxRun);
+  exitListening = true;
+  run = {
     scratchDir: mkdtempSync(join(base, 'pup-gate-')),
     policyDir: mkdtempSync(join(base, 'pup-sandbox-')),
   };
-  process.on('exit', () => {
-    removeGateDir(created.scratchDir);
-    removeGateDir(created.policyDir);
-  });
-  run = created;
-  return created;
+  return run;
+}
+
+/**
+ * How long a child killed by `endSandboxRun` has to finish the write it was
+ * in: one that lands after the removal, a `mkdir -p` above all, brings the
+ * directory back.
+ */
+const KILL_SETTLE_MS = 200;
+
+/**
+ * Remove the run's scratch and profile directories, after killing every child
+ * still running in them, so no writer is left to fail the removal with
+ * `ENOTEMPTY` and leave the directory behind (decision 100). A process that
+ * left its group, as a daemon does, is out of reach and its directory is
+ * reported. The next child starts a new run.
+ */
+export function endSandboxRun(): void {
+  if (!run) return;
+  if (liveChildren.size > 0) {
+    for (const live of liveChildren) signalGroup(live.child, 'SIGKILL');
+    // A blocking wait: on `exit`, nothing scheduled would ever run.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, KILL_SETTLE_MS);
+  }
+  removeGateDir(run.scratchDir);
+  removeGateDir(run.policyDir);
+  run = undefined;
 }
 
 const cacheDirs = new Map<string, string>();

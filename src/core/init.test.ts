@@ -1,24 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
-import { UndeclaredSandboxError } from './sandbox.utils.js';
+import { endSandboxRun, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   ensureProject,
   getProject,
@@ -89,13 +81,20 @@ function onPlatform(platform: NodeJS.Platform): void {
   });
 }
 
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
+
 describe('initProject', () => {
   let db: Database;
   let repo: string;
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-init-')));
+    repo = tempDir('pup-init-');
   });
 
   it('stores a passing baseline on the project row', async () => {
@@ -418,7 +417,7 @@ describe('initProject', () => {
     // The poisoned shape: a corepack install with an empty bin/. The repair
     // moves it aside before the child runs, and the stage still runs the path
     // it was handed, so the crash is Node's real missing-entrypoint banner.
-    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cache-root-')));
+    const tmp = tempDir('pup-cache-root-');
     vi.stubEnv('TMPDIR', tmp);
     const install = join(
       tmp,
@@ -444,7 +443,6 @@ describe('initProject', () => {
       await expect(initProject(db, repo, [adapter])).rejects.toThrow(install);
     } finally {
       vi.unstubAllEnvs();
-      rmSync(tmp, { recursive: true, force: true });
     }
     expect(getProject(db, projectId(repo))?.baseline).toBeNull();
     expect(listBaselineHistory(db, projectId(repo))).toEqual([]);

@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from './code-map.service.js';
 import { openStore } from './db.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';
@@ -21,7 +21,7 @@ function sh(cwd: string, ...args: string[]): string {
 }
 
 function initRepo(files: Record<string, string>): string {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-map-')));
+  const repo = tempDir('pup-map-');
   sh(repo, 'git', 'init', '-b', 'main');
   sh(repo, 'git', 'config', 'user.email', 'map@test');
   sh(repo, 'git', 'config', 'user.name', 'map-test');

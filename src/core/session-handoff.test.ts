@@ -1,15 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +20,7 @@ import {
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { projectPaths } from './paths.utils.js';
 import {
@@ -59,8 +51,8 @@ describe('session handoff', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
-    repoPath = realpathSync(mkdtempSync(join(tmpdir(), 'pup-handoff-repo-')));
-    stateBase = realpathSync(mkdtempSync(join(tmpdir(), 'pup-handoff-state-')));
+    repoPath = tempDir('pup-handoff-repo-');
+    stateBase = tempDir('pup-handoff-state-');
     ensureProject(db, 'proj-1', repoPath);
     insertTask(db, { id: 'task-s1', projectId: 'proj-1', spec: '{}' });
     insertSession(db, {
@@ -306,7 +298,7 @@ describe('session handoff', () => {
     }
 
     function fakeCodegraph(): void {
-      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-bin-')));
+      const dir = tempDir('pup-cg-bin-');
       cgLog = join(dir, 'calls.log');
       writeFileSync(
         join(dir, 'codegraph'),
@@ -355,7 +347,7 @@ describe('session handoff', () => {
     // same wasted tool call in a different place.
     it("withholds the config when the operator's codegraph has gone since the launch", () => {
       writeCompiledMcp();
-      vi.stubEnv('PATH', realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-empty-'))));
+      vi.stubEnv('PATH', tempDir('pup-cg-empty-'));
 
       hardRespawnSession(db, repoPath, 's1', stateBase);
 

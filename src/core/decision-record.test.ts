@@ -1,5 +1,3 @@
-import { mkdtempSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +7,7 @@ vi.mock('../claude/utility.service.js', () => ({
 }));
 
 import { runUtility } from '../claude/utility.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import {
   deleteDecisionRecord,
@@ -141,7 +140,7 @@ describe('draftDecisionRecord', () => {
 
 describe('store migration', () => {
   it('adds the files column to a store created before the column existed', () => {
-    const dbPath = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-store-'))), 'state.db');
+    const dbPath = join(tempDir('pup-store-'), 'state.db');
     const legacy = openStore(dbPath);
     legacy.exec('DROP TABLE decision_records');
     legacy.exec(`CREATE TABLE decision_records (
