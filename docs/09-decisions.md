@@ -2865,6 +2865,17 @@ changes back into those docs is pending.
     file is what runs, so a PR that edits the workflow can drop every guard above; those runs
     are reviewed as workflow changes, not protected by them. An `@claude review` comment runs
     `main`'s copy, which is the only run the guards bind.
+    *Moved outside the checkout (2026-10-18, template sync).* The base's archive now unpacks
+    to `$REVIEW_TOOLING`, a sibling of the checkout, and every script step runs `node
+    node_modules/tsx/dist/cli.mjs` with that directory as its working directory, as the
+    template does, instead of `pnpm run` in `.review-tooling/`. The review's Bash sandbox may
+    write anywhere inside the checkout, so a copy outside it is one the model cannot touch; no
+    walk up from the copy reaches the head's tree, so the committed-directory refusal and the
+    `.git/info/exclude` entry go, and node reads the base's `package.json`, never the head's.
+    The install keeps `--ignore-workspace`. Scripts that run git or gh point them back at the
+    checkout through `GITHUB_WORKSPACE`. The template copies the trigger's checkout instead,
+    which on `pull_request` is the merge ref and carries the head's edits; the merge-base
+    extract stays.
     *Tests, and the mutation.* Unit tests on temp repos, never the gate run on itself (decision
     39): a nested test script that exits non-zero refuses the merge with its output in the
     detail; removing the stage loop from the gate fails five of the nested-package tests,

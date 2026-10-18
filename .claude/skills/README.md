@@ -18,6 +18,7 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | :---- | :---------- | :----- |
 | `to-spec` | Turn the current conversation into a spec: no interview, just synthesis of what was already discussed. | Manual only (`/to-spec`) |
 | `to-tickets` | Break a plan, spec, or conversation into tracer-bullet tickets, each declaring its blocking edges. | Manual only (`/to-tickets`) |
+| `implement-spec` | Implement a whole spec's tickets in parallel: a subagent and worktree per frontier ticket, merged into one integration branch behind a draft PR, then the CI review once the PR is marked ready. | Manual only (`/implement-spec`) |
 | `to-questionnaire` | A decision you can't answer alone: turn it into a questionnaire for the one person who can. | Manual only (`/to-questionnaire`) |
 | `wayfinder` | Plan work too big for one agent session as a shared map of decision tickets under `docs/plans/<effort>/`, then resolve them one at a time; decisions that bind the codebase land in `docs/09-decisions.md`. | Manual only (`/wayfinder`) |
 | `implement` | Implement a spec, a `pup plan` task, or a set of tickets: TDD, the project's typecheck/test commands, a self-review against the acceptance criteria, then commit on a feature branch. | Manual only (`/implement`) |
@@ -28,7 +29,6 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | :---- | :---------- | :----- |
 | `tdd` | Building a feature or fixing a bug test-first; "red-green-refactor"; want integration tests. Drives the red → green loop (refactoring belongs to the review stage, not the loop). | Auto or `/tdd` |
 | `diagnosing-bugs` | A hard bug or performance regression; "diagnose/debug this"; something broken, throwing, failing, or slow. Builds a feedback loop first and redacts secrets from anything it shows. | Auto or `/diagnosing-bugs` |
-| `resolving-merge-conflicts` | A merge, rebase, or cherry-pick stopped on conflicts. Resolves by intent (both sides' goals), and regenerates — never hand-merges — generated files. | Auto or `/resolving-merge-conflicts` |
 | `wizard` | A step only a human can do (dashboard clicks, credentials, CI secrets, a one-off cutover): generates an interactive bash wizard that walks them through it. | Auto or `/wizard` |
 | `research` | Research a question against primary sources and save the cited findings to `docs/research/<slug>.md`. | Auto or `/research` |
 | `improve-codebase-architecture` | "improve architecture" / "find refactors" / "make it more testable". Scans for deepening opportunities, presents a visual HTML report, then grills through whichever one you pick. | Manual only (`/improve-codebase-architecture`) |
@@ -59,6 +59,7 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | Skill | When to use | Invoke |
 | :---- | :---------- | :----- |
 | `writing-for-agents` | Create or edit a skill, `AGENTS.md`, or `CLAUDE.md` well: context pointers, information hierarchy, leading words, invocation mechanics, and this repo's house rules. | Auto or `/writing-for-agents` |
+| `retro` | After a session: read its transcript and suggest fixes to the agent's environment (missing checks, conventions, navigation pointers, no-op instructions, costly tool calls), most severe first. | Manual only (`/retro`) |
 | `handoff` | Compact the current conversation into a handoff document for another agent or a fresh session. | Manual only (`/handoff`) |
 | `wait-what` | A message didn't land: the agent re-pitches it with context, plain language, and the project's own terms. | Manual only (`/wait-what`) |
 | `caveman` | Ultra-compressed replies (~75% fewer tokens) with full technical accuracy; "caveman mode", "be brief". | Auto or `/caveman` |

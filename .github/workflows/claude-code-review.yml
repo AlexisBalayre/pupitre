@@ -57,12 +57,29 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: read
+      # For the reactions on a `@claude review` comment, nothing else: a PR
+      # comment's reactions live on the issues API.
+      issues: write
       id-token: write
       # For the poster's claude-review commit status, nothing else.
       statuses: write
     outputs:
       skip: ${{ (steps.pr-head.outputs.skip == 'true' || steps.preflight.outputs.skip == 'true') && 'true' || 'false' }}
+    env:
+      # Where "Restore review tooling from base" extracts it, outside the
+      # checkout so the review's sandbox cannot write to it, and the working
+      # directory of every script step: node and tsx read the working directory's
+      # package.json and tsconfig before the script runs, and from the checkout
+      # on the checkout is the PR head. A package.json naming tsx's own dist
+      # directory with an `exports` map swaps tsx's preload for the PR's code,
+      # and the scrub-mode stub (an empty one) stops node outright.
+      REVIEW_TOOLING: ${{ github.workspace }}/../review-tooling
+      # Strips credential-shaped variables (the Claude OAuth token, this job's
+      # token) from the shell the model drives: `gh --jq '$ENV.X'` prints any
+      # variable, and the record it could land in is posted to the PR. GH_TOKEN
+      # stays for gh; it is the app token the action revokes before the poster
+      # runs. Job-level because that is where the action reads it from.
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
 
     steps:
       # Full history, not depth-1: `gh pr diff` rejects a path filter, so a scoped
@@ -75,10 +92,11 @@ jobs:
           fetch-depth: 0
 
       # Toolchain ahead of the PR-head checkout: the metrics step runs on
-      # `always()` but still needs pnpm. The tooling itself is installed from
-      # the merge base once the head is checked out, below, so a run that dies
-      # at the head checkout leaves no record: the price of never installing
-      # the head's copy.
+      # Toolchain ahead of the PR-head checkout: the metrics step runs on
+      # `always()` but still needs pnpm and the installed tooling. The tooling
+      # itself is installed from the merge base once the head is checked out,
+      # below, so a run that dies at the head checkout leaves no record: the
+      # price of never installing the head's copy.
       - name: Set up pnpm
         # Pinned to a full SHA: this workflow carries secrets + a write token, so
         # third-party actions are pinned, not floated on a mutable tag.
@@ -129,41 +147,35 @@ jobs:
       # otherwise execute its own unreviewed code with that token, AGENTS.md's
       # hazard below in executable form (pupitre decision 59). Extracted beside
       # the checkout rather than restored in place, so the head's tree stays
-      # clean for the preflight and reviewers still read the head's copy, and
-      # excluded locally so it never reads as a dirty tree. Every script step
-      # runs from it; the head's tools/review is never installed or executed.
+      # clean for the preflight and reviewers still read the head's copy. Every
+      # script step runs from it; the head's tools/review is never installed or
+      # executed. The template copies the trigger's checkout instead, which on
+      # a pull_request event is the merge ref and so carries the head's edits.
       - name: Restore review tooling from base
         if: steps.pr-head.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-        # --ignore-workspace here and on every run step: pnpm walks up from
-        # --dir to find a workspace root, which is the head's checkout, so a
-        # head-committed pnpm-workspace.yaml could list this directory and
-        # inject its own preinstall and nodeOptions into the token-carrying
-        # install and runs. `tar -x` never removes a file, so a head that
-        # commits the directory itself is refused rather than merged into.
+        # --ignore-workspace: pnpm walks up from --dir to find a workspace
+        # root, and nothing above the copy may choose its preinstall or
+        # nodeOptions for this token-carrying install.
         run: |
           set -o pipefail
-          if git ls-files --error-unmatch .review-tooling >/dev/null 2>&1; then
-            echo "::error::the PR head commits .review-tooling; refusing to run tooling from it"
-            exit 1
-          fi
           base_ref=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)
           merge_base=$(git merge-base "origin/${base_ref}" HEAD)
-          mkdir -p .git/info .review-tooling
-          echo '/.review-tooling/' >> .git/info/exclude
-          git archive "$merge_base" tools/review | tar -x --strip-components=2 -C .review-tooling
-          pnpm install --dir .review-tooling --ignore-workspace --frozen-lockfile
+          mkdir -p "$REVIEW_TOOLING"
+          git archive "$merge_base" tools/review | tar -x --strip-components=2 -C "$REVIEW_TOOLING"
+          pnpm install --dir "$REVIEW_TOOLING" --ignore-workspace --frozen-lockfile
 
       # Deterministic preflight: head freshness, tree cleanliness, the merge
       # base, and the full/incremental mode decision, all run as a plain step so
       # a failure is a red step the poster turns into a "not reviewed" verdict,
       # never a model stalled at a permission prompt. It also skips the run when
-      # the head SHA already has a non-errored record (a synchronize retrigger
-      # with nothing new), or when only comments and repo-meta prose changed
-      # since that record (marked "Not reviewed" on the head), except on an
-      # explicit `@claude review`.
+      # the head SHA already has a non-errored, complete record (a synchronize
+      # retrigger with nothing new), or when only comments and repo-meta prose
+      # changed since that record (marked "Not reviewed" on the head), except on
+      # an explicit `@claude review`, whose words it parses into the depth and
+      # areas the model is handed.
       # The merge base is resolved here, while the checkout is still complete:
       # claude-code-action restores the PR's config paths from the base branch
       # with a `--depth=1` fetch, which grafts `origin/<base>` parentless. From
@@ -177,14 +189,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_TRIGGER: ${{ github.event_name == 'issue_comment' && 'comment' || github.event.action }}
-          REVIEW_FORCE_FULL: ${{ github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude review full') }}
-        run: pnpm --dir .review-tooling --ignore-workspace --silent run review:preflight
+          # Through env, never inline in a script: the comment is free text.
+          REVIEW_COMMENT: ${{ github.event.comment.body }}
+        working-directory: ${{ env.REVIEW_TOOLING }}
+        run: node node_modules/tsx/dist/cli.mjs src/review-preflight.script.ts
 
       - name: Generate review schema
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: gen-schema
+        working-directory: ${{ env.REVIEW_TOOLING }}
         run: |
-          schema=$(pnpm --dir .review-tooling --ignore-workspace --silent run review:print-schema)
+          schema=$(node node_modules/tsx/dist/cli.mjs src/print-schema.script.ts)
           # Escape single quotes so the schema embeds safely in the single-quoted
           # --json-schema token below, whatever its descriptions contain.
           schema=${schema//\'/\'\\\'\'}
@@ -210,6 +225,103 @@ jobs:
             rm -f AGENTS.md
           fi
 
+      # The Bash sandbox below needs these on Linux, plus the unprivileged user
+      # namespaces Ubuntu 24.04 restricts. claude-code-action makes the same
+      # setup only when `allowed_non_write_users` is set, which this workflow
+      # never sets, and without it failIfUnavailable fails every review.
+      - name: Install the Bash sandbox
+        if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
+        run: |
+          for attempt in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 5
+          done
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      # Managed settings are the one rule source no repo file can widen: with
+      # allowManagedPermissionRulesOnly, the grants written for local use (the
+      # skill's allowed-tools, .claude/settings.json) stop counting. `allow`
+      # lists every Bash verb the protocol runs; Read, Glob, Grep and Agent need
+      # no rule inside the checkout. Anything else would prompt, and with nobody
+      # to answer it is refused and lands in the record's permission_denials, so
+      # a verb the skill starts using must be added here. That holds in default
+      # mode, which CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces, and in dontAsk, the
+      # mode set here for a run without the scrub; auto mode, whose classifier
+      # approves commands no rule names, is off either way. None of the verbs
+      # writes: the poster below is the review's only writer, so a PR whose diff
+      # tells the reviewer to post something has no channel to do it through.
+      # `gh api` stays out because no deny pattern can hold it read-only: gh
+      # bundles short flags (`-if body=x` is a POST). `git fetch` and `git
+      # checkout` stay out because the only checkout the model could want
+      # reverts the action's config restore. `git diff *` keeps its space so it
+      # cannot match `git difftool`, which runs a command, and `git grep` stays
+      # out because `-O` runs one (the Grep tool covers it). `deny` holds the
+      # file tools in every mode, since a --permission-mode flag outranks the
+      # mode set here (the action's tag mode passes acceptEdits), and strips
+      # `--output`, which makes any git diff, log or show write a file of its
+      # choosing, and refuses a `gh` read naming a repo: a fork's PR body can
+      # close another repo's issue, which the job's token may read and the
+      # review would quote. `-R`/`--repo` and a URL name one with a `/`, except
+      # the scp form `git@github.com:owner%2Frepo`, whose `/` gh decodes itself,
+      # so `@` is refused too; no protocol call passes either to gh. The sandbox
+      # confines what an allowed call can still reach: no write outside the
+      # checkout (the runner's $GITHUB_ENV and the tooling copy among them) and
+      # no host but GitHub's API; failIfUnavailable makes a sandbox that cannot
+      # start fail the run, never run it unsandboxed.
+      - name: Lock the review's permissions
+        if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
+        run: |
+          sudo mkdir -p /etc/claude-code
+          sudo tee /etc/claude-code/managed-settings.json >/dev/null <<'EOF'
+          {
+            "allowManagedPermissionRulesOnly": true,
+            "disableAutoMode": "disable",
+            "permissions": {
+              "defaultMode": "dontAsk",
+              "disableBypassPermissionsMode": "disable",
+              "allow": [
+                "Skill",
+                "StructuredOutput",
+                "Bash(gh pr diff*)",
+                "Bash(gh pr view*)",
+                "Bash(gh issue view*)",
+                "Bash(git diff *)",
+                "Bash(git status*)",
+                "Bash(git log*)",
+                "Bash(git show*)",
+                "Bash(git rev-parse*)",
+                "Bash(git rev-list*)",
+                "Bash(git merge-base*)"
+              ],
+              "deny": [
+                "Edit",
+                "Write",
+                "NotebookEdit",
+                "Bash(git *--output*)",
+                "Bash(gh issue view*/*)",
+                "Bash(gh pr view*/*)",
+                "Bash(gh pr diff*/*)",
+                "Bash(gh issue view*@*)",
+                "Bash(gh pr view*@*)",
+                "Bash(gh pr diff*@*)"
+              ]
+            },
+            "sandbox": {
+              "enabled": true,
+              "failIfUnavailable": true,
+              "allowUnsandboxedCommands": false,
+              "autoAllowBashIfSandboxed": false,
+              "network": {
+                "allowedDomains": ["api.github.com"],
+                "allowManagedDomainsOnly": true
+              }
+            }
+          }
+          EOF
+
       - name: Run Claude Code Review
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: claude-review
@@ -229,6 +341,8 @@ jobs:
             Pull request: #${{ github.event.pull_request.number || github.event.issue.number }} in ${{ github.repository }}
             ${{ steps.preflight.outputs.mode_line }}
             Merge base: ${{ steps.preflight.outputs.merge_base }}
+            Depth: ${{ steps.preflight.outputs.depth }}
+            Areas: ${{ steps.preflight.outputs.areas }}
           # Background tasks off: recent Claude Code runs a subagent in the
           # background unless the model asks otherwise, and the action keeps the
           # first `result` a run emits and stops reading. With reviewers still
@@ -245,24 +359,17 @@ jobs:
           # Orchestrator model only: the reviewers take their tiers from their
           # manifests through the aliases the env above pins. The orchestrator
           # runs Opus at its default effort because its spawn and triage
-          # decisions decide what the review covers; the opus-tier reviewers ask
-          # for high in their manifests. Posted precision is still gated by the
+          # decisions decide what the review covers, raised to high when a
+          # comment asks for a deep review; the opus-tier reviewers ask for high
+          # in their manifests. Posted precision is still gated by the
           # per-important opus validators.
-          # Every verb the protocol needs is listed: unlisted ones fall through to
-          # a permission prompt that nobody is here to answer, and the run halts
-          # at the gate with an empty record that reads as a clean review. The
-          # allowlist is read-only on purpose: the model reports findings and the
-          # poster below writes them, so `gh pr comment`, `gh pr review` and the
-          # inline-comment MCP tool are all absent, and a PR whose own diff tells
-          # the reviewer to post something has no channel to do it through. `git
-          # fetch` and `git checkout` are deliberately absent too: the
-          # full-history checkout above already carries every ref the protocol
-          # reads, and the only checkout the model could want is reverting the
-          # action's config restore, which re-arms the injection that restore
-          # exists to disarm.
+          # The permission rules live in the managed settings locked above, which
+          # make --allowedTools count for nothing as a rule; it stays because
+          # naming Glob and Grep here is what puts them in the tool set on Linux.
           claude_args: |
             --model "claude-opus-5-5"
-            --allowedTools "Agent,Skill,Read,Glob,Grep,Bash(gh pr diff*),Bash(gh pr view*),Bash(gh api repos/*),Bash(git diff*),Bash(git status*),Bash(git log*),Bash(git show*),Bash(git rev-parse*),Bash(git rev-list*),Bash(git merge-base*),Bash(git grep*)"
+            ${{ steps.preflight.outputs.depth == 'deep' && '--effort high' || '' }}
+            --allowedTools "Glob,Grep"
             --json-schema '${{ steps.gen-schema.outputs.schema }}'
 
       # The review's only writer. Ahead of the metrics step because the record's
@@ -272,6 +379,7 @@ jobs:
       # this step fails red when it cannot post, so its silence is never
       # mistaken for a clean bill.
       - name: Post review
+        id: post
         if: always() && steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         env:
           REVIEW_STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
@@ -279,9 +387,33 @@ jobs:
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_COMMIT_SHA: ${{ steps.preflight.outputs.sha }}
           REVIEW_MERGE_BASE: ${{ steps.preflight.outputs.merge_base }}
+          REVIEW_PARTIAL: ${{ steps.preflight.outputs.partial }}
           GH_TOKEN: ${{ github.token }}
-          REVIEW_POSTED_OUTPUT: ${{ github.workspace }}/posted.json
-        run: pnpm --dir .review-tooling --ignore-workspace --silent run review:post
+          # Under the runner's temp, never the checkout: a fork can commit
+          # posted.json as a symlink into the tooling copy, and the write follows it.
+          REVIEW_POSTED_OUTPUT: ${{ runner.temp }}/posted.json
+        working-directory: ${{ env.REVIEW_TOOLING }}
+        run: node node_modules/tsx/dist/cli.mjs src/post-review.script.ts
+
+      # The poster picks the reaction; a run it never finished (a failed
+      # preflight, a cancellation, a closed PR) gets confused. The Claude app's
+      # own 👀 on any @claude mention already says the request landed, so this
+      # is the run's only reaction. It goes on before the cleanup, so a failed
+      # delete never costs it, and then every other reaction this workflow left
+      # goes: a re-run's earlier verdict. Best-effort: a reaction is feedback,
+      # never a reason to fail the review.
+      - name: React with the verdict
+        if: always() && github.event_name == 'issue_comment'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REACTIONS: repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions
+          REACTION: ${{ steps.post.outputs.reaction }}
+        run: |
+          id=$(gh api --method POST "$REACTIONS" -f content="${REACTION:-confused}" --jq .id)
+          for old in $(gh api --paginate "$REACTIONS" --jq ".[] | select(.user.login == \"github-actions[bot]\" and .id != $id) | .id"); do
+            gh api --method DELETE "$REACTIONS/$old"
+          done
 
       - name: Emit review metrics
         # No record for a merged-PR, already-reviewed or comment-only skip: a
@@ -296,17 +428,18 @@ jobs:
           REVIEW_STEP_OUTCOME: ${{ steps.claude-review.outcome }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_COMMIT_SHA: ${{ steps.preflight.outputs.sha }}
-          REVIEW_POSTED_INPUT: ${{ github.workspace }}/posted.json
-          # pnpm --dir runs the writer in the package dir, so anchor the output to the workspace root where upload-artifact resolves its path
-          REVIEW_METRICS_OUTPUT: ${{ github.workspace }}/review-metrics.json
-        run: pnpm --dir .review-tooling --ignore-workspace --silent run review:metrics
+          REVIEW_POSTED_INPUT: ${{ runner.temp }}/posted.json
+          REVIEW_COMMENT: ${{ github.event.comment.body }}
+          REVIEW_METRICS_OUTPUT: ${{ runner.temp }}/review-metrics.json
+        working-directory: ${{ env.REVIEW_TOOLING }}
+        run: node node_modules/tsx/dist/cli.mjs src/review-metrics.script.ts
 
       - name: Upload review metrics
         if: always() && steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: review-metrics
-          path: review-metrics.json
+          path: ${{ runner.temp }}/review-metrics.json
           if-no-files-found: warn
 
   # Artifacts expire after 90 days, which would erase the retro's history; the
