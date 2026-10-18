@@ -18,7 +18,7 @@ copy, never the worktree being committed.
 | `git-safety.sh` | `PreToolUse(Bash)` | Blocks `rm -rf`, `DROP TABLE`, `git push --force`, `git reset --hard`, `checkout -b` on the trunk, and pushes to the trunk. Trunk name from `GIT_TRUNK` (default `main`). |
 | `protect-generated.sh` | `PreToolUse(Edit\|Write)` | Blocks edits to paths matching `GENERATED_PATHS_REGEX`: `pnpm-lock.yaml`, the only generated file this repo commits (change `package.json` and run `pnpm install` instead). |
 | `validate-file-naming.sh` | `PreToolUse(Write)` | Blocks new files under `FILE_NAMING_SCOPE_REGEX` (`src/**/*.ts(x)`) whose name doesn't match `FILE_NAMING_REGEX` (`kebab-case.role.ts`, 25 roles; taxonomy in `docs/conventions/naming.md`), showing `FILE_NAMING_HINT`. Overwrites of existing files and paths outside `$CLAUDE_PROJECT_DIR` pass, so legacy names and sibling repos are not held to the pattern. |
-| `pre-compact-preserve.sh` | `PreCompact` | Injects must-preserve context (current branch + worktree path, modified files, test results) so it survives compaction. |
+| `post-compact-state.sh` | `SessionStart(compact)` | After compaction, re-injects live state read fresh: the session's branch and uncommitted files, every other worktree (path and branch only: git status runs in no tree but the session's own, since a pup worker's can arm an fsmonitor or filter), the open PRs and whether the CI review covers their head. |
 
 **Configure / disable:** edit the entry under `hooks` in `settings.json`. Scripts must stay
 executable (`chmod +x`). To add a hook, see [`.claude/README.md`](../README.md) ("New hook").

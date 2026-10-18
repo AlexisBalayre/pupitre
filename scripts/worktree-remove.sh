@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remove worktrees made by worktree-create.sh, and their branches when no work is lost.
 #   pnpm worktree:remove <name>...   ->  removes .worktrees/<name> and its branch
-#   pnpm worktree:remove --merged    ->  the same for every worktree whose PR merged
+#   pnpm worktree:remove --merged    ->  the same for every worktree whose tip a merged PR shipped
 # A worktree with uncommitted or untracked files, a detached HEAD, or a branch
 # outside <prefix>/ is kept; ignored files (.env, node_modules) go with it. Its
 # branch is deleted once a PR merged into the trunk shipped its tip (and
