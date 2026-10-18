@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -884,6 +885,22 @@ describe('generated hooks over a merge of the target', () => {
       expect(edit('src/cli/decoy.ts', `${block}\n`, 'one main').status).toBe(2);
       expect(edit('src/cli/decoy.ts', 'two', 'two').status).toBe(2);
       expect(edit('src/cli/decoy.ts', block, 'one main', 'Write').status).toBe(2);
+    });
+
+    it('reads no further than an object id into a MERGE_HEAD the session grew', () => {
+      bash('git merge main');
+      const headFile = git(
+        worktree,
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-path',
+        'MERGE_HEAD',
+      ).stdout.trim();
+      writeFileSync(headFile, '');
+      truncateSync(headFile, 2 ** 31);
+
+      expect(edit('src/cli/decoy.ts', block, 'one main').status).toBe(2);
+      expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
     });
 
     it('refuses the same Edit once the file is resolved, or over a merge of anything but the tip', () => {

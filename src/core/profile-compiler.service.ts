@@ -319,8 +319,10 @@ function buildContextMarkdown(
  * progress in the worktree, and fails otherwise. The target is the branch the
  * main checkout has out, the one the gate merges into, and MERGE_HEAD must be
  * its tip exactly. MERGE_HEAD is read from the worktree's own file, one object
- * id and nothing else, since a ref lookup by that name falls back to shared
- * refs any worktree can plant (refs/heads/MERGE_HEAD). Best effort: a session
+ * id in its first 66 bytes, since a ref lookup by that name falls back to
+ * shared refs any worktree can plant (refs/heads/MERGE_HEAD). The read stops
+ * there: the file sits outside the worktree, where `git status` never sees a
+ * write, and a huge one would run every check past the hook timeout. Best effort: a session
  * can move the target's branch itself, so the gate's scope audit, on the
  * branch's own diff, is what holds (decisions 6, 63).
  */
@@ -328,10 +330,9 @@ const MERGE_OF_TARGET_SHELL = `safe_git() { git ${GIT_SAFE_CONFIG.map((arg) => `
 merge_of_target() {
   HEAD_FILE=$(safe_git -C "$WORKTREE" rev-parse --path-format=absolute --git-path MERGE_HEAD 2>/dev/null) || return 1
   [ -f "$HEAD_FILE" ] || return 1
-  MERGING=$(cat -- "$HEAD_FILE") || return 1
+  MERGING=$(head -c 66 -- "$HEAD_FILE") || return 1
   case "$MERGING" in *[!0-9a-f]*) return 1 ;; esac
   [ \${#MERGING} -eq 40 ] || [ \${#MERGING} -eq 64 ] || return 1
-  safe_git -C "$WORKTREE" cat-file -e "$MERGING^{commit}" 2>/dev/null || return 1
   TIP=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'main-worktree/HEAD^{commit}' 2>/dev/null) || return 1
   [ "$MERGING" = "$TIP" ] && printf '%s\\n' "$MERGING"
 }`;

@@ -4937,11 +4937,10 @@ changes back into those docs is pending.
     files involved and reports in one line. The steer is best effort: the land is done whatever a
     steer does. A session whose steer fails for any reason, a refused paste, a stop, tmux or the
     store, is skipped and the rest are still steered, and so is a branch git cannot read; only an
-    interrupt stops the loop. Unlike an introduction, a steer failure past a refused paste or a
-    stop is not rethrown, since the land it would report as failed has already happened and its
-    audit would be lost. Session ids and branches are store text about to
-    name a ref, so only a session whose branch is `pup/<id>` is read. The gate's mechanical
-    rebase stays the final check.
+    interrupt stops the loop. An introduction rethrows a refused paste or a stop; a land does not,
+    since the land it would report as failed has already happened and its audit would be lost.
+    Session ids and branches are store text about to name a ref, so only a session whose branch
+    is `pup/<id>` is read. The gate's mechanical rebase stays the final check.
     *The hooks read a merge of main as main's change.* A merge of main that stops on a conflict
     leaves main's files staged in the worktree, and the Bash re-check (decision 63) flagged them
     as out-of-scope writes. While a merge of the target's tip is in progress, the re-check now
@@ -4951,9 +4950,12 @@ changes back into those docs is pending.
     does not push the hook past its timeout, where it fails open. The tip is the main
     checkout's HEAD (`main-worktree/HEAD`), the branch the gate merges into, and MERGE_HEAD must
     be that commit exactly. MERGE_HEAD is read from the worktree's own file (`git rev-parse
-    --git-path MERGE_HEAD`), one object id and nothing else: a ref lookup by that name falls
-    back to `refs/tags/MERGE_HEAD` and `refs/heads/MERGE_HEAD`, which any worktree can write, and
-    would make every linked worktree look mid-merge. Both hooks are best effort here, not a
+    --git-path MERGE_HEAD`), one object id in its first 66 bytes. The read stops there: the file
+    sits outside the worktree, where no check sees a write, and a huge one would run every later
+    check past the timeout. A ref lookup by that name falls back to `refs/tags/MERGE_HEAD` and
+    `refs/heads/MERGE_HEAD`, which any worktree can write, and would make every linked worktree
+    look mid-merge. A fifo swapped in after the hook's `-f` test still blocks the read until the
+    timeout; bounding the hooks' blocking reads in time is owed. Both hooks are best effort here, not a
     guarantee: the session can move the target's branch with `update-ref` and write its own
     MERGE_HEAD file, so a commit it made can pass for the tip. The gate's scope audit, on the
     branch's own merge-base diff, is what holds. The Edit hook lets one kind of edit through
