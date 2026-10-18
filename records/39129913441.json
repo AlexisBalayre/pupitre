@@ -1,0 +1,97 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T13:09:39.006Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39129913441",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39129913441",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9b564545349dff17d52c526b43face4c65b05d03",
+  "source": "pr",
+  "pr_number": 162,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "d70cb8e6cc3898258c6e4612f47934f751d8c0aa",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "24",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "29-34",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`safe()` runs `tr` under `LC_ALL=C`, so it now masks other worktrees' paths byte by byte: every byte of a non-ASCII character, and common path characters like `~ + @ , : =`, become `?`. A checkout under `/Users/José/...` or `/home/me/c++/...` (including the main checkout, seen from a worktree) prints as `Jos??` or `c??`, and the model may then try to `cd` into a path that does not exist. Consider saying in the comment that the masked path is display-only, or printing a stable label such as the `.worktrees/` basename.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "27-28",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"a plain path's characters\" is vaguer than the set `A-Za-z0-9._/() -` it stands for. It doesn't say that the threat is newlines, control characters or escape sequences injecting lines into the context, or that space and parentheses are allowed on purpose. Naming both would keep a later edit from tightening or loosening the set by mistake.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.896843,
+  "duration_ms": 120580,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 6420,
+    "cache_read": 192187,
+    "cache_creation": 38960,
+    "total": 237577
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 28,
+      "output": 15637,
+      "cache_read": 304874,
+      "cache_creation": 63946,
+      "cost_usd": 0.8104368000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 2096,
+      "cache_read": 46597,
+      "cache_creation": 24305,
+      "cost_usd": 0.08640619999999999
+    }
+  ],
+  "permission_denials": []
+}
