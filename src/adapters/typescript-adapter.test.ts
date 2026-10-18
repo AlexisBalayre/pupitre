@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -58,6 +58,112 @@ describe('typescriptAdapter', () => {
       'tsconfig.json': '{}',
     });
     expect(typescriptAdapter.gateCommands(repo)).toEqual([]);
+  });
+});
+
+// One run answers for the test stage and for coverage only when it is the run
+// the test script makes (decision 95).
+describe('typescriptAdapter.coveredTest', () => {
+  const manifest = (scripts: Record<string, string>): string =>
+    JSON.stringify({ scripts, devDependencies: { vitest: '^4', '@vitest/coverage-v8': '^4' } });
+  /** A repo whose install left the vitest binary the folded run starts. */
+  const installedRepo = (files: Record<string, string>): string => {
+    const dir = makeRepo(files);
+    mkdirSync(join(dir, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(dir, 'node_modules', '.bin', 'vitest'), '');
+    return dir;
+  };
+  const coveredTestIn = (files: Record<string, string>) => {
+    const run = typescriptAdapter.coveredTest?.(localContext(installedRepo(files)));
+    run?.dispose();
+    return run;
+  };
+
+  it.each(['vitest', 'vitest run', ' vitest run '])('folds a %j test script', (test) => {
+    const run = coveredTestIn({ 'package.json': manifest({ test }) });
+
+    expect(run?.command).toBe('npx');
+    expect(run?.args.slice(0, 4)).toEqual(['--no-install', 'vitest', 'run', '--coverage.enabled']);
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['a test script with flags', { 'package.json': manifest({ test: 'vitest run --bail=1' }) }],
+    ['another runner', { 'package.json': manifest({ test: 'jest' }) }],
+    ['a pretest script', { 'package.json': manifest({ test: 'vitest run', pretest: 'tsc' }) }],
+    ['a posttest script', { 'package.json': manifest({ test: 'vitest', posttest: 'echo' }) }],
+    [
+      'no coverage provider',
+      {
+        'package.json': JSON.stringify({
+          scripts: { test: 'vitest run' },
+          devDependencies: { vitest: '^4' },
+        }),
+      },
+    ],
+    [
+      'coverage thresholds in the vitest config',
+      {
+        'package.json': manifest({ test: 'vitest run' }),
+        'vitest.config.ts': 'export default { test: { coverage: { thresholds: { lines: 80 } } } };',
+      },
+    ],
+  ])('keeps the two runs apart for %s', (_, files) => {
+    expect(coveredTestIn(files)).toBeUndefined();
+  });
+
+  it('keeps the two runs apart for an install with no vitest binary, as Plug-n-Play leaves', () => {
+    const repo = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+
+    expect(typescriptAdapter.coveredTest?.(localContext(repo))).toBeUndefined();
+  });
+
+  // The gate's test stage ran `pm run test` in the session's checkout, so a
+  // session's own script or threshold is what the folded run must match.
+  it.each<[string, Record<string, string>]>([
+    ['a test script', { 'package.json': manifest({ test: 'vitest run && playwright test' }) }],
+    ['a pretest script', { 'package.json': manifest({ test: 'vitest run', pretest: 'gen' }) }],
+    [
+      'coverage thresholds',
+      {
+        'package.json': manifest({ test: 'vitest run' }),
+        'vitest.config.ts': 'export default { test: { coverage: { thresholds: { lines: 80 } } } };',
+      },
+    ],
+    ['an unreadable manifest', { 'package.json': '{' }],
+  ])('keeps the two runs apart when the session adds %s', (_, files) => {
+    const configPath = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+    const run = typescriptAdapter.coveredTest?.({ configPath, measurePath: installedRepo(files) });
+    run?.dispose();
+
+    expect(run).toBeUndefined();
+  });
+
+  // The session's build runs before the fold is decided and may leave a fifo
+  // where its manifest was; opening it for a plain read would block pup.
+  it('declines to fold, without blocking, when the session left a fifo for its manifest', () => {
+    const configPath = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+    const measurePath = installedRepo({});
+    execFileSync('mkfifo', [join(measurePath, 'package.json')]);
+
+    expect(typescriptAdapter.coveredTest?.({ configPath, measurePath })).toBeUndefined();
+  });
+
+  it('writes its report outside the checkout, in a directory dispose removes', () => {
+    const repo = installedRepo({
+      'package.json': manifest({ test: 'vitest run' }),
+      'vitest.config.ts': "export default { test: { include: ['src/**/*.test.ts'] } };",
+    });
+    const run = typescriptAdapter.coveredTest?.(localContext(repo));
+    const [outDir = ''] = run?.writablePaths ?? [];
+
+    expect(existsSync(outDir)).toBe(true);
+    expect(outDir.startsWith(repo)).toBe(false);
+    // Before any run there is no report to read.
+    expect(run?.report()).toEqual({
+      unavailable: expect.stringContaining('instrumented vitest run failed'),
+    });
+    run?.dispose();
+    expect(existsSync(outDir)).toBe(false);
   });
 });
 

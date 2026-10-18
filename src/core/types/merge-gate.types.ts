@@ -6,6 +6,12 @@ export interface GateStageResult {
   stage: string;
   status: GateStageStatus;
   detail?: string;
+  /**
+   * Wall time of what the stage ran, in ms, printed with it (decision 95).
+   * Stages run alongside one another, so the times overlap rather than add up
+   * to the gate's. Absent on a stage that ran nothing.
+   */
+  durationMs?: number;
 }
 
 export interface GateReport {
