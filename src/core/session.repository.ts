@@ -560,6 +560,18 @@ export function listEvents(db: Database, sessionId: string): EventRow[] {
 }
 
 /**
+ * The `fix_round` event of the CI fix round a session is in (decision 90):
+ * the newest of its `fix_round`, `merge` and `landed` events, when that is a
+ * `fix_round`. A round ends at the merge its re-gate records.
+ */
+export function currentFixRound(db: Database, sessionId: string): EventRow | undefined {
+  const newest = listEvents(db, sessionId)
+    .reverse()
+    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
+  return newest?.type === 'fix_round' ? newest : undefined;
+}
+
+/**
  * Read one stored event back as the shape its type was written with — the one
  * place a payload is parsed. A payload is session-writable: one that is not
  * JSON, or a field of the wrong type, reads as absent rather than throwing, so

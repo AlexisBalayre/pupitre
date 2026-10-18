@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
@@ -8,12 +8,14 @@ import {
   launchSession,
   type SessionPane,
 } from '../claude/session-runtime.service.js';
-import type { CiReviewLookup } from './dashboard.service.js';
+import { prepareGraph } from './codegraph.client.js';
+import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.client.js';
 import {
   assertGhAvailable,
   originRepoSlug,
   type PullRequestReview,
+  REVIEW_NOT_POSTED_STATUS,
   type ReviewThread,
   readPullRequestReview,
 } from './github.client.js';
@@ -28,7 +30,8 @@ import {
   resolveCommitIfPresent,
   withMergeLock,
 } from './merge-gate.service.js';
-import { projectPaths } from './paths.utils.js';
+import { type ProjectPaths, projectPaths } from './paths.utils.js';
+import { writeCompiledProfile } from './profile-compiler.service.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
@@ -38,14 +41,19 @@ import {
   type SessionRow,
   transitionSessionAlong,
 } from './session.repository.js';
-import { graphForRespawn } from './session-handoff.service.js';
 import {
   isRefusedSteer,
   rollBackRefusedLaunch,
   TopRungReachedError,
 } from './session-lifecycle.errors.js';
-import { fixRoundRoute } from './session-lifecycle.service.js';
+import {
+  fixRoundRoute,
+  killSession,
+  type ProfileSource,
+  recompileSessionProfile,
+} from './session-lifecycle.service.js';
 import { FIX_ROUND_EDGE } from './session-state.utils.js';
+import type { CompiledProfile } from './types/profile.types.js';
 import type { EventPayloads } from './types/session-event.types.js';
 import type { RouteOverride } from './types/session-lifecycle.types.js';
 
@@ -53,15 +61,18 @@ const FIX_USE: OriginUse = { command: '`pup fix`', untouched: 'No fix round was 
 const NOT_STARTED = FIX_USE.untouched;
 /** The status the review poster sets on a head it reviewed in full and found clean. */
 const CLEAN_REVIEW_STATUS = 'no blocking issues';
-/** What a reader cannot see in a thread's text: format characters, a bidi override among them. */
-const FORMAT_CHARS = /\p{Cf}/gu;
+/**
+ * What a reader cannot see in a thread's text: format characters, a bidi
+ * override among them, and the other default-ignorable code points (variation
+ * selectors, U+034F, the Hangul fillers), which can carry invisible text.
+ */
+const FORMAT_CHARS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 /** Where one finding is cut, so a long one cannot crowd the others out of the kickoff. */
 const THREAD_BODY_MAX_CHARS = 4_000;
 /** `pup status` asks GitHub once per open PR each time it prints: a slow answer reads as none. */
 const CI_REVIEW_LOOKUP_TIMEOUT_MS = 10_000;
 
-interface FixRoundRequest {
-  repoPath: string;
+interface FixRoundRequest extends ProfileSource {
   sessionId: string;
   /** `--model`/`--effort` over the climbed rung's (decision 92). */
   override?: RouteOverride;
@@ -75,25 +86,25 @@ export interface FixRoundOutcome {
   prUrl: string;
   head: string;
   threads: number;
-  /** The worktree was gone, with the gate's teardown or `pnpm worktree:clean`, and was added back. */
-  recreatedWorktree: boolean;
 }
 
-/** The PR a merged session's newest merge opened, and what the CI review says on it. */
-interface ReviewedPullRequest {
+/** The PR a merged session's newest merge opened, as the store and origin vouch for it. */
+interface StoredPullRequest {
   prUrl: string;
   /** The sha the gate pinned, the one the PR vouches for (decision 82). */
   pinned: string;
-  review: PullRequestReview;
+  /** Origin's `host/owner/name`, which every gh call is pinned to. */
+  repo: string;
 }
 
 /**
  * `pup fix <session>` (decision 90): hand the CI review's open threads on a
- * merged session's PR back to its worker. Every refusal comes before anything
- * is written: the session must be merged, its newest merge must have opened a
- * PR of origin's recorded repo with no landing after it, and GitHub must report
- * that PR OPEN with its head at the pinned sha, the review bot's newest review
- * on that head, and a thread that review opened still unresolved. Then the
+ * merged session's PR back to its worker. Every refusal before the edge comes
+ * before anything is written: the session must be merged, its newest merge
+ * must have opened a PR of origin's recorded repo with no landing after it,
+ * and GitHub must report that PR OPEN with its head at the pinned sha, the
+ * review bot's newest review run and final status on that head, and a thread
+ * that run opened still unresolved. Then the profile is compiled afresh, the
  * worktree comes back on its branch at that head, one transaction records the
  * round and takes the edge out of `merged`, and a fresh window is kicked off
  * with the task's context and the threads, framed as reviewer data. A kickoff
@@ -110,44 +121,41 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
     );
   }
   assertMintedRow(req.repoPath, session, NOT_STARTED);
-  const reviewed = readReviewedPullRequest(db, req.repoPath, session, () =>
-    assertGhAvailable(FIX_USE.command),
-  );
-  const verdict = reviewVerdict(session.id, reviewed);
+  const stored = storedPullRequest(db, req.repoPath, session);
+  assertGhAvailable(FIX_USE.command);
+  const review = orNotStarted(() => readPullRequestReview(req.repoPath, stored.prUrl, stored.repo));
+  const verdict = reviewVerdict(session.id, stored, review);
   if ('refusal' in verdict) throw new Error(`${verdict.refusal} ${NOT_STARTED}`);
-  const { prUrl, pinned } = reviewed;
+  const { prUrl, pinned } = stored;
   const { head, threads } = verdict;
   if (threads.length === 0) {
     throw new Error(
-      `The review bot's status on ${prUrl} reads clean at ${head}, with no thread to fix. Any ` +
-        'workflow in the repo can set it as that bot, so read the PR before the merge click, ' +
+      `The review bot's status on ${prUrl} reads clean at ${head}, with no thread to fix. That ` +
+        'status is no proof (decision 90): read the PR before the merge click, ' +
         `then run \`pup land ${id}\`. ${NOT_STARTED}`,
     );
   }
-  const compiledDir = projectPaths(req.repoPath, req.pathsBase).compiledDir(session.id);
-  const contextPath = join(compiledDir, 'context.md');
-  if (!existsSync(contextPath)) {
-    throw new Error(
-      `Session ${id} has no compiled context at ${contextPath} to kick a worker off with. ` +
-        NOT_STARTED,
-    );
-  }
-  const context = readFileSync(contextPath, 'utf8');
   const route = routeOrRefuse(db, session, req);
+  const paths = projectPaths(req.repoPath, req.pathsBase);
+  const recompiled = orNotStarted(() => recompileSessionProfile(db, req, session, paths));
   // Under the lock `pup merge` and `pup land` take, since both move the branch
   // and the worktree this restores; the window opens after it, as it may take
   // a while to become ready.
-  const recreatedWorktree = await withMergeLock(req.repoPath, () => {
+  await withMergeLock(req.repoPath, () => {
     assertStillPinned(db, session.id, pinned);
-    const recreated = restoreWorktree(req.repoPath, session, head);
+    restoreWorktree(req.repoPath, session, head);
     takeFixRoundEdge(db, session.id, { prUrl, head, threads: threads.map((thread) => thread.id) });
-    return recreated;
   });
-  relaunchWorker(db, req.repoPath, session, compiledDir, route, [
-    context,
+  relaunchWorker(
+    db,
+    req.repoPath,
+    session,
+    paths,
+    recompiled,
+    route,
     fixRoundBrief(prUrl, head, threads),
-  ]);
-  return { prUrl, head, threads: threads.length, recreatedWorktree };
+  );
+  return { prUrl, head, threads: threads.length };
 }
 
 /**
@@ -163,14 +171,14 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
     const session = getSession(db, shown.id);
     if (session?.state !== FIX_ROUND_EDGE.from) return undefined;
     try {
-      const reviewed = readReviewedPullRequest(
-        db,
+      const stored = storedPullRequest(db, repoPath, session);
+      const review = readPullRequestReview(
         repoPath,
-        session,
-        () => undefined,
+        stored.prUrl,
+        stored.repo,
         CI_REVIEW_LOOKUP_TIMEOUT_MS,
       );
-      const verdict = reviewVerdict(session.id, reviewed);
+      const verdict = reviewVerdict(session.id, stored, review);
       return 'refusal' in verdict ? undefined : { openThreads: verdict.threads.length };
     } catch {
       return undefined;
@@ -179,18 +187,11 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
 }
 
 /**
- * The newest merge's PR and the CI review GitHub holds for it, asked the way
- * `pup land` asks: the url must be a pull request of the repo origin was
- * recorded as, since it is store text and another repo's review would answer
- * for it. `beforeGh` runs once the store has been read, before gh is.
+ * The newest merge's PR, checked the way `pup land` checks it: the url must be
+ * a pull request of the repo origin was recorded as, since it is store text and
+ * another repo's review would answer for it.
  */
-function readReviewedPullRequest(
-  db: Database,
-  repoPath: string,
-  session: SessionRow,
-  beforeGh: () => void,
-  timeoutMs?: number,
-): ReviewedPullRequest {
+function storedPullRequest(db: Database, repoPath: string, session: SessionRow): StoredPullRequest {
   const id = sanitizeReason(session.id);
   const merge = newestMerge(db, session.id);
   if (merge === 'landed') {
@@ -210,9 +211,7 @@ function readReviewedPullRequest(
   }
   const repo = originRepoSlug(pushTarget(db, session, repoPath, FIX_USE));
   assertPullRequestOf(prUrl, repo, NOT_STARTED);
-  beforeGh();
-  const review = orNotStarted(() => readPullRequestReview(repoPath, prUrl, repo, timeoutMs));
-  return { prUrl, pinned: sha, review };
+  return { prUrl, pinned: sha, repo };
 }
 
 /** `run`, its refusal ending as every refusal of `pup fix` does; a Ctrl-C passes as it was. */
@@ -230,19 +229,22 @@ function orNotStarted<T>(run: () => T): T {
  * What the CI review leaves to a fix round, or why there is no round to run:
  * the PR must be OPEN with its head at the pin, since a round starts from a
  * commit the gate measured and a moved head is re-gated first (decision 86),
- * and the review bot's newest review must be on that head, so its threads are
- * about the code the worker will be handed. The threads are the ones that
- * review opened: an earlier round's, left unresolved, are about code since
- * changed, and that review raised again whatever it still found. A finding
- * someone else edited is refused, not relayed: its text is theirs. With none,
- * the head is clean only when the bot's status says so: a review that reached
- * no verdict, a partial one, or one whose findings had no line to anchor to
- * opens no thread either. GitHub's strings are scrubbed where they print; the
- * url and the pin passed their checks already.
+ * and the review bot's newest review run must be on that head, so its threads
+ * are about the code the worker will be handed. The threads are the ones that
+ * run opened: an earlier round's, left unresolved, are about code since
+ * changed, and that run raised again whatever it still found. They are relayed
+ * only once the bot's status on the head is final and not the poster's failure
+ * to post, so a review of an earlier head cannot pass as the head's. A finding
+ * someone else edited, or one hidden on GitHub, is refused, not relayed. With
+ * none, the head is clean only when the bot's status says so: a review that
+ * reached no verdict, a partial one, or one whose findings had no line to
+ * anchor to opens no thread either. GitHub's strings are scrubbed where they
+ * print; the url and the pin passed their checks already.
  */
 function reviewVerdict(
   sessionId: string,
-  { prUrl, pinned, review }: ReviewedPullRequest,
+  { prUrl, pinned }: StoredPullRequest,
+  review: PullRequestReview,
 ): { head: string; threads: ReviewThread[] } | { refusal: string } {
   const id = sanitizeReason(sessionId);
   if (review.state !== 'OPEN') {
@@ -270,37 +272,58 @@ function reviewVerdict(
         'first.',
     };
   }
-  if (review.reviewedHead !== head) {
-    return {
-      refusal:
-        review.reviewedHead === undefined
-          ? `The CI review has not reviewed ${prUrl} yet; wait for its review of ${head}, then ` +
-            're-run.'
-          : `The CI review's newest review of ${prUrl} is on ` +
-            `${sanitizeReason(review.reviewedHead)}, not on its head ${head}; wait for the ` +
-            'review of the head, then re-run.',
-    };
-  }
-  const threads = review.openThreads;
-  const edited = threads.find((thread) => thread.editedByOther);
-  if (edited !== undefined) {
-    return {
-      refusal:
-        `Thread ${sanitizeReason(edited.id)} on ${prUrl} was edited after the review bot posted ` +
-        "it, by an account that is not the bot's, so its text is no longer the review's. Read " +
-        'it on GitHub and resolve it once answered, then re-run.',
-    };
-  }
-  if (threads.length > 0) return { head, threads };
   const status = review.headStatus;
-  if (status?.state === 'SUCCESS' && status.description === CLEAN_REVIEW_STATUS) {
-    return { head, threads };
-  }
   const said =
     status === undefined
       ? 'set no status on it'
       : `set its status to ${sanitizeReason(status.state)} ` +
         `(${sanitizeReason(status.description) || 'no description'})`;
+  // The preflight skips a push it judges not worth reviewing with a pending
+  // status and no review, so waiting alone never clears it.
+  const wait =
+    status?.state === 'PENDING'
+      ? 'Comment `@claude review` on the PR to have the head reviewed, then re-run.'
+      : 'Wait for the review of the head, then re-run.';
+  if (review.reviewedHead !== head) {
+    return {
+      refusal:
+        review.reviewedHead === undefined
+          ? `The CI review has not reviewed ${prUrl} yet, and it ${said}. ${wait}`
+          : `The CI review's newest review of ${prUrl} is on ` +
+            `${sanitizeReason(review.reviewedHead)}, not on its head ${head}, and it ${said}. ` +
+            wait,
+    };
+  }
+  const threads = review.openThreads;
+  const edited = threads.find((thread) => thread.isEditedByOther || thread.isMinimized);
+  if (edited !== undefined) {
+    return {
+      refusal:
+        `Thread ${sanitizeReason(edited.id)} on ${prUrl} ` +
+        (edited.isMinimized
+          ? 'was hidden on GitHub, so it is not relayed as the review. '
+          : "was edited after the review bot posted it, by an account that is not the bot's, " +
+            "so its text is no longer the review's. ") +
+        'Read it on GitHub and resolve it once answered, then re-run.',
+    };
+  }
+  if (threads.length > 0) {
+    if (
+      status === undefined ||
+      status.state === 'PENDING' ||
+      status.description === REVIEW_NOT_POSTED_STATUS
+    ) {
+      return {
+        refusal:
+          `The CI review's threads on ${prUrl} came with no final status on its head ${head}: ` +
+          `it ${said}. ${wait}`,
+      };
+    }
+    return { head, threads };
+  }
+  if (status?.state === 'SUCCESS' && status.description === CLEAN_REVIEW_STATUS) {
+    return { head, threads };
+  }
   return {
     refusal:
       `The CI review of ${head} opened no thread on ${prUrl}, but it ${said}, not a clean ` +
@@ -329,15 +352,16 @@ function routeOrRefuse(db: Database, session: SessionRow, req: FixRoundRequest):
 }
 
 /**
- * Bring the session's worktree back on its branch at the PR's head; true when
- * it had to be added. The gate's teardown removes the worktree and deletes the
- * branch at the pin, and `pnpm worktree:clean` removes a worktree too, so both
- * are usually gone, and the pin stays reachable from the tracking ref the push
- * recorded. Whatever is left must already agree with the head: a branch
- * elsewhere, or a surviving worktree not on the branch at it, is refused
- * rather than moved, since either may hold work the gate never measured.
+ * Add the session's worktree back on its branch at the PR's head. The gate's
+ * teardown removes the worktree and deletes the branch at the pin, so both are
+ * usually gone, and the pin stays reachable from the tracking ref the push
+ * recorded. A branch elsewhere is refused rather than moved. A surviving
+ * worktree, a killed round's, is refused whatever it holds: its worker could
+ * repoint its `.git` gitfile or `commondir` at a config arming a filter, which
+ * the macOS sandbox does not protect, so no git runs in it and nothing reuses
+ * it (decision 90).
  */
-function restoreWorktree(repoPath: string, session: SessionRow, head: string): boolean {
+function restoreWorktree(repoPath: string, session: SessionRow, head: string): void {
   runGit(repoPath, ['worktree', 'prune']);
   const branchRef = `refs/heads/${session.branch}`;
   const tip = resolveCommitIfPresent(repoPath, branchRef);
@@ -348,20 +372,16 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): b
         NOT_STARTED,
     );
   }
-  // Asked of git, not the filesystem, as `pup land` asks (decision 84).
-  const registered = runGit(repoPath, ['worktree', 'list', '--porcelain'])
-    .split('\n\n')
-    .map((block) => block.split('\n'))
-    .find((lines) => lines[0] === `worktree ${session.worktree_path}`);
-  if (registered) {
-    if (!registered.includes(`HEAD ${head}`) || !registered.includes(`branch ${branchRef}`)) {
-      throw new Error(
-        `The worktree at ${session.worktree_path} is not on ${session.branch} at ${head}, the ` +
-          "PR's head; remove it or bring it there, then re-run. " +
-          NOT_STARTED,
-      );
-    }
-    return false;
+  const isRegistered = runGit(repoPath, ['worktree', 'list', '--porcelain'])
+    .split('\n')
+    .includes(`worktree ${session.worktree_path}`);
+  if (isRegistered || existsSync(session.worktree_path)) {
+    const dir = `.worktrees/${sanitizeReason(session.id)}`;
+    throw new Error(
+      `pup fix found ${dir} left from an earlier round; remove it with \`rm -r ${dir}\` then ` +
+        '`git worktree prune` from the main checkout (do not run git inside it), then re-run. ' +
+        NOT_STARTED,
+    );
   }
   // `worktree add` checks out every file and runs a smudge filter on each
   // with the operator's environment, so it is refused while one is armed
@@ -373,7 +393,6 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): b
       ? ['worktree', 'add', '-b', session.branch, session.worktree_path, head]
       : ['worktree', 'add', session.worktree_path, session.branch],
   );
-  return true;
 }
 
 /**
@@ -394,11 +413,10 @@ function assertStillPinned(db: Database, sessionId: string, pinned: string): voi
 /**
  * Record the fix round, take its edge out of `merged` and drop the pane the
  * row recorded, in one write (decision 90), refused with nothing written when
- * the row has left `merged`. That pane is the window the gate killed, or
- * another window's after a tmux restart: until the round's window opens, or
- * for good if pup dies first, a steer, an interrupt or the watchdog finds no
- * pane rather than that one, and a kill goes by name. The event keeps the
- * rejection count the round starts from, which the gate's cap counts from.
+ * the row has left `merged`. Until the round's window opens, or for good if
+ * pup dies first, a steer, an interrupt or the watchdog finds no pane rather
+ * than a dead one, and a kill goes by name. The event keeps the rejection
+ * count the round starts from, which the gate's cap counts from.
  */
 function takeFixRoundEdge(
   db: Database,
@@ -417,34 +435,51 @@ function takeFixRoundEdge(
 }
 
 /**
- * Open the round's window in the restored worktree and kick it off, recorded
- * as the session's fresh window: the `respawn` event is what bounds what this
+ * Write the round's freshly compiled profile, open its window in the restored
+ * worktree and kick it off with the task's context and `brief`, recorded as
+ * the session's fresh window: the `respawn` event is what bounds what this
  * window runs into from the windows before it, for its own later climb
- * (decision 92). The route is stored only once the kickoff landed, so a round
- * undone here climbs once on its retry, not twice.
+ * (decision 92). A kickoff that never lands is undone the way `pup kill` ends
+ * a round, back to `merged`, and its worktree removed, so `pup fix` can be re-run; the `fix_round` event
+ * stays as the trace of the round that was tried. The route is stored only
+ * once the kickoff landed, so an undone round climbs once on its retry.
  */
 function relaunchWorker(
   db: Database,
   repoPath: string,
   session: SessionRow,
-  compiledDir: string,
+  paths: ProjectPaths,
+  { compiled, binary }: { compiled: CompiledProfile; binary: string | undefined },
   route: SessionRoute,
-  prompt: string[],
+  brief: string,
 ): void {
+  const compiledDir = paths.compiledDir(session.id);
+  // The worktree goes too: the next round refuses a surviving one, and this
+  // one's window ran, so nothing reuses it either.
+  const undoRound = () => {
+    killSession(db, session.id);
+    rmSync(session.worktree_path, { recursive: true, force: true });
+    runGit(repoPath, ['worktree', 'prune']);
+  };
   let pane: SessionPane | undefined;
   let delivered = false;
-  let rowMoved = false;
+  let hasRowMoved = false;
   try {
-    // By name only: the gate killed the window at the merge, and the pane id
-    // it recorded can be another window's once tmux has restarted. A window
-    // of this name is one a failed teardown left, and would refuse the new one.
+    writeCompiledProfile(compiled, compiledDir);
+    // By name only: the pane id the gate recorded can be another window's
+    // once tmux has restarted. A window of this name is one a failed teardown
+    // left, and would refuse the new one.
     killTmux(session.id);
     pane = launchSession({
       sessionId: session.id,
       worktreePath: session.worktree_path,
       settingsPath: join(compiledDir, 'settings.json'),
       route: routeFor(route.tier, route.rung, route),
-      mcpConfigPath: graphForRespawn(repoPath, session.worktree_path, compiledDir),
+      // From this compile's binary, as a launch decides, never from an
+      // `mcp.json` on disk the recompile did not write.
+      mcpConfigPath: prepareGraph(binary, repoPath, session.worktree_path)
+        ? join(compiledDir, 'mcp.json')
+        : undefined,
     });
     // A `pup kill` while the window opened took the row back to merged: a
     // pane stored on it would be a live window on a session that has none.
@@ -452,57 +487,41 @@ function relaunchWorker(
       .prepare('UPDATE sessions SET tmux_target = ? WHERE id = ? AND state = ?')
       .run(pane.paneId, session.id, FIX_ROUND_EDGE.to);
     if (stored.changes === 0) {
-      rowMoved = true;
+      hasRowMoved = true;
       throw new Error(
         `Session ${sanitizeReason(session.id)} left ${FIX_ROUND_EDGE.to} while its window ` +
           `opened, so the window was killed. ${NOT_STARTED}`,
       );
     }
     try {
-      delivered = kickoff(pane, prompt.join('\n\n'));
+      delivered = kickoff(pane, `${compiled.contextMarkdown}\n\n${brief}`);
     } finally {
       appendEvent(db, session.id, 'respawn', { delivered });
     }
   } catch (error) {
-    const opened = pane;
-    if (rowMoved) {
-      killTmux(session.id, opened?.paneId);
+    if (hasRowMoved) {
+      killTmux(session.id, pane?.paneId);
       throw error;
     }
     if (!isRefusedSteer(error)) {
-      undoFixRound(db, session.id, opened);
+      undoRound();
       throw error;
     }
     throw rollBackRefusedLaunch(
-      () => undoFixRound(db, session.id, opened),
-      `Fix round rolled back (session ${sanitizeReason(session.id)} merged again, its window killed)`,
+      undoRound,
+      `Fix round rolled back (session ${sanitizeReason(session.id)} merged again, its window ` +
+        'and worktree gone)',
       error,
     );
   }
   if (!delivered) {
     throw rollBackRefusedLaunch(
-      () => undoFixRound(db, session.id, pane),
+      undoRound,
       `Session ${sanitizeReason(session.id)}'s window never became ready, so the threads were ` +
         'not delivered and the fix round was rolled back',
     );
   }
   recordSessionRoute(db, session.id, route);
-}
-
-/**
- * Undo a fix round whose worker never got its kickoff: the window goes and the
- * session takes the edge back to `merged`, so its PR is in the inbox again and
- * `pup fix` can be re-run. The `fix_round` event stays, the trace of the round
- * that was tried, as an undone launch keeps its kickoff's.
- */
-function undoFixRound(db: Database, sessionId: string, pane: SessionPane | undefined): void {
-  killTmux(sessionId, pane?.paneId);
-  transitionSessionAlong(
-    db,
-    sessionId,
-    { from: FIX_ROUND_EDGE.to, to: FIX_ROUND_EDGE.from },
-    { kind: 'fix-round-undone' },
-  );
 }
 
 /**
@@ -516,7 +535,7 @@ function undoFixRound(db: Database, sessionId: string, pane: SessionPane | undef
  * body, so no line of it can close the block.
  */
 function fixRoundBrief(prUrl: string, head: string, threads: ReviewThread[]): string {
-  const count = `${threads.length} open thread${threads.length === 1 ? '' : 's'}`;
+  const count = openThreadCount(threads.length);
   const quoted = threads.map((thread, index) => {
     const body = reviewerText(thread.body);
     const runs = [...body.matchAll(/`+/g)].map(([run]) => run.length + 1);

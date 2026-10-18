@@ -132,6 +132,15 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   const mergeCommit = pr.mergeCommit;
 
   const landed = await withMergeLock(req.repoPath, () => {
+    // `pup fix` takes the session out of merged under this lock, maybe while
+    // GitHub was being read above; landing then would tear down its live round.
+    const now = getSession(db, session.id)?.state;
+    if (now !== 'merged') {
+      throw new Error(
+        `Session ${id} moved to ${now ?? 'gone'} while \`pup land\` waited for the merge lock. ` +
+          'Nothing was landed.',
+      );
+    }
     const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
     const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
     // A squash or rebase merge lands other commits than the ones the gate

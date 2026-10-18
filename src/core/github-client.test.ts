@@ -75,7 +75,15 @@ describe('readPullRequestReview', () => {
     line: 4,
     originalLine: 2,
     comments: {
-      nodes: [{ author: BOT, pullRequestReview: { id: NEWEST }, body: 'finding', ...comment }],
+      nodes: [
+        {
+          author: BOT,
+          pullRequestReview: { id: NEWEST },
+          body: 'finding',
+          isMinimized: false,
+          ...comment,
+        },
+      ],
     },
     ...fields,
   });
@@ -148,8 +156,22 @@ describe('readPullRequestReview', () => {
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
       openThreads: [
-        { id: 'PRRT_open', path: 'src/a.ts', line: 4, body: 'finding', editedByOther: false },
-        { id: 'PRRT_moved', path: undefined, line: 2, body: 'finding', editedByOther: false },
+        {
+          id: 'PRRT_open',
+          path: 'src/a.ts',
+          line: 4,
+          body: 'finding',
+          isEditedByOther: false,
+          isMinimized: false,
+        },
+        {
+          id: 'PRRT_moved',
+          path: undefined,
+          line: 2,
+          body: 'finding',
+          isEditedByOther: false,
+          isMinimized: false,
+        },
       ],
     });
   });
@@ -175,13 +197,33 @@ describe('readPullRequestReview', () => {
       },
     });
 
-    expect(read().openThreads.map((open) => open.editedByOther)).toEqual([
+    expect(read().openThreads.map((open) => open.isEditedByOther)).toEqual([
       false,
       false,
       true,
       true,
       true,
     ]);
+  });
+
+  // A comment hidden on GitHub is out of the reviewer's view, so it is not
+  // relayed as the review; a field outside its shape reads as hidden.
+  it('tells a finding hidden on GitHub', () => {
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review(NEWEST, 5)] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          thread({ id: 'PRRT_shown' }),
+          thread({ id: 'PRRT_hidden' }, { isMinimized: true }),
+          thread({ id: 'PRRT_unread' }, { isMinimized: undefined }),
+        ],
+      },
+    });
+
+    expect(read().openThreads.map((open) => open.isMinimized)).toEqual([false, true, true]);
   });
 
   it('reads no status set by another creator, or on a commit that is not the head', () => {

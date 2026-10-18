@@ -19,6 +19,7 @@ import {
 import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
   interruptSession,
+  killedFixRoundMessage,
   killSession,
   launchTask,
   steerSession,
@@ -141,8 +142,7 @@ export function interruptSelected(deps: ActionDeps, sessionId: string): ActionRe
 export function killSelected(deps: ActionDeps, sessionId: string): ActionResult {
   return attempt(() =>
     killSession(deps.db, sessionId) === 'merged'
-      ? `Killed ${sessionId}'s fix round; it is merged again, its PR open for \`pup land\`. ` +
-        "If its branch carries the round's commits, reset it to the PR's head before another `pup fix` or re-gate."
+      ? killedFixRoundMessage(sessionId)
       : `Killed ${sessionId}; its task is back in the backlog.`,
   );
 }

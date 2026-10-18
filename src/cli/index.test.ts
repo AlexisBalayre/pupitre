@@ -5555,7 +5555,6 @@ describe('CLI commands', () => {
         prUrl: PR,
         head: HEAD,
         threads: 2,
-        recreatedWorktree: true,
       });
 
       await buildProgram().parseAsync(
@@ -5568,10 +5567,11 @@ describe('CLI commands', () => {
         sessionId: 's1',
         override: { model: 'claude-opus-5-5', effort: 'xhigh' },
         overrideVia: 'operator',
+        base: DEFAULT_BASE_PROFILE,
+        claudeUserDir: join(home, '.claude'),
       });
       expect(logs).toEqual([
         `Fix round started for s1: the 2 open threads the CI review left on ${PR} at ${HEAD} went to a fresh window.`,
-        `Recreated its worktree on its branch at ${HEAD}.`,
         'When it is done: `pup review s1`, then `pup merge s1 --pr`.',
       ]);
       expect(process.exitCode).toBeUndefined();
@@ -5585,14 +5585,12 @@ describe('CLI commands', () => {
         prUrl: PR,
         head: HEAD,
         threads: 1,
-        recreatedWorktree: false,
       });
 
       await buildProgram().parseAsync(['fix', 's1'], { from: 'user' });
 
       expect(firstCall(startFixRound)[1]).toMatchObject({ overrideVia: 'conductor' });
       expect(logs[0]).toContain('the 1 open thread the CI review left');
-      expect(logs.join('\n')).not.toContain('Recreated');
     });
 
     it('prints a refusal on one line with its control characters gone', async () => {
@@ -5611,7 +5609,7 @@ describe('CLI commands', () => {
       useCwd(initRepo());
       vi.mocked(startFixRound).mockRejectedValue(
         new LaunchRolledBackError(
-          'Fix round rolled back (session s1 merged again, its window killed)',
+          'Fix round rolled back (session s1 merged again, its window and worktree gone)',
           new Error('The paste never landed.'),
         ),
       );
@@ -5620,7 +5618,7 @@ describe('CLI commands', () => {
 
       expect(errors).toEqual([
         'The paste never landed.',
-        'Fix round rolled back (session s1 merged again, its window killed). Re-run `pup fix s1`.',
+        'Fix round rolled back (session s1 merged again, its window and worktree gone). Re-run `pup fix s1`.',
       ]);
       expect(process.exitCode).toBe(1);
     });

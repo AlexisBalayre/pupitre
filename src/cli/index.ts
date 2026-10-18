@@ -41,6 +41,7 @@ import {
   findStalledSessions,
   goalHeadline,
   needsYou,
+  openThreadCount,
 } from '../core/dashboard.service.js';
 import {
   type DecisionRecordRow,
@@ -110,6 +111,7 @@ import {
 import {
   createSession,
   interruptSession,
+  killedFixRoundMessage,
   killSession,
   launchTask,
   markSessionDone,
@@ -1698,14 +1700,11 @@ export function buildProgram(): Command {
         );
         return;
       }
-      if (killSession(db, session) === 'merged') {
-        console.log(
-          `Killed session ${session}'s fix round; it is merged again, its PR open for \`pup land\`. ` +
-            `If its branch carries the round's commits, reset it to the PR's head before another \`pup fix\` or re-gate.`,
-        );
-        return;
-      }
-      console.log(`Killed session ${session}.`);
+      console.log(
+        killSession(db, session) === 'merged'
+          ? killedFixRoundMessage(session)
+          : `Killed session ${session}.`,
+      );
     });
 
   program
@@ -2106,9 +2105,7 @@ export function buildProgram(): Command {
     .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .action(async (session: string, opts: RouteOverride) => {
       const { repoPath, db } = project();
-      // A fix round kicks a worker off with what a reviewer wrote about
-      // session code, and takes the one edge out of `merged`; the operator and
-      // the conductor run it, as they run the gate that follows (decision 90).
+      // A session must not set off a worker kickoff built from reviewer text.
       if (callingSession(db)) {
         return refuse('`pup fix` is refused to sessions; the operator or the conductor runs it.');
       }
@@ -2116,6 +2113,8 @@ export function buildProgram(): Command {
       try {
         outcome = await startFixRound(db, {
           repoPath,
+          base: DEFAULT_BASE_PROFILE,
+          claudeUserDir: join(homedir(), '.claude'),
           sessionId: session,
           override: { model: opts.model, effort: opts.effort },
           overrideVia: callingConductor() ? 'conductor' : 'operator',
@@ -2126,14 +2125,10 @@ export function buildProgram(): Command {
         }
         return refuseScrubbed(error);
       }
-      const threads = `${outcome.threads} open thread${outcome.threads === 1 ? '' : 's'}`;
       console.log(
-        `Fix round started for ${sanitizeReason(session)}: the ${threads} the CI review left on ` +
+        `Fix round started for ${sanitizeReason(session)}: the ${openThreadCount(outcome.threads)} the CI review left on ` +
           `${outcome.prUrl} at ${outcome.head} went to a fresh window.`,
       );
-      if (outcome.recreatedWorktree) {
-        console.log(`Recreated its worktree on its branch at ${outcome.head}.`);
-      }
       console.log(
         `When it is done: \`pup review ${sanitizeReason(session)}\`, then ` +
           `\`pup merge ${sanitizeReason(session)} --pr\`.`,

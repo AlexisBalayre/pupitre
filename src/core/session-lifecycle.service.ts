@@ -31,12 +31,12 @@ import { asTier, type ClimbReason, climbFrom, routeFor, taskTier } from './routi
 import {
   appendEvent,
   claimingSession,
+  currentFixRound,
   ensureProject,
   getSession,
   getTask,
   insertSession,
   insertTask,
-  listEvents,
   listTaskSessions,
   readTaskSpec,
   type SessionRoute,
@@ -57,7 +57,7 @@ import {
 import { FIX_ROUND_EDGE, isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { ScopeConflict } from './types/overlap.types.js';
-import type { SessionId, TaskSpec } from './types/profile.types.js';
+import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
@@ -319,6 +319,69 @@ function sessionWindowRoute(
   );
 }
 
+/** What a session's profile is compiled from besides its task: the launch's layers and user config. */
+export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'role' | 'claudeUserDir'>;
+
+/**
+ * Compile a session's profile into its compiled dir's path, not yet written:
+ * the launch's compile, and the fix round's (decision 90). Returns the binary
+ * the graph is served by, which the compile was shaped by.
+ */
+function compileSessionProfile(
+  source: ProfileSource,
+  task: TaskSpec,
+  session: Pick<SessionRow, 'id' | 'worktree_path'>,
+  paths: ProjectPaths,
+  peers: SessionPeer[],
+): { compiled: CompiledProfile; binary: string | undefined } {
+  const compiledDir = paths.compiledDir(session.id);
+  const userConfigHash = snapshotUserConfigHash(source.claudeUserDir);
+  mkdirSync(compiledDir, { recursive: true });
+  // Before the compile, because the answer shapes the compiled files and the
+  // hash is recorded over them: which binary serves the graph is part of the
+  // session's environment, not a runtime detail (decision 51).
+  const binary = codegraphBinary(source.repoPath);
+  const compiled = compileProfile({
+    base: source.base,
+    role: source.role,
+    task,
+    sessionId: session.id as SessionId,
+    // The compiler reads the project brief through this (decision 57); the
+    // worktree is not it, and may not exist yet at this point anyway.
+    repoPath: source.repoPath,
+    worktreePath: session.worktree_path,
+    eventsFile: paths.eventsFile(session.id),
+    userConfigHash,
+    outDir: compiledDir,
+    codegraphBinary: binary,
+    peers,
+  });
+  return { compiled, binary };
+}
+
+/**
+ * A fix round's profile, compiled afresh from the task spec as a launch
+ * compiles it, with the knowledge slice and the peers sharing its files as of
+ * now (decision 90). The compiled dir under the store is one the conductor's
+ * shell can write (decision 47), so a round never relaunches from what it holds.
+ */
+export function recompileSessionProfile(
+  db: Database,
+  source: ProfileSource,
+  session: SessionRow,
+  paths: ProjectPaths,
+): { compiled: CompiledProfile; binary: string | undefined } {
+  const task = readTaskSpec(db, session.task_id);
+  task.knowledgeSlice = knowledgeSliceFor(
+    db,
+    source.repoPath,
+    projectId(source.repoPath),
+    task.scopeIn,
+  );
+  const peers = scopeConflicts(db, source.repoPath, task.scopeIn, task.scopeOut).map(peerOf);
+  return compileSessionProfile(source, task, session, paths, peers);
+}
+
 function startSession(
   db: Database,
   req: LaunchTaskRequest & { task: TaskSpec },
@@ -341,27 +404,13 @@ function startSession(
   // stored days ago by `pup plan` is not the argv the operator just typed. A
   // throw after `worktree add` would leave an orphan worktree and branch, and
   // every retry would then fail on the existing branch name (decision 40).
-  const userConfigHash = snapshotUserConfigHash(req.claudeUserDir);
-  mkdirSync(compiledDir, { recursive: true });
-  // Before the compile, because the answer shapes the compiled files and the
-  // hash is recorded over them: which binary serves the graph is part of the
-  // session's environment, not a runtime detail (decision 51).
-  const binary = codegraphBinary(req.repoPath);
-  const compiled = compileProfile({
-    base: req.base,
-    role: req.role,
-    task: req.task,
-    sessionId: sessionId as SessionId,
-    // The compiler reads the project brief through this (decision 57); the
-    // worktree is not it, and does not exist yet at this point anyway.
-    repoPath: req.repoPath,
-    worktreePath,
-    eventsFile: paths.eventsFile(sessionId),
-    userConfigHash,
-    outDir: compiledDir,
-    codegraphBinary: binary,
+  const { compiled, binary } = compileSessionProfile(
+    req,
+    req.task,
+    { id: sessionId, worktree_path: worktreePath },
+    paths,
     peers,
-  });
+  );
   runGit(req.repoPath, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
   writeCompiledProfile(compiled, compiledDir);
   // After `worktree add`, since the files do not exist before it, and before the
@@ -561,20 +610,32 @@ export function killSession(db: Database, sessionId: string): 'killed' | 'merged
   // The pane too, not the name alone: a rename from inside the session would
   // leave the name pointing at nothing while the window ran on.
   killTmux(sessionId, row.tmux_target);
-  const newest = listEvents(db, sessionId)
-    .reverse()
-    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
-  if (!isTerminal(row.state) && newest?.type === 'fix_round') {
-    transitionSessionAlong(
-      db,
-      sessionId,
-      { from: row.state, to: FIX_ROUND_EDGE.from },
-      { kind: 'fix-round-killed' },
-    );
+  if (!isTerminal(row.state) && currentFixRound(db, sessionId) !== undefined) {
+    // The pane is dead now: a row back in `merged` that kept it would hand a
+    // steer or a later kill whatever window holds that id next.
+    db.transaction(() => {
+      transitionSessionAlong(
+        db,
+        sessionId,
+        { from: row.state, to: FIX_ROUND_EDGE.from },
+        { kind: 'fix-round-killed' },
+      );
+      db.prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ?').run(sessionId);
+    })();
     return FIX_ROUND_EDGE.from;
   }
   transitionSession(db, sessionId, 'killed');
   return 'killed';
+}
+
+/** What `pup kill` and `pup ui` say when a kill ended a fix round, not the session. */
+export function killedFixRoundMessage(sessionId: string): string {
+  return (
+    `Killed ${sessionId}'s fix round; it is merged again, its PR open for \`pup land\`. Before ` +
+    `another \`pup fix\`, remove its worktree from the main checkout with \`rm -r ` +
+    `.worktrees/${sessionId}\` then \`git worktree prune\`, never running git inside it, and ` +
+    "reset its branch to the PR's head if it carries the round's commits."
+  );
 }
 
 function requireSession(db: Database, sessionId: string): SessionRow {

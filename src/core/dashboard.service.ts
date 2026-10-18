@@ -355,11 +355,15 @@ const NEED_ORDER: DashboardNeed['kind'][] = [
 /**
  * What the CI review says on a merged session's open PR (decision 90): the
  * review bot's unresolved threads on the PR's head, zero when its status reads
- * clean on that head. Any workflow in the repo writes as that bot, so a clean
- * line is what the status says, never proof.
+ * clean on that head, which is what the status says, never proof.
  */
 export interface CiReview {
   openThreads: number;
+}
+
+/** `N open thread(s)`, as the inbox, `pup fix` and the round's kickoff count them. */
+export function openThreadCount(count: number): string {
+  return `${count} open thread${count === 1 ? '' : 's'}`;
 }
 
 /** GitHub's answer on a shown session's open PR, undefined when there is none. */
@@ -446,8 +450,11 @@ function needOf(session: DashboardSession, ciReview?: CiReviewLookup): Dashboard
     // and gh a pull-request url.
     const review = url !== undefined && session.isMintedId ? ciReview?.(session) : undefined;
     if (review !== undefined && review.openThreads > 0) {
-      const threads = `${review.openThreads} open thread${review.openThreads === 1 ? '' : 's'}`;
-      return need('pr-open', `CI review left ${threads} on its head`, command(`pup fix ${id}`));
+      return need(
+        'pr-open',
+        `CI review left ${openThreadCount(review.openThreads)} on its head`,
+        command(`pup fix ${id}`),
+      );
     }
     return need(
       'pr-open',

@@ -83,6 +83,7 @@ import {
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
+  currentFixRound,
   decodeEvent,
   getProject,
   getSession,
@@ -301,6 +302,14 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     session.state === 'merged' && req.openPr ? mergeToRegate(db, session.id) : undefined;
   if (session.state !== 'awaiting-review' && !merged) {
     throw new SessionNotReviewableError(req.sessionId, session.state);
+  }
+  // A plain merge would fast-forward the round's commits locally and record a
+  // merge with no PR, while the PR the round answers stays behind (decision 90).
+  if (!req.openPr && currentFixRound(db, session.id) !== undefined) {
+    throw new Error(
+      `Session ${session.id} is in a CI fix round; its commits go back to its open PR. ` +
+        `Run \`pup merge ${session.id} --pr\`.`,
+    );
   }
   // First of the refusals that spawn nothing: everything below runs children,
   // and a platform with no sandbox and no operator declaration runs none of
@@ -1833,22 +1842,19 @@ export function withLedgerKept(error: unknown, kept: number): unknown {
  * A stored base past `rejectCount` reads as none: the count only grows.
  */
 function fixRoundRejectBase(db: Database, sessionId: string, rejectCount: number): number {
-  const newest = listEvents(db, sessionId)
-    .reverse()
-    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
-  if (newest?.type !== 'fix_round') return 0;
-  const event = decodeEvent(newest);
+  const round = currentFixRound(db, sessionId);
+  if (round === undefined) return 0;
+  const event = decodeEvent(round);
   const base = event.type === 'other' ? event.fields.rejectBase : undefined;
   return Number.isSafeInteger(base) && (base as number) <= rejectCount ? (base as number) : 0;
 }
 
 function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
-  const rejectCount = incrementRejectCount(db, report.sessionId);
+  const lifetimeRejects = incrementRejectCount(db, report.sessionId);
+  // The round's own count, so the cap and the CLI's "rejection n/2" agree.
+  const rejectCount = lifetimeRejects - fixRoundRejectBase(db, report.sessionId, lifetimeRejects);
   transitionSession(db, report.sessionId, 'rejected', { report });
-  if (
-    rejectCount - fixRoundRejectBase(db, report.sessionId, rejectCount) >
-    MAX_REJECTS_BEFORE_BLOCKED
-  ) {
+  if (rejectCount > MAX_REJECTS_BEFORE_BLOCKED) {
     transitionSession(db, report.sessionId, 'blocked', {
       reason: `reject cap of ${MAX_REJECTS_BEFORE_BLOCKED} reached`,
       rejectCount,
