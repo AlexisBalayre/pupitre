@@ -2888,10 +2888,13 @@ changes back into those docs is pending.
     extraheader sat in `.git` for the whole job, readable by the model. The preflight's fetch of
     `ci/review-metrics` borrows gh's credential helper for that one command, `gh pr checkout`
     authenticates through gh, and the metrics are appended through the contents API, so no git
-    call needs a stored token. The poster's `git diff`, which runs after the model has had the
-    checkout, turns off fsmonitor, hooks, an external diff, textconv drivers and every transport
-    (`protocol.allow=never`, `GIT_NO_LAZY_FETCH`), so nothing the head or the model configured
-    runs with the token.
+    call needs a stored token. The one credential left in `.git` while the model runs is the
+    action's own app token in the origin URL, which the model already holds as `GH_TOKEN` and the
+    action revokes before the poster runs. The poster's `git diff`, which runs after the model has
+    had the checkout, turns off fsmonitor, hooks, an external diff and textconv drivers, and every
+    transport through `GIT_ALLOW_PROTOCOL=none` and `GIT_NO_LAZY_FETCH`, which config cannot
+    override, so nothing the head or the model configured runs with the token. `--text` keeps a
+    head's `-diff` attribute from hiding the hunks the comments anchor to.
     *Tests, and the mutation.* Unit tests on temp repos, never the gate run on itself (decision
     39): a nested test script that exits non-zero refuses the merge with its output in the
     detail; removing the stage loop from the gate fails five of the nested-package tests,
