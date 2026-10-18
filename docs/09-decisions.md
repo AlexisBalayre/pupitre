@@ -4840,7 +4840,7 @@ changes back into those docs is pending.
     main's code against this branch's, one after the other, while other sessions kept the host's
     load average between 9 and 45. Main took 599.6 s and 571.2 s; the branch took 275.4 s and
     302.3 s, each with decision 94's re-run of a flaky test, and 313.7 s on one run (test stage
-    307.2 s, build 5.8 s, lint 0.6 s, every debt capability under 0.4 s). That is 46 to 54% less
+    307.2 s, build 5.8 s, lint 0.6 s, every debt capability under 0.4 s). That is 46 to 53% less
     than main's 585 s mean. Main's third run hung in its coverage run, whose 10-minute timeout
     ended nothing, and was stopped after 85 minutes and not counted. The second branch run is how
     the shared profile file above was found.

@@ -104,6 +104,37 @@ describe('typescriptAdapter.coveredTest', () => {
     expect(coveredTestIn(files)).toBeUndefined();
   });
 
+  // The gate's test stage ran `pm run test` in the session's checkout, so a
+  // session's own script or threshold is what the folded run must match.
+  it.each<[string, Record<string, string>]>([
+    ['a test script', { 'package.json': manifest({ test: 'vitest run && playwright test' }) }],
+    ['a pretest script', { 'package.json': manifest({ test: 'vitest run', pretest: 'gen' }) }],
+    [
+      'coverage thresholds',
+      {
+        'package.json': manifest({ test: 'vitest run' }),
+        'vitest.config.ts': 'export default { test: { coverage: { thresholds: { lines: 80 } } } };',
+      },
+    ],
+    ['an unreadable manifest', { 'package.json': '{' }],
+  ])('keeps the two runs apart when the session adds %s', (_, files) => {
+    const configPath = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+    const run = typescriptAdapter.coveredTest?.({ configPath, measurePath: makeRepo(files) });
+    run?.dispose();
+
+    expect(run).toBeUndefined();
+  });
+
+  // The session's build runs before the fold is decided and may leave a fifo
+  // where its manifest was; opening it for a plain read would block pup.
+  it('declines to fold, without blocking, when the session left a fifo for its manifest', () => {
+    const configPath = makeRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+    const measurePath = makeRepo({});
+    execFileSync('mkfifo', [join(measurePath, 'package.json')]);
+
+    expect(typescriptAdapter.coveredTest?.({ configPath, measurePath })).toBeUndefined();
+  });
+
   it('writes its report outside the checkout, in a directory dispose removes', () => {
     const repo = makeRepo({
       'package.json': manifest({ test: 'vitest run' }),

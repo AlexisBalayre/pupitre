@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
@@ -135,10 +144,32 @@ function moduleId(file: string): string {
   return dir === '.' ? '(root)' : dir.split(sep).join('/');
 }
 
+/** Larger than any manifest or config a repo keeps at its root. */
+const CONFIG_READ_MAX_BYTES = 1 << 20;
+
+/**
+ * A config file the measured checkout holds, which the session's build may
+ * have replaced after the gate cut it: opening a fifo or a device would block
+ * the event loop, stage timeouts and interrupt forwarding with it, so only a
+ * regular file is read, checked on the opened descriptor. Throws otherwise.
+ */
+function readPlainFile(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > CONFIG_READ_MAX_BYTES) {
+      throw new Error(`${path} is not a plain file`);
+    }
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function readManifest(repoPath: string): PackageManifest | undefined {
   const manifestPath = join(repoPath, 'package.json');
   if (!existsSync(manifestPath)) return undefined;
-  return JSON.parse(readFileSync(manifestPath, 'utf8')) as PackageManifest;
+  return JSON.parse(readPlainFile(manifestPath)) as PackageManifest;
 }
 
 function packageManager(repoPath: string): string {
@@ -179,7 +210,7 @@ function declaresCoverageThresholds(repoPath: string): boolean {
   return readdirSync(repoPath).some((name) => {
     if (!VITEST_CONFIG_FILE.test(name)) return false;
     try {
-      return readFileSync(join(repoPath, name), 'utf8').includes('thresholds');
+      return readPlainFile(join(repoPath, name)).includes('thresholds');
     } catch {
       return true;
     }
@@ -402,13 +433,22 @@ export const typescriptAdapter: Adapter = {
     // `vitest` runs once outside a terminal, as every gate child is. Flags,
     // another runner or a pre/post script would make the two different runs,
     // and the test stage would then pass on a run nobody made (decision 95).
-    const scripts = readManifest(ctx.configPath)?.scripts ?? {};
-    if (!PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '')) return undefined;
-    if (scripts.pretest !== undefined || scripts.posttest !== undefined) return undefined;
     // A threshold fails an instrumented run whose every test passed, and the
     // test stage would then fail on a figure: such a repo keeps the two runs,
-    // its coverage run alone failing on the threshold, as before.
-    if (declaresCoverageThresholds(ctx.configPath)) return undefined;
+    // its coverage run alone failing on the threshold, as before. Both
+    // checkouts are asked: the trusted one decides whether the gate may fold,
+    // and the measured one is what `pm run test` there would have run, so a
+    // session that edits its own scripts or config keeps the two runs.
+    for (const path of new Set([ctx.configPath, ctx.measurePath])) {
+      try {
+        const scripts = readManifest(path)?.scripts ?? {};
+        if (!PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '')) return undefined;
+        if (scripts.pretest !== undefined || scripts.posttest !== undefined) return undefined;
+        if (declaresCoverageThresholds(path)) return undefined;
+      } catch {
+        return undefined;
+      }
+    }
     const run = instrumentedRun(ctx);
     return isUnavailable(run) ? undefined : run;
   },

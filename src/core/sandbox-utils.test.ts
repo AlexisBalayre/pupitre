@@ -227,6 +227,38 @@ describe('runGateChild', () => {
     ).rejects.toMatchObject({ code: 'ENOBUFS' });
   });
 
+  // A helper that left the group keeps the pipes open after the timeout stops
+  // the group, and `'close'` waits for every holder of them.
+  it('stops a timed-out child whose helper left the group still holding its pipes', async () => {
+    const cwd = fakeCheckout();
+    const helper = join(cwd, 'helper.pid');
+
+    const failure = await runGateChild(
+      'perl',
+      [
+        '-MPOSIX',
+        '-e',
+        `if (!fork) { setsid; open my $f, '>', '${helper}'; print $f $$; close $f; sleep 30; exit } sleep 30`,
+      ],
+      { cwd, repoPath: cwd, timeout: 500 },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'ETIMEDOUT' });
+    process.kill(Number(readFileSync(helper, 'utf8')), 'SIGKILL');
+  }, 10_000);
+
+  it('kills a timed-out child that ignores SIGTERM once the grace runs out', async () => {
+    const cwd = fakeCheckout();
+
+    const failure = await runGateChild('sh', ['-c', "trap '' TERM; while :; do sleep 0.1; done"], {
+      cwd,
+      repoPath: cwd,
+      timeout: 200,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGKILL' });
+  }, 15_000);
+
   // A stage child is in a process group of its own, out of reach of the
   // terminal's Ctrl-C, so pup forwards what it receives (decision 95).
   describe('an interrupt of pup itself', () => {

@@ -233,6 +233,10 @@ export async function runGateChild(
     const stop = (code: 'ETIMEDOUT' | 'ENOBUFS'): void => {
       failure ??= code;
       signalGroup(child, 'SIGTERM');
+      closePipes(child);
+      // A child that ignores SIGTERM would otherwise never exit, and `'close'`
+      // waits for it; the interrupt path escalates the same way.
+      live.killTimer ??= setTimeout(() => signalGroup(child, 'SIGKILL'), INTERRUPT_GRACE_MS);
     };
     const timer =
       options.timeout === undefined
@@ -420,10 +424,23 @@ const forwarders: Record<InterruptSignal, () => void> = {
   SIGHUP: () => forwardInterrupt('SIGHUP'),
 };
 
+/**
+ * As execFileSync did when it stopped a child: `'close'` waits for every
+ * holder of the pipes, and a process that left the group still holds them,
+ * which would keep the stage, and the merge lock, open past its timeout.
+ */
+function closePipes(child: ChildProcess): void {
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
 function forwardInterrupt(signal: InterruptSignal): void {
   for (const live of liveChildren) {
     live.interruptedBy ??= signal;
-    live.killTimer ??= setTimeout(() => signalGroup(live.child, 'SIGKILL'), INTERRUPT_GRACE_MS);
+    live.killTimer ??= setTimeout(() => {
+      signalGroup(live.child, 'SIGKILL');
+      closePipes(live.child);
+    }, INTERRUPT_GRACE_MS);
     signalGroup(live.child, signal);
   }
 }

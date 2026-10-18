@@ -19,7 +19,12 @@ import {
   saveProjectOriginUrl,
 } from './session.repository.js';
 import type { DebtGap } from './types/debt.types.js';
-import type { BaselineStageResult, InitReport, ProjectBaseline } from './types/init.types.js';
+import type {
+  BaselineStageResult,
+  InitReport,
+  MeasuredBaseline,
+  ProjectBaseline,
+} from './types/init.types.js';
 
 export class NoAdapterError extends Error {
   constructor(repoPath: string) {
@@ -163,11 +168,6 @@ async function runBaselineStage(
       durationMs: Date.now() - start,
     };
   }
-}
-
-/** A baseline measured but not yet stored, with the debt capabilities that could not measure. */
-export interface MeasuredBaseline extends InitReport {
-  gaps: DebtGap[];
 }
 
 /**

@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { COVERAGE, DEAD_CODE } from './debt.service.js';
-import { type MeasuredBaseline, measureBaseline, persistBaseline } from './init.service.js';
+import { measureBaseline, persistBaseline } from './init.service.js';
 import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { getProject } from './session.repository.js';
@@ -14,7 +14,12 @@ import type {
   StageTransition,
 } from './types/audit.types.js';
 import type { DebtGap } from './types/debt.types.js';
-import type { BaselineStageStatus, DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type {
+  BaselineStageStatus,
+  DebtBaseline,
+  MeasuredBaseline,
+  ProjectBaseline,
+} from './types/init.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 function classifyDelta(before: BaselineStageStatus, after: BaselineStageStatus): StageDelta {
