@@ -1,0 +1,117 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T13:16:17.984Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39130320875",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39130320875",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f4b87100cf65c48208a5a2aa71e5ca997b3896f6",
+  "source": "pr",
+  "pr_number": 162,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9b564545349dff17d52c526b43face4c65b05d03",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "24",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "17-25",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Line 19 prints `$SELF` (`git rev-parse --show-toplevel`) and `$BRANCH` (`git branch --show-current`) into the session's context without `safe()`. A pup worker controls both: through `core.worktree` in the shared config (the path can contain a newline, which forges lines), or by running `git branch -m` on this checkout's branch. The new comment at lines 21-23 says everything is masked, and this line contradicts it.",
+      "body": "**The checkout line is the last unmasked channel into context.** [L15-L24](https://github.com/AlexisBalayre/pupitre/blob/f4b87100cf65c48208a5a2aa71e5ca997b3896f6/.claude/hooks/post-compact-state.sh#L15-L24) prints `$SELF` and `$BRANCH` as-is. `safe()` is only defined on line 24, after that line. A pup worker can set both values through the shared repo:\n\n- **`$SELF`:** `core.worktree` in the shared `.git/config` makes `rev-parse --show-toplevel` return any directory the worker creates. Linux path components may contain `\\n`, so `$SELF` can carry real newlines and forge whole lines, such as a fake `- open PRs: ... review: SUCCESS`, under a header that says \"trust it over the summary\". The repo already treats this key as attacker-controlled: [docs/09-decisions.md L4178-L4179](https://github.com/AlexisBalayre/pupitre/blob/f4b87100cf65c48208a5a2aa71e5ca997b3896f6/docs/09-decisions.md#L4178-L4179) and [src/core/merge-gate.service.ts L650-L651](https://github.com/AlexisBalayre/pupitre/blob/f4b87100cf65c48208a5a2aa71e5ca997b3896f6/src/core/merge-gate.service.ts#L650-L651).\n- **`$BRANCH`:** a worker can run `git branch -m <this checkout's branch> <name>` from its own worktree. That renames the branch and rewrites this checkout's HEAD, so `$BRANCH` becomes attacker text. Refnames cannot hold newlines, but they can hold arbitrary words and non-ASCII characters. Line 31 already masks exactly this field for other worktrees.\n\nThe new comment at lines 21-23 says \"anything outside a plain path's characters is masked before it lands in this session's context\", and line 19 breaks that promise. The fix is to move `safe()` above the first echo and mask both values. The `[ \"$path\" = \"$SELF\" ]` comparison should keep the raw `$SELF`. (The git-internals points were checked by reading the code, not by running git, so confidence is medium.)",
+      "suggestion": "BRANCH=$(git branch --show-current 2>/dev/null)\n# Another session names its worktree's path and branch, can rename this\n# checkout's branch or aim core.worktree in the shared config, and a fork names\n# its PR branch, so anything outside a plain path's characters is masked before\n# it lands in this session's context. The gh filter below masks the same set.\nsafe() { printf '%s' \"$1\" | LC_ALL=C tr -c 'A-Za-z0-9._/() -' '?'; }\necho \"Live state after compaction (read now; trust it over the summary):\"\necho \"- checkout: $(safe \"$SELF\") on $(safe \"${BRANCH:-a detached HEAD}\")\"\n\necho \"- other worktrees (path, branch):\""
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "38",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This change drops the jq `.[:60]` cap, which was the only length limit on fork PR branch names. Those names are set by outsiders, and up to 20 of them now reach context at full length. The mask still stops forged lines, but `_ . / - ( )` are enough to write readable text. Worktree paths never had a cap either. If you want a bound, put one cap in `safe()` (e.g. `| head -c 200`) and the same one in the jq filter, so every field is covered.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/post-compact-state.sh",
+      "line": "37-38",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`gh pr list` resolves its repository from the shared git config (`remote.*.url`, `remote.<name>.gh-resolved`). A worker can repoint those at a repo it owns and post a `claude-review` SUCCESS status there, so the hook prints believable `#N ... review: SUCCESS` lines. Masking cannot catch this because the fields are well-formed. A template hook has no clean fix, so a line in the header comment saying the PR list is only as trustworthy as the remote config may be enough.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The validator's `gh pr view 162 --json files` call was denied by the Bash permission lock. It fell back to `gh pr diff 162 --name-only` plus a Glob to establish provenance, so the verdict was unaffected."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7035207,
+  "duration_ms": 345079,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 11892,
+    "cache_read": 366312,
+    "cache_creation": 50011,
+    "total": 428231
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 48,
+      "output": 39466,
+      "cache_read": 612891,
+      "cache_creation": 106661,
+      "cost_usd": 1.5954282000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 3185,
+      "cache_read": 103150,
+      "cache_creation": 26355,
+      "cost_usd": 0.10809250000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 162 --repo AlexisBalayre/pupitre --json files --jq '.files[] | \"\\(.path) +\\(.additions) -\\(.deletions)\"'"
+    }
+  ]
+}
