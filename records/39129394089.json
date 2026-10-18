@@ -1,0 +1,228 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T13:04:53.666Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39129394089",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39129394089",
+  "actor": "AlexisBalayre",
+  "commit_sha": "27cf7ceb058f7bfe09a404753882d57a515eaacf",
+  "source": "pr",
+  "pr_number": 161,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-state.utils.ts",
+      "line": "26-36",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Once FIX_ROUND_EDGE takes a session from merged to running, every ordinary exit from running is open again, killed included. A killed fix-round session leaves its gated PR open on GitHub, and pup can no longer land it or show it. Its task also goes back to the backlog, so it can be launched a second time.",
+      "body": "**A fix round that ends in `pup kill` orphans the open PR and puts the task back in the backlog**\n\nBefore this PR, a session whose newest merge carried a `prUrl` was always `merged`, which is terminal, so it could never be killed. `FIX_ROUND_EDGE` now moves such a session to `running`:\n\n```ts\nexport const FIX_ROUND_EDGE = { from: 'merged', to: 'running' } as const satisfies {\n```\n\nFrom `running`, the table allows `killed` (`running: ['awaiting-review', 'killed', 'blocked']`). `killSession` only checks that the session exists, then calls `transitionSession(db, sessionId, 'killed')`. Nothing on the row marks it as a fix round, and nothing takes it back to `merged` except `undoFixRound`, which only runs when the kickoff fails. So when an operator gives up on a round (the gate blocked it at the reject cap, or they would rather fix the PR by hand), `pup kill` is their only tool. After a kill:\n\n- `pup land` refuses it: `only a session the gate merged with --pr can land` ([land.service.ts#L60-L65](https://github.com/AlexisBalayre/pupitre/blob/27cf7ceb058f7bfe09a404753882d57a515eaacf/src/core/land.service.ts#L60-L65)). The first gate's PR, still OPEN on GitHub with gated work in it, can no longer be landed through pup: no audit ratchet, no `landed` event, no local fast-forward.\n- The inbox stops showing it: `const pr = row.state === 'merged' ? openPullRequest(events) : undefined;` ([dashboard.service.ts#L633](https://github.com/AlexisBalayre/pupitre/blob/27cf7ceb058f7bfe09a404753882d57a515eaacf/src/core/dashboard.service.ts#L633)).\n- `claimedStates()` leaves out `killed`, so `listBacklogTasks` lists the task again and `launchTask`'s `claimingSession` check lets it be launched again, redoing work that is already open as a PR.\n\nDecision 90 covers only the forward path and the kickoff-failure undo; it says nothing about a fix round that ends in kill. A `blocked` fix-round session can also reach `killed` through `blocked: ['running', 'killed']`.\n\nPossible fixes: a way to abort a round back to `merged` (for example, `pup kill` on a session with a `fix_round` after its newest merge takes the edge back, as `undoFixRound` does), or refuse to kill such a session and treat a killed session with an unlanded PR as still claimed.\n\nCode: https://github.com/AlexisBalayre/pupitre/blob/27cf7ceb058f7bfe09a404753882d57a515eaacf/src/core/session-state.utils.ts#L26-L36 and https://github.com/AlexisBalayre/pupitre/blob/27cf7ceb058f7bfe09a404753882d57a515eaacf/src/core/fix-round.service.ts#L412-L422",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "255-256, 278-279, 380-386",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The thread cap counts every thread the PR has ever had, resolved ones and humans' included, and reads the oldest 100. The refusal tells the operator to 'resolve some on GitHub, then re-run', but resolving a thread does not take it out of the count. Once a PR has more than 100 threads in total, `pup fix` refuses for good and the operator is told to do something that cannot help. The `pup status` inbox also falls back to its plain line, because `ciReviewLookup` swallows the throw. Reading `first:` also starts from the wrong end: the only threads that count (raisedOn === head) are the newest ones.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "412-422",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`takeFixRoundEdge` moves the session to running but never resets `reject_count`, and `rejectOrBlock` compares that lifetime count with `MAX_REJECTS_BEFORE_BLOCKED = 2` (`if (rejectCount > MAX_REJECTS_BEFORE_BLOCKED)` → blocked, merge-gate.service.ts:1807). So a session that needed two gate rejections before it first merged gets parked as `blocked` on the first failing gate of its fix round, with no re-steer carrying the report. A fresh session would get two re-steers. Decision 90 says a fix round goes through the gate 'as any finished session does', and nothing records this as intended. Either reset `reject_count` in the edge's transaction, or record in decision 90 that the cap spans the session's whole life.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "397-417",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Open threads are picked by the first comment's `originalCommit` equal to the head, not by which review opened them. If two review runs land on the same head, `pup fix` and the inbox count both runs' unresolved threads. That happens when an `@claude review` comment re-runs a review that preflight would otherwise skip as a duplicate, or when a partial review is followed by a full one. The same finding can then reach the worker twice. If the newest run on the head came back clean, the inbox still says 'CI review left N open threads' and `pup fix` hands over the earlier run's findings. Fix: also select the first comment's `pullRequestReview { id }` (and each review's `id` in `reviews`), then keep only threads from the bot's newest review.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90 says every refusal ends `No fix round was started.`, but the >100-threads refusal thrown by `readPullRequestReview` in src/core/github.client.ts (and a raw failing `gh` call) reach the operator without that suffix; wrap the `readPullRequestReview` call in `readReviewedPullRequest` (fix-round.service.ts:229) so errors gain it, or soften the decision's wording.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "463-481",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Duplicated Code: `relaunchWorker` re-implements the private helper `graphForRespawn` (src/core/session-handoff.service.ts:252-262) line for line, and its own comment says it does: \"The restored worktree indexed afresh, as a respawn's is (decision 51)\". The new code is `existsSync(mcpConfig) && prepareGraph(codegraphBinary(repoPath), repoPath, session.worktree_path) ? mcpConfig : undefined`, which is the same `mcp.json` existence check, the same `prepareGraph(codegraphBinary(repoPath), ...)` call and the same fallback to undefined. So the rule for when a fresh window gets a code graph now lives in two places, and a change to decision 51 (for example, withholding the graph on some new condition) has to be made in both. The steps that follow also copy `relaunchWindow` in session-handoff.service.ts:293-315: launch with `settingsPath`/`routeFor`, store `tmux_target`, then `kickoff` inside a try/finally that appends `respawn { delivered }`. Suggested fix: export `graphForRespawn` and call `mcpConfigPath: graphForRespawn(repoPath, session.worktree_path, compiledDir)`. The rest of the launch sequence can stay where it is, because the fix round's undo and its late `recordSessionRoute` really are different.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "346-353",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Duplicated Code, now on its third copy: `let tip; try { tip = resolveCommit(repoPath, branchRef) } catch (error) { rethrowIfKilled(error); if (error instanceof Error && error.message.includes('symbolic ref')) throw error; }` repeats regate.service.ts:244-250 and merge-gate.service.ts:574-580 (both already on main). All three copies tell a symref refusal apart from a missing branch by matching the substring 'symbolic ref' in the message `resolveCommit` builds at merge-gate.service.ts:559. Rewording that message would quietly turn a symref refusal into 'branch is gone' at every call site, and here that path goes on to run `worktree add -b`. AGENTS.md's 'no abstraction until third use' is now met. Suggested fix: add a `resolveCommitIfPresent(repoPath, ref): string | undefined` beside `resolveCommit` in merge-gate.service.ts that does this rethrow, and call it from all three places, or at least from this new one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "425-439",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Logic in the wrong layer, plus Duplicated Code: `moveState` is a second writer of session state, and it sits in a service. Its body is `UPDATE sessions SET state = ? ... AND state = ?` followed by `appendEvent(db, sessionId, 'gate_result', { from, to, ...payload })`. That copies the write and the transition event that `transitionSession` (session.repository.ts:492-508) owns, and until now that function was the only `UPDATE sessions SET state` in src/. Keeping `FIX_ROUND_EDGE` out of `TRANSITIONS` makes sense. But the shape of the transition event and the guarded state write are now defined twice, so a change to how transitions are logged has to touch both. Suggested fix: move the compare-and-set into session.repository.ts, for example `transitionSessionAlong(db, id, edge: { from, to }, payload)`, next to `transitionSession`. It can share the event append and leave `canTransition` unchanged.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "365-378",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This PR breaks a promise the `needsYou` JSDoc still makes, while editing that same JSDoc. The comment keeps \"so `pup status`, the fleet view and the conductor that reads `pup status` cannot disagree about what waits on the operator\" and then adds \"`ciReview` is GitHub's answer for an open PR, asked only by `pup status`\". After this change, `fleetSummary` (dashboard.service.ts:144) and `web-dashboard.service.ts:157` still call `needsYou(snapshot)` with no lookup. So for the same merged session with open CI threads, the fleet view and web dashboard print \"PR opened, not landed → <url>\" while `pup status` prints \"CI review left N open threads on its head → pup fix <id>\". The kind and ordering still match; the reason and answer do not. A future reader trusting the comment would not expect the two views to disagree. Fix: limit the agreement claim to the line's kind and order, or say the CI line appears only in `pup status`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1436",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The lookup's function type has no name, so the PR spells it three different ways: `(session: DashboardSession) => CiReview | undefined` twice in dashboard.service.ts (`needsYou` and `needOf`), `(shown: { id: string }) => CiReview | undefined` as the return type of `ciReviewLookup` in fix-round.service.ts:176, and `ciReview?: Parameters<typeof needsYou>[1]` in `printDashboard`. The `Parameters<...>[1]` form hides the contract behind a positional lookup on another function's signature, and the three versions can drift apart without the compiler complaining. Exporting one `CiReviewLookup` type next to `CiReview` in dashboard.service.ts would give the producer, the consumer and the CLI pass-through one name to share.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "63-80",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Exported interfaces `FixRoundRequest`, `FixRoundOutcome` (fix-round.service.ts:63-80) and `CiReview` (dashboard.service.ts:361-363) are declared in service files, against docs/conventions/general.md §Type separation (\"Never inline an exported type/interface in a *.service.ts\"); move them to src/core/types/ (several sibling services already break this rule).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "55-61",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Thresholds and a timeout (`THREAD_BODY_MAX_CHARS`, `CI_REVIEW_LOOKUP_TIMEOUT_MS`, `CLEAN_REVIEW_STATUS` here; `REVIEW_PAGE`, `REVIEW_STATUS_CONTEXT`, `REVIEW_BOT_LOGIN` in github.client.ts) are defined in service/client files rather than an area `*.constants.ts`, against docs/conventions/general.md §No hardcoded values (github.client.ts's existing `GH_COMMAND_TIMEOUT_MS` sets the same precedent).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "345-352",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `readPullRequestReview` JSDoc breaks a line mid-sentence after \"Every\" (\"…like every other call here. Every / string in it is GitHub's copy…\"), an edit leftover; reflow the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-state.utils.ts",
+      "line": "27",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`FIX_ROUND_EDGE`'s JSDoc says pup fix \"undoes it the same way when the worker's kickoff never lands\", but the undo is the reverse edge (running -> merged via `moveState(FIX_ROUND_EDGE.to, FIX_ROUND_EDGE.from)`); \"takes it back (running to merged) when…\" is accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90's ~55-line \"Tests:\" paragraph restates, refusal by refusal, what fix-round.test.ts, dashboard.test.ts, github-client.test.ts and index.test.ts already assert, and will go stale as tests change; shrink it to a sentence or two.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.799000599999999,
+  "duration_ms": 437879,
+  "num_turns": 18,
+  "tokens": {
+    "input": 10,
+    "output": 20263,
+    "cache_read": 203852,
+    "cache_creation": 62382,
+    "total": 286507
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 222,
+      "output": 101571,
+      "cache_read": 4673613,
+      "cache_creation": 451154,
+      "cost_usd": 5.4099466
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 11327,
+      "cache_read": 275325,
+      "cache_creation": 99275,
+      "cost_usd": 0.38905400000000007
+    }
+  ],
+  "permission_denials": []
+}
