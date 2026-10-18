@@ -17,11 +17,17 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   steerPane: vi.fn(),
 }));
+// The real diff, so a test can fail one call of it and no other.
+vi.mock('./git-diff.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./git-diff.client.js')>();
+  return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
+});
 
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
+import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -36,6 +42,7 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
+import { TerminalSessionError } from './session-lifecycle.errors.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR &
 // co., which a pre-commit hook run would aim at the pupitre repo instead.
@@ -235,19 +242,29 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   describe('steering the live sessions it overlaps (decision 99)', () => {
-    /** A running session forked from main before the land, its branch changing `file`. */
-    function seedPeer(id: string, file: string): void {
+    /**
+     * A running session forked from main before the land, its branch changing
+     * `file`. `branch` is what its row names, `inGit: false` leaves that branch
+     * out of git, and `pane: false` records no window for it.
+     */
+    function seedPeer(
+      id: string,
+      file: string,
+      { branch = `pup/${id}`, inGit = true, pane = true } = {},
+    ): void {
       const peerTree = join(repo, '.worktrees', id);
-      sh(repo, 'git', 'worktree', 'add', '-q', '-b', `pup/${id}`, peerTree, 'main');
-      commitIn(peerTree, file, `export const ${id} = 1;\n`);
+      if (inGit) {
+        sh(repo, 'git', 'worktree', 'add', '-q', '-b', branch, peerTree, 'main');
+        commitIn(peerTree, file, `export const peer = '${id}';\n`);
+      }
       insertTask(db, { id: `task-${id}`, projectId: pid, spec: '{}' });
       insertSession(db, {
         id,
         taskId: `task-${id}`,
         worktreePath: peerTree,
-        branch: `pup/${id}`,
+        branch,
         profileHash: 'hash',
-        tmuxTarget: `%${id}`,
+        ...(pane ? { tmuxTarget: `%${id}` } : {}),
       });
       transitionSession(db, id, 'running');
     }
@@ -273,6 +290,74 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     beforeEach(() => {
       vi.mocked(steerPane).mockReset();
+      // Back to the real diff the mock wraps.
+      vi.mocked(gitDiffPaths).mockReset();
+    });
+
+    it('steers no one, and still lands, when git cannot list the landed files', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      const real = vi.mocked(gitDiffPaths).getMockImplementation();
+      vi.mocked(gitDiffPaths).mockImplementation((repoPath, target, branch) => {
+        if (target.endsWith('^1')) throw new Error('fatal: bad revision');
+        return real?.(repoPath, target, branch) ?? [];
+      });
+
+      await landMerged();
+
+      expect(vi.mocked(gitDiffPaths).mock.calls.some(([, target]) => target.endsWith('^1'))).toBe(
+        true,
+      );
+      expect(landedEvents()).toHaveLength(1);
+      expect(steersTo('s2')).toEqual([]);
+      expect(steerEvents('s2')).toEqual([]);
+    });
+
+    it('skips a peer whose id or branch is not one a launch mints', async () => {
+      seedPeer('bad.id', 'src/feature.ts');
+      seedPeer('s4', 'src/feature.ts', { branch: 'pup/elsewhere' });
+      seedPeer('s2', 'src/feature.ts');
+
+      await landMerged();
+
+      expect(steersTo('bad.id')).toEqual([]);
+      expect(steersTo('s4')).toEqual([]);
+      expect(steersTo('s2')).toHaveLength(1);
+    });
+
+    it('skips a peer whose branch git cannot read, and still steers the rest', async () => {
+      seedPeer('s3', 'src/feature.ts', { inGit: false });
+      seedPeer('s2', 'src/feature.ts');
+
+      await landMerged();
+
+      expect(steersTo('s3')).toEqual([]);
+      expect(steerEvents('s3')).toEqual([]);
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+    });
+
+    it('steers past a peer with no window and one that has just stopped', async () => {
+      seedPeer('s3', 'src/feature.ts', { pane: false });
+      seedPeer('s4', 'src/feature.ts');
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementation((pane) => {
+        if (pane.paneId === '%s4') throw new TerminalSessionError('s4', 'killed', 'steer');
+      });
+
+      await landMerged();
+
+      expect(steerEvents('s3')).toEqual([]);
+      expect(steerEvents('s4')).toEqual([]);
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+    });
+
+    it('lets any other steer failure through, with the land already recorded', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementation(() => {
+        throw new Error('tmux: server exited unexpectedly');
+      });
+
+      await expect(landMerged()).rejects.toThrow('tmux: server exited unexpectedly');
+      expect(landedEvents()).toHaveLength(1);
     });
 
     it('steers a live session sharing a landed file once, and one sharing none not at all', async () => {
