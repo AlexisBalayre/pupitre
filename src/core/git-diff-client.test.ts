@@ -1,7 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
   ArmedGitDriverError,
@@ -14,6 +23,9 @@ import {
   gitDiffPaths,
   rethrowIfKilled,
   runGit,
+  verifiedWorktreeGitEnv,
+  WorktreeRepointedError,
+  worktreeGitEnv,
 } from './git-diff.client.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
@@ -675,5 +687,137 @@ describe('rethrowIfKilled', () => {
   it("leaves git's own failure and a crash to the caller's catch", () => {
     expect(() => rethrowIfKilled(failureOf('exit 1'))).not.toThrow();
     expect(() => rethrowIfKilled(failureOf('kill -SEGV $$'))).not.toThrow();
+  });
+});
+
+// A session can rewrite its worktree's `.git` gitfile and its admin dir's
+// `commondir` from inside the sandbox, and an index read that followed either
+// would run a clean filter armed in the repo they name (decision 101).
+describe('worktree git pins (decision 101)', () => {
+  let repo: string;
+  let worktree: string;
+  let marker: string;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src/app.ts'), 'export const app = 1;\n');
+    commitAll(repo, 'base');
+    worktree = join(repo, '.worktrees', 's-1');
+    sh(repo, 'git', 'worktree', 'add', '-q', '-b', 'pup/s-1', worktree);
+    marker = join(tempDir('pup-marker-'), 'fired');
+  });
+
+  /** Arms a clean filter on every path of the repo at `gitDir`, writing `marker` if it runs. */
+  function plantCleanFilter(gitDir: string): void {
+    sh(
+      gitDir,
+      'git',
+      'config',
+      '--file',
+      join(gitDir, 'config'),
+      'filter.pwn.clean',
+      `sh -c 'echo pwned >> ${marker}; cat'`,
+    );
+    mkdirSync(join(gitDir, 'info'), { recursive: true });
+    writeFileSync(join(gitDir, 'info', 'attributes'), '* filter=pwn\n');
+  }
+
+  /** A repo of the session's own, holding the worktree's file and an armed filter. */
+  function plantedRepo(): string {
+    const elsewhere = makeRepo();
+    mkdirSync(join(elsewhere, 'src'));
+    writeFileSync(join(elsewhere, 'src/app.ts'), 'export const app = 1;\n');
+    commitAll(elsewhere, 'planted');
+    plantCleanFilter(join(elsewhere, '.git'));
+    return join(elsewhere, '.git');
+  }
+
+  /** Same size, new mtime: git must re-read the file, through the filter, to compare it. */
+  function touchLater(file: string): void {
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(file, later, later);
+  }
+
+  /** The plant is live: plain git in the worktree runs it. Then reset for the pinned run. */
+  function expectPlainGitFires(stale: string): void {
+    touchLater(stale);
+    sh(worktree, 'git', 'status', '--porcelain');
+    expect(existsSync(marker)).toBe(true);
+    unlinkSync(marker);
+    touchLater(stale);
+  }
+
+  const pinnedStatus = () =>
+    runGit(worktree, ['status', '--porcelain', '--ignore-submodules=all'], {
+      env: { ...worktreeGitEnv(repo, worktree) },
+    });
+
+  it('names the admin and common dirs of a worktree whose pointers are untouched', () => {
+    expect(verifiedWorktreeGitEnv(repo, worktree)).toEqual({
+      GIT_DIR: join(repo, '.git', 'worktrees', 's-1'),
+      GIT_COMMON_DIR: join(repo, '.git'),
+      GIT_WORK_TREE: worktree,
+    });
+  });
+
+  it.each([
+    ['a repointed gitfile', (planted: string) => [join(worktree, '.git'), `gitdir: ${planted}\n`]],
+    [
+      'a rewritten commondir',
+      (planted: string) => [join(repo, '.git', 'worktrees', 's-1', 'commondir'), `${planted}\n`],
+    ],
+  ])('refuses %s, and pinned git never runs its clean filter', (_, pointer) => {
+    const [file, content] = pointer(plantedRepo()) as [string, string];
+    writeFileSync(file, content);
+    expectPlainGitFires(join(worktree, 'src/app.ts'));
+
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    // Pinned, git reads neither pointer: a rewrite after the check changes nothing.
+    pinnedStatus();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('never runs a child git in a gitlink over a .git of the session', () => {
+    const sub = join(worktree, 'sub');
+    mkdirSync(sub);
+    sh(sub, 'git', 'init', '-q');
+    writeFileSync(join(sub, 'f'), 'a\n');
+    sh(sub, 'git', 'add', 'f');
+    sh(sub, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'sub');
+    plantCleanFilter(join(sub, '.git'));
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sub,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    }).trim();
+    sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},sub`);
+    expectPlainGitFires(join(sub, 'f'));
+
+    pinnedStatus();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('refuses a gitfile that is a symlink or a fifo, without blocking on the fifo', () => {
+    const copy = join(tempDir('pup-gitfile-'), 'gitfile');
+    writeFileSync(copy, readFileSync(join(worktree, '.git')));
+    unlinkSync(join(worktree, '.git'));
+    symlinkSync(copy, join(worktree, '.git'));
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+
+    unlinkSync(join(worktree, '.git'));
+    sh(worktree, 'mkfifo', '.git');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+  });
+
+  // The gate's driver check runs pinned, as the rebase it guards does: unpinned,
+  // it would read whichever repo the pointer named at that moment.
+  it('reads armed drivers from the trusted dirs, whatever the gitfile names', () => {
+    sh(repo, 'git', 'config', 'filter.real.smudge', 'cat');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${plantedRepo()}\n`);
+
+    expect(armedGitDrivers(worktree, worktreeGitEnv(repo, worktree))).toEqual([
+      'filter.real.smudge',
+    ]);
   });
 });

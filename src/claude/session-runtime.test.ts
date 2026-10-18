@@ -44,6 +44,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
 });
 
+import { WorktreeRepointedError } from '../core/git-diff.client.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
@@ -267,12 +268,23 @@ function spawnPrefix(name: string): string[] {
 }
 
 describe('launchSession', () => {
+  // A real linked worktree: the launch checks its git pointers before the
+  // window opens (decision 101).
+  let repo: string;
+  let opts: typeof OPTS;
+
+  beforeEach(() => {
+    const made = initRepoWithWorktree();
+    repo = made.repo;
+    opts = { ...OPTS, worktreePath: made.worktree };
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
   it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary under nice -n 10, and returns the pane it printed', () => {
-    const pane = launchSession(OPTS);
+    const pane = launchSession(opts);
 
     // The pane id, not the session name: it is what every later steer,
     // interrupt and capture is addressed to (decision 46).
@@ -292,17 +304,44 @@ describe('launchSession', () => {
       '-y',
       '50',
       '-c',
-      OPTS.worktreePath,
+      opts.worktreePath,
       '-e',
-      `PUP_SESSION_ID=${OPTS.sessionId}`,
+      `PUP_SESSION_ID=${opts.sessionId}`,
+      // Git pinned to the dirs pup trusts, for Claude Code's own startup git
+      // and everything the window runs after it (decision 101).
+      '-e',
+      `GIT_DIR=${join(repo, '.git', 'worktrees', 'wt')}`,
+      '-e',
+      `GIT_COMMON_DIR=${join(repo, '.git')}`,
+      '-e',
+      `GIT_WORK_TREE=${opts.worktreePath}`,
       '-e',
       `PUP_BIN=${process.argv[1] ?? 'pup'}`,
       FAKE_NICE_BIN,
       '-n',
       '10',
       FAKE_CLAUDE_BIN,
-      ...launchArgs(OPTS),
+      ...launchArgs(opts),
     ]);
+  });
+
+  // A respawn opens a window on a worktree the last one could write: one whose
+  // pointers name another repo would have Claude Code's startup git run that
+  // repo's filters, so nothing is opened at all.
+  it.each([
+    ['a repointed gitfile', '.git', (elsewhere: string) => `gitdir: ${elsewhere}\n`],
+    ['a rewritten commondir', '', (elsewhere: string) => `${elsewhere}\n`],
+  ])('opens no window over %s', (_, pointer, content) => {
+    const elsewhere = tempDir('pup-elsewhere-');
+    sh(elsewhere, 'git', 'init', '-q');
+    const target = pointer
+      ? join(opts.worktreePath, pointer)
+      : join(repo, '.git', 'worktrees', 'wt', 'commondir');
+    writeFileSync(target, content(join(elsewhere, '.git')));
+
+    expect(() => launchSession(opts)).toThrow(WorktreeRepointedError);
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toEqual([]);
   });
 
   // `pup launch` and `pup new` are the conductor's to run, and they run in its
@@ -315,7 +354,7 @@ describe('launchSession', () => {
     vi.stubEnv('PUP_CONDUCTOR', 'proj-1');
     vi.stubEnv('PUP_SESSION_ID', 'someone-else');
 
-    const pane = launchSession(OPTS);
+    const pane = launchSession(opts);
 
     expect(pane.socket).toBeUndefined();
     for (const [, args, options] of vi
@@ -351,7 +390,7 @@ describe('launchSession', () => {
     vi.stubEnv('NODE_OPTIONS', '--require /tmp/evil.js');
     vi.stubEnv('TMUX_TMPDIR', '/private/tmp');
 
-    launchSession(OPTS);
+    launchSession(opts);
 
     for (const [, , options] of vi
       .mocked(execFileSync)
@@ -376,7 +415,7 @@ describe('launchSession', () => {
         : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
     );
     try {
-      expect(() => launchSession(OPTS)).toThrow('tmux new-session printed "", not a pane id.');
+      expect(() => launchSession(opts)).toThrow('tmux new-session printed "", not a pane id.');
     } finally {
       vi.mocked(execFileSync).mockImplementation(original as never);
     }

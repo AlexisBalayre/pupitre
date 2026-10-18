@@ -5,6 +5,8 @@ import {
   readFileSync,
   realpathSync,
   truncateSync,
+  unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -376,29 +378,35 @@ describe('generated bash re-check (decision 63)', () => {
     GIT_CONFIG_SYSTEM: '/dev/null',
   };
   let root: string;
+  let repo: string;
   let worktree: string;
   let events: string;
 
-  /** A real git worktree with one commit, and the session's profile compiled for it. */
+  /**
+   * A real linked git worktree of a repo with one commit, as a session's is, and
+   * the session's profile compiled for it.
+   */
   beforeEach(() => {
     root = tempDir('pup-recheck-');
-    worktree = join(root, 'wt');
+    repo = join(root, 'repo');
+    worktree = join(repo, '.worktrees', 's-1');
     events = join(root, 'events.jsonl');
-    mkdirSync(join(worktree, 'src/net'), { recursive: true });
-    mkdirSync(join(worktree, 'src/cli'), { recursive: true });
-    writeFileSync(join(worktree, 'src/net/client.ts'), 'export {};\n');
-    writeFileSync(join(worktree, 'src/cli/index.ts'), 'export {};\n');
-    writeFileSync(join(worktree, 'src/cli/decoy.ts'), 'export {};\n');
+    mkdirSync(join(repo, 'src/net'), { recursive: true });
+    mkdirSync(join(repo, 'src/cli'), { recursive: true });
+    writeFileSync(join(repo, 'src/net/client.ts'), 'export {};\n');
+    writeFileSync(join(repo, 'src/cli/index.ts'), 'export {};\n');
+    writeFileSync(join(repo, 'src/cli/decoy.ts'), 'export {};\n');
     for (const args of [
       ['init', '-q', '-b', 'main'],
       ['add', '-A'],
       ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'],
+      ['worktree', 'add', '-q', '-b', 'pup/s-1', worktree, 'main'],
     ]) {
-      spawnSync('git', args, { cwd: worktree, env: GIT_ENV });
+      spawnSync('git', args, { cwd: repo, env: GIT_ENV });
     }
     const outDir = join(root, 'compiled');
     const compiled = ProfileCompiler.compileProfile(
-      makeInput({ worktreePath: worktree, eventsFile: events, outDir }),
+      makeInput({ repoPath: repo, worktreePath: worktree, eventsFile: events, outDir }),
     );
     ProfileCompiler.writeCompiledProfile(compiled, outDir);
   });
@@ -533,9 +541,10 @@ describe('generated bash re-check (decision 63)', () => {
   });
 
   it('sees a .claude/ write hidden by an exclude rule the command wrote itself', () => {
+    // The linked worktree's exclude file is the common dir's, two levels up.
     const result = bash(
       "python3 - <<'EOF'\n" +
-        "open('.git/info/exclude', 'a').write('\\n.claude/\\n')\n" +
+        "open('../../.git/info/exclude', 'a').write('\\n.claude/\\n')\n" +
         "import os; os.makedirs('.claude', exist_ok=True)\n" +
         "open('.claude/settings.local.json', 'w').write('{}')\n" +
         'EOF',
@@ -576,7 +585,7 @@ describe('generated bash re-check (decision 63)', () => {
   it('refuses when git fails or is missing, and never blocks the call before it', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin);
-    for (const tool of ['jq', 'cat', 'tr', 'grep', 'mktemp', 'rm', 'mkdir', 'mv', 'wc']) {
+    for (const tool of ['jq', 'cat', 'tr', 'grep', 'head', 'mktemp', 'rm', 'mkdir', 'mv', 'wc']) {
       const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
       spawnSync('ln', ['-s', found.stdout.trim(), join(bin, tool)]);
     }
@@ -601,6 +610,66 @@ describe('generated bash re-check (decision 63)', () => {
     expect(after.stderr).toContain(
       'SCOPE CHECK FAILED: bash re-check could not make its scratch dir',
     );
+  });
+
+  // A session can rewrite its worktree's gitfile and its admin dir's commondir
+  // from inside the sandbox, and the hook runs outside it: git that followed
+  // either would run a clean filter armed in the repo they name (decision 101).
+  describe('over git pointers the session rewrote', () => {
+    let marker: string;
+    const plainGit = (cwd: string, ...args: string[]) =>
+      spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' });
+
+    beforeEach(() => {
+      marker = join(root, 'fired');
+    });
+
+    /** A repo holding the worktree's files, with a clean filter armed on every path. */
+    function armedRepo(dir: string): string {
+      mkdirSync(join(dir, 'src/net'), { recursive: true });
+      writeFileSync(join(dir, 'src/net/client.ts'), 'export {};\n');
+      plainGit(dir, 'init', '-q');
+      plainGit(dir, 'add', '-A');
+      plainGit(dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'armed');
+      plainGit(dir, 'config', 'filter.pwn.clean', `sh -c 'echo pwned >> ${marker}; cat'`);
+      writeFileSync(join(dir, '.git/info/attributes'), '* filter=pwn\n');
+      return join(dir, '.git');
+    }
+
+    /** Proves the plant live with plain git, then makes the file stale again for the hook. */
+    function expectPlainGitFires(stale: string): void {
+      const later = () => new Date(Date.now() + 60_000);
+      utimesSync(stale, later(), later());
+      plainGit(worktree, 'status', '--porcelain');
+      expect(existsSync(marker)).toBe(true);
+      unlinkSync(marker);
+      utimesSync(stale, later(), later());
+    }
+
+    it.each([
+      ['a repointed gitfile', () => [join(worktree, '.git'), 'gitdir: ']],
+      ['a rewritten commondir', () => [join(repo, '.git/worktrees/s-1/commondir'), '']],
+    ])('refuses after the call over %s, and runs no clean filter', (_, pointer) => {
+      const [file, prefix] = pointer() as [string, string];
+      writeFileSync(file, `${prefix}${armedRepo(join(root, 'armed'))}\n`);
+      expectPlainGitFires(join(worktree, 'src/net/client.ts'));
+
+      const result = bash('echo hi');
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`${worktree}/.git or its commondir no longer names`);
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it('runs no child git in a gitlink over a .git the session made', () => {
+      const sub = join(worktree, 'src/net/sub');
+      armedRepo(sub);
+      const head = plainGit(sub, 'rev-parse', 'HEAD').stdout.trim();
+      plainGit(worktree, 'update-index', '--add', '--cacheinfo', `160000,${head},src/net/sub`);
+      expectPlainGitFires(join(sub, 'src/net/client.ts'));
+
+      expect(bash('echo hi').status).toBe(0);
+      expect(existsSync(marker)).toBe(false);
+    });
   });
 
   it('wires the re-check before and after every Bash call, failures included', () => {
@@ -892,6 +961,20 @@ describe('generated hooks over a merge of the target', () => {
 
       expect(edit('src/cli/decoy.ts', block, 'one main').status).toBe(2);
       expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
+    });
+
+    // The hook runs outside the sandbox, the gitfile is writable inside it, and
+    // git that followed it would read another repo's config (decision 101).
+    it('refuses the resolving Edit once the gitfile names another repo', () => {
+      bash('git merge main');
+      const elsewhere = join(root, 'elsewhere');
+      mkdirSync(elsewhere);
+      git(elsewhere, 'init', '-q');
+      writeFileSync(join(worktree, '.git'), `gitdir: ${join(elsewhere, '.git')}\n`);
+
+      const result = edit('src/cli/decoy.ts', block, 'one main');
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('or its commondir no longer names');
     });
 
     it('refuses the same Edit once the file is resolved, or over a merge of anything but the tip', () => {

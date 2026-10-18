@@ -5304,6 +5304,58 @@ changes back into those docs is pending.
     they return. Each of these fails with its fix taken out: the unconditional group kill, the
     kill before removal, the 200 ms wait (the exit test, two runs in three) and the gate's call.
 
+101. **Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18).**
+    Extends decision 50. A linked worktree finds its repo through two files: its `.git` gitfile
+    (`gitdir: <common>/worktrees/<id>`) and that admin dir's `commondir`. On macOS the sandbox
+    runtime write-protects neither. Reproduced on Apple Git 2.39.5: a session points either file
+    at a repo of its own, whose config arms `filter.<x>.clean` with `* filter=<x>` in its
+    `info/attributes`. The next index-reading git run at the worktree outside the sandbox then
+    runs the filter with the operator's environment. That covers the compiled hooks' `git
+    status` and the gate's status and rebase. Nothing in `GIT_SAFE_CONFIG` can stop it, since no
+    `-c` names a driver someone else chose, and `assertNoArmedGitDrivers` read the repo the
+    pointer named at the moment it looked, so a swap after the check went through.
+    *Pinned, not followed.* Every git call pup or its hooks make in a worktree now runs with
+    `GIT_DIR=<common>/worktrees/<id>`, `GIT_COMMON_DIR=<common>` and `GIT_WORK_TREE=<worktree>`.
+    With all three set, git reads neither pointer. `<common>` is the realpath of the main
+    checkout's `.git`, as `git worktree add` records it, and `<id>` is the worktree's basename,
+    the name `worktree add` gives it. Both come from pup's own paths, never from the files.
+    The hooks get them rendered at compile time, inside `safe_git`. The gate pins its
+    worktree-clean status, its rebase and `--abort`, and its driver check, which now reads the
+    config the rebase will use. The session window gets all three through tmux `-e`, so Claude
+    Code's own startup git, and everything the window runs in the worktree, is pinned too.
+    *Checked, so a rewrite is loud.* Pinned git would ignore a rewritten pointer. But the
+    operator's shell and anything else that runs git there unpinned would follow it. So before
+    the pinned calls, `verifiedWorktreeGitEnv` (and `pinned_worktree` in the hooks) checks with
+    filesystem reads alone that `<worktree>/.git` is a regular file reading `gitdir: <admin
+    dir>`, that the admin dir is its own realpath, and that its `commondir` resolves to
+    `<common>`. Any mismatch is a refusal naming both paths. The hooks refuse after the call
+    (the re-check) or refuse the conflict-resolution Edit, the gate throws before it rebases,
+    and a launch or respawn opens no window. The TypeScript check opens each pointer with
+    `O_NOFOLLOW | O_NONBLOCK`, so a symlink or a fifo is refused rather than followed or waited on.
+    *`--ignore-submodules=all` on status and on the hook's diff.* A gitlink in the index over
+    `<worktree>/<path>/.git` makes `status` and a worktree `diff` run a child git in that
+    directory, with `GIT_DIR` set to the submodule's own repo, so the pins do not reach it and
+    its armed filter runs. With the flag, git skips submodules entirely. The rebase was checked
+    with the same plant and runs no child (`submodule.recurse=false`, decision 80).
+    *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
+    pick another name, because a stale admin dir held it, is refused at launch, never followed.
+    The window's repo is derived from the worktree path, `<repo>/.worktrees/<session-id>`, the one
+    layout `startSession` uses. With `all`, the hooks and the gate's worktree-clean stage no
+    longer see a gitlink change. The gate's scope audit, on the branch's own diff, still does.
+    The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
+    between still blocks until the hook timeout, as decision 99's MERGE_HEAD read does. A
+    session's own `pup session done` runs `runGit` with the GIT_DIR family scrubbed, inside the
+    session's sandbox, where following its own pointers gains it nothing.
+    Tests: a repointed gitfile and a rewritten commondir, each naming a repo whose clean filter
+    writes a marker, fire it under plain `git status`. They are refused by
+    `verifiedWorktreeGitEnv`, by the re-check after a Bash call, by the conflict-resolution Edit
+    and by the gate before its rebase, and pinned git leaves no marker. A gitlink over a
+    session-made `.git` with the same filter fires it under plain status, and leaves no marker
+    after a re-check run, a pinned status, or a gate that merges the branch holding it. A
+    symlinked or fifo gitfile is refused without blocking. The driver check reads the trusted
+    config whatever the gitfile names. A launch passes the three variables to tmux and opens
+    nothing over either rewritten pointer.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

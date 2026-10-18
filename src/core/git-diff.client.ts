@@ -1,6 +1,15 @@
 import { type ExecFileSyncOptions, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { DiffFileStat } from './types/git-diff.types.js';
@@ -15,6 +24,107 @@ export type { DiffFileStat };
 export function scrubbedGitEnv(): NodeJS.ProcessEnv {
   const scrubbed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !scrubbed.includes(key)));
+}
+
+/** The three variables that pin git to a session worktree's trusted dirs (decision 101). */
+export interface WorktreeGitEnv {
+  GIT_DIR: string;
+  GIT_COMMON_DIR: string;
+  GIT_WORK_TREE: string;
+}
+
+/**
+ * The admin and common dirs pup trusts for a session worktree, as git
+ * variables (decision 101). A linked worktree finds its repo through two files
+ * the session can write from inside the sandbox — its `.git` gitfile and the
+ * admin dir's `commondir` — so git run there outside the sandbox would read
+ * the config, attributes and index of a repo the session chose, and run the
+ * `filter.<x>.clean` or `core.fsmonitor` it arms, which no `-c` can disarm.
+ * With all three set git reads neither file. Neither is read here either: the
+ * common dir is the main checkout's `.git`, resolved as `git worktree add`
+ * records it, and the admin dir is named after the worktree, as `worktree add`
+ * names it. A `.git` that does not exist yet (a compile runs before the
+ * worktree is added) is used as given, which the pointer check then refuses.
+ */
+export function worktreeGitEnv(repoPath: string, worktreePath: string): WorktreeGitEnv {
+  const dotGit = join(repoPath, '.git');
+  const commonDir = existsSync(dotGit) ? realpathSync(dotGit) : dotGit;
+  return {
+    GIT_DIR: join(commonDir, 'worktrees', basename(worktreePath)),
+    GIT_COMMON_DIR: commonDir,
+    GIT_WORK_TREE: worktreePath,
+  };
+}
+
+/** Larger than any pointer git writes; a bigger file is not one. */
+export const POINTER_MAX_BYTES = 4096;
+
+/**
+ * A pointer file's text, without the newline git ends it with, or undefined
+ * when it is not a regular file. Opened without following a symlink and
+ * without blocking, so a fifo swapped in after a check cannot hang the read.
+ */
+function readPointer(path: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > POINTER_MAX_BYTES) return undefined;
+    const buffer = Buffer.alloc(stat.size);
+    const read = readSync(fd, buffer, 0, stat.size, 0);
+    return buffer.subarray(0, read).toString('utf8').replace(/\n$/, '');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function realpathOrUndefined(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+export class WorktreeRepointedError extends Error {
+  constructor(worktreePath: string, env: WorktreeGitEnv) {
+    super(
+      `Refusing to run git in ${sanitizeReason(worktreePath)}: its .git no longer names ` +
+        `${sanitizeReason(env.GIT_DIR)}, or that admin dir's commondir no longer names ` +
+        `${sanitizeReason(env.GIT_COMMON_DIR)}. A session can rewrite both from inside its ` +
+        'sandbox, and any git that followed them would run the filters of a repo it chose. ' +
+        'Restore them (`git worktree repair` from the main checkout) and retry, and treat the ' +
+        'session that rewrote them as compromised.',
+    );
+    this.name = 'WorktreeRepointedError';
+  }
+}
+
+/**
+ * `worktreeGitEnv`, once the worktree's pointers are checked with filesystem
+ * reads alone: `<worktree>/.git` is a regular file reading `gitdir: <admin
+ * dir>`, the admin dir is its own realpath, and its `commondir` resolves to
+ * the common dir. Pinned git would not follow a rewritten pointer anyway; the
+ * check is what makes the rewrite loud, since everything that runs git there
+ * unpinned — the session's own window, the operator's shell — would follow it.
+ */
+export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): WorktreeGitEnv {
+  const env = worktreeGitEnv(repoPath, worktreePath);
+  const gitfile = readPointer(join(worktreePath, '.git'));
+  const commondir = readPointer(join(env.GIT_DIR, 'commondir'));
+  if (
+    gitfile !== `gitdir: ${env.GIT_DIR}` ||
+    realpathOrUndefined(env.GIT_DIR) !== env.GIT_DIR ||
+    commondir === undefined ||
+    realpathOrUndefined(resolve(env.GIT_DIR, commondir)) !== env.GIT_COMMON_DIR
+  ) {
+    throw new WorktreeRepointedError(worktreePath, env);
+  }
+  return env;
 }
 
 /**
@@ -388,22 +498,28 @@ export class ArmedGitDriverError extends Error {
  * this measurement only ever adds findings — the config and the attributes
  * file are shared, so a worktree reports everything the main checkout does
  * plus its own worktree scope, and a session cannot aim the read somewhere
- * quieter than the one git itself will consult.
+ * quieter than the one git itself will consult. A session worktree is read
+ * under `env`, its `verifiedWorktreeGitEnv`, which is how the call it guards
+ * runs: unpinned, the read would follow pointers the session can swap between
+ * the check and the call (decision 101).
  */
-export function armedGitDrivers(gitPath: string): string[] {
+export function armedGitDrivers(gitPath: string, env?: WorktreeGitEnv): string[] {
   const armed: string[] = [];
-  const commonDir = runGit(gitPath, [
-    'rev-parse',
-    '--path-format=absolute',
-    '--git-common-dir',
-  ]).trim();
+  const opts = { env: env ? { ...env } : undefined };
+  const commonDir = runGit(
+    gitPath,
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+    opts,
+  ).trim();
   const [pattern] = attributePatterns(join(commonDir, 'info', 'attributes'));
   if (pattern) armed.push(`info/attributes (${sanitizeReason(pattern)})`);
   // `--list --show-scope` rather than `--local --get-regexp`: `--worktree`
   // silently falls back to the local file when `extensions.worktreeConfig` is
   // off, so it cannot be read on its own, and one listing covers both scopes.
   // Entries are `<scope>\0<key>\n<value>\0`, so they come out in pairs.
-  const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z']).trim().split('\0');
+  const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z'], opts)
+    .trim()
+    .split('\0');
   for (let i = 0; i + 1 < listed.length; i += 2) {
     if (!SESSION_WRITABLE_SCOPES.includes(listed[i] as string)) continue;
     const entry = listed[i + 1] as string;
@@ -437,7 +553,7 @@ function attributePatterns(file: string): string[] {
  * Decision 6's loud-backstop shape: there is no disarm to fall back on, so the
  * only honest answer is to stop and name what is armed (decision 50).
  */
-export function assertNoArmedGitDrivers(gitPath: string): void {
-  const armed = armedGitDrivers(gitPath);
+export function assertNoArmedGitDrivers(gitPath: string, env?: WorktreeGitEnv): void {
+  const armed = armedGitDrivers(gitPath, env);
   if (armed.length > 0) throw new ArmedGitDriverError(gitPath, armed);
 }

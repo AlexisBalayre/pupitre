@@ -43,6 +43,7 @@ import {
   gitDiffPaths,
   rethrowIfKilled,
   runGit,
+  verifiedWorktreeGitEnv,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -334,9 +335,15 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
   // one, and a worktree-scoped config is only visible from its own worktree
   // (decision 50). The main checkout is asked again under the lock, since the
   // stages run while the session is alive (decision 80). A re-gate rebases
-  // nothing and its worktree is gone with the first merge.
+  // nothing and its worktree is gone with the first merge. The worktree is read
+  // pinned to the dirs pup trusts, as the rebase will run (decision 101).
   assertNoArmedGitDrivers(req.repoPath);
-  if (!merged) assertNoArmedGitDrivers(session.worktree_path);
+  if (!merged) {
+    assertNoArmedGitDrivers(
+      session.worktree_path,
+      verifiedWorktreeGitEnv(req.repoPath, session.worktree_path),
+    );
+  }
   const target = currentBranch(req.repoPath);
   if (!target) {
     throw new Error(`Main worktree at ${req.repoPath} is not on a branch; cannot merge.`);
@@ -906,8 +913,19 @@ async function gateAndMerge(
   const failed = (): MergeOutcome =>
     rejectOrBlock(db, { sessionId: session.id, passed: false, sandbox, stages });
 
+  // Every git call in the worktree runs pinned to the admin and common dirs pup
+  // trusts, checked again under the lock: the session can rewrite the pointers
+  // that would otherwise pick the config, and so the filters, git runs
+  // (decision 101). `--ignore-submodules=all`, because a gitlink in the index
+  // over a `.git` of the session's makes status run a child git in it that
+  // drops the pins.
+  const pinned = { env: { ...verifiedWorktreeGitEnv(req.repoPath, worktree) } };
   let started = Date.now();
-  const dirty = runGit(worktree, ['status', '--porcelain']).trim();
+  const dirty = runGit(
+    worktree,
+    ['status', '--porcelain', '--ignore-submodules=all'],
+    pinned,
+  ).trim();
   if (dirty) {
     stages.push(
       timedSince(started, {
@@ -939,7 +957,7 @@ async function gateAndMerge(
     );
   } else {
     try {
-      runGit(worktree, ['rebase', targetSha]);
+      runGit(worktree, ['rebase', targetSha], pinned);
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
@@ -949,7 +967,7 @@ async function gateAndMerge(
       );
     } catch (error) {
       try {
-        runGit(worktree, ['rebase', '--abort']);
+        runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
         // nothing to abort — the rebase never started
       }

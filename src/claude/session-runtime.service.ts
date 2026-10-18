@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { runGit } from '../core/git-diff.client.js';
+import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
@@ -445,6 +445,14 @@ interface ClaudeWindowOptions {
    * conductor's: the guards tell the two apart by which is set (decision 47).
    */
   caller: Record<string, string>;
+  /**
+   * A session window's git pins (decision 101), so the git Claude Code runs
+   * at startup, and everything it spawns in the worktree after, reads the
+   * admin and common dirs pup trusts rather than whatever the worktree's
+   * pointers name by then. Absent for the conductor, whose checkout is no
+   * linked worktree of a session's.
+   */
+  git?: WorktreeGitEnv;
   /** The tmux server to open it on: the conductor's own, or the default one. */
   socket?: string;
   /** `nice -n` level for the window's `claude`; unset runs it at pup's own priority. */
@@ -474,6 +482,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
     window: WINDOW_SIZE,
     env: {
       ...opts.caller,
+      ...opts.git,
       // Absolute path to this CLI, so `pup session done` works even when `pup`
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',
@@ -501,6 +510,10 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_SESSION_ID: opts.sessionId },
+    // Checked before the window opens, so a respawn over pointers the last
+    // window rewrote is refused rather than run on them. A session's worktree
+    // is `<repo>/.worktrees/<session-id>`, the one place `startSession` puts it.
+    git: verifiedWorktreeGitEnv(dirname(dirname(opts.worktreePath)), opts.worktreePath),
     niceness: SESSION_NICENESS,
   });
 }

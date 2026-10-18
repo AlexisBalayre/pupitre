@@ -6,6 +6,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,7 +62,7 @@ import { runUtility } from '../claude/utility.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
-import { ArmedGitDriverError } from './git-diff.client.js';
+import { ArmedGitDriverError, WorktreeRepointedError } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
@@ -1840,6 +1841,74 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect((await merge()).status).toBe('merged');
       expect(existsSync(fired)).toBe(false);
+    });
+  });
+
+  // The gate's status and rebase run in the worktree outside any sandbox, and
+  // the session can rewrite the gitfile and the commondir that choose which
+  // repo's config git reads there, clean filters included (decision 101).
+  describe('worktree git pointers the session rewrote', () => {
+    let marker: string;
+
+    beforeEach(() => {
+      marker = join(tempDir('pup-gate-fired-'), 'fired');
+    });
+
+    /** A repo tracking `file`, with a clean filter armed on every path. */
+    function armedRepo(dir: string, file: string): string {
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
+      sh(dir, 'git', 'init', '-q');
+      writeFileSync(join(dir, file), 'export const app = 1;\n');
+      sh(dir, 'git', 'add', '-A');
+      sh(dir, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'armed');
+      sh(dir, 'git', 'config', 'filter.pwn.clean', `sh -c 'echo pwned >> ${marker}; cat'`);
+      writeFileSync(join(dir, '.git/info/attributes'), '* filter=pwn\n');
+      return join(dir, '.git');
+    }
+
+    /** Proves the plant live with plain git, then makes the file stale again for the gate. */
+    function expectPlainGitFires(worktree: string, stale: string): void {
+      const later = () => new Date(Date.now() + 60_000);
+      utimesSync(stale, later(), later());
+      sh(worktree, 'git', 'status', '--porcelain');
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+      utimesSync(stale, later(), later());
+    }
+
+    it.each([
+      ['a repointed gitfile', (worktree: string) => [join(worktree, '.git'), 'gitdir: ']],
+      [
+        'a rewritten commondir',
+        () => [join(repo, '.git', 'worktrees', SESSION_ID, 'commondir'), ''],
+      ],
+    ])('refuses %s before any git runs there', async (_, pointer) => {
+      const worktree = seedSession(db, repo);
+      // A stale branch, so the gate would take the rebase path.
+      commitIn(repo, 'README.md', '# hello\n');
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const armed = armedRepo(tempDir('pup-armed-'), 'src/app.ts');
+      const [file, prefix] = pointer(worktree) as [string, string];
+      writeFileSync(file, `${prefix}${armed}\n`);
+      expectPlainGitFires(worktree, join(worktree, 'src/app.ts'));
+
+      await expect(merge()).rejects.toThrow(WorktreeRepointedError);
+      expect(existsSync(marker)).toBe(false);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('runs no child git in a gitlink over a .git the session made', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(repo, 'README.md', '# hello\n');
+      const sub = join(worktree, 'src/sub');
+      armedRepo(sub, 'app.ts');
+      const head = sh(sub, 'git', 'rev-parse', 'HEAD').trim();
+      sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},src/sub`);
+      sh(worktree, 'git', 'commit', '-q', '-m', 'gitlink');
+      expectPlainGitFires(worktree, join(sub, 'app.ts'));
+
+      expect((await merge()).status).toBe('merged');
+      expect(existsSync(marker)).toBe(false);
     });
   });
 
