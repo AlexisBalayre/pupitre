@@ -8,6 +8,7 @@ import {
   type ModelRoute,
   SECURITY_REVIEW_EFFORT,
 } from '../claude/model-ladder.constants.js';
+import { shellWord } from '../claude/session-runtime.service.js';
 import { readBrief, workerBrief } from './brief.service.js';
 import { codegraphMcpConfig } from './codegraph.client.js';
 import { GIT_SAFE_CONFIG } from './git-diff.client.js';
@@ -248,7 +249,8 @@ export function mainLandedMessage(landed: {
   files: string[];
   openPullRequest: boolean;
 }): string {
-  const ref = `refs/heads/${sanitizeReason(landed.target)}`;
+  // A ref name may hold `;` or `$(`, and the worker runs this as typed.
+  const ref = shellWord(`refs/heads/${sanitizeReason(landed.target)}`);
   const take = landed.openPullRequest
     ? `Your branch has an open pull request, so keep its history: run \`git merge ${ref}\`, ` +
       'which records a merge commit, and do not rebase it.'
@@ -357,20 +359,29 @@ if printf '%s\\n' "$REL" | grep -qiE '^\\.claude/'; then
 fi
 ${MERGE_OF_TARGET_SHELL}
 # Out of scope, an Edit still goes through when all it does is resolve a conflict
-# a merge of the target left in the file (decision 99): git lists the file
-# unmerged, the replaced text holds a conflict marker line, and the new text holds
-# none and is made only of lines of the replaced text: one side, the other, or
-# both. A Write never does, since it replaces the whole file.
+# a merge of the target left in the file (decision 99). The replaced text is one
+# whole conflict block, from its <<<<<<< line to its >>>>>>> line, and the new
+# text holds no marker and is made only of lines of the block: one side, the
+# other, or both. The index must hold the conflict that merge makes: the
+# branch's blob as ours, the tip's as theirs, and the two different, so a
+# conflict staged by hand over a file holding marker lines earns nothing. A Write
+# never goes through, since it replaces the whole file.
 RESOLUTION='def marker: test("(^|\\n)(<{7}|={7}|>{7}|[|]{7})( [^\\n]*)?(\\n|$)");
   .tool_name == "Edit"
-  and (.tool_input.old_string | type == "string" and marker)
+  and (.tool_input.old_string | type == "string"
+    and (rtrimstr("\\n") / "\\n" | (first | test("^<{7}( |$)")) and (last | test("^>{7}( |$)"))))
   and (.tool_input.new_string | type == "string" and (marker | not))
   and ((.tool_input.old_string / "\\n") as $old
     | all(.tool_input.new_string / "\\n" | .[]; . as $line | any($old[]; . == $line)))'
 resolves_conflict() {
   [ "$(printf '%s' "$INPUT" | jq -r "$RESOLUTION")" = true ] || return 1
-  merge_of_target > /dev/null || return 1
-  [ -n "$(safe_git -C "$WORKTREE" --literal-pathspecs ls-files -u -- "$REL")" ]
+  MERGED=$(merge_of_target) || return 1
+  STAGES=$(safe_git -C "$WORKTREE" --literal-pathspecs ls-files -u -- "$REL") || return 1
+  OURS=$(printf '%s\\n' "$STAGES" | awk '$3 == 2 { print $2 }')
+  THEIRS=$(printf '%s\\n' "$STAGES" | awk '$3 == 3 { print $2 }')
+  [ -n "$OURS" ] && [ -n "$THEIRS" ] && [ "$OURS" != "$THEIRS" ] || return 1
+  [ "$OURS" = "$(safe_git -C "$WORKTREE" rev-parse -q --verify "HEAD:$REL" 2>/dev/null)" ] &&
+    [ "$THEIRS" = "$(safe_git -C "$WORKTREE" rev-parse -q --verify "$MERGED:$REL" 2>/dev/null)" ]
 }
 if printf '%s\\n' "$REL" | grep -qE -f '${join(hooksDir, 'scope-out.pat')}'; then
   resolves_conflict && exit 0
@@ -447,26 +458,17 @@ WORK=$(mkdir -p "$SNAPSHOTS" && mktemp -d "$SNAPSHOTS/work.XXXXXX") || {
 trap 'rm -rf "$WORK"' EXIT
 ${MERGE_OF_TARGET_SHELL}
 
-# Whether $1 holds what the merged tip holds there: present with the same blob, or
-# absent from both. Only a regular file under the hash cap is read, as below.
-holds_merged() {
-  case "$1" in *[[:cntrl:]]*) return 1 ;; esac
-  WANT=$(safe_git -C "$WORKTREE" rev-parse -q --verify "$MERGED:$1" 2>/dev/null)
-  if [ ! -e "$WORKTREE/$1" ] && [ ! -L "$WORKTREE/$1" ]; then [ -z "$WANT" ]; return; fi
-  [ -n "$WANT" ] && [ -f "$WORKTREE/$1" ] && [ ! -L "$WORKTREE/$1" ] || return 1
-  [ "$(( $(wc -c < "$WORKTREE/$1") ))" -le ${RECHECK_HASH_MAX_BYTES} ] || return 1
-  [ "$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$1" 2>/dev/null)" = "$WANT" ]
-}
-
 # One line per dirty path outside this task's scope: "<fingerprint> <reason> <path>".
 # Returns 1 when git cannot be read and 2 when there are too many paths to check;
 # both refuse after the call. git names every path raw with -z; tr turns each
 # newline inside a name into \\001 before NUL becomes the line separator, so a
 # record is always one line and a name is only ever quoted data, never split,
 # globbed or evaluated. Precedence is the scope hook's: .claude/, then scope-out,
-# then scope-in. While a merge of the target is in progress, a path holding the
-# merged tip's own content came in from the target and is not the session's
-# change (decision 99): the branch is judged by what differs from that tip.
+# then scope-in. While a merge of the target is in progress, a tracked path whose
+# worktree content is the merged tip's came in from the target and is not the
+# session's change (decision 99): the branch is judged by what differs from that
+# tip, asked of git once rather than path by path, which would outrun the hook's
+# timeout on a merge that brings in many files.
 out_of_scope() {
   MERGED=$(merge_of_target) || MERGED=
   safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
@@ -483,15 +485,24 @@ out_of_scope() {
   # Every record the loop below would read, in-scope ones included: the cap is
   # on the forks, not on the verdicts.
   [ "$(wc -l < "$WORK/records")" -le ${RECHECK_MAX_DIRTY_PATHS} ] || return 2
+  if [ -n "$MERGED" ]; then
+    safe_git -C "$WORKTREE" diff --no-ext-diff --no-textconv --no-renames --name-only -z \\
+      "$MERGED" -- > "$WORK/merged" || return 1
+    tr '\\n\\000' '\\001\\n' < "$WORK/merged" > "$WORK/differs"
+  fi
   while IFS= read -r ENTRY; do
     CODE=\${ENTRY%"\${ENTRY#??}"}
     FILE=\${ENTRY#???}
+    # Untracked and ignored paths are in no diff against a commit, so they never pass.
+    if [ -n "$MERGED" ] && [ "$CODE" != '??' ] && [ "$CODE" != '!!' ] &&
+      ! grep -qxF -e "$FILE" "$WORK/differs"; then
+      continue
+    fi
     if printf '%s\\n' "$FILE" | grep -qiE '^\\.claude/'; then REASON=protected-path
     elif printf '%s\\n' "$FILE" | grep -qE -f "$HOOKS/scope-out.pat"; then REASON=scope-out
     elif printf '%s\\n' "$FILE" | grep -qE -f "$HOOKS/scope-in.pat"; then continue
     else REASON=outside-scope-in
     fi
-    [ -n "$MERGED" ] && holds_merged "$FILE" && continue
     case "$FILE" in
       *[[:cntrl:]]*) SUM=unhashable ;;
       *) case "$CODE" in

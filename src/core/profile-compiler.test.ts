@@ -212,7 +212,18 @@ describe('compileProfile', () => {
 
       expect(message).toContain('pup-s -2 just landed on ma in, changing files');
       expect(message).toContain('a 2J.ts');
-      expect(message).toContain('`git rebase refs/heads/ma in`');
+      expect(message).toContain("`git rebase 'refs/heads/ma in'`");
+    });
+
+    it('quotes a target the shell would read as more than a ref', () => {
+      const message = ProfileCompiler.mainLandedMessage({
+        name: 'pup-s-2',
+        target: 'main;touch pwned',
+        files: ['a.ts'],
+        openPullRequest: true,
+      });
+
+      expect(message).toContain("`git merge 'refs/heads/main;touch pwned'`");
     });
   });
 
@@ -747,6 +758,52 @@ describe('generated hooks over a merge of the target', () => {
     expect(edit('src/cli/index.ts', 'main', 'evil', 'Write').status).toBe(2);
     expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
     expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
+  });
+
+  it('reads the merged tip through no replace ref a session planted', () => {
+    fork({}, { 'src/cli/index.ts': 'main\n' });
+    bash('git merge main');
+    // A commit like the tip but holding the session's own index.ts, swapped in
+    // for the tip by `git replace` in the shared ref store.
+    const evilIndex = join(root, 'evil-index');
+    spawnSync(
+      'sh',
+      [
+        '-c',
+        'b=$(printf "evil\\n" | git hash-object -w --stdin) && ' +
+          `GIT_INDEX_FILE='${evilIndex}' git read-tree main && ` +
+          `GIT_INDEX_FILE='${evilIndex}' git update-index --cacheinfo 100644,$b,src/cli/index.ts && ` +
+          `t=$(GIT_INDEX_FILE='${evilIndex}' git write-tree) && ` +
+          'git replace "$(git rev-parse main)" "$(git commit-tree "$t" -p main~1 -m e)"',
+      ],
+      { cwd: repo, env: GIT_ENV },
+    );
+    expect(git(repo, 'cat-file', '-p', 'main:src/cli/index.ts').stdout).toBe('evil\n');
+
+    expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
+    expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
+  });
+
+  it('refuses an Edit over marker lines whose conflict was staged by hand', () => {
+    const markers = '<<<<<<< a\nkeep\n=======\ngate()\n>>>>>>> b';
+    fork({ 'src/cli/decoy.ts': `${markers}\n` }, { 'src/cli/index.ts': 'main\n' });
+    // No merge ran: MERGE_HEAD is written by hand and the file given all three
+    // stages at the blob it already holds.
+    spawnSync(
+      'sh',
+      [
+        '-c',
+        'git rev-parse main > "$(git rev-parse --git-path MERGE_HEAD)" && ' +
+          'b=$(git rev-parse HEAD:src/cli/decoy.ts) && ' +
+          'printf "0 0000000000000000000000000000000000000000\\tsrc/cli/decoy.ts\\n' +
+          '100644 $b 1\\tsrc/cli/decoy.ts\\n100644 $b 2\\tsrc/cli/decoy.ts\\n' +
+          '100644 $b 3\\tsrc/cli/decoy.ts\\n" | git update-index --index-info',
+      ],
+      { cwd: worktree, env: GIT_ENV },
+    );
+    expect(git(worktree, 'ls-files', '-u').stdout.trim().split('\n')).toHaveLength(3);
+
+    expect(edit('src/cli/decoy.ts', markers, 'keep').status).toBe(2);
   });
 
   it('allows resolving a conflict main left in a scope-out file, and nothing else there', () => {

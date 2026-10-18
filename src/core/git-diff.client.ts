@@ -45,6 +45,10 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * `submodule.recurse` would have the rebase and that checkout recurse into a
  * `.git/modules/<name>` repo whose own config and attributes no driver check
  * reads, so it is pinned off (decision 80).
+ * `core.useReplaceRefs` is off because a session can write `refs/replace/`
+ * in the shared ref store: a replacement for the target's tip would hand
+ * every diff, and the scope audit reading it, a tree the session chose in
+ * place of the one the sha names (decision 99).
  * The `lfs` filter is emptied and made optional, so no pup git call runs
  * git-lfs: with the operator's global `git lfs install`, a tracked
  * `.gitattributes` naming `filter=lfs` makes it the smudge driver of every
@@ -77,6 +81,8 @@ export const GIT_SAFE_CONFIG = [
   'pull.twohead=ort',
   '-c',
   'submodule.recurse=false',
+  '-c',
+  'core.useReplaceRefs=false',
   '-c',
   'filter.lfs.required=false',
   '-c',

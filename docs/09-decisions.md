@@ -4931,7 +4931,8 @@ changes back into those docs is pending.
     target, the radar's reading. A branch with an open PR, by the store's word (its newest
     `merge` event carries a `prUrl` and no `landed` follows, the inbox's rule), is told to run
     `git merge refs/heads/<target>`, a merge commit, since GitHub holds its history. Any other
-    branch is told to run `git rebase refs/heads/<target>`. No steer mentions a force-push. The
+    branch is told to run `git rebase refs/heads/<target>`, the ref shell-quoted where a ref
+    name may hold what a shell reads as syntax. No steer mentions a force-push. The
     worker commits its work in progress first, resolves the conflicts, re-runs the tests for the
     files involved and reports in one line. The steer is best effort, as an introduction is: a
     refused paste, a session that has just stopped and a branch git cannot read are skipped, and
@@ -4941,17 +4942,25 @@ changes back into those docs is pending.
     *The hooks read a merge of main as main's change.* A merge of main that stops on a conflict
     leaves main's files staged in the worktree, and the Bash re-check (decision 63) flagged them
     as out-of-scope writes. While a merge of the target's tip is in progress, the re-check now
-    skips a dirty path whose content is the tip's own, present with the same blob or absent from
-    both: the branch is judged by what differs from what it merged. The tip is the main
+    skips a tracked dirty path that one `git diff <tip> --name-only` does not list, whose
+    worktree content is the tip's own: the branch is judged by what differs from what it
+    merged. It is one git call per check, not one per path, so a merge bringing in many files
+    does not push the hook past its timeout, where it fails open. The tip is the main
     checkout's HEAD (`main-worktree/HEAD`), the branch the gate merges into, and MERGE_HEAD must
     be that commit exactly, so a merge of anything else, a commit the session made or the
     target's own past, earns nothing. The Edit hook lets one kind of edit through outside
-    scope-in or inside scope-out: an Edit, never a Write, on a file git lists unmerged during
-    such a merge, whose replaced text holds a conflict marker line and whose new text holds none
-    and is made only of lines of the replaced text (one side, the other, or both). A committed
-    merge needed no change: the gate diffs against the merge-base, which a merge of main moves to
-    main's tip. Every git call the two hooks make, the ones they made before included, now runs
-    as `safe_git`, under `GIT_SAFE_CONFIG`'s pins rendered into the script.
+    scope-in or inside scope-out: an Edit, never a Write, whose replaced text is one whole
+    conflict block, from its `<<<<<<<` line to its `>>>>>>>` line, and whose new text holds no
+    marker and is made only of lines of the block (one side, the other, or both). The index
+    must hold the conflict such a merge makes: the branch's blob at stage 2, the tip's at
+    stage 3, and the two different, so a conflict staged by hand over a file that happens to
+    hold marker lines earns nothing. A committed merge needed no change: the gate diffs against
+    the merge-base, which a merge of main moves to main's tip. Every git call the two hooks
+    make, the ones they made before included, now runs as `safe_git`, under `GIT_SAFE_CONFIG`'s
+    pins rendered into the script. The review of this change found a session could plant a
+    `refs/replace/` entry for the tip in the shared ref store and hand every diff, the gate's
+    scope audit included, a tree of its choosing; `GIT_SAFE_CONFIG` now pins
+    `core.useReplaceRefs=false`, so neither `runGit` nor the hooks follow one.
     *Ceilings.* No live session carries an open PR until a fix round keeps its worker running,
     so until then every steer says rebase. Only committed work counts: a peer's uncommitted edit
     to a landed file earns no steer. A conflict in an out-of-scope file means the branch changed
@@ -4959,18 +4968,27 @@ changes back into those docs is pending.
     `git merge` that wrote the markers. If main moves again mid-merge, MERGE_HEAD is no longer
     the tip and both hooks fall back to their old reading until the worker merges again. A merge
     bringing in more dirty paths than the re-check's cap is reported on every Bash call until it
-    is committed, as any large dirty tree is.
+    is committed, as any large dirty tree is. The diff trusts the index's stat data, as `git
+    status` does, so a session that forges index entries could hide a write from the re-check,
+    and a session whose branch already holds marker lines in an out-of-scope file can stage the
+    branch-and-tip conflict by hand and edit within that block. Either way the file differs from
+    the target, and the gate's scope audit refuses it. A `pup land` run git-diffs each live
+    session's branch, as the gate and the overlap check already do, so the transport pins owed
+    against a planted promisor remote cover it too.
     Tests: after a land, a live session sharing a landed file gets one `main-landed` steer and
     one sharing none gets nothing. The steer says rebase without an open PR and merge with one,
     and neither mentions a force-push. A refused paste records no steer and leaves the land
-    done. The steer scrubs the landed name, the target and the files. In a real repo with a
+    done. The steer scrubs the landed name, the target and the files, and shell-quotes a target
+    holding `;`. In a real repo with a
     linked worktree, a `git merge main` stopped on a conflict, with main's out-of-scope and
     scope-out files staged, passes the re-check, and so does committing the resolved merge. After
     it, an Edit, a Write and a Bash write to an out-of-scope file are still refused. In a file
     conflicted outside scope-in or inside scope-out, an Edit keeping one side, the other or both
     passes; one adding a line of its own, leaving a marker, touching no marker or written as a
     Write is refused, as is the same Edit once the file is staged or during a merge of a commit
-    other than the tip.
+    other than the tip. An Edit over marker lines whose conflict was staged by hand, all three
+    stages at one blob, is refused. A write of an out-of-scope file is reported though a
+    planted replace ref makes the tip hold the same content.
 
 ## Implementation notes
 

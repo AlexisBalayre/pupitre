@@ -218,7 +218,8 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
  * the target. After the `landed` event and best effort, as a peer's
  * introduction is: the land is done whatever a steer does, a session whose
  * paste is refused or that has just stopped is skipped, and so is one whose
- * branch git cannot read yet, a queued session's.
+ * branch git cannot read yet, a queued session's. A PR whose files git cannot
+ * list steers no one, rather than report a land that happened as failed.
  */
 function steerOverlappingSessions(
   db: Database,
@@ -228,7 +229,13 @@ function steerOverlappingSessions(
   target: string,
   targetSha: string,
 ): void {
-  const landedFiles = new Set(gitDiffPaths(repoPath, `${mergeCommit}^1`, mergeCommit));
+  let landedFiles: Set<string>;
+  try {
+    landedFiles = new Set(gitDiffPaths(repoPath, `${mergeCommit}^1`, mergeCommit));
+  } catch (error) {
+    rethrowIfKilled(error);
+    return;
+  }
   const name = windowLabel({ sessionId: landedId });
   for (const peer of listSessions(db, holdingStates())) {
     // Store text about to name a ref: only the branch a launch mints is read.
