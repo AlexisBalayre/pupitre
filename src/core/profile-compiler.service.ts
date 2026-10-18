@@ -10,6 +10,7 @@ import {
 } from '../claude/model-ladder.constants.js';
 import { readBrief, workerBrief } from './brief.service.js';
 import { codegraphMcpConfig } from './codegraph.client.js';
+import { GIT_SAFE_CONFIG } from './git-diff.client.js';
 import { globsToGrepFile } from './glob.utils.js';
 import {
   CHARS_PER_TOKEN,
@@ -235,6 +236,31 @@ export function peerJoinedMessage(peer: SessionPeer): string {
   );
 }
 
+/**
+ * The one steer each live worker overlapping a land receives (decision 99):
+ * take the target in now, while the conflict is one change wide. A branch
+ * with an open pull request merges it, since rewriting a branch GitHub already
+ * holds would need its history replaced there; any other branch rebases.
+ */
+export function mainLandedMessage(landed: {
+  name: string;
+  target: string;
+  files: string[];
+  openPullRequest: boolean;
+}): string {
+  const ref = `refs/heads/${sanitizeReason(landed.target)}`;
+  const take = landed.openPullRequest
+    ? `Your branch has an open pull request, so keep its history: run \`git merge ${ref}\`, ` +
+      'which records a merge commit, and do not rebase it.'
+    : `Run \`git rebase ${ref}\`.`;
+  return (
+    `${sanitizeReason(landed.name)} just landed on ${sanitizeReason(landed.target)}, changing ` +
+    `files your branch changes too: ${namedPeerFiles(landed.files)}. Take it in now, before ` +
+    `your next edit: commit your work in progress first. ${take} Resolve any conflicts, ` +
+    're-run the tests for the files involved, and report in one line what taking it in changed.'
+  );
+}
+
 function buildContextMarkdown(
   merged: ProfileLayer,
   input: CompileInput & { peers?: SessionPeer[] },
@@ -285,6 +311,22 @@ function buildContextMarkdown(
 }
 
 /**
+ * Shell both worktree hooks share (decision 99). `safe_git` is git under the
+ * pins `runGit` applies, each a Pupitre constant single-quoted into the script.
+ * `merge_of_target` prints MERGE_HEAD while a merge of the target's tip is in
+ * progress in the worktree, and fails otherwise. The target is the branch the
+ * main checkout has out, the one the gate merges into, and MERGE_HEAD must be
+ * its tip exactly: a merge of any other commit, one the session made or the
+ * target's own past, earns nothing from either hook.
+ */
+const MERGE_OF_TARGET_SHELL = `safe_git() { git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"; }
+merge_of_target() {
+  MERGING=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'MERGE_HEAD^{commit}' 2>/dev/null) || return 1
+  TIP=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'main-worktree/HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$MERGING" = "$TIP" ] && printf '%s\\n' "$MERGING"
+}`;
+
+/**
  * Scope enforcement. Task-controlled patterns live in sidecar files read via
  * `grep -E -f`, so no glob value is ever interpolated into shell source; only
  * Pupitre-owned, validated paths are. REL is normalized and parent traversal
@@ -313,10 +355,29 @@ case "/$REL/" in *"/../"*) echo "BLOCKED: path traversal is not allowed." >&2; e
 if printf '%s\\n' "$REL" | grep -qiE '^\\.claude/'; then
   echo "BLOCKED: .claude/ is owned by Pupitre and read-only for sessions." >&2; exit 2
 fi
+${MERGE_OF_TARGET_SHELL}
+# Out of scope, an Edit still goes through when all it does is resolve a conflict
+# a merge of the target left in the file (decision 99): git lists the file
+# unmerged, the replaced text holds a conflict marker line, and the new text holds
+# none and is made only of lines of the replaced text: one side, the other, or
+# both. A Write never does, since it replaces the whole file.
+RESOLUTION='def marker: test("(^|\\n)(<{7}|={7}|>{7}|[|]{7})( [^\\n]*)?(\\n|$)");
+  .tool_name == "Edit"
+  and (.tool_input.old_string | type == "string" and marker)
+  and (.tool_input.new_string | type == "string" and (marker | not))
+  and ((.tool_input.old_string / "\\n") as $old
+    | all(.tool_input.new_string / "\\n" | .[]; . as $line | any($old[]; . == $line)))'
+resolves_conflict() {
+  [ "$(printf '%s' "$INPUT" | jq -r "$RESOLUTION")" = true ] || return 1
+  merge_of_target > /dev/null || return 1
+  [ -n "$(safe_git -C "$WORKTREE" --literal-pathspecs ls-files -u -- "$REL")" ]
+}
 if printf '%s\\n' "$REL" | grep -qE -f '${join(hooksDir, 'scope-out.pat')}'; then
+  resolves_conflict && exit 0
   echo "BLOCKED: file is in scope-out for this task." >&2; exit 2
 fi
 if printf '%s\\n' "$REL" | grep -qE -f '${join(hooksDir, 'scope-in.pat')}'; then exit 0; fi
+resolves_conflict && exit 0
 echo "BLOCKED: file is outside this task's scope-in." >&2
 exit 2
 `;
@@ -384,6 +445,18 @@ WORK=$(mkdir -p "$SNAPSHOTS" && mktemp -d "$SNAPSHOTS/work.XXXXXX") || {
   [ "$PHASE" = PreToolUse ] && exit 0
   echo "SCOPE CHECK FAILED: bash re-check could not make its scratch dir." >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
+${MERGE_OF_TARGET_SHELL}
+
+# Whether $1 holds what the merged tip holds there: present with the same blob, or
+# absent from both. Only a regular file under the hash cap is read, as below.
+holds_merged() {
+  case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+  WANT=$(safe_git -C "$WORKTREE" rev-parse -q --verify "$MERGED:$1" 2>/dev/null)
+  if [ ! -e "$WORKTREE/$1" ] && [ ! -L "$WORKTREE/$1" ]; then [ -z "$WANT" ]; return; fi
+  [ -n "$WANT" ] && [ -f "$WORKTREE/$1" ] && [ ! -L "$WORKTREE/$1" ] || return 1
+  [ "$(( $(wc -c < "$WORKTREE/$1") ))" -le ${RECHECK_HASH_MAX_BYTES} ] || return 1
+  [ "$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$1" 2>/dev/null)" = "$WANT" ]
+}
 
 # One line per dirty path outside this task's scope: "<fingerprint> <reason> <path>".
 # Returns 1 when git cannot be read and 2 when there are too many paths to check;
@@ -391,15 +464,18 @@ trap 'rm -rf "$WORK"' EXIT
 # newline inside a name into \\001 before NUL becomes the line separator, so a
 # record is always one line and a name is only ever quoted data, never split,
 # globbed or evaluated. Precedence is the scope hook's: .claude/, then scope-out,
-# then scope-in.
+# then scope-in. While a merge of the target is in progress, a path holding the
+# merged tip's own content came in from the target and is not the session's
+# change (decision 99): the branch is judged by what differs from that tip.
 out_of_scope() {
-  git -C "$WORKTREE" -c core.fsmonitor= status --porcelain=v1 -z --untracked-files=all \\
+  MERGED=$(merge_of_target) || MERGED=
+  safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
     --no-renames > "$WORK/status" || return 1
   # An ignored path is in no listing above, and the ignore rule can be the session's
   # own: .git/info/exclude is not a worktree path, so writing it is invisible. Under
   # .claude/ the ignored files are listed too, and only those (!!) are kept from this
   # pass, since everything else in it is already in the first.
-  git -C "$WORKTREE" -c core.fsmonitor= status --porcelain=v1 -z --untracked-files=all \\
+  safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
     --ignored=traditional --no-renames -- ':(icase).claude' > "$WORK/protected" || return 1
   { tr '\\n\\000' '\\001\\n' < "$WORK/status"
     tr '\\n\\000' '\\001\\n' < "$WORK/protected" | grep '^!! '
@@ -415,6 +491,7 @@ out_of_scope() {
     elif printf '%s\\n' "$FILE" | grep -qE -f "$HOOKS/scope-in.pat"; then continue
     else REASON=outside-scope-in
     fi
+    [ -n "$MERGED" ] && holds_merged "$FILE" && continue
     case "$FILE" in
       *[[:cntrl:]]*) SUM=unhashable ;;
       *) case "$CODE" in
@@ -426,7 +503,7 @@ out_of_scope() {
                SIZE=$(( $(wc -c < "$WORKTREE/$FILE") ))
                if [ "$SIZE" -gt ${RECHECK_HASH_MAX_BYTES} ]; then SUM=large-$SIZE
                else
-                 SUM=$(git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null) || SUM=unreadable
+                 SUM=$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null) || SUM=unreadable
                fi
              else SUM=special
              fi ;;

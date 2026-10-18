@@ -4922,6 +4922,55 @@ changes back into those docs is pending.
     compiled worker context carries the collaboration protocol with no peers, caps a peer's
     files at 20 with a count, and changes its hash with peers. The conductor's context names
     overlap as allowed and carries no `--allow-overlap`, `re-scope` or `disjoint`.
+    *Main reaches overlapping workers as soon as a peer lands (amended 2026-10-18).* Talking
+    settles who edits what, but each branch still drifts from main until the gate's rebase,
+    where the conflict is as wide as both tasks. Once `pup land` has written its `landed` event,
+    it steers every live session whose branch changed a file the landed PR changed, once, as a
+    `steer` of kind `main-landed` by the landed session. The PR's files are its merge commit
+    against its first parent; a session's are its branch's own changes since it forked from the
+    target, the radar's reading. A branch with an open PR, by the store's word (its newest
+    `merge` event carries a `prUrl` and no `landed` follows, the inbox's rule), is told to run
+    `git merge refs/heads/<target>`, a merge commit, since GitHub holds its history. Any other
+    branch is told to run `git rebase refs/heads/<target>`. No steer mentions a force-push. The
+    worker commits its work in progress first, resolves the conflicts, re-runs the tests for the
+    files involved and reports in one line. The steer is best effort, as an introduction is: a
+    refused paste, a session that has just stopped and a branch git cannot read are skipped, and
+    the land is done whatever a steer does. Session ids and branches are store text about to
+    name a ref, so only a session whose branch is `pup/<id>` is read. The gate's mechanical
+    rebase stays the final check.
+    *The hooks read a merge of main as main's change.* A merge of main that stops on a conflict
+    leaves main's files staged in the worktree, and the Bash re-check (decision 63) flagged them
+    as out-of-scope writes. While a merge of the target's tip is in progress, the re-check now
+    skips a dirty path whose content is the tip's own, present with the same blob or absent from
+    both: the branch is judged by what differs from what it merged. The tip is the main
+    checkout's HEAD (`main-worktree/HEAD`), the branch the gate merges into, and MERGE_HEAD must
+    be that commit exactly, so a merge of anything else, a commit the session made or the
+    target's own past, earns nothing. The Edit hook lets one kind of edit through outside
+    scope-in or inside scope-out: an Edit, never a Write, on a file git lists unmerged during
+    such a merge, whose replaced text holds a conflict marker line and whose new text holds none
+    and is made only of lines of the replaced text (one side, the other, or both). A committed
+    merge needed no change: the gate diffs against the merge-base, which a merge of main moves to
+    main's tip. Every git call the two hooks make, the ones they made before included, now runs
+    as `safe_git`, under `GIT_SAFE_CONFIG`'s pins rendered into the script.
+    *Ceilings.* No live session carries an open PR until a fix round keeps its worker running,
+    so until then every steer says rebase. Only committed work counts: a peer's uncommitted edit
+    to a landed file earns no steer. A conflict in an out-of-scope file means the branch changed
+    one, which the gate refuses whatever the merge does, and the re-check still reports the
+    `git merge` that wrote the markers. If main moves again mid-merge, MERGE_HEAD is no longer
+    the tip and both hooks fall back to their old reading until the worker merges again. A merge
+    bringing in more dirty paths than the re-check's cap is reported on every Bash call until it
+    is committed, as any large dirty tree is.
+    Tests: after a land, a live session sharing a landed file gets one `main-landed` steer and
+    one sharing none gets nothing. The steer says rebase without an open PR and merge with one,
+    and neither mentions a force-push. A refused paste records no steer and leaves the land
+    done. The steer scrubs the landed name, the target and the files. In a real repo with a
+    linked worktree, a `git merge main` stopped on a conflict, with main's out-of-scope and
+    scope-out files staged, passes the re-check, and so does committing the resolved merge. After
+    it, an Edit, a Write and a Bash write to an out-of-scope file are still refused. In a file
+    conflicted outside scope-in or inside scope-out, an Edit keeping one side, the other or both
+    passes; one adding a line of its own, leaving a marker, touching no marker or written as a
+    Write is refused, as is the same Edit once the file is staged or during a merge of a commit
+    other than the tip.
 
 ## Implementation notes
 

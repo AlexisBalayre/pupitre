@@ -19,7 +19,9 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
 
 /**
  * The config every pup git call overrides, the argv half of `scrubbedGitEnv`.
- * Private: `runGit` is the one place it is applied (decision 73).
+ * `runGit` is the one place pup's own calls apply it (decision 73); the only
+ * other reader is the profile compiler, which renders it into the generated
+ * hooks' `safe_git` so the git a session's hooks run is pinned the same way.
  * Linked worktrees share `$GIT_COMMON_DIR/config` and `.git/**` is untracked,
  * so a session can set either of these keys without the scope hooks or the
  * gate seeing it, and the operator's next git call would run what it names.
@@ -56,7 +58,7 @@ export function scrubbedGitEnv(): NodeJS.ProcessEnv {
  * has no `-c` disarm at all — its driver name is chosen by whoever wrote it —
  * so it is refused rather than disarmed; see `armedGitDrivers` (decision 50).
  */
-const GIT_SAFE_CONFIG = [
+export const GIT_SAFE_CONFIG = [
   '-c',
   'core.hooksPath=/dev/null',
   '-c',

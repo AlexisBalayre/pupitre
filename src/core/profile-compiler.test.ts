@@ -201,6 +201,19 @@ describe('compileProfile', () => {
           '(the function or section) and agree who does what.',
       );
     });
+
+    it('scrubs the landed name, the target and the files in the take-main-in steer', () => {
+      const message = ProfileCompiler.mainLandedMessage({
+        name: 'pup-s\u001b-2',
+        target: 'ma\u0007in',
+        files: ['a\u009b2J.ts'],
+        openPullRequest: false,
+      });
+
+      expect(message).toContain('pup-s -2 just landed on ma in, changing files');
+      expect(message).toContain('a 2J.ts');
+      expect(message).toContain('`git rebase refs/heads/ma in`');
+    });
   });
 
   // Decision 77: a layer adds denials after decision 74's and never removes one.
@@ -599,6 +612,191 @@ describe('generated bash re-check (decision 63)', () => {
     expect(entry?.hooks.map((h) => h.command)).toEqual([
       '/state/sessions/s-1/compiled/hooks/bash-recheck.sh',
     ]);
+  });
+});
+
+// Decision 99: a worker takes main in by merging it, with real git in a linked
+// worktree, as a session's is.
+describe('generated hooks over a merge of the target', () => {
+  const GIT_ENV: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  let root: string;
+  let repo: string;
+  let worktree: string;
+  let events: string;
+
+  const git = (cwd: string, ...args: string[]) =>
+    spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' });
+
+  function commit(cwd: string, files: Record<string, string>): void {
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(cwd, path)), { recursive: true });
+      writeFileSync(join(cwd, path), content);
+    }
+    git(cwd, 'add', '-A');
+    git(cwd, 'commit', '-q', '-m', 'change');
+  }
+
+  /**
+   * main and a session branch forked from it, each committing its own files on
+   * top, and the session's profile compiled for its worktree. Both change
+   * `src/net/client.ts`, in scope, so `git merge main` stops on a conflict with
+   * main's other files staged beside it.
+   */
+  function fork(branchFiles: Record<string, string>, mainFiles: Record<string, string>): void {
+    commit(worktree, { 'src/net/client.ts': 'branch\n', ...branchFiles });
+    commit(repo, { 'src/net/client.ts': 'main\n', ...mainFiles });
+    const outDir = join(root, 'compiled');
+    const compiled = ProfileCompiler.compileProfile(
+      makeInput({ repoPath: repo, worktreePath: worktree, eventsFile: events, outDir }),
+    );
+    ProfileCompiler.writeCompiledProfile(compiled, outDir);
+  }
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'pup-merge-hooks-')));
+    repo = join(root, 'repo');
+    worktree = join(repo, '.worktrees', 's-1');
+    events = join(root, 'events.jsonl');
+    mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'config', 'user.name', 't');
+    git(repo, 'config', 'user.email', 't@t');
+    commit(repo, {
+      '.gitignore': '.worktrees/\n',
+      'src/net/client.ts': 'base\n',
+      'src/cli/index.ts': 'base\n',
+      'src/cli/decoy.ts': 'one\ntwo\n',
+    });
+    git(repo, 'worktree', 'add', '-q', '-b', 'pup/s-1', worktree, 'main');
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function runScript(script: string, payload: object) {
+    return spawnSync('/bin/sh', [join(root, 'compiled/hooks', script)], {
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+      timeout: 4_000,
+      env: { ...GIT_ENV, PUP_SESSION_ID: 's-1' },
+    });
+  }
+
+  /** The Bash call as Claude Code runs it: the pre hook, the command, the post hook. */
+  function bash(command: string) {
+    const payload = (phase: string) => ({
+      hook_event_name: phase,
+      tool_use_id: 'toolu_01merge',
+      tool_input: { command },
+    });
+    expect(runScript('bash-recheck.sh', payload('PreToolUse')).status).toBe(0);
+    spawnSync('sh', ['-c', command], { cwd: worktree, env: GIT_ENV });
+    return runScript('bash-recheck.sh', payload('PostToolUse'));
+  }
+
+  function edit(path: string, oldString: string, newString: string, tool = 'Edit') {
+    return runScript('scope-enforce.sh', {
+      tool_name: tool,
+      tool_input: {
+        file_path: join(worktree, path),
+        ...(tool === 'Edit'
+          ? { old_string: oldString, new_string: newString }
+          : { content: newString }),
+      },
+    });
+  }
+
+  function violations(): string[] {
+    if (!existsSync(events)) return [];
+    return readFileSync(events, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, string>)
+      .filter((event) => event.type === 'scope_violation')
+      .map((event) => `${event.path} ${event.reason}`);
+  }
+
+  it("passes a merge of main whose conflicts stop it with main's out-of-scope files staged", () => {
+    fork({}, { 'src/cli/index.ts': 'main\n', 'src/net/legacy/old.ts': 'main\n' });
+
+    const merge = bash('git merge main');
+
+    // What the re-check reads: main's files staged, out of scope, mid-merge.
+    expect(git(worktree, 'status', '--porcelain').stdout).toContain('M  src/cli/index.ts');
+    expect(merge.stderr).toBe('');
+    expect(merge.status).toBe(0);
+    expect(violations()).toEqual([]);
+    expect(edit('src/net/client.ts', 'branch', 'resolved').status).toBe(0);
+    expect(
+      bash('printf "resolved\\n" > src/net/client.ts && git add -A && git commit -q --no-edit')
+        .status,
+    ).toBe(0);
+    expect(violations()).toEqual([]);
+  });
+
+  it('still refuses a write to an out-of-scope file once main is merged in', () => {
+    fork({}, { 'src/cli/index.ts': 'main\n' });
+    bash('git merge main');
+
+    expect(edit('src/cli/index.ts', 'main', 'evil').status).toBe(2);
+    expect(edit('src/cli/index.ts', 'main', 'evil', 'Write').status).toBe(2);
+    expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
+    expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
+  });
+
+  it('allows resolving a conflict main left in a scope-out file, and nothing else there', () => {
+    fork({ 'src/net/legacy/old.ts': 'branch\n' }, { 'src/net/legacy/old.ts': 'main\n' });
+    bash('git merge main');
+    const conflict = '<<<<<<< HEAD\nbranch\n=======\nmain\n>>>>>>> main';
+
+    expect(edit('src/net/legacy/old.ts', conflict, 'main').status).toBe(0);
+    expect(edit('src/net/legacy/old.ts', conflict, 'other').status).toBe(2);
+  });
+
+  describe('a conflict main left in an out-of-scope file', () => {
+    const block = '<<<<<<< HEAD\none branch\n=======\none main\n>>>>>>> main';
+
+    beforeEach(() => {
+      fork({ 'src/cli/decoy.ts': 'one branch\ntwo\n' }, { 'src/cli/decoy.ts': 'one main\ntwo\n' });
+    });
+
+    it('allows an Edit that keeps one side, the other, or both', () => {
+      bash('git merge main');
+      expect(readFileSync(join(worktree, 'src/cli/decoy.ts'), 'utf8')).toContain(block);
+
+      expect(edit('src/cli/decoy.ts', block, 'one main').status).toBe(0);
+      expect(edit('src/cli/decoy.ts', block, 'one branch').status).toBe(0);
+      expect(edit('src/cli/decoy.ts', block, 'one main\none branch').status).toBe(0);
+    });
+
+    it('refuses an Edit that writes a line of its own, leaves a marker, or is a Write', () => {
+      bash('git merge main');
+
+      expect(edit('src/cli/decoy.ts', block, 'one main\nevil()').status).toBe(2);
+      expect(edit('src/cli/decoy.ts', block, 'one main\n=======').status).toBe(2);
+      expect(edit('src/cli/decoy.ts', 'two', 'two').status).toBe(2);
+      expect(edit('src/cli/decoy.ts', block, 'one main', 'Write').status).toBe(2);
+    });
+
+    it('refuses the same Edit once the file is resolved, or over a merge of anything but the tip', () => {
+      bash('git merge main');
+      bash('git add src/cli/decoy.ts');
+      expect(edit('src/cli/decoy.ts', block, 'one main').status).toBe(2);
+
+      bash('git merge --abort');
+      git(repo, 'branch', 'side', 'main');
+      commit(repo, { 'src/net/other.ts': 'moved on\n' });
+      bash('git merge side');
+      expect(readFileSync(join(worktree, 'src/cli/decoy.ts'), 'utf8')).toContain('<<<<<<< HEAD');
+      expect(
+        edit('src/cli/decoy.ts', block.replace('>>>>>>> main', '>>>>>>> side'), 'one main').status,
+      ).toBe(2);
+    });
   });
 });
 

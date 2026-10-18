@@ -12,7 +12,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  steerPane: vi.fn(),
+}));
+
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
@@ -225,6 +232,104 @@ describe('landSession', { timeout: 20_000 }, () => {
     );
     // The inbox reads the event, so the PR no longer waits on the operator.
     expect(needsYou(buildDashboardSnapshot(db, repo, Date.now()))).toEqual([]);
+  });
+
+  describe('steering the live sessions it overlaps (decision 99)', () => {
+    /** A running session forked from main before the land, its branch changing `file`. */
+    function seedPeer(id: string, file: string): void {
+      const peerTree = join(repo, '.worktrees', id);
+      sh(repo, 'git', 'worktree', 'add', '-q', '-b', `pup/${id}`, peerTree, 'main');
+      commitIn(peerTree, file, `export const ${id} = 1;\n`);
+      insertTask(db, { id: `task-${id}`, projectId: pid, spec: '{}' });
+      insertSession(db, {
+        id,
+        taskId: `task-${id}`,
+        worktreePath: peerTree,
+        branch: `pup/${id}`,
+        profileHash: 'hash',
+        tmuxTarget: `%${id}`,
+      });
+      transitionSession(db, id, 'running');
+    }
+
+    async function landMerged(): Promise<void> {
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+      await land();
+    }
+
+    const steersTo = (id: string) =>
+      vi.mocked(steerPane).mock.calls.filter(([pane]) => pane.paneId === `%${id}`);
+    const steerEvents = (id: string) =>
+      listEvents(db, id)
+        .filter((row) => row.type === 'steer')
+        .map((row) => JSON.parse(row.payload));
+
+    beforeEach(() => {
+      vi.mocked(steerPane).mockReset();
+    });
+
+    it('steers a live session sharing a landed file once, and one sharing none not at all', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      seedPeer('s3', 'src/other.ts');
+
+      await landMerged();
+
+      expect(steersTo('s2')).toHaveLength(1);
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      expect(steersTo('s3')).toEqual([]);
+      expect(steerEvents('s3')).toEqual([]);
+    });
+
+    it('tells a branch with no open PR to rebase onto main, never to force-push', async () => {
+      seedPeer('s2', 'src/feature.ts');
+
+      await landMerged();
+
+      const message = String(steersTo('s2')[0]?.[1]);
+      expect(message).toContain(`pup-${SESSION_ID} just landed on main`);
+      expect(message).toContain('src/feature.ts');
+      expect(message).toContain('`git rebase refs/heads/main`');
+      expect(message).not.toContain('git merge');
+      expect(message).not.toMatch(/force|push/i);
+    });
+
+    it('tells a branch with an open PR to merge main in, never to rebase or force-push', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      appendEvent(db, 's2', 'merge', {
+        branch: 'pup/s2',
+        sha: sh(repo, 'git', 'rev-parse', 'pup/s2'),
+        target: 'main',
+        files: ['src/feature.ts'],
+        prUrl: 'https://github.com/owner/repo/pull/8',
+      });
+
+      await landMerged();
+
+      const message = String(steersTo('s2')[0]?.[1]);
+      expect(message).toContain('`git merge refs/heads/main`');
+      expect(message).toContain('merge commit');
+      expect(message).not.toContain('git rebase');
+      expect(message).not.toMatch(/force|push/i);
+    });
+
+    it('lands whatever a steer does: a refused paste records no steer', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementationOnce(() => {
+        throw new SteerNotDeliveredError('s2', 10, 'box-absent');
+      });
+
+      await landMerged();
+
+      expect(landedEvents()).toHaveLength(1);
+      expect(steerEvents('s2')).toEqual([]);
+    });
   });
 
   it('refuses a second land of the same session', async () => {
