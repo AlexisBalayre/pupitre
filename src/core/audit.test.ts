@@ -58,8 +58,8 @@ describe('auditProject', () => {
   });
 
   describe('off darwin (decision 78)', () => {
-    it('refuses without the declaration and leaves the stored baseline alone', () => {
-      initProject(db, repo, [makeAdapter()]);
+    it('refuses without the declaration and leaves the stored baseline alone', async () => {
+      await initProject(db, repo, [makeAdapter()]);
       const stored = getProject(db, projectId(repo))?.baseline;
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', undefined);
@@ -72,16 +72,18 @@ describe('auditProject', () => {
       expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
     });
 
-    it('re-runs under the declaration and names it', () => {
+    it('re-runs under the declaration and names it', async () => {
       onPlatform('linux');
       vi.stubEnv('PUP_SANDBOX', 'vm');
 
-      expect(auditProject(db, repo, [makeAdapter()]).sandbox).toBe('vm (declared by operator)');
+      expect((await auditProject(db, repo, [makeAdapter()])).sandbox).toBe(
+        'vm (declared by operator)',
+      );
     });
   });
 
-  it('flags a stage that went pass -> fail as a regression and refreshes the baseline', () => {
-    initProject(db, repo, [makeAdapter()]);
+  it('flags a stage that went pass -> fail as a regression and refreshes the baseline', async () => {
+    await initProject(db, repo, [makeAdapter()]);
     const failingTest = makeAdapter({
       gateCommands: () => [
         { stage: 'build', command: 'true', args: [] },
@@ -90,7 +92,7 @@ describe('auditProject', () => {
       ],
     });
 
-    const report = auditProject(db, repo, [failingTest]);
+    const report = await auditProject(db, repo, [failingTest]);
 
     expect(report.transitions).toEqual([
       { stage: 'build', before: 'pass', after: 'pass', delta: 'unchanged' },
@@ -102,8 +104,8 @@ describe('auditProject', () => {
     expect(stored.stages[1]).toMatchObject({ stage: 'test', status: 'fail' });
   });
 
-  it('reports a stage that went fail -> pass as an improvement, not a regression', () => {
-    initProject(db, repo, [
+  it('reports a stage that went fail -> pass as an improvement, not a regression', async () => {
+    await initProject(db, repo, [
       makeAdapter({
         gateCommands: () => [
           { stage: 'build', command: 'true', args: [] },
@@ -113,7 +115,7 @@ describe('auditProject', () => {
       }),
     ]);
 
-    const report = auditProject(db, repo, [makeAdapter()]);
+    const report = await auditProject(db, repo, [makeAdapter()]);
 
     expect(report.transitions[1]).toEqual({
       stage: 'test',
@@ -124,8 +126,8 @@ describe('auditProject', () => {
     expect(report.hasRegression).toBe(false);
   });
 
-  it('behaves like init when no baseline is stored: no transitions, baseline saved', () => {
-    const report = auditProject(db, repo, [makeAdapter()]);
+  it('behaves like init when no baseline is stored: no transitions, baseline saved', async () => {
+    const report = await auditProject(db, repo, [makeAdapter()]);
 
     expect(report.previous).toBeNull();
     expect(report.transitions).toEqual([]);
@@ -134,22 +136,22 @@ describe('auditProject', () => {
     expect(stored.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
   });
 
-  it('reports all stages unchanged when nothing moved', () => {
-    initProject(db, repo, [makeAdapter()]);
+  it('reports all stages unchanged when nothing moved', async () => {
+    await initProject(db, repo, [makeAdapter()]);
 
-    const report = auditProject(db, repo, [makeAdapter()]);
+    const report = await auditProject(db, repo, [makeAdapter()]);
 
     expect(report.transitions.map((t) => t.delta)).toEqual(['unchanged', 'unchanged', 'unchanged']);
     expect(report.hasRegression).toBe(false);
   });
 
-  it('treats losing a command for a passing stage (pass -> skipped) as a regression', () => {
-    initProject(db, repo, [makeAdapter()]);
+  it('treats losing a command for a passing stage (pass -> skipped) as a regression', async () => {
+    await initProject(db, repo, [makeAdapter()]);
     const buildOnly = makeAdapter({
       gateCommands: () => [{ stage: 'build', command: 'true', args: [] }],
     });
 
-    const report = auditProject(db, repo, [buildOnly]);
+    const report = await auditProject(db, repo, [buildOnly]);
 
     expect(report.transitions[1]).toEqual({
       stage: 'test',
@@ -160,12 +162,12 @@ describe('auditProject', () => {
     expect(report.hasRegression).toBe(true);
   });
 
-  it('flags duplicated lines rising as a debt regression and refuses via hasRegression', () => {
-    initProject(db, repo, [
+  it('flags duplicated lines rising as a debt regression and refuses via hasRegression', async () => {
+    await initProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 182, blocks: [] }) }),
     ]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 196, blocks: [] }) }),
     ]);
 
@@ -177,12 +179,12 @@ describe('auditProject', () => {
     expect(stored.debt?.duplicatedLines).toBe(196);
   });
 
-  it('reports falling duplicated lines as improved, not a regression', () => {
-    initProject(db, repo, [
+  it('reports falling duplicated lines as improved, not a regression', async () => {
+    await initProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 196, blocks: [] }) }),
     ]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 182, blocks: [] }) }),
     ]);
 
@@ -192,10 +194,12 @@ describe('auditProject', () => {
     expect(report.hasRegression).toBe(false);
   });
 
-  it('flags a growing unused-export count as a debt regression', () => {
-    initProject(db, repo, [makeAdapter({ deadCode: () => [{ file: 'a.ts', exportName: 'foo' }] })]);
+  it('flags a growing unused-export count as a debt regression', async () => {
+    await initProject(db, repo, [
+      makeAdapter({ deadCode: () => [{ file: 'a.ts', exportName: 'foo' }] }),
+    ]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({
         deadCode: () => [
           { file: 'a.ts', exportName: 'foo' },
@@ -210,10 +214,10 @@ describe('auditProject', () => {
     expect(report.hasRegression).toBe(true);
   });
 
-  it('flags a coverage ratio drop beyond the epsilon as a debt regression', () => {
-    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+  it('flags a coverage ratio drop beyond the epsilon as a debt regression', async () => {
+    await initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ coverage: () => coverageReport(80, 100) }),
     ]);
 
@@ -223,10 +227,10 @@ describe('auditProject', () => {
     expect(report.hasRegression).toBe(true);
   });
 
-  it('treats a coverage ratio move within the epsilon as unchanged', () => {
-    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(900, 1000) })]);
+  it('treats a coverage ratio move within the epsilon as unchanged', async () => {
+    await initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(900, 1000) })]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ coverage: () => coverageReport(899, 1000) }),
     ]);
 
@@ -236,12 +240,12 @@ describe('auditProject', () => {
     expect(report.hasRegression).toBe(false);
   });
 
-  it('leaves a history row for each audit, preserving the numbers it overwrote', () => {
-    initProject(db, repo, [
+  it('leaves a history row for each audit, preserving the numbers it overwrote', async () => {
+    await initProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 182, blocks: [] }) }),
     ]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 196, blocks: [] }) }),
     ]);
 
@@ -254,12 +258,12 @@ describe('auditProject', () => {
     expect(history[1]?.captured_at).toBe(report.baseline.capturedAt);
   });
 
-  it('keeps the stored baseline and its history whole when coverage was not measured', () => {
-    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+  it('keeps the stored baseline and its history whole when coverage was not measured', async () => {
+    await initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
     const stored = getProject(db, projectId(repo))?.baseline;
     const history = listBaselineHistory(db, projectId(repo));
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ coverage: () => ({ unavailable: 'instrumented vitest run failed: boom' }) }),
     ]);
 
@@ -270,10 +274,10 @@ describe('auditProject', () => {
     expect(listBaselineHistory(db, projectId(repo))).toEqual(history);
   });
 
-  it('refreshes the baseline when every metric measured', () => {
-    initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
+  it('refreshes the baseline when every metric measured', async () => {
+    await initProject(db, repo, [makeAdapter({ coverage: () => coverageReport(90, 100) })]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ coverage: () => coverageReport(95, 100) }),
     ]);
 
@@ -285,10 +289,10 @@ describe('auditProject', () => {
 
   // A runner that was never declared gaps on every run; refusing for it would
   // block the audit for good over a figure the baseline never held.
-  it('refreshes the baseline when the unmeasured metric was never measured before', () => {
-    initProject(db, repo, [makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) })]);
+  it('refreshes the baseline when the unmeasured metric was never measured before', async () => {
+    await initProject(db, repo, [makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) })]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
     ]);
 
@@ -305,19 +309,19 @@ describe('auditProject', () => {
       deadCode: () => ({ unavailable: 'no vulture declared' }),
     });
 
-    it('refreshes when the second adapter never measured dead code', () => {
-      initProject(db, repo, [ts, pyWithout]);
+    it('refreshes when the second adapter never measured dead code', async () => {
+      await initProject(db, repo, [ts, pyWithout]);
 
-      const report = auditProject(db, repo, [ts, pyWithout]);
+      const report = await auditProject(db, repo, [ts, pyWithout]);
 
       expect(report.unmeasured).toEqual([]);
       expect(listBaselineHistory(db, projectId(repo))).toHaveLength(2);
     });
 
-    it('refreshes when the second adapter was not run by the stored capture at all', () => {
-      initProject(db, repo, [ts]);
+    it('refreshes when the second adapter was not run by the stored capture at all', async () => {
+      await initProject(db, repo, [ts]);
 
-      const report = auditProject(db, repo, [ts, pyWithout]);
+      const report = await auditProject(db, repo, [ts, pyWithout]);
 
       expect(report.unmeasured).toEqual([]);
       const stored = JSON.parse(
@@ -326,11 +330,11 @@ describe('auditProject', () => {
       expect(stored.gaps).toEqual([{ adapterId: 'py', capability: 'dead code' }]);
     });
 
-    it('keeps the baseline when the second adapter measured before and failed now', () => {
-      initProject(db, repo, [ts, makeAdapter({ id: 'py', deadCode: () => [] })]);
+    it('keeps the baseline when the second adapter measured before and failed now', async () => {
+      await initProject(db, repo, [ts, makeAdapter({ id: 'py', deadCode: () => [] })]);
       const stored = getProject(db, projectId(repo))?.baseline;
 
-      const report = auditProject(db, repo, [ts, pyWithout]);
+      const report = await auditProject(db, repo, [ts, pyWithout]);
 
       expect(report.unmeasured).toEqual(['py: dead code not measured — no vulture declared']);
       expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
@@ -340,8 +344,8 @@ describe('auditProject', () => {
   // Stored before gaps were recorded: judged by the figures it holds, so a
   // coverage figure is still protected and a metric it never had still is not.
   describe('with a baseline stored before gaps were recorded', () => {
-    function storeLegacy(adapter: Adapter): void {
-      initProject(db, repo, [adapter]);
+    async function storeLegacy(adapter: Adapter): Promise<void> {
+      await initProject(db, repo, [adapter]);
       const stored = JSON.parse(
         getProject(db, projectId(repo))?.baseline ?? '{}',
       ) as ProjectBaseline;
@@ -349,11 +353,11 @@ describe('auditProject', () => {
       saveProjectBaseline(db, projectId(repo), legacy.adapters, JSON.stringify(legacy));
     }
 
-    it('keeps the baseline when a coverage figure it holds went unmeasured', () => {
-      storeLegacy(makeAdapter({ coverage: () => coverageReport(90, 100) }));
+    it('keeps the baseline when a coverage figure it holds went unmeasured', async () => {
+      await storeLegacy(makeAdapter({ coverage: () => coverageReport(90, 100) }));
       const stored = getProject(db, projectId(repo))?.baseline;
 
-      const report = auditProject(db, repo, [
+      const report = await auditProject(db, repo, [
         makeAdapter({ coverage: () => ({ unavailable: 'boom' }) }),
       ]);
 
@@ -361,10 +365,10 @@ describe('auditProject', () => {
       expect(getProject(db, projectId(repo))?.baseline).toBe(stored);
     });
 
-    it('refreshes and records the gap for a metric it never held', () => {
-      storeLegacy(makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }));
+    it('refreshes and records the gap for a metric it never held', async () => {
+      await storeLegacy(makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }));
 
-      const report = auditProject(db, repo, [
+      const report = await auditProject(db, repo, [
         makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
       ]);
 
@@ -376,8 +380,8 @@ describe('auditProject', () => {
     });
   });
 
-  it('stores a first baseline with a gap like `pup init` does: there is nothing to keep', () => {
-    const report = auditProject(db, repo, [
+  it('stores a first baseline with a gap like `pup init` does: there is nothing to keep', async () => {
+    const report = await auditProject(db, repo, [
       makeAdapter({ coverage: () => ({ unavailable: 'no runner' }) }),
     ]);
 
@@ -386,10 +390,10 @@ describe('auditProject', () => {
     expect(listBaselineHistory(db, projectId(repo))).toHaveLength(1);
   });
 
-  it('emits no transition for a metric measured on only one side', () => {
-    initProject(db, repo, [makeAdapter()]);
+  it('emits no transition for a metric measured on only one side', async () => {
+    await initProject(db, repo, [makeAdapter()]);
 
-    const report = auditProject(db, repo, [
+    const report = await auditProject(db, repo, [
       makeAdapter({ duplication: () => ({ duplicatedLines: 10, blocks: [] }) }),
     ]);
 

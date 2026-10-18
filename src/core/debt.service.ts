@@ -2,6 +2,7 @@ import { isUnavailable, sanitizeReason } from '../adapters/capability.utils.js';
 import type {
   Adapter,
   CapabilityContext,
+  CapabilityUnavailable,
   CoverageReport,
   DeadExport,
   DuplicationReport,
@@ -39,23 +40,25 @@ export const DEAD_CODE = 'dead code';
 export const COVERAGE = 'coverage';
 
 /**
- * Run every debt capability the detected adapters declare, over one checkout.
- * Counts sum across adapters rather than stopping at the first: a
- * TypeScript+Python repo has debt in both languages, and a bar counted over
- * one of them is not the repo's bar (decision 72).
- *
- * Coverage is the exception — one ratio per repo, from the first adapter that
- * can produce one, exactly as `pup init` has always taken it. Two runners'
- * ratios are not one number, and the gate's patch-coverage bar has to come
- * from the same report `coverableFiles` is answered against.
+ * Dead code and duplication, from every debt capability the detected adapters
+ * declare, over one checkout. Counts sum across adapters rather than stopping
+ * at the first: a TypeScript+Python repo has debt in both languages, and a bar
+ * counted over one of them is not the repo's bar (decision 72). Both only read
+ * the checkout, so a caller runs this alongside its test run (decision 95);
+ * `measureCoverage` adds what needs the suite itself.
  */
-export function measureDebt(adapters: Adapter[], ctx: CapabilityContext): DebtMeasurement {
+export async function measureStaticDebt(
+  adapters: Adapter[],
+  ctx: CapabilityContext,
+): Promise<DebtMeasurement> {
   const debt: DebtBaseline = {};
   const gaps: DebtGap[] = [];
+  const elapsedMs: Record<string, number> = {};
 
+  let started = Date.now();
   const deadExports: DeadExport[][] = [];
   for (const adapter of adapters) {
-    const result = adapter.deadCode?.(ctx);
+    const result = await adapter.deadCode?.(ctx);
     if (result === undefined) continue;
     if (isUnavailable(result)) {
       gaps.push({ adapterId: adapter.id, capability: DEAD_CODE, reason: result.unavailable });
@@ -67,10 +70,15 @@ export function measureDebt(adapters: Adapter[], ctx: CapabilityContext): DebtMe
   // must leave the bar unset (a baseline of [] would read as "0 dead exports"
   // and flag every later finding), while one that found nothing still stores [].
   if (deadExports.length > 0) debt.deadExports = deadExports.flat();
+  if (adapters.some((a) => a.deadCode)) elapsedMs['dead-code'] = Date.now() - started;
 
-  const duplicationReports = adapters
-    .map((a) => a.duplication?.(ctx))
-    .filter((r): r is DuplicationReport => r !== undefined);
+  started = Date.now();
+  const duplicationReports: DuplicationReport[] = [];
+  for (const adapter of adapters) {
+    const report = await adapter.duplication?.(ctx);
+    if (report !== undefined) duplicationReports.push(report);
+  }
+  if (adapters.some((a) => a.duplication)) elapsedMs.duplication = Date.now() - started;
   let duplication: DuplicationReport | undefined;
   if (duplicationReports.length > 0) {
     duplication = mergeDuplication(duplicationReports);
@@ -80,29 +88,50 @@ export function measureDebt(adapters: Adapter[], ctx: CapabilityContext): DebtMe
     debt.duplicationRule = DUPLICATION_RULE_ID;
   }
 
-  const coverageAdapter = adapters.find((a) => a.coverage);
-  let coverage: CoverageReport | undefined;
-  if (coverageAdapter) {
-    const result = coverageAdapter.coverage?.(ctx);
-    if (isUnavailable(result)) {
-      gaps.push({
-        adapterId: coverageAdapter.id,
-        capability: COVERAGE,
-        reason: result.unavailable,
-      });
-    } else {
-      coverage = result;
-    }
-    const ratio = coverage ? repoCoverageRatio(coverage) : undefined;
-    if (ratio !== undefined) debt.coverageRatio = ratio;
-  }
+  return { debt, gaps, ...(duplication ? { duplication } : {}), elapsedMs };
+}
 
+/**
+ * `measured` with the repo's coverage. One ratio per repo, from the first
+ * adapter that can produce one, exactly as `pup init` has always taken it: two
+ * runners' ratios are not one number, and the gate's patch-coverage bar has to
+ * come from the same report `coverableFiles` is answered against.
+ *
+ * `folded` is that adapter's report from the test run, when the test stage ran
+ * its `coveredTest` (decision 95). Without it the adapter runs the suite again,
+ * so a caller runs this once its test runs are over, never alongside them. The
+ * coverage stage's time is this call's: a folded report's run is the test
+ * stage's, and counted there.
+ */
+export async function measureCoverage(
+  measured: DebtMeasurement,
+  adapters: Adapter[],
+  ctx: CapabilityContext,
+  folded?: CoverageReport | CapabilityUnavailable,
+): Promise<DebtMeasurement> {
+  const coverageAdapter = adapters.find((a) => a.coverage);
+  if (!coverageAdapter) return measured;
+  const started = Date.now();
+  const result = folded ?? (await coverageAdapter.coverage?.(ctx));
+  const elapsedMs = { ...measured.elapsedMs, coverage: Date.now() - started };
+  if (isUnavailable(result)) {
+    return {
+      ...measured,
+      gaps: [
+        ...measured.gaps,
+        { adapterId: coverageAdapter.id, capability: COVERAGE, reason: result.unavailable },
+      ],
+      coverageAdapter,
+      elapsedMs,
+    };
+  }
+  const ratio = result ? repoCoverageRatio(result) : undefined;
   return {
-    debt,
-    gaps,
-    ...(duplication ? { duplication } : {}),
-    ...(coverage ? { coverage } : {}),
-    ...(coverageAdapter ? { coverageAdapter } : {}),
+    ...measured,
+    debt: { ...measured.debt, ...(ratio !== undefined ? { coverageRatio: ratio } : {}) },
+    ...(result ? { coverage: result } : {}),
+    coverageAdapter,
+    elapsedMs,
   };
 }
 
@@ -150,7 +179,10 @@ export function judgeDebt(
     judgeCoverage(measured, baseline, sessionId),
   ];
   return {
-    stages: verdicts.map((v) => v.stage),
+    stages: verdicts.map(({ stage }) => {
+      const durationMs = measured.elapsedMs?.[stage.stage];
+      return durationMs === undefined ? stage : { ...stage, durationMs };
+    }),
     flags: verdicts.flatMap((v) => (v.flag ? [v.flag] : [])),
     ratchet: Object.assign({}, ...verdicts.map((v) => v.ratchet)) as DebtBaseline,
   };

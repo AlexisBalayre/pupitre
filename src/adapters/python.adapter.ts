@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globToRegExp, globToRegExpSource } from '../core/glob.utils.js';
-import { runGateChild } from '../core/sandbox.utils.js';
+import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import {
@@ -215,7 +215,7 @@ function runCapability(
   words: string[],
   outDir?: string,
   env?: Record<string, string>,
-): string {
+): Promise<string> {
   const [command, ...args] = words;
   // Tool and config both come from the repo being measured, so the child runs
   // under the same seam as a gate stage: env allowlist plus sandbox (decisions
@@ -288,7 +288,7 @@ export const pythonAdapter: Adapter = {
     return commands;
   },
 
-  deadCode(ctx: CapabilityContext): DeadExport[] | CapabilityUnavailable {
+  async deadCode(ctx: CapabilityContext): Promise<DeadExport[] | CapabilityUnavailable> {
     const { measurePath, configPath } = ctx;
     if (!declaresTool(configPath, 'vulture')) {
       return { unavailable: `no vulture declared in ${PYTHON_CONFIGS.join(', ')}` };
@@ -313,10 +313,11 @@ export const pythonAdapter: Adapter = {
     const args = trustedSection ? [] : ['.', `--exclude=${VULTURE_EXCLUDE}`];
     try {
       return parseVultureOutput(
-        runCapability(ctx, [...capabilityRunnerPrefix(configPath), 'vulture', ...args]),
+        await runCapability(ctx, [...capabilityRunnerPrefix(configPath), 'vulture', ...args]),
         measurePath,
       );
     } catch (error) {
+      if (error instanceof GateInterruptedError) throw error;
       const failure = error as { status?: number; stdout?: string };
       if (failure.status === VULTURE_DEAD_CODE_EXIT) {
         return parseVultureOutput(failure.stdout ?? '', measurePath);
@@ -341,7 +342,7 @@ export const pythonAdapter: Adapter = {
     );
   },
 
-  coverage(ctx: CapabilityContext): CoverageReport | CapabilityUnavailable {
+  async coverage(ctx: CapabilityContext): Promise<CoverageReport | CapabilityUnavailable> {
     const { measurePath, configPath } = ctx;
     if (!declaresTool(configPath, 'pytest-cov')) {
       return { unavailable: `no pytest-cov declared in ${PYTHON_CONFIGS.join(', ')}` };
@@ -357,7 +358,7 @@ export const pythonAdapter: Adapter = {
       // artifact left behind fails merge-gate's worktree-clean check against a
       // file the session never wrote. Deleting `.coverage` afterwards instead
       // would destroy a developer's pre-existing data file.
-      runCapability(
+      await runCapability(
         ctx,
         [
           ...capabilityRunnerPrefix(configPath),
@@ -378,11 +379,12 @@ export const pythonAdapter: Adapter = {
       const raw = JSON.parse(readFileSync(reportPath, 'utf8')) as CoveragePyReport;
       return coveragePyToCoverageReport(raw, measurePath);
     } catch (error) {
+      if (error instanceof GateInterruptedError) throw error;
       // A failed instrumented run (crash, timeout, failing tests) degrades to
       // "not measured" — the plain test stage has already gated correctness.
       return { unavailable: `instrumented pytest run failed: ${failureSummary(error)}` };
     } finally {
-      rmSync(outDir, { recursive: true, force: true });
+      removeGateDir(outDir);
     }
   },
 };

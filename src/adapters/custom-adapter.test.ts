@@ -41,37 +41,40 @@ describe('loadCustomAdapter', () => {
     );
   });
 
-  it("parses a capability command's stdout as JSON", () => {
+  it("parses a capability command's stdout as JSON", async () => {
     const repo = makeRepo(`deadCode: echo '[{"file":"src/a.ex","exportName":"orphan"}]'\n`);
 
     const adapter = loadCustomAdapter(repo);
 
-    expect(adapter?.deadCode?.(localContext(repo))).toEqual([
+    expect(await adapter?.deadCode?.(localContext(repo))).toEqual([
       { file: 'src/a.ex', exportName: 'orphan' },
     ]);
   });
 
-  it('feeds complexity the file list as JSON on stdin', () => {
+  it('feeds complexity the file list as JSON on stdin', async () => {
     // `cat` echoes stdin back, proving the contract end to end.
     const repo = makeRepo('complexity: cat\n');
 
     const adapter = loadCustomAdapter(repo);
 
-    expect(adapter?.complexity?.(localContext(repo), ['a.ex', 'b.ex'])).toEqual(['a.ex', 'b.ex']);
+    expect(await adapter?.complexity?.(localContext(repo), ['a.ex', 'b.ex'])).toEqual([
+      'a.ex',
+      'b.ex',
+    ]);
   });
 
-  it('throws a named error when a capability command emits invalid JSON', () => {
+  it('throws a named error when a capability command emits invalid JSON', async () => {
     const repo = makeRepo('deadCode: echo not-json\n');
 
-    expect(() => loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toThrow(
+    await expect(loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).rejects.toThrow(
       CustomAdapterCommandError,
     );
   });
 
-  it('throws a named error when a capability command fails', () => {
+  it('throws a named error when a capability command fails', async () => {
     const repo = makeRepo('deadCode: exit 3\n');
 
-    expect(() => loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toThrow(
+    await expect(loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).rejects.toThrow(
       CustomAdapterCommandError,
     );
   });
@@ -79,7 +82,7 @@ describe('loadCustomAdapter', () => {
   // Off darwin without the declaration pup refuses to run the child at all;
   // that refusal carries the operator's instructions and must not be rewrapped
   // as the command failing (decision 78).
-  it('lets the sandbox refusal through unwrapped', () => {
+  it('lets the sandbox refusal through unwrapped', async () => {
     const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
     Object.defineProperty(process, 'platform', { ...original, value: 'linux' });
     vi.stubEnv('PUP_SANDBOX', undefined);
@@ -89,41 +92,41 @@ describe('loadCustomAdapter', () => {
     });
     const repo = makeRepo("deadCode: echo '[]'\n");
 
-    expect(() => loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toThrow(
+    await expect(loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).rejects.toThrow(
       UndeclaredSandboxError,
     );
   });
 
-  it('rejects a capability result whose JSON is the wrong shape', () => {
+  it('rejects a capability result whose JSON is the wrong shape', async () => {
     // `{"unavailable": …}` now means "stage skipped" to the gate, so a command
     // measuring session code must not be able to produce one; `null` used to
     // throw inside the gate's type guard.
     for (const stdout of ['{"unavailable":"nothing to see"}', 'null', '"a string"']) {
       const repo = makeRepo(`deadCode: echo '${stdout}'\n`);
 
-      expect(() => loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toThrow(
+      await expect(loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).rejects.toThrow(
         CustomAdapterCommandError,
       );
     }
   });
 
-  it('degrades a failing coverage command to unavailable, naming the failure', () => {
+  it('degrades a failing coverage command to unavailable, naming the failure', async () => {
     const repo = makeRepo('coverage: echo boom >&2; exit 1\n');
 
-    const result = loadCustomAdapter(repo)?.coverage?.(localContext(repo));
+    const result = await loadCustomAdapter(repo)?.coverage?.(localContext(repo));
 
     expect(result).toEqual({ unavailable: expect.stringContaining('coverage command failed') });
     expect(result).toEqual({ unavailable: expect.stringContaining('boom') });
   });
 
-  it('scrubs the GIT_DIR family from capability command environments', () => {
+  it('scrubs the GIT_DIR family from capability command environments', async () => {
     // When pup runs inside a git hook, an inherited GIT_DIR would misdirect any
     // git usage in the command at the hook's repo (same rationale as the gate).
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion inside a yaml fixture, not a JS template
     const repo = makeRepo('deadCode: echo "[\\"${GIT_DIR:-scrubbed}\\"]"\n');
     process.env.GIT_DIR = '/somewhere/.git';
     try {
-      expect(loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toEqual(['scrubbed']);
+      expect(await loadCustomAdapter(repo)?.deadCode?.(localContext(repo))).toEqual(['scrubbed']);
     } finally {
       delete process.env.GIT_DIR;
     }

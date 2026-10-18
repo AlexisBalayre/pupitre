@@ -4,13 +4,13 @@ import {
   localContext,
   sanitizeReason,
 } from '../adapters/capability.utils.js';
-import type { Adapter } from '../adapters/types/adapter.types.js';
+import type { Adapter, GateCommand, GateStage } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
-import { measureDebt } from './debt.service.js';
+import { measureCoverage, measureStaticDebt } from './debt.service.js';
 import { runGit } from './git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
-import { runGateChild, sandboxLabel } from './sandbox.utils.js';
+import { GateInterruptedError, runGateChild, sandboxLabel } from './sandbox.utils.js';
 import {
   countProjectSessions,
   ensureProject,
@@ -19,7 +19,12 @@ import {
   saveProjectOriginUrl,
 } from './session.repository.js';
 import type { DebtGap } from './types/debt.types.js';
-import type { BaselineStageResult, InitReport, ProjectBaseline } from './types/init.types.js';
+import type {
+  BaselineStageResult,
+  InitReport,
+  MeasuredBaseline,
+  ProjectBaseline,
+} from './types/init.types.js';
 
 export class NoAdapterError extends Error {
   constructor(repoPath: string) {
@@ -133,25 +138,27 @@ function recordOriginUrl(
   );
 }
 
-function runBaselineStage(
+async function runBaselineStage(
   repoPath: string,
   stage: string,
-  command: { command: string; args: string[] },
+  command: { command: string; args: string[]; writablePaths?: string[] },
   gateEnv?: string[],
-): BaselineStageResult {
+): Promise<BaselineStageResult> {
   const start = Date.now();
   try {
     // Main is "trusted" only in the sense that the gate let it in — these are
     // still the scripts a session wrote, one merge earlier, so they run under
     // the same seam as a gate stage (decisions 28, 36).
-    runGateChild(command.command, command.args, {
+    await runGateChild(command.command, command.args, {
       cwd: repoPath,
       repoPath,
+      ...(command.writablePaths ? { writablePaths: command.writablePaths } : {}),
       gateEnv,
       timeout: GATE_COMMAND_TIMEOUT_MS,
     });
     return { stage, status: 'pass', durationMs: Date.now() - start };
   } catch (error) {
+    if (error instanceof GateInterruptedError) throw error;
     const failure = error as { stdout?: string; stderr?: string; message?: string };
     const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
     return {
@@ -161,11 +168,6 @@ function runBaselineStage(
       durationMs: Date.now() - start,
     };
   }
-}
-
-/** A baseline measured but not yet stored, with the debt capabilities that could not measure. */
-interface MeasuredBaseline extends InitReport {
-  gaps: DebtGap[];
 }
 
 /**
@@ -181,20 +183,22 @@ export function initProject(
   adapters: Adapter[],
   gateEnv?: string[],
   recording: OriginRecording = 'record',
-): InitReport {
-  const {
-    projectId: pid,
-    baseline,
-    findings,
-    sandbox,
-  } = measureBaseline(db, repoPath, adapters, gateEnv, recording);
-  persistBaseline(db, pid, baseline);
-  return { projectId: pid, baseline, findings, sandbox };
+): Promise<InitReport> {
+  // Not async, so measureBaseline's refusals still throw (see there).
+  return measureBaseline(db, repoPath, adapters, gateEnv, recording).then(
+    ({ projectId: pid, baseline, findings, sandbox }) => {
+      persistBaseline(db, pid, baseline);
+      return { projectId: pid, baseline, findings, sandbox };
+    },
+  );
 }
 
 /**
  * Everything `pup init` does short of storing the baseline, so `pup audit` can
- * look at what was measured before it decides whether to store it.
+ * look at what was measured before it decides whether to store it. Not async:
+ * the refusals before anything runs throw rather than reject, as they always
+ * have, because the CLI's no-adapter guard catches a throw; the stages are the
+ * promise.
  */
 export function measureBaseline(
   db: Database,
@@ -202,7 +206,7 @@ export function measureBaseline(
   adapters: Adapter[],
   gateEnv?: string[],
   recording: OriginRecording = 'record',
-): MeasuredBaseline {
+): Promise<MeasuredBaseline> {
   // Before anything runs, so a platform pup cannot confine and the operator has
   // not declared refuses whole, not after half a baseline (decision 78).
   const sandbox = sandboxLabel();
@@ -212,60 +216,130 @@ export function measureBaseline(
   const pid = projectId(repoPath);
   ensureProject(db, pid, repoPath);
 
-  const stages: BaselineStageResult[] = [];
   const findings: string[] = [];
   // Before the stages, so the push target is recorded even on a run that ends
   // in a broken-toolchain refusal (decision 55): it is not a bar, and setup is
   // exactly when the checkout is the one the operator trusts.
   const originFinding = recordOriginUrl(db, pid, repoPath, recording);
   if (originFinding) findings.push(originFinding);
-  const commands = detected.flatMap((a) => a.gateCommands(repoPath));
-  for (const stage of ['build', 'test', 'lint'] as const) {
-    const command = commands.find((c) => c.stage === stage);
-    if (!command) {
-      stages.push({ stage, status: 'skipped', detail: 'no command available', durationMs: 0 });
-      findings.push(
-        `No ${stage} command resolved — the gate will report this stage as "not measured".`,
-      );
-      continue;
+  return measureStages(repoPath, detected, gateEnv, findings).then((baseline) => ({
+    projectId: pid,
+    baseline: baseline.baseline,
+    findings,
+    sandbox,
+    gaps: baseline.gaps,
+  }));
+}
+
+/** The baseline stages and debt capabilities, onto `findings`. */
+async function measureStages(
+  repoPath: string,
+  detected: Adapter[],
+  gateEnv: string[] | undefined,
+  findings: string[],
+): Promise<{ baseline: ProjectBaseline; gaps: DebtGap[] }> {
+  const ctx = localContext(repoPath, gateEnv);
+  const commands = detected.flatMap((adapter) =>
+    adapter.gateCommands(repoPath).map((command) => ({ ...command, adapter })),
+  );
+  const run = (
+    stage: GateStage,
+    command: (Omit<GateCommand, 'stage'> & { writablePaths?: string[] }) | undefined,
+  ): Promise<BaselineStageResult> | undefined =>
+    command && runBaselineStage(repoPath, stage, command, gateEnv);
+  const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
+
+  // Build first and alone: the test run and lint read what it produced.
+  const build = await run('build', commandFor('build'));
+  if (build) assertToolchain([build]);
+  // One instrumented run answers for the test stage and for coverage when the
+  // adapter whose test command it is measures coverage too (decision 95).
+  const test = commandFor('test');
+  const coverageAdapter = detected.find((a) => a.coverage);
+  const covered =
+    test && test.adapter === coverageAdapter ? test.adapter.coveredTest?.(ctx) : undefined;
+  try {
+    // Lint and the static debt capabilities only read the checkout, so they
+    // run alongside the test run; each settles before anything is read, so no
+    // child outlives a refusal (decision 95).
+    const running = [
+      run('test', covered ?? test),
+      run('lint', commandFor('lint')),
+      measureStaticDebt(detected, ctx),
+    ] as const;
+    const settled = await Promise.allSettled(running);
+    const interrupted = settled.find(
+      (outcome) => outcome.status === 'rejected' && outcome.reason instanceof GateInterruptedError,
+    );
+    if (interrupted?.status === 'rejected') throw interrupted.reason;
+    const [tested, linted, staticDebt] = await Promise.all(running);
+
+    const stages: BaselineStageResult[] = [];
+    for (const [stage, result] of [
+      ['build', build],
+      ['test', tested],
+      ['lint', linted],
+    ] as const) {
+      if (!result) {
+        stages.push({ stage, status: 'skipped', detail: 'no command available', durationMs: 0 });
+        findings.push(
+          `No ${stage} command resolved — the gate will report this stage as "not measured".`,
+        );
+        continue;
+      }
+      stages.push(result);
+      if (result.status === 'fail') {
+        findings.push(
+          `${stage} fails at baseline — the v1 gate hard-fails this stage, so no session can merge until it passes on ${repoPath}.`,
+        );
+      }
     }
-    const result = runBaselineStage(repoPath, stage, command, gateEnv);
-    stages.push(result);
-    if (result.status === 'fail') {
+    // Checked before coverage too: an unfolded coverage run goes through the
+    // same package manager, and would only spend minutes failing the same way.
+    assertToolchain(stages);
+
+    // The gate measures the same way, through the same module, or the bar
+    // stored here and the bar merges are compared against drift apart
+    // (decision 72). A failed instrumented run wrote no coverage worth reading.
+    const folded = !covered
+      ? undefined
+      : tested?.status === 'pass'
+        ? covered.report()
+        : { unavailable: 'the instrumented test run failed, so its coverage is not read' };
+    const { debt, gaps } = await measureCoverage(staticDebt, detected, ctx, folded);
+    // A capability that could not measure says why (decision 29); that reason is
+    // the whole point of running init before any session does.
+    // Sanitized here, not at the producer: a custom adapter's reason is parsed
+    // JSON that never passed through failureSummary (decision 29).
+    for (const gap of gaps) {
       findings.push(
-        `${stage} fails at baseline — the v1 gate hard-fails this stage, so no session can merge until it passes on ${repoPath}.`,
+        `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}. ` +
+          'The gate will skip that stage until it is fixed.',
       );
     }
+
+    const baseline: ProjectBaseline = {
+      capturedAt: new Date().toISOString(),
+      adapters: detected.map((a) => a.id),
+      stages,
+      ...(Object.keys(debt).length > 0 ? { debt } : {}),
+      gaps: gaps.map(({ adapterId, capability }) => ({ adapterId, capability })),
+    };
+    return { baseline, gaps };
+  } finally {
+    covered?.dispose();
   }
-  // Checked before the debt capabilities too: they run the same package
-  // manager, and would only spend minutes failing the same way.
+}
+
+/**
+ * Refuse a capture whose stage died loading the package manager rather than
+ * measuring anything: stored, that FAIL would be the bar (decision 55).
+ */
+function assertToolchain(stages: BaselineStageResult[]): void {
   for (const { stage, status, detail } of stages) {
     const installPath = status === 'fail' ? brokenPackageManagerInstall(detail ?? '') : undefined;
     if (installPath) throw new BrokenToolchainError(stage, installPath);
   }
-
-  // The gate measures the same way, through the same module, or the bar stored
-  // here and the bar merges are compared against drift apart (decision 72).
-  const { debt, gaps } = measureDebt(detected, localContext(repoPath, gateEnv));
-  // A capability that could not measure says why (decision 29); that reason is
-  // the whole point of running init before any session does.
-  // Sanitized here, not at the producer: a custom adapter's reason is parsed
-  // JSON that never passed through failureSummary (decision 29).
-  for (const gap of gaps) {
-    findings.push(
-      `${sanitizeReason(gap.adapterId)}: ${gap.capability} not measured — ${sanitizeReason(gap.reason)}. ` +
-        'The gate will skip that stage until it is fixed.',
-    );
-  }
-
-  const baseline: ProjectBaseline = {
-    capturedAt: new Date().toISOString(),
-    adapters: detected.map((a) => a.id),
-    stages,
-    ...(Object.keys(debt).length > 0 ? { debt } : {}),
-    gaps: gaps.map(({ adapterId, capability }) => ({ adapterId, capability })),
-  };
-  return { projectId: pid, baseline, findings, sandbox, gaps };
 }
 
 /**
