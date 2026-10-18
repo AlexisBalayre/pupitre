@@ -14,14 +14,14 @@ cat >/dev/null
 cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
 SELF=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
+# Another session names worktree paths and can rename any branch, this one's
+# included, and a fork names its PR branch, so anything outside a plain path's
+# characters is masked before it lands in this session's context. The gh filter
+# below masks the same set.
+safe() { printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/() -' '?'; }
 BRANCH=$(git branch --show-current 2>/dev/null)
 echo "Live state after compaction (read now; trust it over the summary):"
-echo "- checkout: $SELF on ${BRANCH:-a detached HEAD}"
-
-# Another session names its worktree's path and branch, and a fork names its PR
-# branch, so anything outside a plain path's characters is masked before it
-# lands in this session's context. The gh filter below masks the same set.
-safe() { printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/() -' '?'; }
+echo "- checkout: $(safe "$SELF") on $(safe "${BRANCH:-a detached HEAD}")"
 echo "- other worktrees (path, branch):"
 git worktree list --porcelain 2>/dev/null |
   awk '/^worktree /{p=$0; sub(/^worktree /, "", p)}
