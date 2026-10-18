@@ -1,0 +1,107 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T09:08:41.705Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39113900928",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39113900928",
+  "actor": "AlexisBalayre",
+  "commit_sha": "82077d9baf8d926550fae292ab71fe7093989af6",
+  "source": "pr",
+  "pr_number": 156,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4393901bcc00788c2759324d7366b0d5b2cd49e1",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "431-454",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/sandbox-utils.test.ts",
+      "line": "232-258",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test covers the new SIGKILL in `settle` (`if (failure !== undefined || live.interruptedBy) signalGroup(child, 'SIGKILL');`, sandbox.utils.ts:258). The escaped-helper test calls `setsid`, so its helper leaves the group and this kill can't reach it. The timeout and interrupt tests are settled by the existing grace timer or the forwarded signal. Deleting line 258 would leave the suite green. Possible test: under a short timeout, a stage backgrounds a group member that traps TERM and holds no pipe (for example `(trap '' TERM; exec sleep 47 >/dev/null 2>&1 </dev/null) &`) and then exits; assert that member is dead once the run rejects.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "452-455",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `node_modules/.bin/vitest` existence check lives in `coveredTest`, but the `npx --no-install` launch it guards is built in `instrumentedRun`. The launcher and its precondition sit in two functions, so changing how vitest is started could leave the guard stale. Moving the check next to the launch in `instrumentedRun`, returning its unavailable value, keeps them together.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "258",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The settle-time group SIGKILL only reaches processes still in the stage's process group. A session process that calls setsid/setpgid (as the test's helper does) survives it, so decision 95's 'none outlives the checkout' does not hold against a session that chooses to leave the group. This isn't a regression and gains the process no new access: it stays under the same sandbox grants, and at worst leaves the gate-checkout removal hitting ENOTEMPTY, which the gate already reports and tolerates.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6905125999999997,
+  "duration_ms": 208581,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 7642,
+    "cache_read": 235171,
+    "cache_creation": 61014,
+    "total": 303839
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 58,
+      "output": 26780,
+      "cache_read": 796425,
+      "cache_creation": 135768,
+      "cost_usd": 1.5569989999999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2631,
+      "cache_read": 68683,
+      "cache_creation": 37374,
+      "cost_usd": 0.13351359999999998
+    }
+  ],
+  "permission_denials": []
+}
