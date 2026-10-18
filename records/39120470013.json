@@ -1,0 +1,117 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T10:48:01.022Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39120470013",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39120470013",
+  "actor": "AlexisBalayre",
+  "commit_sha": "92f661d217851dbee4b1df758b9b010863bcce6b",
+  "source": "pr",
+  "pr_number": 158,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "79d087c66cc2da6be3d1cfd468d83f4abdab118c",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "328-337",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "890-904",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 2 GiB MERGE_HEAD test grows an all-NUL sparse file. With the old `cat`, command substitution drops the NULs, MERGING comes out empty, and the hook still exits 2. So the test catches a reverted `cat` only when reading 2 GiB overruns the 4 s spawn timeout, which a fast shell might not. Writing a non-tip object id plus a newline before calling `truncateSync` would make the test independent of timing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "333",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`head -c 66` uses a bare `66`, and the JSDoc and decision 99 never say why it is 66: 64 hex digits (SHA-256), a newline, and one more byte so an overlong value is detected. The 40/64 length checks on the next line depend on this number, so a reader changing the accepted lengths has no cue to change the 66.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "325",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In the `MERGE_OF_TARGET_SHELL` JSDoc, the line ending \"…past the hook timeout. Best effort: a session\" runs to about 92 columns, while the rest of the block wraps at about 80. The paragraph was only partly reflowed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4958",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In decision 99, the line \"timeout; bounding the hooks' blocking reads in time is owed. Both hooks are best effort here, not a\" runs to about 103 columns, past the file's 100-column wrap. Rewrap from \"Both hooks are best effort…\" onward.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2377594,
+  "duration_ms": 145160,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 8057,
+    "cache_read": 258281,
+    "cache_creation": 47045,
+    "total": 313395
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 32,
+      "output": 20199,
+      "cache_read": 390287,
+      "cache_creation": 97715,
+      "cost_usd": 1.1118754
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 3595,
+      "cache_read": 39350,
+      "cache_creation": 32816,
+      "cost_usd": 0.125884
+    }
+  ],
+  "permission_denials": []
+}
