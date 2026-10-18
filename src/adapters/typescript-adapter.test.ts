@@ -1,15 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { localContext } from './capability.utils.js';
 import type { DeadExport, DuplicationReport } from './types/adapter.types.js';
 import type { IstanbulCoverageMap } from './types/istanbul.types.js';
 import { rootCoverageReport, typescriptAdapter } from './typescript.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-adapter-')));
+  const dir = tempDir('pup-adapter-');
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(dir, name), content);
   }
@@ -169,7 +169,7 @@ describe('typescriptAdapter.coveredTest', () => {
 
 describe('typescriptAdapter.depGraph', () => {
   function makeSourceRepo(files: Record<string, string>): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-graph-')));
+    const dir = tempDir('pup-graph-');
     for (const [name, content] of Object.entries(files)) {
       mkdirSync(dirname(join(dir, name)), { recursive: true });
       writeFileSync(join(dir, name), content);
@@ -318,7 +318,7 @@ describe('typescriptAdapter nested packages', () => {
 
   /** A checkout with `files` committed: markers are read from HEAD's tree. */
   function makeTree(files: Record<string, string>): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-nested-')));
+    const dir = tempDir('pup-nested-');
     writeFiles(dir, files);
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, env: GIT_ENV });
     git('init', '-q');

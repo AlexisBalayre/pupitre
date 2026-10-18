@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { UnknownProfileError } from './profile-store.errors.js';
@@ -10,7 +10,7 @@ import { getProfileLayer, listProfileLayers } from './profile-store.service.js';
 describe('profile store', () => {
   let profilesDir: string;
   beforeEach(() => {
-    profilesDir = mkdtempSync(join(tmpdir(), 'pup-profiles-'));
+    profilesDir = tempDir('pup-profiles-');
   });
 
   it('lists only the built-in base when the profiles dir is empty or missing', () => {

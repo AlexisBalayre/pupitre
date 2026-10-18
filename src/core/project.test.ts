@@ -1,8 +1,7 @@
-import { mkdtempSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 
 // The tmux boundary only: whether a conductor window is up.
 vi.mock('./conductor.service.js', () => ({ isConductorRunning: vi.fn(() => false) }));
@@ -45,7 +44,7 @@ function seedSession(sessionId: string): void {
 
 beforeEach(() => {
   db = openStore(':memory:');
-  repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-project-')));
+  repo = tempDir('pup-project-');
   pid = projectId(repo);
   ensureProject(db, pid, repo);
 });

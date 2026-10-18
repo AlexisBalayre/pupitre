@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { sandboxProfile, writeProfile } from './sandbox-profile.utils.js';
 
 const HOME = '/Users/dev';
@@ -122,7 +123,7 @@ describe('writeProfile', () => {
     // checkouts, which stay exempt, and the derived .git denies — since a
     // wrong derivation ships a wrong policy with every sandboxProfile test
     // still green.
-    const policyDir = mkdtempSync(join(tmpdir(), 'pup-profile-golden-'));
+    const policyDir = tempDir('pup-profile-golden-');
     const home = realpathSync(homedir());
 
     const profilePath = writeProfile(policyDir, ['/x/checkout'], ['/x/scratch']);
@@ -142,6 +143,5 @@ describe('writeProfile', () => {
         '',
       ].join('\n'),
     );
-    rmSync(policyDir, { recursive: true, force: true });
   });
 });

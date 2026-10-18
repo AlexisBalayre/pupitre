@@ -1,15 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -53,6 +44,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
 });
 
+import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
   attachArgs,
@@ -101,7 +93,7 @@ function sh(cwd: string, ...args: string[]): void {
 }
 
 function initRepoWithWorktree(): { repo: string; worktree: string } {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-trust-')));
+  const repo = tempDir('pup-trust-');
   sh(repo, 'git', 'init', '-b', 'main');
   sh(repo, 'git', 'config', 'user.email', 'trust@test');
   sh(repo, 'git', 'config', 'user.name', 'trust-test');
@@ -122,7 +114,7 @@ describe('preseedTrust', () => {
     // Claude Code keys the trust dialog on the git common-dir root, so seeding
     // only the worktree path still leaves the dialog blocking kickoff.
     const { repo, worktree } = initRepoWithWorktree();
-    const claudeJson = join(mkdtempSync(join(tmpdir(), 'pup-cfg-')), 'claude.json');
+    const claudeJson = join(tempDir('pup-cfg-'), 'claude.json');
 
     preseedTrust(worktree, claudeJson);
 
@@ -133,7 +125,7 @@ describe('preseedTrust', () => {
 
   it('preserves existing project entries and flips declined trust to accepted', () => {
     const { repo, worktree } = initRepoWithWorktree();
-    const claudeJson = join(mkdtempSync(join(tmpdir(), 'pup-cfg-')), 'claude.json');
+    const claudeJson = join(tempDir('pup-cfg-'), 'claude.json');
     writeFileSync(
       claudeJson,
       JSON.stringify({
@@ -151,8 +143,8 @@ describe('preseedTrust', () => {
   });
 
   it('seeds only the launch path when it is not a git checkout', () => {
-    const plainDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-plain-')));
-    const claudeJson = join(mkdtempSync(join(tmpdir(), 'pup-cfg-')), 'claude.json');
+    const plainDir = tempDir('pup-plain-');
+    const claudeJson = join(tempDir('pup-cfg-'), 'claude.json');
 
     preseedTrust(plainDir, claudeJson);
 
@@ -163,7 +155,7 @@ describe('preseedTrust', () => {
 
   it('writes a single entry when launching at the repo root itself', () => {
     const { repo } = initRepoWithWorktree();
-    const claudeJson = join(mkdtempSync(join(tmpdir(), 'pup-cfg-')), 'claude.json');
+    const claudeJson = join(tempDir('pup-cfg-'), 'claude.json');
 
     preseedTrust(repo, claudeJson);
 
@@ -580,7 +572,7 @@ describe('attachArgs against the installed tmux', () => {
     // Under `tmpdir()` because the merge gate runs this suite sandboxed, where
     // the child's own TMPDIR is about all it may write — `/tmp` is denied
     // (decision 36).
-    const dir = mkdtempSync(join(tmpdir(), 'x'));
+    const dir = tempDir('x');
     // No `$TMUX`: these tests can run inside a pup session, and tmux refuses a
     // nested attach before it ever resolves the target.
     const env: NodeJS.ProcessEnv = { ...process.env };
@@ -606,7 +598,6 @@ describe('attachArgs against the installed tmux', () => {
       expect(bareAttach.stderr).toContain('open terminal failed');
     } finally {
       tmuxHere(['kill-server']);
-      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -796,7 +787,7 @@ describe('steerPane with a fake tmux on PATH', () => {
   let wait: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fake-tmux-')));
+    const dir = tempDir('pup-fake-tmux-');
     mkdirSync(join(dir, 'bin'));
     state = join(dir, 'state');
     mkdirSync(state);

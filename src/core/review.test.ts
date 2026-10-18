@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { buildReviewQueue, buildSessionReview } from './review.service.js';
 import {
@@ -28,7 +28,7 @@ function sh(cwd: string, ...args: string[]): string {
 }
 
 function initRepo(): string {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-review-')));
+  const repo = tempDir('pup-review-');
   sh(repo, 'git', 'init', '-b', 'main');
   sh(repo, 'git', 'config', 'user.email', 'review@test');
   sh(repo, 'git', 'config', 'user.name', 'review-test');

@@ -1,8 +1,7 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 
 describe('openStore', () => {
@@ -31,7 +30,7 @@ describe('openStore', () => {
   it('adds a table missing from a pre-existing store on reopen', () => {
     // SCHEMA runs on every open, so a store created before a table existed
     // gains it without a MIGRATIONS entry (those are for added columns only).
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
     const old = openStore(dbPath);
     old.exec('DROP TABLE baseline_history');
     old.close();
@@ -50,7 +49,7 @@ describe('openStore', () => {
   it('adds dormant_at to a store created before it, keeping its project active', () => {
     // A projects table as stores had it before decision 62: every column but
     // the new one, and a registered project in it.
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
     const old = new Database(dbPath);
     old.exec(`CREATE TABLE projects (
       id TEXT PRIMARY KEY,
@@ -77,7 +76,7 @@ describe('openStore', () => {
   });
 
   it('adds the routing columns to a store created before decision 92, its rows unrouted', () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
     const old = openStore(dbPath);
     old.exec(`
       ALTER TABLE tasks DROP COLUMN tier;
@@ -118,7 +117,7 @@ describe('openStore', () => {
     // Unlike the additive entries, this migration runs while the column is
     // still present. `tasks.status` duplicated session state and was never
     // read; the backlog derives it from the sessions table (decision 40).
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
     const old = openStore(dbPath);
     old.exec("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'open'");
     old.prepare("INSERT INTO projects (id, repo_path) VALUES ('p1', '/repo')").run();
@@ -153,7 +152,7 @@ describe('openStore', () => {
   // which a store from before that origin refuses at the CHECK. SQLite cannot
   // alter a CHECK in place, so the table is rebuilt once, rows and ids intact.
   it('rebuilds a pre-existing tasks table whose CHECK refuses the conductor origin', () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'pup-store-')), 'pup.db');
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
     const old = openStore(dbPath);
     old.pragma('foreign_keys = OFF');
     old.exec(`

@@ -7,7 +7,6 @@ import {
   readlinkSync,
   realpathSync,
   rmdirSync,
-  rmSync,
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -74,6 +73,7 @@ import {
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
+  endSandboxRun,
   GateInterruptedError,
   removeGateDir,
   runGateChild,
@@ -363,7 +363,9 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
         ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
         : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
     } finally {
-      // Still under the lock, on a pass, a failed stage and a throw alike.
+      // Still under the lock, on a pass, a failed stage and a throw alike, and
+      // before this process goes on to anything else (decision 100).
+      endSandboxRun();
       // Swallowed: a cleanup failure must not replace the gate's outcome or
       // its error, and the registration goes with the next gate's prune once
       // the directory is gone.
@@ -1697,7 +1699,8 @@ function pushBranch(repoPath: string, originUrl: string, branch: string, tip: st
 
 /**
  * Run `fn` against an empty bare scratch git dir that borrows `repoPath`'s
- * object store, removed afterwards: git there never reads the shared config a
+ * object store, removed afterwards (a removal that fails is reported, never
+ * thrown over `fn`'s result: decision 100): git there never reads the shared config a
  * session can write, while the operator's global and system config still apply
  * (decision 54). `fn`'s runner is `--git-dir` the scratch dir, with
  * `GIT_OBJECT_DIRECTORY` set, so what it writes lands in the repo's objects.
@@ -1744,7 +1747,7 @@ export function withScratchGitDir<TResult>(
       ),
     );
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    removeGateDir(scratch);
   }
 }
 

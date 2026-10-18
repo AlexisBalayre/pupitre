@@ -4,7 +4,6 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -13,12 +12,12 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { CommanderError } from 'commander';
 import type { ReactElement } from 'react';
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -157,7 +156,11 @@ import { runMergeGate } from '../core/merge-gate.service.js';
 import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
-import { GateInterruptedError, UndeclaredSandboxError } from '../core/sandbox.utils.js';
+import {
+  endSandboxRun,
+  GateInterruptedError,
+  UndeclaredSandboxError,
+} from '../core/sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -221,10 +224,6 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
-
-function tempDir(prefix: string): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
-}
 
 /** A repo with no adapter markers (no package.json, pyproject.toml, ...). */
 function initRepo(): string {
@@ -422,6 +421,13 @@ function seedLedgerEntry(
   return id;
 }
 
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
+
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;
   let logs: string[];
@@ -478,7 +484,6 @@ describe('CLI commands', () => {
     // process.cwd(), read fresh on every call).
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
-    rmSync(home, { recursive: true, force: true });
     process.exitCode = originalExitCode;
   });
 

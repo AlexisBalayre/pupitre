@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -10,7 +11,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 // The real rmSync, wrapped so one test can make a removal fail as a busy
 // directory does.
@@ -19,15 +20,24 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, rmSync: vi.fn(actual.rmSync) };
 });
 
+import { tempDir } from '../test/temp-dir.mock.js';
 import { projectId } from './paths.utils.js';
 import {
+  endSandboxRun,
   GateInterruptedError,
   isSandboxSupported,
   removeGateDir,
   runGateChild,
   sandboxLabel,
+  TOOLCHAIN_CACHE_DIRNAME,
   UndeclaredSandboxError,
 } from './sandbox.utils.js';
+
+// A test worker exits without the `exit` event the run's removal waits for,
+// so each test ends the run its children started.
+afterEach(() => {
+  endSandboxRun();
+});
 
 /** The label pup reports when it applied its own profile rather than inheriting one. */
 const APPLIED_LABEL = 'sandbox-exec (macOS)';
@@ -97,10 +107,17 @@ describe('sandboxLabel', () => {
 });
 
 describe('sandboxMode, through the label it reports', () => {
-  /** A fresh module registry, so the once-per-process probe runs again. */
+  /**
+   * A fresh module registry, so the once-per-process probe runs again. The
+   * probe starts a run of the fresh module's own, which the file's hook
+   * cannot reach.
+   */
   async function freshLabel(): Promise<string> {
     vi.resetModules();
     const module = await import('./sandbox.utils.js');
+    onTestFinished(() => {
+      module.endSandboxRun();
+    });
     return module.sandboxLabel();
   }
 
@@ -114,7 +131,7 @@ describe('sandboxMode, through the label it reports', () => {
       // gate runs this suite already sandboxed, where `inherited` is the truth
       // and there is nothing left to forge.
       const honest = await freshLabel();
-      const binDir = mkdtempSync(join(tmpdir(), 'pup-forged-probe-'));
+      const binDir = tempDir('pup-forged-probe-');
       writeFileSync(
         join(binDir, 'true'),
         '#!/bin/sh\necho "sandbox-exec: sandbox_apply: Operation not permitted" >&2\nexit 1\n',
@@ -125,7 +142,6 @@ describe('sandboxMode, through the label it reports', () => {
       await expect(freshLabel()).resolves.toBe(honest);
 
       vi.unstubAllEnvs();
-      rmSync(binDir, { recursive: true, force: true });
     },
   );
 
@@ -142,6 +158,9 @@ describe('sandboxMode, through the label it reports', () => {
       }));
 
       const module = await import('./sandbox.utils.js');
+      onTestFinished(() => {
+        module.endSandboxRun();
+      });
 
       // Fail closed: a sandbox broken in a way pup does not recognise refuses
       // the stage rather than quietly running the child unconfined.
@@ -153,30 +172,49 @@ describe('sandboxMode, through the label it reports', () => {
 });
 
 describe('runGateChild', () => {
-  const checkouts: string[] = [];
-
   /**
    * A checkout under HOME, where "writable because it was passed as writable"
    * is worth asserting at all — everywhere else the default-allow policy would
    * have let the write through anyway. Falls back to tmp when HOME is already
    * denied, which is what pup's own gate does to this suite by running it as a
-   * sandboxed stage.
+   * sandboxed stage. Removed with the toolchain cache a child keys on it, as
+   * `tempDir` removes its own (decision 100).
    */
   function fakeCheckout(): string {
-    const path = (() => {
-      try {
-        return mkdtempSync(join(homedir(), '.pup-sandbox-test-'));
-      } catch {
-        return mkdtempSync(join(tmpdir(), 'pup-sandbox-test-'));
-      }
-    })();
-    checkouts.push(path);
+    let path: string;
+    try {
+      path = mkdtempSync(join(homedir(), '.pup-sandbox-test-'));
+    } catch {
+      return tempDir('pup-sandbox-test-');
+    }
+    const cache = join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(path));
+    onTestFinished(() => {
+      rmSync(path, { recursive: true, force: true });
+      rmSync(cache, { recursive: true, force: true });
+    });
     return path;
   }
 
-  afterAll(() => {
-    for (const path of checkouts) rmSync(path, { recursive: true, force: true });
-  });
+  /** The pid a child wrote to `file` in `cwd`, once it has. */
+  function pidIn(cwd: string, file: string): Promise<number> {
+    return vi.waitFor(
+      () => {
+        const pid = Number(readFileSync(join(cwd, file), 'utf8'));
+        if (!pid) throw new Error(`no pid in ${file} yet`);
+        return pid;
+      },
+      { timeout: 10_000 },
+    );
+  }
+
+  function alive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   /** Under pup's own gate, HOME is already denied — and then it already exists. */
   function mkdirSafely(path: string): void {
@@ -279,27 +317,6 @@ describe('runGateChild', () => {
       }
     }
 
-    /** The pid a child wrote to `file` in `cwd`, once it has. */
-    function pidIn(cwd: string, file: string): Promise<number> {
-      return vi.waitFor(
-        () => {
-          const pid = Number(readFileSync(join(cwd, file), 'utf8'));
-          if (!pid) throw new Error(`no pid in ${file} yet`);
-          return pid;
-        },
-        { timeout: 10_000 },
-      );
-    }
-
-    function alive(pid: number): boolean {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
     it('stops the child and everything it started, then rejects and stops listening', async () => {
       const cwd = fakeCheckout();
       const before = process.listeners('SIGTERM');
@@ -360,12 +377,78 @@ describe('runGateChild', () => {
     });
   });
 
+  // A directory still being written to cannot be removed whole: rmSync's
+  // rmdir fails ENOTEMPTY, and a writer that recreates its path brings it back.
+  describe('the scratch dir (decision 100)', () => {
+    it('kills what a passed stage left running in its group', async () => {
+      const cwd = fakeCheckout();
+
+      await runGateChild('sh', ['-c', 'sleep 48.1 >/dev/null 2>&1 & echo $! > bg.pid'], {
+        cwd,
+        repoPath: cwd,
+      });
+
+      const straggler = await pidIn(cwd, 'bg.pid');
+      await vi.waitFor(() => expect(alive(straggler)).toBe(false));
+    });
+
+    it('ends the run with a child still writing into it, and removes it whole', async () => {
+      const cwd = fakeCheckout();
+      const scratch = await runGateChild('sh', ['-c', 'printf %s "$TMPDIR"'], {
+        cwd,
+        repoPath: cwd,
+      });
+      const writer = runGateChild(
+        'sh',
+        ['-c', 'echo $$ > w.pid; i=0; while :; do i=$((i+1)); mkdir -p "$TMPDIR/d$i"; done'],
+        { cwd, repoPath: cwd },
+      ).catch((error: unknown) => error);
+      const pid = await pidIn(cwd, 'w.pid');
+      await vi.waitFor(() => expect(readdirSync(scratch).length).toBeGreaterThan(5));
+
+      endSandboxRun();
+
+      expect(existsSync(scratch)).toBe(false);
+      expect(await writer).toMatchObject({ signal: 'SIGKILL' });
+      expect(alive(pid)).toBe(false);
+    });
+
+    // The crash that opened decision 100: pup exited with a stage child still
+    // writing, and its exit handler's removal threw ENOTEMPTY.
+    it('leaves nothing behind when pup exits with a child still writing into it', {
+      timeout: 20_000,
+    }, () => {
+      const tmp = tempDir('pup-exit-');
+      const script = join(tmp, 'exit.mts');
+      writeFileSync(
+        script,
+        [
+          `import { readdirSync } from 'node:fs';`,
+          `import { runGateChild } from ${JSON.stringify(join(process.cwd(), 'src', 'core', 'sandbox.utils.ts'))};`,
+          `const cwd = ${JSON.stringify(fakeCheckout())};`,
+          `const scratch = await runGateChild('sh', ['-c', 'printf %s "$TMPDIR"'], { cwd, repoPath: cwd });`,
+          `void runGateChild('sh', ['-c', 'i=0; while :; do i=$((i+1)); mkdir -p "$TMPDIR/d$i"; done'], { cwd, repoPath: cwd }).catch(() => undefined);`,
+          `const poll = setInterval(() => { if (readdirSync(scratch).length > 5) { clearInterval(poll); process.exit(0); } }, 10);`,
+        ].join('\n'),
+      );
+
+      const run = spawnSync(process.execPath, ['--import', 'tsx', script], {
+        encoding: 'utf8',
+        env: { ...process.env, TMPDIR: tmp },
+        cwd: process.cwd(),
+      });
+
+      expect(run.stderr).toBe('');
+      expect(run.status).toBe(0);
+      expect(readdirSync(tmp).filter((name) => /^pup-(gate|sandbox)-/.test(name))).toEqual([]);
+    });
+  });
+
   it('moves aside a corepack install with an empty bin/ before the child runs', async () => {
     // The shape a half-extracted download left twice: corepack reuses the
     // directory, every stage dies on MODULE_NOT_FOUND for pnpm.cjs, and the
     // audit stored that as the baseline. A fresh TMPDIR is a fresh cache root.
-    const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cache-root-')));
-    checkouts.push(tmp);
+    const tmp = tempDir('pup-cache-root-');
     vi.stubEnv('TMPDIR', tmp);
     const cwd = fakeCheckout();
     const pnpmDir = join(tmp, 'pup-toolchain-cache', projectId(cwd), 'corepack', 'v1', 'pnpm');
@@ -502,12 +585,7 @@ describe('runGateChild', () => {
       // test run (decision 95): each keeps the grants it was spawned with.
       it('gives children started together each its own grants', async () => {
         const cwd = fakeCheckout();
-        const granted = Array.from({ length: 6 }, () =>
-          realpathSync(mkdtempSync(join(tmpdir(), 'pup-grant-'))),
-        );
-        onTestFinished(() => {
-          for (const dir of granted) rmSync(dir, { recursive: true, force: true });
-        });
+        const granted = Array.from({ length: 6 }, () => tempDir('pup-grant-'));
 
         await Promise.all(
           granted.map((dir) =>
@@ -623,10 +701,7 @@ describe('runGateChild', () => {
 // scratch dir made the exit handler's removal throw ENOTEMPTY (decision 95).
 describe('removeGateDir', () => {
   it('reports a directory it could not remove instead of throwing', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pup-remove-test-'));
-    onTestFinished(() => {
-      rmSync(dir, { recursive: true, force: true });
-    });
+    const dir = tempDir('pup-remove-test-');
     vi.mocked(rmSync).mockImplementationOnce(() => {
       throw Object.assign(new Error('ENOTEMPTY: directory not empty, rmdir'), {
         code: 'ENOTEMPTY',
@@ -643,7 +718,7 @@ describe('removeGateDir', () => {
   });
 
   it('removes a directory and everything in it', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pup-remove-test-'));
+    const dir = tempDir('pup-remove-test-');
     mkdirSync(join(dir, 'nested'));
     writeFileSync(join(dir, 'nested', 'file'), 'x');
 

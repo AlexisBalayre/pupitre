@@ -1,14 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +25,7 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
@@ -255,9 +247,9 @@ describe('launchTask scope overlap (decision 99)', () => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     // projectPaths writes compiled profiles under $HOME/.pupitre.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-launch-home-'));
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-launch-')));
+    repo = tempDir('pup-launch-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');
@@ -494,15 +486,15 @@ describe('launchTask armed-driver guard', () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-armed-home-'));
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-')));
+    repo = tempDir('pup-armed-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');
     commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
     ensureProject(db, projectId(repo), repo);
-    fired = join(realpathSync(mkdtempSync(join(tmpdir(), 'pup-armed-fired-'))), 'fired');
+    fired = join(tempDir('pup-armed-fired-'), 'fired');
   });
 
   afterEach(() => {
@@ -607,9 +599,9 @@ describe('launchTask rollback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-rollback-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-rollback-home-'));
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-rollback-')));
+    repo = tempDir('pup-rollback-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');
@@ -735,9 +727,9 @@ describe('launchTask model routing (decision 92)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-route-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-route-home-'));
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-route-')));
+    repo = tempDir('pup-route-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');
@@ -1149,7 +1141,7 @@ describe('launchTask code graph', () => {
    * directory, which is what the exclude line exists to cover.
    */
   function fakeCodegraph(body: string): string {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-bin-')));
+    const dir = tempDir('pup-cg-bin-');
     cgLog = join(dir, 'calls.log');
     writeFileSync(
       join(dir, 'codegraph'),
@@ -1185,10 +1177,10 @@ describe('launchTask code graph', () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-cg-home-'));
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-cg-launch-')));
+    repo = tempDir('pup-cg-launch-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');
@@ -1280,9 +1272,9 @@ describe('launchTask and the project brief', () => {
   beforeEach(() => {
     db = openStore(':memory:');
     // The brief lives under $HOME/.pupitre beside the compiled profiles.
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-brief-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-brief-home-'));
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-brief-launch-')));
+    repo = tempDir('pup-brief-launch-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');

@@ -1,15 +1,13 @@
-import { mkdtempSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
-import { UndeclaredSandboxError } from './sandbox.utils.js';
+import { endSandboxRun, UndeclaredSandboxError } from './sandbox.utils.js';
 import { getProject, saveProjectBaseline } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskId } from './types/profile.types.js';
@@ -48,13 +46,20 @@ function onPlatform(platform: NodeJS.Platform): void {
   });
 }
 
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
+
 describe('auditProject', () => {
   let db: Database;
   let repo: string;
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-audit-')));
+    repo = tempDir('pup-audit-');
   });
 
   describe('off darwin (decision 78)', () => {

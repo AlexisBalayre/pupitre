@@ -1,6 +1,5 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +12,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { hasConductorWindow } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -99,9 +99,9 @@ describe('startWebDashboard', () => {
   let dashboard: WebDashboard;
 
   beforeEach(async () => {
-    vi.stubEnv('HOME', realpathSync(mkdtempSync(join(tmpdir(), 'pup-web-home-'))));
+    vi.stubEnv('HOME', tempDir('pup-web-home-'));
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-web-')));
+    repo = tempDir('pup-web-');
     ensureProject(db, projectId(repo), repo);
     dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS });
   });
@@ -111,7 +111,6 @@ describe('startWebDashboard', () => {
     db.close();
     vi.unstubAllEnvs();
     vi.mocked(hasConductorWindow).mockReset();
-    rmSync(repo, { recursive: true, force: true });
   });
 
   function seedSession(

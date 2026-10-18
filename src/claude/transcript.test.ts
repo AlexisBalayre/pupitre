@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { latestContextTokens } from './transcript.service.js';
 
 function makeTranscriptDir(lines: object[]): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-transcript-')));
+  const dir = tempDir('pup-transcript-');
   writeFileSync(join(dir, 'session.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n'));
   return dir;
 }

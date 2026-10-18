@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from '../core/db.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { ensureProject } from '../core/session.repository.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   enclosingProject,
   fleetProjects,
@@ -21,10 +21,6 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
-
-function tempDir(prefix: string): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
-}
 
 function initRepo(): string {
   const repo = tempDir('pup-proj-repo-');

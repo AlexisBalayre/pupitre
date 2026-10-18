@@ -1,13 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +20,7 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
@@ -107,16 +99,14 @@ function eventsOfType(db: Database, sessionId: string, type: string) {
 describe('sweepDeadTurns', () => {
   let db: Database;
   let repo: string;
-  let home: string;
 
   beforeEach(() => {
     // projectPaths resolves the sessions directory under homedir() — point it
     // at a throwaway HOME, or the run writes into the developer's real
     // ~/.pupitre, which the merge gate's sandbox refuses outright.
-    home = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-home-')));
-    vi.stubEnv('HOME', home);
+    vi.stubEnv('HOME', tempDir('pup-watchdog-home-'));
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-watchdog-')));
+    repo = tempDir('pup-watchdog-');
     vi.clearAllMocks();
     vi.mocked(conductorPane).mockReturnValue(undefined);
     vi.mocked(deadTurnError).mockReturnValue(undefined);
@@ -126,8 +116,6 @@ describe('sweepDeadTurns', () => {
   afterEach(() => {
     db.close();
     vi.unstubAllEnvs();
-    rmSync(repo, { recursive: true, force: true });
-    rmSync(home, { recursive: true, force: true });
   });
 
   describe('a session whose turn died', () => {
