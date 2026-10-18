@@ -1,0 +1,264 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-18T15:32:46.975Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39140173969",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39140173969",
+  "actor": "AlexisBalayre",
+  "commit_sha": "38ca7e60432cbed499be6265c328fc2f0aea7585",
+  "source": "pr",
+  "pr_number": 161,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "16041853144c3fec680a4497a5c69a684641b425",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "273-294",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "127-149",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "223-238",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "134-143",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new re-check under the lock covers only one order: `pup fix` taking the edge before `pup land` gets the lock. In the other order the race is still open. `pup land` writes its `landed` event after it has released the merge lock and run the multi-minute audit. During that time `pup fix`'s `assertStillPinned` still sees the old merge as newest. So a fix that read the PR as OPEN before the GitHub merge passes every check under the lock, re-adds the worktree and branch that land just removed, and starts a round on a PR that has already landed.",
+      "body": "**`pup fix` can still start a round on a PR that `pup land` is already landing.**\n\nThe re-check under the lock in `pup land` covers only one order: fix takes the edge first, then land gets the lock.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/38ca7e60432cbed499be6265c328fc2f0aea7585/src/core/land.service.ts#L134-L143\n\nIn the other order, fix's checks see nothing land does under the lock. Land fast-forwards, removes the worktree and deletes `pup/<id>`, then releases the lock. It writes `landed` only after the multi-minute audit:\n\n```ts\nconst audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');\nappendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/38ca7e60432cbed499be6265c328fc2f0aea7585/src/core/land.service.ts#L199-L203\n\nSay `pup fix` read the PR as OPEN just before the GitHub merge. It then takes the merge lock, which does not block, after land releases it but before `landed` is written. Every check under fix's lock passes:\n- `assertStillPinned` still finds the old `merge` event as the newest, at the pinned sha.\n- `restoreWorktree` finds no branch, so `worktree add -b` re-creates `pup/<id>` and the worktree at the head.\n- `takeFixRoundEdge` succeeds, because the row is still `merged`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/38ca7e60432cbed499be6265c328fc2f0aea7585/src/core/fix-round.service.ts#L144-L148\nhttps://github.com/AlexisBalayre/pupitre/blob/38ca7e60432cbed499be6265c328fc2f0aea7585/src/core/fix-round.service.ts#L398-L411\n\nThe worker is relaunched on a landed PR, with the branch and worktree that land just removed. `landed` is then appended after `fix_round`, so the session is `running` while its newest merge reads `'landed'`. `assertStillPinned`'s docstring says it covers \"a `pup land` that finished while the review was read\", which holds only once the audit is done.\n\nThe window is narrow: the time between fix's read and its lock has to cover the merge click and land's locked section. It can happen when the conductor lands while the operator runs `pup fix`.\n\nPossible fixes:\n- Give fix something land changes under the lock. For example, under fix's lock, refuse when the pinned sha is already an ancestor of `refs/remotes/origin/<target>`, which land updates under the lock.\n- Or record `landed`, or a landing marker, inside land's lock before `tearDown`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "283-286",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When threads come with no status, or with the poster's 'the review could not be posted' FAILURE, or the run died before its `finally`, the refusal says to wait, but waiting never clears those states; only an `@claude review` comment re-runs the head, and only PENDING gets that hint.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "310-322",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The final-status gate does not bind the threads to the run that set the status: the poster's status write is best-effort and its review carries no `commit_id`, so an earlier run's threads can sit beside a later run's no-verdict FAILURE, or an older final status can survive a re-run whose status write failed, on the same head. Requiring `status.state === 'SUCCESS'` narrows this; decision 90's 'same run' claim overstates it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "459-463",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A `pup kill` during the kickoff wait moves the row to merged; `undoRound`'s `killSession` then tries merged → killed and throws InvalidTransitionError, masking the original error and skipping the worktree `rmSync`/prune (the old undo threw too, but now the worktree is also left).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "632-639",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`killedFixRoundMessage` puts the store-read session id unsanitised into an `rm -r .worktrees/<id>` command (reached from `pup ui`'s kill with no `assertMintedRow`), while the matching `restoreWorktree` refusal sanitises it; a forged row id like `s ~` yields a destructive command if pasted. Name the command only for a `SESSION_ID_PATTERN` id, and share one cleanup-instruction string between the two sites.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "466-484",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`relaunchWorker` re-implements `startSession`'s post-compile steps (`writeCompiledProfile`, then the `prepareGraph(binary, …) ? join(compiledDir, 'mcp.json') : undefined` ternary, now its third copy), and the unnamed `{ compiled: CompiledProfile; binary: string | undefined }` pair is spelled out three times; one session-lifecycle helper that writes the profile and returns the settings/mcp paths would serve both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "323",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ProfileSource` includes `role`, but the launch stores only the role's name and `pup fix` never passes one, so the type suggests a faithful recompile it cannot give; drop `role` from it or resolve it from the task row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "381-382",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`recompileSessionProfile` turns scope conflicts into kickoff peers but never calls `introduceToPeers` or writes a `scope_overlap` event as `launchTask` does, so live peers sharing files are not told the round's worker is editing again.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "310-322",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Threads are relayed under a `partial review: …` SUCCESS status while the clean path requires the exact full-review string; probably intended, but the asymmetry is undocumented in decision 90.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4718",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In decision 90, the inserted sentence about `pup merge` printing `rejection 1/2` now sits before \"That event, carrying the thread ids…\", so \"That event\" no longer points at the `fix_round` event; move the insertion or name the event.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90 says \"three commands that would lose the round refuse\" but lists two refusals (respawn/`kill --respawn`, plain merge) and then `pup land`'s re-check, which is not a refusal of that kind; reword as two refusals and one re-check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90's Tests paragraph narrates review history (\"Round 2 of CI review added…\") rather than what the tests cover, and several edited lines (that one, the `Default_Ignorable_Code_Point` sentence, the decision 83 note) wrap unevenly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "440-446",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `relaunchWorker` JSDoc has one overlong line (\"a round, back to `merged`, and its worktree removed, so `pup fix` can be re-run; the `fix_round` event\") followed by a short one; reflow the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "325-329",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`compileSessionProfile`'s JSDoc \"Compile a session's profile into its compiled dir's path, not yet written\" is garbled, and the function does `mkdirSync` the dir; e.g. \"Compile a session's profile for its compiled dir without writing the files.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ReviewThread.isMinimized`'s JSDoc (\"as an injection attempt is hidden\") is speculative and inexact, since the flag is true for anything but a plain `false`; state that contract and drop the inline comment that repeats it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "139-142",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The land refusal renders `moved to gone` when the row is missing (`now ?? 'gone'`), and the `CiReview` JSDoc's \"which is what the status says, never proof\" reads clumsily; reword both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "465",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`let delivered = false;` (and `edited` in github.client.ts:425) are booleans left without an is/has prefix next to the delta's `hasRowMoved`/`isEditedByOther` renames (docs/conventions/general.md §Type safety).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.7303365,
+  "duration_ms": 583774,
+  "num_turns": 22,
+  "tokens": {
+    "input": 18,
+    "output": 19825,
+    "cache_read": 576420,
+    "cache_creation": 116508,
+    "total": 712771
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 322,
+      "output": 150764,
+      "cache_read": 8502529,
+      "cache_creation": 638499,
+      "cost_usd": 8.259092799999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 15572,
+      "cache_read": 390717,
+      "cache_creation": 110552,
+      "cost_usd": 0.4712437
+    }
+  ],
+  "permission_denials": []
+}
