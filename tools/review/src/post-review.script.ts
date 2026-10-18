@@ -59,10 +59,13 @@ function fileDiff(mergeBase: string, file: string): string {
     // which the action's depth-1 base fetch grafts parentless.
     // The model has had the checkout by now, and this runs with the job's
     // token: nothing the head or the model could have configured may run a
-    // command here (fsmonitor, hooks, an external diff or a textconv driver).
+    // command here (fsmonitor, hooks, an external diff or a textconv driver),
+    // nor a lazy fetch through a rewritten remote: the diff reads local commits.
     return execFileSync(
       "git",
       [
+        "-c",
+        "protocol.allow=never",
         "-c",
         "core.fsmonitor=",
         "-c",
@@ -77,7 +80,7 @@ function fileDiff(mergeBase: string, file: string): string {
         "--",
         `:/${file}`,
       ],
-      { encoding: "utf8", cwd: process.env.GITHUB_WORKSPACE },
+      { encoding: "utf8", cwd: process.env.GITHUB_WORKSPACE, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } },
     );
   } catch {
     warn(`could not diff ${file}; its findings go in the review body`);

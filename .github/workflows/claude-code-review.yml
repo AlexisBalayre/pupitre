@@ -216,19 +216,20 @@ jobs:
       # the action's SENSITIVE_PATHS list predates it: v1.0.237 still restores
       # CLAUDE.md, .claude/ and .mcp.json, not AGENTS.md, so the PR head's copy
       # would execute unreviewed. Apply the action's own treatment first:
-      # snapshot the head's copy for reviewers under .claude-pr/, then take the
-      # merge base's. Drop this step once upstream restores AGENTS.md itself.
+      # snapshot the head's copy for reviewers, then take the merge base's.
+      # Drop this step once upstream restores AGENTS.md itself. Not under
+      # .claude-pr/: the action clears that directory before the model starts.
       # The snapshot is written from the object store into a directory made
-      # fresh here, never copied through a path: the head can commit
-      # .claude-pr/AGENTS.md as a symlink into the tooling copy, and a `cp`
-      # onto it overwrites the poster that later runs with the job's token.
+      # fresh here, never copied through a path: the head can commit the
+      # destination as a symlink into the tooling copy, and a `cp` onto it
+      # overwrites the poster that later runs with the job's token.
       - name: Restore AGENTS.md from base
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         env:
           MERGE_BASE: ${{ steps.preflight.outputs.merge_base }}
         run: |
-          rm -rf .claude-pr && mkdir .claude-pr
-          if git cat-file -e HEAD:AGENTS.md 2>/dev/null; then git show HEAD:AGENTS.md > .claude-pr/AGENTS.md; fi
+          rm -rf .claude-pr-agents && mkdir .claude-pr-agents
+          if git cat-file -e HEAD:AGENTS.md 2>/dev/null; then git show HEAD:AGENTS.md > .claude-pr-agents/AGENTS.md; fi
           if git cat-file -e "${MERGE_BASE}:AGENTS.md" 2>/dev/null; then
             git checkout "${MERGE_BASE}" -- AGENTS.md
             git restore --staged AGENTS.md

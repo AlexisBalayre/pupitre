@@ -2881,15 +2881,17 @@ changes back into those docs is pending.
     head is written from the object store, never through a path the head controls. The
     "Restore AGENTS.md" step copied `AGENTS.md` onto `.claude-pr/AGENTS.md`, which the head can
     commit as a symlink into `$REVIEW_TOOLING`, so the `cp` overwrote the poster that runs
-    after the model with the job's token. The step now recreates `.claude-pr` and writes `git
-    show HEAD:AGENTS.md` into it, and the copy is made read-only once installed, since no later
+    after the model with the job's token. The step now writes `git show HEAD:AGENTS.md` into a freshly made
+    `.claude-pr-agents/` (the action clears `.claude-pr/` before the model starts, so a snapshot
+    there never reached a reviewer), and the tooling copy is made read-only once installed, since no later
     step writes there. The checkout persists no credential (`persist-credentials: false`): its
     extraheader sat in `.git` for the whole job, readable by the model. The preflight's fetch of
     `ci/review-metrics` borrows gh's credential helper for that one command, `gh pr checkout`
     authenticates through gh, and the metrics are appended through the contents API, so no git
     call needs a stored token. The poster's `git diff`, which runs after the model has had the
-    checkout, turns off fsmonitor, hooks, an external diff and textconv drivers, so nothing the
-    head or the model configured runs with the token.
+    checkout, turns off fsmonitor, hooks, an external diff, textconv drivers and every transport
+    (`protocol.allow=never`, `GIT_NO_LAZY_FETCH`), so nothing the head or the model configured
+    runs with the token.
     *Tests, and the mutation.* Unit tests on temp repos, never the gate run on itself (decision
     39): a nested test script that exits non-zero refuses the merge with its output in the
     detail; removing the stage loop from the gate fails five of the nested-package tests,
