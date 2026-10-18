@@ -309,9 +309,8 @@ function fetchTarget(
 
 /**
  * What the gate's own teardown may have left (it is best effort): the
- * session's worktree, and its branch while main holds every commit of it, as
- * `pnpm worktree:clean` removes a worktree whose PR merged. A branch with
- * commits main lacks is kept for the operator, as the gate keeps one that moved
+ * session's worktree, and its branch while main holds every commit of it. A
+ * branch with commits main lacks is kept for the operator, as the gate keeps one that moved
  * past the pin.
  */
 function tearDown(

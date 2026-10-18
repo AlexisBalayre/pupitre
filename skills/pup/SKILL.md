@@ -82,5 +82,5 @@ model or `--effort max`.
 
 Worker done -> security review of `main...HEAD` in `.worktrees/<task>` -> one steer with the
 must-fix items -> gate with `pup merge <task> --pr` -> address the CI review -> human merges ->
-pull, `pnpm worktree:clean`, `pup audit`, next task. Details, the gate's flags and the gotchas
+pull, `pnpm worktree:remove --merged`, `pup audit`, next task. Details, the gate's flags and the gotchas
 that bite every project are in [LOOP.md](LOOP.md); read it before your first gate or steer.

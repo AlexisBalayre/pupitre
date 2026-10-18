@@ -31,7 +31,7 @@ cd .worktrees/my-change
 # ... work, commit ...
 git push -u origin feature/my-change
 gh pr create --base main
-pnpm worktree:clean                 # after the merge; removes worktrees whose remote branch is gone
+pnpm worktree:remove my-change      # after the merge; the worktree, then its branch
 ```
 
 `main` is protected: pull requests only, no force-push, no deletion. The scripts read the trunk name and branch prefix from [`.claude/project.env`](.claude/project.env), so they stay in agreement with the guard hooks.
