@@ -1,0 +1,278 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-23T08:00:08.697Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39920399987",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39920399987",
+  "actor": "AlexisBalayre",
+  "commit_sha": "44b9bd114d8058cde43f3e37a561cf644cfce66d",
+  "source": "pr",
+  "pr_number": 169,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "511",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The window exports `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` to everything it runs, so a test suite, package manager or build tool that runs `git init`, `clone` or other git in another directory hits the session repo or corrupts the shared `<common>/config`. The only guard is a kickoff line that subprocesses never read.",
+      "body": "**The window's git pins reach every process the session runs, not just the agent's own git commands.**\n\n```ts\n      ...(opts.git ? { ...opts.git, ...WINDOW_GIT_CONFIG } : {}),\n```\n\nThese variables go through tmux `-e` into the `claude` process's environment. Every Bash command and every child of those commands inherits them: `vitest`, `pnpm install`, any build tool. Nothing in the window clears them. Only pup's own `runGit` scrubs the `GIT_DIR` family (`scrubbedGitEnv`).\n\nDecision 101 (*Other repos from the window*, `docs/09-decisions.md` L5363-5367) says it reproduced that `git init` in another directory under these variables writes `core.worktree=<worktree>` into the shared `<common>/config`. Its only mitigation is the kickoff line (`profile-compiler.service.ts` L298-302) that tells the **agent** to run `env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE git …`. A subprocess never reads the kickoff. A managed project whose tests or tooling run git in a `mkdtemp` dir will now:\n\n- write `core.worktree=<session worktree>` into the main checkout's `.git/config`, so the operator's own unflagged git there works against the session worktree. The config is session-writable, per decision 41, so the sandbox does not block the write. pup's gate writes are already safe because they pass `--work-tree <repoPath>` (decisions 80 and 81).\n- commit onto the session's branch: a `git commit` from the temp dir resolves to the pinned `GIT_DIR`.\n- fail `git clone`, for example a package manager fetching a git dependency, with \"working tree already exists\".\n- silently read the wrong repo on `git -C <other> status/log`, because `GIT_DIR`/`GIT_WORK_TREE` override discovery.\n\nBefore this PR the same commands touched only their own temp repo. pupitre's own suite is unaffected only because its helpers strip every `GIT_*` variable by hand. Target repos have no such protection.\n\nOptions:\n- keep the pins out of the window's environment, and pin only pup's own git and the hooks' git (both already do);\n- or record the subprocess case as an accepted ceiling in decision 101, and have the gate/hook refuse while `<common>/config` carries `core.worktree`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/44b9bd114d8058cde43f3e37a561cf644cfce66d/src/claude/session-runtime.service.ts#L509-L515",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "542",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "If the operator has `worktree.useRelativePaths=true`, `git worktree add` writes a relative `gitdir: ../../.git/worktrees/<id>`. Both checks compare against the absolute admin path, so every launch throws `WorktreeRepointedError` (\"treat the session as compromised\") after `worktree add` and `insertSession` have already run, and every hook refuses.",
+      "body": "**A relative gitfile (Git 2.48+ `worktree.useRelativePaths`) fails every pointer check.**\n\n```ts\n    git: verifiedWorktreeGitEnv(dirname(dirname(opts.worktreePath)), opts.worktreePath),\n```\n\nThe check in `verifiedWorktreeGitEnv` (`git-diff.client.ts` L135) requires `gitfile === \\`gitdir: ${env.GIT_DIR}\\``, and `GIT_DIR` is always an absolute realpath. The hook's `pinned_worktree` (`profile-compiler.service.ts` L363) does the same plain string comparison. Both checks resolve `commondir`; neither resolves a relative gitfile.\n\npup's `worktree add` calls (`session-lifecycle.service.ts` L461, `fix-round.service.ts` L396) go through `runGit`. `GIT_SAFE_CONFIG` does not override `worktree.useRelativePaths`, and the operator's global and system config still apply. With that option set on Git 2.48+, git writes `gitdir: ../../.git/worktrees/<id>`, and:\n\n- `startSession` throws inside `launchSession` (L479). By then the worktree is added and `insertSession` (L469) has written the row, which is the orphan state the comment at L449-452 warns about.\n- the gate (`merge-gate.service.ts` L344, L922) and every hook refuse.\n- the refusal tells the operator to \"treat the session as compromised\", which is false here.\n\nThese sessions worked before this PR, and decision 101 does not list this case as a ceiling.\n\nPossible fixes:\n- pin `-c worktree.useRelativePaths=false` on pup's `worktree add` calls (or add it to `GIT_SAFE_CONFIG`);\n- or resolve a relative gitfile against the worktree in both checks before comparing.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/44b9bd114d8058cde43f3e37a561cf644cfce66d/src/claude/session-runtime.service.ts#L539-L542\nhttps://github.com/AlexisBalayre/pupitre/blob/44b9bd114d8058cde43f3e37a561cf644cfce66d/src/core/git-diff.client.ts#L130-L147",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "105-113, 149-159",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `extensions.worktreeConfig`-on refusal reuses `WorktreeRepointedError`, whose message tells the operator to treat the session as compromised. Git's own `sparse-checkout` turns that extension on, so a sparse-checkout main checkout now hard-refuses every gate, blaming a session that did nothing and advising a fix that would break sparse-checkout.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "140-147",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The repointed-pointer refusal suggests `git worktree repair`, which rewrites the gitfile and the `gitdir` back-link but not `<admin>/commondir`, so for a rewritten commondir the named remedy leaves the gate refusing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "786",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `.gitmodules` override hook test checks only that `status` is not null, so a hook that refused in `pinned_worktree` before running any git would also leave no marker and still pass. Assert `.toBe(0)` as the sibling gitlink test does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.test.ts",
+      "line": "283-296",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `WINDOW_GIT_CONFIG_ARGS` constant was inserted between `spawnPrefix`'s existing JSDoc and `spawnPrefix` itself, so that JSDoc now sits on the git-config constant and `spawnPrefix` has no doc. Move the constant above line 283.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1879-1899, 1986-1991",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same `armedRepo`/`plantCleanFilter` and `expectPlainGitFires` test helpers (plant a clean filter that writes a marker; touch, run plain `git status`, assert marker) are added in merge-gate.test, git-diff-client.test and profile-compiler.test, and re-inlined again for the `.gitmodules` cases. That is past the third-use bar; one shared helper beside `src/test/temp-dir.mock.ts` would do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "42-46",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`WorktreeGitEnv` is an `interface` with no index signature, so every place the pins are passed to `runGit` copies it (`{ env: { ...env } }`) only to satisfy `NodeJS.ProcessEnv`. A `type` alias, or `runGit` accepting it directly, drops the spreads.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "371-380, 504",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`preseedTrust`'s new optional `git?` parameter sits after the test-only `claudeJsonPath` default, so the production caller must pass `CLAUDE_JSON` explicitly, and leaving `git` out quietly falls back to asking unpinned git.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "360-367",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The shell `pinned_worktree` check shares `POINTER_MAX_BYTES` with the TS verifier but behaves differently: `head -c` truncates instead of rejecting, and `$(...)` strips every trailing newline, so `gitdir: X\\n\\n` passes the hook but fails the TS check. Nothing keeps the two copies in step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "950-951, 967-972",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comments next to the driver check and `const pinned = ...` restate the `armedGitDrivers` and `verifiedWorktreeGitEnv` JSDoc, which AGENTS.md §Comments says to delete at the call site.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "42-46",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new exported `WorktreeGitEnv` interface and `POINTER_MAX_BYTES` constant are defined in the client, where general.md puts exported types in `types/*.types.ts` and constants in `*.constants.ts` (the file already imports `DiffFileStat` from `./types/git-diff.types.js`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1021-1037",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `vi.mock('./git-diff.client.js', ...)` partially mocks a real-git module to inject a gitfile swap, where testing.md reserves `vi.mock` for tmux/`claude -p` and prefers the real dependency (a PATH shim like the hook test's `head` would avoid it).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5350, 5379",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two lines in decision 101 (the `GIT_CONFIG_COUNT`… list and \"The gate's scope audit, on the branch's own diff, still does.\") run to ~115-130 columns in a file wrapped at ~100; they look like late edits that were never reflowed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5380-5381",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fifo ceiling names only the gitfile read, but the hook's `commondir` read has the same `-f`-then-`head` window, so a fifo swapped in there also blocks until the hook timeout; the ceiling could say \"the gitfile and commondir\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "decision 101, \"Checked, so a rewrite is loud\"",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Any mismatch is a refusal naming both paths\" fits the pointer mismatch, but the `config.worktree`/extension refusals name a different pair (`config.worktree` and `<common>/config`), so the sentence over-generalises.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "179-185, 202",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The window sets `GIT_CONFIG_COUNT=2` with keys 0 and 1, which silently drops any `GIT_CONFIG_COUNT/KEY_n/VALUE_n` entries the operator's environment already carried (e.g. a CI credential helper or `safe.directory`); decision 101 documents the scrub for pup's own git but not this effect on the window.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "812-820, 889-891",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The conductor kickoff still tells the conductor to run unpinned `git -C .worktrees/<session-id> log/diff`, which follows a session-rewritable gitfile (e.g. to a repo with `log.showSignature` + `gpg.program`); running from the main checkout against `refs/heads/pup/<session-id>` would avoid it. Decision 101's ceilings name only the conductor checkout's own git.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "340-346, 922-970",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The armed-driver check runs before the merge lock, and only the pointer check is repeated under the lock before `git rebase`, so a session that writes `<common>/info/attributes` in between can aim a path at a filter the operator defines globally (the gap predates this PR, which does not widen it).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "The gate-side security instance (git-diff.client.ts / merge-gate.service.ts) was stopped by the safety classifier on its last step and ended early. It reports it did not fully check git calls that run in other linked worktrees during a gate (e.g. the gate's own private checkout); that sub-surface is under-covered."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.788993300000001,
+  "duration_ms": 574393,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 22081,
+    "cache_read": 361107,
+    "cache_creation": 67662,
+    "total": 450864
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 274,
+      "output": 155567,
+      "cache_read": 5784509,
+      "cache_creation": 533036,
+      "cost_usd": 7.137503800000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 20155,
+      "cache_read": 619390,
+      "cache_creation": 155165,
+      "cost_usd": 0.6514894999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 6a2c5dd 44b9bd1 --stat"
+    }
+  ]
+}
