@@ -67,6 +67,12 @@ export interface TestSlotOptions {
   /** Called when `maxWaitMs` ran out and the run goes ahead without a slot. */
   onWaitExpired?: () => void;
   /**
+   * Set, the run goes ahead without a slot when the slots cannot be used at
+   * all, such as a file or a loop planted where their directory goes, and this
+   * is told why; unset, that error is thrown. An interrupt is always thrown.
+   */
+  onSlotsUnusable?: (error: unknown) => void;
+  /**
    * Called once, the first time every slot is taken or a gate is waiting
    * ahead of a worker: who holds the slots, and the gates queued first.
    */
@@ -241,7 +247,8 @@ export class SlotWaitInterruptedError extends Error {
  *
  * Runs `fn` with no slot inside a run that already holds one: the child of a
  * `pup session test`, and a gate's sandboxed child, which cannot write the
- * slots at all; and once `maxWaitMs` runs out, telling `onWaitExpired`.
+ * slots at all; once `maxWaitMs` runs out, telling `onWaitExpired`; and when
+ * the slots cannot be used, telling `onSlotsUnusable` if the caller set it.
  */
 export async function withTestSlot<TResult>(
   holder: { kind: SlotHolderKind; label: string },
@@ -258,7 +265,9 @@ export async function withTestSlot<TResult>(
   try {
     slot = await acquire(record, options);
   } catch (error) {
-    if (!isUnwritable(error)) throw error;
+    if (isUnwritable(error)) return fn();
+    if (!options.onSlotsUnusable || error instanceof SlotWaitInterruptedError) throw error;
+    options.onSlotsUnusable(error);
     return fn();
   }
   if (slot === undefined) {
@@ -361,7 +370,9 @@ export function sessionTestCommand(repoPath: string): GateCommand | undefined {
 /**
  * `pup session test [args]`: the project's test command with `args` after it,
  * run in the session's worktree once it holds a test slot, its output on this
- * terminal. npm passes a script's arguments only after `--`. Answers the
+ * terminal. npm passes a script's arguments only after `--`, and `sh -c` takes
+ * the first word after its script as `$0`, so a custom adapter's script gets a
+ * name there and the files as `"$@"`, its text untouched. Answers the
  * run's exit status; an interrupt or a stop of pup's own reaches the run too,
  * so the slot is never freed under a suite that is still going.
  */
@@ -373,7 +384,9 @@ export async function runSessionTest(req: {
   slots?: TestSlotOptions;
 }): Promise<number> {
   const { command, args } = req;
-  const separator = command.command === 'npm' && args.length > 0 ? ['--'] : [];
+  const shellScript = command.command === 'sh' && command.args[0] === '-c';
+  const separator =
+    args.length === 0 ? [] : command.command === 'npm' ? ['--'] : shellScript ? ['sh'] : [];
   return withTestSlot(
     { kind: 'worker', label: req.sessionId },
     () =>

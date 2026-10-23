@@ -1,11 +1,20 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
   GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
+  runSessionTest,
   type SlotHolder,
   type TestSlotOptions,
   vmStatAvailableBytes,
@@ -249,6 +258,34 @@ describe('withTestSlot (decision 96)', () => {
     await held.settled;
   });
 
+  it('runs without a slot when a file is planted where the slots go, telling the caller', async () => {
+    const planted = join(dir, 'slots');
+    writeFileSync(planted, '');
+    const unusable = vi.fn();
+    let ran = false;
+    await withTestSlot(
+      { kind: 'gate', label: 'gate s1' },
+      async () => {
+        ran = true;
+      },
+      { ...options, dir: planted, onSlotsUnusable: unusable },
+    );
+
+    expect(ran).toBe(true);
+    expect(unusable).toHaveBeenCalledOnce();
+  });
+
+  it('throws when the slots cannot be used and the caller asked for no fallback', async () => {
+    const planted = join(dir, 'slots');
+    writeFileSync(planted, '');
+    const fn = vi.fn(async () => undefined);
+
+    await expect(
+      withTestSlot({ kind: 'worker', label: 's1' }, fn, { ...options, dir: planted }),
+    ).rejects.toThrow();
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('ignores the wait file of a gate that died waiting', async () => {
     writeFileSync(
       join(dir, 'gate-1-x.wait'),
@@ -318,6 +355,31 @@ describe('withTestSlot (decision 96)', () => {
       options,
     );
     expect(ran).toBe(true);
+  });
+});
+
+describe('runSessionTest (decision 96)', () => {
+  beforeEach(() => {
+    vi.stubEnv(HELD_SLOT_ENV, '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("hands a custom adapter's `sh -c` script the files as its arguments", async () => {
+    const dir = tempDir('pup-session-test-');
+    const out = join(dir, 'args');
+    const status = await runSessionTest({
+      command: { stage: 'test', command: 'sh', args: ['-c', `printf '%s\\n' "$@" > '${out}'`] },
+      args: ['a.test.ts', 'b c.test.ts'],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: join(dir, 'slots'), pollMs: 10 },
+    });
+
+    expect(status).toBe(0);
+    expect(readFileSync(out, 'utf8')).toBe('a.test.ts\nb c.test.ts\n');
   });
 });
 

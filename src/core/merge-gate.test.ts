@@ -3970,6 +3970,20 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // Both still held by their live holder, and no wait left behind.
       expect(readdirSync(slots).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
     });
+
+    it('runs its tests without a slot when a session planted a file where the slots go', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      rmSync(slots, { recursive: true });
+      writeFileSync(slots, '');
+
+      expect((await merge()).status).toBe('merged');
+      expect(errors.mock.calls.flat().join('\n')).toMatch(
+        /The test slots could not be used \(.+\); the gate runs its tests without one\./,
+      );
+    });
   });
 });
 

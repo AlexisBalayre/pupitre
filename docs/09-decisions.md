@@ -5121,9 +5121,11 @@ changes back into those docs is pending.
     sessions, which spend most of their time thinking and editing. So test runs wait their turn
     and sessions do not.
     Slots. `pup session test [args]` runs the test command of the repo's first adapter, the same
-    one the gate's test stage runs (decision 22), with the arguments appended, only once it holds
+    one the gate's test stage runs (decision 22), with the arguments after it, only once it holds
     one of the machine's test slots, 2 by default. There is no related-test form in the adapter
-    yet, so a worker names its test files; npm gets a `--` before them. A slot is a lock file
+    yet, so a worker names its test files. npm gets a `--` before them, and a custom adapter's
+    `sh -c '<cmd>'` gets `sh` as its `$0`, so the files reach the script as `"$@"`, its text
+    untouched; a script that does not use them runs as it would in the gate. A slot is a lock file
     `slot-N.lock` in `~/.pupitre/slots` holding the holder's kind, label, pid and a token. A take
     writes a staged file and hard-links it into a free slot name, so two takers cannot both win
     one. A slot is reclaimed when its pid is not a live process of this user (`kill(pid, 0)`;
@@ -5147,6 +5149,11 @@ changes back into those docs is pending.
     keeps a slot longer than the gate lets one of its runs go is hung, or holds no test run at
     all. A worker ignores a gate's wait file older than that bound, or dated ahead of now.
     Worker waits are not bounded: a stuck holder stalls only sessions' own test runs.
+    Nor can a broken slots path fail the gate: when the slots cannot be used at all, such as a
+    regular file or a symlink loop planted at `~/.pupitre/slots`, or a directory planted as
+    `slot-N.lock` that Linux will not unlink, the gate prints `The test slots could not be used
+    (<reason>); the gate runs its tests without one.` and runs them. An interrupt still ends it.
+    A worker's `pup session test` fails with that error instead, as only sessions broke it.
     The wait happens before the test stage starts, so it is not part of the stage's time. The
     merge lock's listener (decision 84) holds signals, so the wait listens for SIGINT and SIGTERM
     itself and ends the gate as `GateInterruptedError` would, removing the coverage run's report
@@ -5190,7 +5197,9 @@ changes back into those docs is pending.
     node_modules/vitest/vitest.mjs`, `pnpm -C . test`, `npx --yes vitest`, `sh -c 'vitest'`),
     runs unqueued; a session that sets `PUP_TEST_SLOT` skips the wait; one that forges a slot
     naming a live process of its own, or backgrounds a hung `pup session test`, holds slots
-    until the gate's bound runs out. The cap file and the store are writable by session and
+    until the gate's bound runs out; one that breaks the slots path makes every gate run without
+    a slot and every worker's `pup session test` fail until the operator removes what it
+    planted. The cap file and the store are writable by session and
     conductor code, as decisions 46 and 47 say of the store, so a session can rewrite the cap.
     Fixing the cap at the conductor's start was weighed and not done: every place it could live,
     the compiled directory, an environment variable, the conductor's settings, is as writable
@@ -5204,7 +5213,9 @@ changes back into those docs is pending.
     fifo is reclaimed without blocking (the fifo test hangs on the old read); a gate is served
     before a worker that waited longer and is named to it; a dead gate's wait file, and a live
     one's older than the bound, are ignored; a run whose longest wait runs out runs without a
-    slot and says so, and so does a gate, merging with both slots still held; a slot is freed on a
+    slot and says so, and so does a gate, merging with both slots still held; a file planted where
+    the slots go runs a gate without one, saying so, and fails a run with no fallback; a custom
+    adapter's `sh -c` script gets the files as its arguments; a slot is freed on a
     throw and left alone once another run took it; `PUP_TEST_SLOT` and an unwritable directory
     run without a slot. In the gate, a gate with both slots held waits and prints whom for, and a
     worker stays waiting behind it after a slot frees. The compiled settings refuse pnpm test,

@@ -1342,6 +1342,12 @@ export async function measureBranch(
             `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
               'tests without one.',
           ),
+        // A slots path a session broke must not fail every gate on the machine.
+        onSlotsUnusable: (error) =>
+          console.error(
+            `The test slots could not be used (${failureSummary(error)}); the ` +
+              'gate runs its tests without one.',
+          ),
       }).catch((error: unknown) => {
         // A wait that ended before the suites ran leaves the coverage run's
         // directory to this; a second dispose after theirs removes nothing.
