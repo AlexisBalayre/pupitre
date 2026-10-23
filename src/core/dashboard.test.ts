@@ -1283,6 +1283,16 @@ describe('needsYou', () => {
 
         expect(inbox()).toEqual([]);
       });
+
+      // Every transition logs a gate_result, but the store is session-writable:
+      // a state written by hand has no event behind it, and no refusal either.
+      it('reads no refusal off a session put in awaiting-review with no event', () => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        seedIn('s-review', []);
+        db.prepare("UPDATE sessions SET state = 'awaiting-review' WHERE id = 's-review'").run();
+
+        expect(inbox()).toEqual([]);
+      });
     });
 
     // The conductor holds the branch until the gate opens its PR; from there
