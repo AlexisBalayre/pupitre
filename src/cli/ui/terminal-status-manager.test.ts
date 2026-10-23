@@ -76,6 +76,18 @@ describe('createTerminalStatus', () => {
     ]);
   });
 
+  // Decision 102: a running conductor gates the finished session itself.
+  it.each([
+    ['no conductor runs', false, '1 need you'],
+    ['the conductor runs', true, '0 need you'],
+  ])('counts an awaiting-review session as a need only when %s', (_name, running, count) => {
+    const out = tty();
+    const fleet = reading(session({ state: 'awaiting-review' }));
+    for (const { snapshot } of fleet.projects) snapshot.conductor.running = running;
+    createTerminalStatus(out, { TERM_PROGRAM: 'Apple_Terminal' }).update(fleet);
+    expect(out.writes).toEqual([`${PUSH}${ESC}]2;pup proj · 0 running · ${count}${BEL}`]);
+  });
+
   it('writes idle in green over an empty fleet', () => {
     const out = tty();
     createTerminalStatus(out, ITERM).update(reading());

@@ -663,19 +663,39 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      expect(logs.slice(0, 6)).toEqual([
+      expect(logs.slice(0, 5)).toEqual([
         'Needs you',
         '  s-asking  question: rebase or merge?  → pup steer s-asking "..."',
         '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
         expect.stringMatching(
           /^ {2}s-stalled {2}STALLED \(\d+m\) {2}→ pup steer s-stalled "\.\.\."$/,
         ),
-        '  s-review  awaiting review  → pup review s-review then pup merge s-review --pr',
         '  s-pr  PR opened, not landed  → https://github.com/o/r/pull/7',
       ]);
-      expect(logs[6]).toMatch(/^OVERDUE DEBT/);
+      expect(logs[5]).toMatch(/^OVERDUE DEBT/);
       // A local fast-forward has landed already: no PR waits on anyone.
       expect(logs.join('\n')).not.toContain('s-local');
+      // The running conductor gates the finished session (decision 102): it
+      // leaves the inbox and stays in the table.
+      expect(logs.join('\n')).not.toContain('awaiting review');
+      expect(logs.slice(6)).toContainEqual(expect.stringMatching(/^awaiting-review +s-review /));
+    });
+
+    it('puts an awaiting-review session in the inbox when no conductor runs to gate it', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-review');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's-review', 'running');
+      transitionSession(db, 's-review', 'awaiting-review');
+      db.close();
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.slice(0, 2)).toEqual([
+        'Needs you',
+        '  s-review  awaiting review  → pup review s-review then pup merge s-review --pr',
+      ]);
     });
 
     it('prints no inbox when nothing waits on the operator', () => {

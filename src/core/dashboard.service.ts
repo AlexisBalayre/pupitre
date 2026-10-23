@@ -377,10 +377,13 @@ export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview
  * kind, the snapshot's own row order. `ciReview` is GitHub's answer for an
  * open PR, asked only by `pup status`, the one reader that may wait on gh, so
  * the CI line appears there alone; without it, or without an answer, an open
- * PR keeps its plain line.
+ * PR keeps its plain line. While the project's conductor runs, a session
+ * awaiting review is the conductor's to gate, not the operator's, unless its
+ * gate was refused: accepting flagged debt takes a human (decision 102).
  */
 export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup): DashboardNeed[] {
-  const needs = snapshot.sessions.flatMap((session) => needOf(session, ciReview) ?? []);
+  const gating = snapshot.conductor.running;
+  const needs = snapshot.sessions.flatMap((session) => needOf(session, gating, ciReview) ?? []);
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
 
@@ -393,7 +396,11 @@ export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup)
 const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
-function needOf(session: DashboardSession, ciReview?: CiReviewLookup): DashboardNeed | undefined {
+function needOf(
+  session: DashboardSession,
+  gating: boolean,
+  ciReview?: CiReviewLookup,
+): DashboardNeed | undefined {
   const { id } = session;
   const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
     kind,
@@ -437,7 +444,17 @@ function needOf(session: DashboardSession, ciReview?: CiReviewLookup): Dashboard
       command(`pup steer ${id} "..."`),
     );
   }
-  if (session.state === 'awaiting-review') {
+  if (session.state === 'awaiting-review' && session.gateRefused) {
+    return need(
+      'awaiting-review',
+      'gate refused on flagged debt',
+      command(
+        `pup merge ${id} --pr --accept-debt "<reason>" --review-by "<condition>", ` +
+          `or pup steer ${id} "..."`,
+      ),
+    );
+  }
+  if (session.state === 'awaiting-review' && !gating) {
     return need(
       'awaiting-review',
       'awaiting review',
@@ -638,6 +655,7 @@ function dashboardSession(
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
+  const gateRefused = row.state === 'awaiting-review' && newestGateRefused(events);
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
@@ -667,6 +685,7 @@ function dashboardSession(
     ...(question === undefined ? {} : { question }),
     ...(openPr === undefined ? {} : { openPr }),
     ...(lastGate ? { lastGate } : {}),
+    ...(gateRefused ? { gateRefused } : {}),
     ...(route ? { route } : {}),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     needsHuman:
@@ -782,6 +801,22 @@ function newestGate(newestFirst: EventRow[]): DashboardGate | undefined {
     if (gate) return gate;
   }
   return undefined;
+}
+
+/**
+ * Whether the gate's refusal still stands (decision 102): it left the session
+ * in awaiting-review, and only a human can accept the debt it flagged. A steer
+ * answers it, as it answers a question, and a `session_done` after it is new
+ * work to gate; neither moves the state, so neither logs a transition. Any
+ * newer `gate_result`, not only a newer report, means the refusal is history.
+ */
+function newestGateRefused(newestFirst: EventRow[]): boolean {
+  for (const row of newestFirst) {
+    const event = decodeEvent(row);
+    if (event.type === 'steer' || event.type === 'session_done') return false;
+    if (event.type === 'gate_result') return event.outcome === 'refused';
+  }
+  return false;
 }
 
 /**

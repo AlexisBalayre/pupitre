@@ -160,6 +160,12 @@ export interface DashboardSession {
    */
   openPr?: { url?: string };
   lastGate?: DashboardGate;
+  /**
+   * The gate refused this awaiting-review session on flagged debt, and no
+   * steer or new finish came after: accepting the debt takes a human, never
+   * the conductor (decision 102).
+   */
+  gateRefused?: boolean;
   /** Absent on a session launched before routing, or a row whose route does not read back. */
   route?: DashboardRoute;
   /** The newest few stored events, oldest of them first — the order they happened in. */
