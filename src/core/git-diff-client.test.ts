@@ -16,6 +16,7 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  assertNoWorktreeConfig,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -24,6 +25,7 @@ import {
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
+  WorktreeConfigError,
   WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
@@ -933,5 +935,56 @@ describe('worktree git pins (decision 101)', () => {
         expect(() => verifiedWorktreeGitEnv(repo, added)).toThrow(WorktreeRepointedError);
       },
     );
+  });
+});
+
+// The operator's config, not a session's: `git sparse-checkout` turns the
+// extension on and writes `config.worktree`, which the launch's own check
+// would refuse only once the worktree and the session row exist (decision 101).
+describe('assertNoWorktreeConfig', () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src/app.ts'), 'export const app = 1;\n');
+    writeFileSync(join(repo, 'README.md'), 'readme\n');
+    commitAll(repo, 'base');
+  });
+
+  it('refuses a repo sparse-checkout has touched, disabled or not, naming it', () => {
+    sh(repo, 'git', 'sparse-checkout', 'set', 'src');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/git sparse-checkout/);
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow(/compromised/);
+
+    // `disable` leaves both the extension and the file behind.
+    sh(repo, 'git', 'sparse-checkout', 'disable');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
+  });
+
+  it('refuses the file alone, the extension alone and a value git cannot read', () => {
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+    writeFileSync(join(repo, '.git/config.worktree'), '');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/config\.worktree exists/);
+    unlinkSync(join(repo, '.git/config.worktree'));
+
+    // Written from outside the repo, which git refuses to open once the value is unreadable.
+    const setExtension = (value: string) =>
+      sh(
+        dirname(repo),
+        'git',
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        value,
+      );
+    setExtension('true');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on/);
+    setExtension('maybe');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
+    setExtension('false');
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
 });

@@ -5406,6 +5406,19 @@ changes back into those docs is pending.
     The checks stay exact and do not resolve a relative gitfile, so a worktree added with
     relative paths outside pup is refused. The refusal's repair hint carries the same `-c`,
     because `worktree repair` also rewrites links to match the option.
+    *Worktree config refused before anything is written.* The extension is the operator's own
+    config wherever `git sparse-checkout` or `clone --sparse` ever ran. git turns it on in the
+    shared config, and `sparse-checkout disable` leaves it on, with `.git/config.worktree`
+    (Apple Git 2.39.5). The in-window check refused such a repo only after `startSession` had
+    added the worktree and written its row. A relaunch then hit `TaskAlreadyClaimedError`, each
+    retry after `pup kill` left another worktree and branch, and the message blamed a session
+    that never ran (CI review, 2026-10-23). So `pup launch` and `pup new` call
+    `assertNoWorktreeConfig` beside `assertNoArmedGitDrivers`, before anything is written. It
+    refuses while the extension is on in `<repo>/.git/config`, or holds a value git cannot read
+    as a boolean, or while `<repo>/.git/config.worktree` exists. Its message names sparse
+    checkout and how to turn the extension off, not a compromise. The in-window check stays as
+    it is, for an extension turned on after the launch. A fix round's `worktree add` still
+    comes before that check, a follow-up.
     *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
     pick another name, because a stale admin dir held it, is refused at launch, never followed.
     The hooks and the gate take the repo from the project path they are given. A launch takes it
@@ -5446,7 +5459,10 @@ changes back into those docs is pending.
     marker. Each gitlink test in the hooks and the gate fails with `--ignore-submodules=all`
     taken out of the status it runs. A `config.worktree` arming the filter, with the
     extension on, fires it under plain status and is refused by both checks. So is the file
-    alone, the extension alone, and an unreadable value. A swap after the check, by a `head` on
+    alone, the extension alone, and an unreadable value. `assertNoWorktreeConfig` refuses a repo
+    `git sparse-checkout set` left, before and after `disable`, with no word of a compromise, and
+    refuses `<repo>/.git/config.worktree` alone, the extension alone and an unreadable value. A
+    `pup launch` and a `pup new` it refuses leave no session row, worktree or branch. A swap after the check, by a `head` on
     the hook's PATH that shows the check the trusted gitfile, and in the gate by a wrapper that
     restores the trusted gitfile around each check and puts the armed one back after it, leaves
     no marker. The gate merges, and only the teardown's `worktree remove` refuses the swapped

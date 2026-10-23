@@ -112,6 +112,19 @@ export class WorktreeRepointedError extends Error {
   }
 }
 
+export class WorktreeConfigError extends Error {
+  constructor(repoPath: string, problem: string) {
+    super(
+      `Refusing to launch a session in ${sanitizeReason(repoPath)}: ${problem}. Git turns ` +
+        'per-worktree config on for `git sparse-checkout` and `git clone --sparse`, and with ' +
+        "it on a session's git would read a config.worktree the session can write (decision " +
+        '101). Run `git sparse-checkout disable` if the checkout is sparse, then `git config ' +
+        '--unset extensions.worktreeConfig` and remove .git/config.worktree, and retry.',
+    );
+    this.name = 'WorktreeConfigError';
+  }
+}
+
 /**
  * `worktreeGitEnv`, once the worktree's pointers are checked with filesystem
  * reads alone: `<worktree>/.git` is a regular file reading `gitdir: <admin
@@ -148,7 +161,7 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
   }
   if (
     lstatSync(join(env.GIT_DIR, 'config.worktree'), { throwIfNoEntry: false }) ||
-    worktreeConfigOn(worktreePath, env)
+    worktreeConfigOn(worktreePath, env.GIT_COMMON_DIR, env)
   ) {
     throw new WorktreeRepointedError(
       worktreePath,
@@ -162,24 +175,48 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
 }
 
 /**
+ * Refuse a launch while git would read per-worktree config in the repo: the
+ * extension is on in its `.git/config`, or `.git/config.worktree` exists.
+ * `verifiedWorktreeGitEnv` refuses such a repo too, but only once `startSession`
+ * has added the worktree and written the session row, which then block a
+ * retry, so a launch asks here before either (decision 101). The config is the
+ * operator's, not a session's: `git sparse-checkout` turns the extension on.
+ */
+export function assertNoWorktreeConfig(repoPath: string): void {
+  const dotGit = join(repoPath, '.git');
+  if (lstatSync(join(dotGit, 'config.worktree'), { throwIfNoEntry: false })) {
+    throw new WorktreeConfigError(
+      repoPath,
+      `${sanitizeReason(join(dotGit, 'config.worktree'))} exists`,
+    );
+  }
+  if (worktreeConfigOn(repoPath, dotGit)) {
+    throw new WorktreeConfigError(
+      repoPath,
+      `extensions.worktreeConfig is on in ${sanitizeReason(join(dotGit, 'config'))}`,
+    );
+  }
+}
+
+/**
  * Whether the common dir's own config turns `extensions.worktreeConfig` on, as
  * git reads it for the repository format: that file alone, no includes. A
  * value git cannot read as a boolean counts as on.
  */
-function worktreeConfigOn(worktreePath: string, env: WorktreeGitEnv): boolean {
+function worktreeConfigOn(gitPath: string, commonDir: string, env?: WorktreeGitEnv): boolean {
   try {
     const value = runGit(
-      worktreePath,
+      gitPath,
       [
         'config',
         '--file',
-        join(env.GIT_COMMON_DIR, 'config'),
+        join(commonDir, 'config'),
         '--type',
         'bool',
         '--get',
         'extensions.worktreeConfig',
       ],
-      { env: { ...env }, stdio: ['ignore', 'pipe', 'ignore'] },
+      { env: env ? { ...env } : undefined, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     return value.trim() !== 'false';
   } catch (error) {
