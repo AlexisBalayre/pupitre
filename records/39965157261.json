@@ -1,0 +1,120 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-23T13:59:47.371Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39965157261",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39965157261",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ff930ed212da4c953b12a0cf8cc102764f6b278b",
+  "source": "pr",
+  "pr_number": 171,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "446-455",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "While the conductor runs, `needOf` drops every `awaiting-review` session. That includes one where the conductor's `pup merge --pr` was refused on a soft flag. The session stays `awaiting-review` until the operator approves debt, and the PR's premise that the operator's turn \"comes back as the `pr-open` line\" never happens for it.",
+      "body": "**A session whose `--pr` gate was refused disappears from every operator surface while the conductor runs.**\n\nThe new check removes the need for any `awaiting-review` session whenever `snapshot.conductor.running` is true:\n\n```ts\n  if (session.state === 'awaiting-review' && !gating) {\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/ff930ed212da4c953b12a0cf8cc102764f6b278b/src/core/dashboard.service.ts#L446-L455>\n\nThe conductor does not get every such session to a PR:\n\n- **A refused gate leaves the session where it was.** On a soft flag (`flaggedDebt.length > 0 && !req.acceptDebt`), `refuseGate` appends a `gate_result` event `{ outcome: 'refused', report }` and returns `status: 'refused'`. It never transitions the session ([merge-gate.service.ts#L1574-L1583](https://github.com/AlexisBalayre/pupitre/blob/ff930ed212da4c953b12a0cf8cc102764f6b278b/src/core/merge-gate.service.ts#L1574-L1583)). `MergeStatus` documents that the session \"stays in awaiting-review (a human decides)\" ([merge-gate.types.ts#L59-L66](https://github.com/AlexisBalayre/pupitre/blob/ff930ed212da4c953b12a0cf8cc102764f6b278b/src/core/types/merge-gate.types.ts#L59-L66)).\n- **The conductor cannot make that call.** Its prompt says \"You relay an approval, you never give one\" ([profile-compiler.service.ts#L871-L892](https://github.com/AlexisBalayre/pupitre/blob/ff930ed212da4c953b12a0cf8cc102764f6b278b/src/core/profile-compiler.service.ts#L871-L892)), and decision 75 requires a named human approver. So no PR is opened and no `pr-open` line ever appears.\n- **Other `--pr` refusals strand it the same way.** One example is a missing push target (`merge-gate.service.ts` ~L820). A session the operator launched while the conductor window is up is also affected, because the conductor only gates the sessions it launched.\n\nIn each case nothing else in `needOf` catches the session. `question`, `blocked`, `top-rung` and `stalled` don't apply, `pr-open` needs a recorded PR, and `lastGate` is never read. So the session drops out of `pup status` Needs-you, `pup ui`, the terminal tab count and the web inbox, and remains only as a table row. Decision 102's claim that the operator's turn \"comes back as the `pr-open` line once the gate opens the PR\" does not hold here. No test covers a refused gate while the conductor runs.\n\n**Fix direction:** keep the need when the session's newest `gate_result` event is a refusal.\n\n- Compute something like `gateRefused` in `dashboardSession` from the latest `gate_result` event's `outcome === 'refused'`. `lastGate.passed === false` won't work, because it would match a stale rejection after a rerun.\n- Change the condition to `session.state === 'awaiting-review' && (!gating || session.gateRefused)`.\n- Ideally, give that case an answer that names `--accept-debt`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "446-448",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new inline comment in `needOf` restates what this PR already added to the `needsYou` JSDoc (conductor gates awaiting-review, decision 102). `needOf` is private with one caller, and AGENTS.md says to delete a call-site copy the seam already states. Drop it or cut it to a bare decision pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5479-5481",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 102 says the conductor gates its own branches from \"decision 74 onward\". Decision 74 is about keeping workers off AskUserQuestion/EnterPlanMode, and the conductor gate with `pup merge --pr` is decision 75, so this should read \"decision 75 onward\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4313-4314",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 102 \"Amends decision 83\", but 83 still lists awaiting-review unconditionally with no `*Amended by decision 102:*` marker, which neighbouring amended entries carry (e.g. L328, L442, L3923, L5170).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5314-5315",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 97 still says iTerm2's `needs you` status fires when a session is awaiting review. With a conductor running that no longer holds after decision 102, and 102 does not mention amending 97.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7410568000000002,
+  "duration_ms": 250525,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 7043,
+    "cache_read": 180384,
+    "cache_creation": 36833,
+    "total": 224270
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 82,
+      "output": 22977,
+      "cache_read": 1494622,
+      "cache_creation": 131358,
+      "cost_usd": 1.5260814000000007
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 6575,
+      "cache_read": 174094,
+      "cache_creation": 52704,
+      "cost_usd": 0.2149754
+    }
+  ],
+  "permission_denials": []
+}
