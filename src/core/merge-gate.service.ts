@@ -98,7 +98,12 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
-import { describeSlotWait, SlotWaitInterruptedError, withTestSlot } from './test-slot.service.js';
+import {
+  describeSlotWait,
+  GATE_SLOT_WAIT_MS,
+  SlotWaitInterruptedError,
+  withTestSlot,
+} from './test-slot.service.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type {
@@ -1330,6 +1335,13 @@ export async function measureBranch(
   const suites = hasSuite
     ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
         onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
+        // Bounded, as the wait holds the merge lock (decision 96).
+        maxWaitMs: GATE_SLOT_WAIT_MS,
+        onWaitExpired: () =>
+          console.error(
+            `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
+              'tests without one.',
+          ),
       }).catch((error: unknown) => {
         // A wait that ended before the suites ran leaves the coverage run's
         // directory to this; a second dispose after theirs removes nothing.

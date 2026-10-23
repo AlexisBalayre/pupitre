@@ -3,16 +3,17 @@ import {
   linkSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { constants, freemem, homedir } from 'node:os';
 import { join } from 'node:path';
 import { detectAdapters } from '../adapters/adapter.registry.js';
-import { sanitizeReason } from '../adapters/capability.utils.js';
+import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
+import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 
 // The machine is what 6 to 8 workers share, and test runs are what saturate it
 // (decision 96): sessions think and edit freely, and every test run waits for
@@ -36,6 +37,16 @@ export const HELD_SLOT_ENV = 'PUP_TEST_SLOT';
 
 const POLL_MS = 1000;
 
+/**
+ * The longest the gate waits for a slot before it runs its tests without one
+ * (decision 96): a stage's own timeout, since a holder that keeps a slot longer
+ * than the gate lets any of its runs go is hung, or holds no test run at all.
+ * The slots are the machine's and the gate waits under the merge lock, so an
+ * unbounded wait would let one stuck run hold every project's gate. A worker
+ * ignores a gate's wait file older than this.
+ */
+export const GATE_SLOT_WAIT_MS = GATE_COMMAND_TIMEOUT_MS;
+
 /** Who takes a slot: the merge gate goes first, a worker's `pup session test` after it. */
 export type SlotHolderKind = 'gate' | 'worker';
 
@@ -51,6 +62,10 @@ export interface TestSlotOptions {
   dir?: string;
   slots?: number;
   pollMs?: number;
+  /** How long to wait before running without a slot; forever when unset. */
+  maxWaitMs?: number;
+  /** Called when `maxWaitMs` ran out and the run goes ahead without a slot. */
+  onWaitExpired?: () => void;
   /**
    * Called once, the first time every slot is taken or a gate is waiting
    * ahead of a worker: who holds the slots, and the gates queued first.
@@ -71,22 +86,30 @@ interface SlotRecord extends SlotHolder {
   token: string;
 }
 
+/**
+ * Whether a slot's holder is a live process of this user, the only kind that
+ * takes a slot under this user's home. One we may not signal (EPERM) belongs to
+ * another user, such as launchd's pid 1, so it holds no slot of ours.
+ */
 function isAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch (error) {
-    // Another user's process is alive but not ours to signal.
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  } catch {
+    return false;
   }
 }
 
-/** A slot or wait file's record; undefined when it is gone or holds nothing pup wrote. */
+/**
+ * A slot or wait file's record; undefined when it is gone. Anything pup did
+ * not write, unparseable text or a file that is not a regular one, reads as a
+ * dead holder's, so it is reclaimed: a fifo is never opened to block on.
+ */
 function readRecord(path: string): SlotRecord | undefined {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, 'utf8'));
+    raw = JSON.parse(readPlainFile(path));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     // Written whole by a link, so unparseable text is not a take in progress.
@@ -138,7 +161,11 @@ function liveHolders(dir: string, slots: number, token: string): (SlotRecord | u
   });
 }
 
-/** Gates waiting for a slot; a dead waiter's file is removed. */
+/**
+ * Gates waiting for a slot; a dead waiter's file is removed. A file older than
+ * a gate ever waits, or dated ahead, is no gate's wait, so it holds no worker
+ * back.
+ */
 function waitingGates(dir: string): SlotHolder[] {
   const gates: SlotHolder[] = [];
   for (const name of readdirSync(dir)) {
@@ -147,7 +174,8 @@ function waitingGates(dir: string): SlotHolder[] {
     const record = readRecord(path);
     if (!record) continue;
     if (isAlive(record.pid)) {
-      gates.push(record);
+      const age = Date.now() - (statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0);
+      if (age >= -1000 && age <= GATE_SLOT_WAIT_MS) gates.push(record);
     } else {
       try {
         unlinkSync(path);
@@ -213,7 +241,7 @@ export class SlotWaitInterruptedError extends Error {
  *
  * Runs `fn` with no slot inside a run that already holds one: the child of a
  * `pup session test`, and a gate's sandboxed child, which cannot write the
- * slots at all.
+ * slots at all; and once `maxWaitMs` runs out, telling `onWaitExpired`.
  */
 export async function withTestSlot<TResult>(
   holder: { kind: SlotHolderKind; label: string },
@@ -226,11 +254,15 @@ export async function withTestSlot<TResult>(
     pid: process.pid,
     token: `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`,
   };
-  let slot: string;
+  let slot: string | undefined;
   try {
     slot = await acquire(record, options);
   } catch (error) {
     if (!isUnwritable(error)) throw error;
+    return fn();
+  }
+  if (slot === undefined) {
+    options.onWaitExpired?.();
     return fn();
   }
   try {
@@ -240,8 +272,11 @@ export async function withTestSlot<TResult>(
   }
 }
 
-/** Wait for a free slot and take it, a gate ahead of every worker; answers its path. */
-async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<string> {
+/**
+ * Wait for a free slot and take it, a gate ahead of every worker; answers its
+ * path, or undefined once `maxWaitMs` ran out with none taken.
+ */
+async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<string | undefined> {
   const dir = options.dir ?? slotsDir();
   const slots = options.slots ?? TEST_SLOTS;
   mkdirSync(dir, { recursive: true });
@@ -260,6 +295,7 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
   process.on('SIGTERM', onSignal);
   try {
     if (waitFile) writeFileSync(waitFile, JSON.stringify(record));
+    const deadline = Date.now() + (options.maxWaitMs ?? Number.POSITIVE_INFINITY);
     let told = false;
     for (;;) {
       if (interrupted) throw new SlotWaitInterruptedError(interrupted);
@@ -269,6 +305,7 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
         const slot = take(dir, slots, record);
         if (slot) return slot;
       }
+      if (Date.now() >= deadline) return undefined;
       if (!told) {
         told = true;
         options.onWait?.(
@@ -378,7 +415,9 @@ export async function runSessionTest(req: {
 export function availableMemoryBytes(): number {
   if (process.platform !== 'darwin') return freemem();
   try {
-    return vmStatAvailableBytes(execFileSync('vm_stat', { encoding: 'utf8' })) ?? freemem();
+    return (
+      vmStatAvailableBytes(execFileSync('/usr/bin/vm_stat', { encoding: 'utf8' })) ?? freemem()
+    );
   } catch {
     return freemem();
   }

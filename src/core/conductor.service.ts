@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { failureSummary } from '../adapters/capability.utils.js';
+import { failureSummary, readPlainFile } from '../adapters/capability.utils.js';
 import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
 import {
   conductorName,
@@ -57,12 +57,13 @@ function maxSessionsFile(repoPath: string): string {
 /**
  * The most live sessions a launch may reach in this project: the cap the last
  * conductor start stored, else `DEFAULT_MAX_SESSIONS`. A file that holds no
- * positive whole number reads as the default rather than as no cap.
+ * positive whole number, or is not a regular file, reads as the default
+ * rather than as no cap; a fifo planted there is never opened to block on.
  */
 export function maxSessions(repoPath: string): number {
   let stored: number;
   try {
-    stored = Number(readFileSync(maxSessionsFile(repoPath), 'utf8').trim());
+    stored = Number(readPlainFile(maxSessionsFile(repoPath)).trim());
   } catch {
     return DEFAULT_MAX_SESSIONS;
   }

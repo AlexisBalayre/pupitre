@@ -1,9 +1,10 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
+  GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
   type SlotHolder,
   type TestSlotOptions,
@@ -177,6 +178,75 @@ describe('withTestSlot (decision 96)', () => {
     expect(gatesSeen).toEqual([[expect.objectContaining({ kind: 'gate', label: 'gate s9' })]]);
     for (const held of [first, second, gate, worker]) held.end();
     await Promise.all([first.settled, second.settled, gate.settled, worker.settled]);
+  });
+
+  it('runs without a slot once its longest wait runs out, saying so', async () => {
+    for (const index of [0, 1]) {
+      writeFileSync(
+        join(dir, `slot-${index}.lock`),
+        JSON.stringify({ kind: 'worker', label: 'hung', pid: process.ppid, token: 'x' }),
+      );
+    }
+    const expired = vi.fn();
+    let ran = false;
+    await withTestSlot(
+      { kind: 'gate', label: 'gate s1' },
+      async () => {
+        ran = true;
+      },
+      { ...options, maxWaitMs: 50, onWaitExpired: expired },
+    );
+
+    expect(ran).toBe(true);
+    expect(expired).toHaveBeenCalledOnce();
+    expect(readdirSync(dir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "reclaims a slot naming another user's process, such as pid 1",
+    async () => {
+      for (const index of [0, 1]) {
+        writeFileSync(
+          join(dir, `slot-${index}.lock`),
+          JSON.stringify({ kind: 'worker', label: 'forged', pid: 1, token: 'x' }),
+        );
+      }
+      const log: string[] = [];
+      const held = run('worker', 's1', log);
+      await tick();
+
+      expect(log).toEqual(['s1']);
+      held.end();
+      await held.settled;
+    },
+  );
+
+  it('reclaims a fifo planted as a slot without blocking on it', async () => {
+    execFileSync('mkfifo', [join(dir, 'slot-0.lock'), join(dir, 'slot-1.lock')]);
+    const log: string[] = [];
+    const held = run('worker', 's1', log);
+    await tick();
+
+    expect(log).toEqual(['s1']);
+    held.end();
+    await held.settled;
+  });
+
+  it("ignores a live gate's wait file older than a gate ever waits", async () => {
+    const wait = join(dir, 'gate-1-x.wait');
+    writeFileSync(
+      wait,
+      JSON.stringify({ kind: 'gate', label: 'stale', pid: process.ppid, token: 'x' }),
+    );
+    const longAgo = (Date.now() - GATE_SLOT_WAIT_MS - 60_000) / 1000;
+    utimesSync(wait, longAgo, longAgo);
+    const log: string[] = [];
+    const held = run('worker', 's1', log);
+    await tick();
+
+    expect(log).toEqual(['s1']);
+    held.end();
+    await held.settled;
   });
 
   it('ignores the wait file of a gate that died waiting', async () => {

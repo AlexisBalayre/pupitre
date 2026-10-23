@@ -1,19 +1,10 @@
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fstatSync,
-  mkdtempSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
 import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
-import { failureSummary, isUnavailable } from './capability.utils.js';
+import { failureSummary, isUnavailable, readPlainFile } from './capability.utils.js';
 import { nestedPackageDirs } from './git-tree.client.js';
 import type {
   Adapter,
@@ -142,28 +133,6 @@ function manifestEntryFiles(repoPath: string, fileSet: Set<string>): Set<string>
 function moduleId(file: string): string {
   const dir = dirname(file);
   return dir === '.' ? '(root)' : dir.split(sep).join('/');
-}
-
-/** Larger than any manifest or config a repo keeps at its root. */
-const CONFIG_READ_MAX_BYTES = 1 << 20;
-
-/**
- * A config file the measured checkout holds, which the session's build may
- * have replaced after the gate cut it: opening a fifo or a device would block
- * the event loop, stage timeouts and interrupt forwarding with it, so only a
- * regular file is read, checked on the opened descriptor. Throws otherwise.
- */
-function readPlainFile(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > CONFIG_READ_MAX_BYTES) {
-      throw new Error(`${path} is not a plain file`);
-    }
-    return readFileSync(fd, 'utf8');
-  } finally {
-    closeSync(fd);
-  }
 }
 
 function readManifest(repoPath: string): PackageManifest | undefined {

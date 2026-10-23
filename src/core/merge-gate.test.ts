@@ -73,6 +73,18 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   };
 });
 
+// Shortened by the one test of a gate that runs out its wait for a test slot.
+const slotWait = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('./test-slot.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./test-slot.service.js')>();
+  return {
+    ...actual,
+    get GATE_SLOT_WAIT_MS() {
+      return slotWait.ms ?? actual.GATE_SLOT_WAIT_MS;
+    },
+  };
+});
+
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import {
@@ -3939,6 +3951,24 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await gate).status).toBe('merged');
       await worker;
       expect(workerRan).toBe(true);
+    });
+
+    it('runs its tests without a slot once its wait runs out, saying so', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      slotWait.ms = 1000;
+      onTestFinished(() => {
+        slotWait.ms = undefined;
+      });
+
+      expect((await merge()).status).toBe('merged');
+      expect(errors.mock.calls.flat().join('\n')).toContain(
+        'No test slot came free in 1.0s; the gate runs its tests without one.',
+      );
+      // Both still held by their live holder, and no wait left behind.
+      expect(readdirSync(slots).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
     });
   });
 });

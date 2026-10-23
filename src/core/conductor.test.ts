@@ -226,6 +226,15 @@ describe('startConductor', () => {
         expect(maxSessions(REPO)).toBe(4);
       }
     });
+
+    it('reads the default for a fifo planted as the cap, never blocking on it', () => {
+      start({ maxSessions: 7 });
+      const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
+      rmSync(file);
+      execFileSync('mkfifo', [file]);
+
+      expect(maxSessions(REPO)).toBe(4);
+    });
   });
 
   it('writes nothing to the store: the conductor is not a session', () => {

@@ -1,4 +1,28 @@
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import type { CapabilityContext, CapabilityUnavailable } from './types/adapter.types.js';
+
+/** Larger than any manifest, config or record pup reads this way. */
+const PLAIN_FILE_MAX_BYTES = 1 << 20;
+
+/**
+ * A file that code pup does not trust may have replaced: a config in the
+ * measured checkout, a slot or the session cap under the store (decision 96).
+ * Opening a fifo or a device would block the event loop, and timeouts and
+ * interrupt forwarding with it, so only a regular file is read, checked on the
+ * descriptor opened without blocking. Throws otherwise.
+ */
+export function readPlainFile(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > PLAIN_FILE_MAX_BYTES) {
+      throw new Error(`${path} is not a plain file`);
+    }
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /**
  * Narrows a capability result to its "no measurement" arm. Deliberately a

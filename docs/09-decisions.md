@@ -5126,9 +5126,12 @@ changes back into those docs is pending.
     yet, so a worker names its test files; npm gets a `--` before them. A slot is a lock file
     `slot-N.lock` in `~/.pupitre/slots` holding the holder's kind, label, pid and a token. A take
     writes a staged file and hard-links it into a free slot name, so two takers cannot both win
-    one. A slot whose pid is dead (`kill(pid, 0)`, EPERM counted alive) or whose record does not
-    parse is reclaimed: renamed aside, re-read, and linked back if its holder turns out alive. A
-    release removes the slot only while it still holds the run's own token. While it waits, the
+    one. A slot is reclaimed when its pid is not a live process of this user (`kill(pid, 0)`;
+    EPERM means another user's, such as pid 1, which holds no slot under this home), or when it
+    is not a regular file or its record does not parse: renamed aside, re-read, and linked back
+    if its holder turns out alive. Slot and wait files are read only after a non-blocking open
+    shows a regular file (`readPlainFile`, moved from the TypeScript adapter to the capability
+    utils for this), so a fifo planted there is reclaimed, never blocked on. A release removes the slot only while it still holds the run's own token. While it waits, the
     run prints once whom it waits for, `Waiting for a test slot, held by session t-1 (pid 4242)
     and the merge gate for t-2 (pid 4343); the merge gate for t-3 waits first.`, labels passed
     through `sanitizeReason`, and polls each second. The child runs with `PUP_TEST_SLOT` set, its
@@ -5138,6 +5141,12 @@ changes back into those docs is pending.
     takes one slot too, and only when there is a suite to run. A waiting gate writes
     `gate-<pid>-<token>.wait`; no worker takes a free slot while a live gate's wait file exists,
     and a dead gate's file is removed. Waiting gates race among themselves, as do waiting workers.
+    The gate waits under the merge lock and the slots are every project's, so its wait is
+    bounded: after a stage's own timeout, 10 minutes (`GATE_SLOT_WAIT_MS`), it prints `No test
+    slot came free in 600.0s; the gate runs its tests without one.` and runs them. A holder that
+    keeps a slot longer than the gate lets one of its runs go is hung, or holds no test run at
+    all. A worker ignores a gate's wait file older than that bound, or dated ahead of now.
+    Worker waits are not bounded: a stuck holder stalls only sessions' own test runs.
     The wait happens before the test stage starts, so it is not part of the stage's time. The
     merge lock's listener (decision 84) holds signals, so the wait listens for SIGINT and SIGTERM
     itself and ends the gate as `GateInterruptedError` would, removing the coverage run's report
@@ -5156,8 +5165,9 @@ changes back into those docs is pending.
     The cap. `pup conductor start --max-sessions <n>` (default 4, a whole number of at least 1)
     stores the cap in `~/.pupitre/<project>/conductor/max-sessions` and prints it. `pup launch`
     and `pup new` count the project's sessions in a holding state and refuse, before anything is
-    written, once that count reaches the cap, for the conductor and the operator alike. A missing
-    or unreadable file means 4. `--over-cap` lets the operator past it. The conductor passing it
+    written, once that count reaches the cap, for the conductor and the operator alike. A
+    missing file, one holding no positive whole number, or one that is not a regular file, means
+    4. `--over-cap` lets the operator past it. The conductor passing it
     is refused at the CLI, and a launch made through the conductor ignores it.
     Decision 99 puts no cap on how many sessions may share a file; this cap counts every live
     session, overlapping or not. A `pup fix` round (decision 90) brings a merged session, which
@@ -5175,13 +5185,26 @@ changes back into those docs is pending.
     waits until every planned task does, and is then launched under decision 99.
     Ceilings: a reused pid keeps a dead holder's slot looking alive until that process exits. Two
     reclaimers racing over one dead slot can over-subscribe it by one run. The guard is best
-    effort: a script that runs the test runner, or a route the patterns miss, runs unqueued. The
-    cap file and the store are writable by session code, as decision 46 says of the store. A gate
+    effort, as is the gate's priority: both are fairness among cooperating sessions, not a
+    boundary. A script that runs the test runner, or a route the patterns miss (`node
+    node_modules/vitest/vitest.mjs`, `pnpm -C . test`, `npx --yes vitest`, `sh -c 'vitest'`),
+    runs unqueued; a session that sets `PUP_TEST_SLOT` skips the wait; one that forges a slot
+    naming a live process of its own, or backgrounds a hung `pup session test`, holds slots
+    until the gate's bound runs out. The cap file and the store are writable by session and
+    conductor code, as decisions 46 and 47 say of the store, so a session can rewrite the cap.
+    Fixing the cap at the conductor's start was weighed and not done: every place it could live,
+    the compiled directory, an environment variable, the conductor's settings, is as writable
+    from the conductor's shell, which can also drop `PUP_CONDUCTOR` and pass `--over-cap`
+    (decision 27's ceiling), so the cap is an operator's setting the conductor follows, not one
+    it cannot change. A gate
     run outside any sandbox and outside `pup session test`, such as a test that runs the gate,
     takes real slots unless `PUP_TEST_SLOT` is set.
     Tests: three runs with two slots run two and start the third when one ends; a dead holder's
-    slot is reclaimed and a live foreign holder's is not; a gate is served before a worker that
-    waited longer and is named to it; a dead gate's wait file is ignored; a slot is freed on a
+    slot is reclaimed and a live foreign holder's is not, while one naming pid 1 or planted as a
+    fifo is reclaimed without blocking (the fifo test hangs on the old read); a gate is served
+    before a worker that waited longer and is named to it; a dead gate's wait file, and a live
+    one's older than the bound, are ignored; a run whose longest wait runs out runs without a
+    slot and says so, and so does a gate, merging with both slots still held; a slot is freed on a
     throw and left alone once another run took it; `PUP_TEST_SLOT` and an unwritable directory
     run without a slot. In the gate, a gate with both slots held waits and prints whom for, and a
     worker stays waiting behind it after a slot frees. The compiled settings refuse pnpm test,
@@ -5190,7 +5213,8 @@ changes back into those docs is pending.
     killed sessions are not counted, the operator's `--over-cap` passes and the conductor's never
     does; a fix round's recompile goes ahead below the cap and is refused at it and under the
     floor; under 1.5 GB, read from a faked figure, a launch refuses naming it, even with
-    `--over-cap`. The cap is stored and read back with its default; the CLI passes and refuses
+    `--over-cap`. The cap is stored and read back with its default, also for a fifo planted as
+    the file; the CLI passes and refuses
     the flags, and `pup session test` passes its arguments and exit status.
 
 99. **Workers share files and collaborate: a launch overlapping a live session is never refused,
