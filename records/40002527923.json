@@ -1,0 +1,268 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-23T18:31:08.574Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40002527923",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40002527923",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1c26673e8f8871464fa7188136f0f18f3a8f62dc",
+  "source": "pr",
+  "pr_number": 170,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/capability.utils.ts",
+      "line": "14-25",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`readPlainFile` trusts `st_size` as its read bound, and then reads to EOF with no limit. A session can symlink `~/.pupitre/slots/slot-0.lock` to `/proc/self/pagemap`. Pup then reads a file without end on every gate poll. That freezes the gate's event loop under the merge lock, beats the 10-minute bound and signal handling, and can exhaust the machine's memory.",
+      "body": "**A planted procfs symlink makes the gate's slot read run without end**\n\nDecision 96 says a file planted under the slots directory is \"never blocked on\", and that this keeps the gate's wait inside its bound with its signals live. `readPlainFile` checks only the file type and the size `fstat` reports, then reads to EOF:\n\n```ts\nconst stat = fstatSync(fd);\nif (!stat.isFile() || stat.size > PLAIN_FILE_MAX_BYTES) {\n  throw new Error(`${path} is not a plain file`);\n}\nreturn readFileSync(fd, 'utf8');\n```\n\nThe open has no `O_NOFOLLOW`. Linux procfs files are regular files that report `st_size` 0 and stream data. `/proc/self/pagemap` returns 8 bytes for each virtual page up to the task size (about 256 GiB on x86_64), and it resolves to the reading process, here the gate's own `pup`. `readFileSync(fd)` on Node 24 reads until EOF and ignores `st_size`. So the type and size checks both pass, and the read never ends in practice.\n\n**Attack path.** A session runs `ln -s /proc/self/pagemap ~/.pupitre/slots/slot-0.lock`. The next `pup merge` on a Linux `PUP_SANDBOX=vm` host reaches `liveHolders` → `readRecord` → `readPlainFile` (`test-slot.service.ts` L119/L162), and `reclaim` reads the file again after the rename (L147). The read is synchronous, so `GATE_SLOT_WAIT_MS`, the SIGINT/SIGTERM listeners in `acquire` and every timer stop working. Memory grows until the process is OOM-killed, while the merge lock stays held. Workers' `pup session test` and the cap read in `pup launch` hit the same helper.\n\nThe function body moved here unchanged from `typescript.adapter.ts`. What this PR adds is the call sites that matter most (the gate's slot wait under the merge lock, and the cap read), plus decision 96's guarantee that they are safe.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1c26673e8f8871464fa7188136f0f18f3a8f62dc/src/adapters/capability.utils.ts#L14-L25\n\n**Fix.** Bound the read itself rather than trusting `st_size`. Keep the `isFile()`/size pre-check as a fast reject, then read through `readSync`, which needs an import:\n\n```ts\nconst buffer = Buffer.alloc(PLAIN_FILE_MAX_BYTES + 1);\nlet length = 0;\nfor (let read = -1; read !== 0 && length < buffer.length; length += read) {\n  read = readSync(fd, buffer, length, buffer.length - length, null);\n}\nif (length > PLAIN_FILE_MAX_BYTES) throw new Error(`${path} is not a plain file`);\nreturn buffer.toString('utf8', 0, length);\n```\n\nA pagemap link then fails after 1 MiB and reads as a dead holder's file, which `reclaim` removes. Adding `O_NOFOLLOW` for the slot, wait and cap reads would also close the symlink route.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "516-527",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The guard pattern built from the adapter's own test command can never match for a custom adapter. A custom adapter's test command is always `{command: 'sh', args: ['-c', script]}`, so the pattern requires the Bash command to start with `sh -c <script>`. A session runs `go test ./...` or `cargo test`, never that, so a custom-adapter project's real test command runs outside the slot queue.",
+      "body": "**The guard on the adapter's own test command does nothing for custom adapters**\n\nDecision 96 lists \"the adapter's own test command, its words escaped\" among the commands the compiled profile refuses. `testRunnerPatterns` builds that pattern by joining the command and its args word by word:\n\n```ts\nconst words = testCommand ? [testCommand.command, ...testCommand.args] : [];\n```\n\nBut `custom.adapter.ts` (L191-196) always returns `{ command: 'sh', args: ['-c', config[stage]] }`, with the script as one unsplit string. With `test: go test ./...` in `.pupitre/adapter.yml`, the compiled pattern is roughly `COMMAND_START sh[[:space:]]+-c[[:space:]]+go test \\./\\.\\.\\.([[:space:]]|$)`. That means:\n\n- A session that runs `go test ./...` or `cargo test` directly does not match it.\n- Even `sh -c 'go test ./...'` does not match, because of the quote.\n- The fixed `TEST_RUNNER_PATTERNS` cover only vitest/jest and `pnpm|yarn|npm|bun [run] test`.\n\nSo for every stack declared through `adapter.yml` (Go, Rust, anything without a built-in adapter), the project's real suite runs outside the slots. Those are exactly the CPU-heavy runs the decision exists to queue. The guard tests in `profile-compiler.test.ts` (around L1703-1724) cover `uv run pytest` and `make test.unit` but never the `sh -c` shape.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1c26673e8f8871464fa7188136f0f18f3a8f62dc/src/core/profile-compiler.service.ts#L516-L527\n\n**Fix direction.** For an `sh -c` command, match the script's own words instead. Splitting on whitespace alone is not enough:\n\n- Drop a trailing `\"$@\"`. Decision 96 now passes the files that way, so scripts are likely to contain it.\n- Skip compound or quoted scripts (`;`, `&&`, `||`, `|`, `$(`, quotes), the way a newline already drops the pattern.\n- Skip, or note, one-word scripts like `make`, which would otherwise refuse every `make ...` call.\n- Drop empty words. An empty word compiles to a pattern that refuses every Bash call.\n\nAdd a guard test with a custom `sh -c` adapter.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "100-101",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "land.test.ts and fix-round.test.ts run real `runMergeGate` calls whose adapter has a test stage, but they neither stub HELD_SLOT_ENV nor redirect HOME. Their gates therefore take slots and write wait files in the developer's real ~/.pupitre/slots, so running the suite directly while workers hold the slots makes these tests wait and time out, and their wait files hold back real workers meanwhile. merge-gate.test.ts guards against exactly this in its beforeEach.",
+      "body": "**Gates in these tests take the machine's real test slots**\n\nThe gate now wraps its suites in `withTestSlot({ kind: 'gate', ... })` with no `dir`, so it uses `join(homedir(), '.pupitre', 'slots')`. The only bypass is `PUP_TEST_SLOT` (`HELD_SLOT_ENV`). `merge-gate.test.ts` stubs it in its `beforeEach` for exactly this reason:\n\n```ts\n// As inside a slot already held, so a gate here never queues behind the\n// machine's real test runs; the slot tests clear it (decision 96).\nvi.stubEnv(HELD_SLOT_ENV, 'merge-gate.test');\n```\n\n`land.test.ts` (gate at L697-702) and `fix-round.test.ts` (gates at L322, 912, 1135, 1174) also call the real `runMergeGate`, and their adapters have a `test` stage, so `hasSuite` is true. Neither file stubs `HELD_SLOT_ENV`, redirects `HOME`, or mocks the test-slot module, and `vitest.config.ts` has no setup file.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1c26673e8f8871464fa7188136f0f18f3a8f62dc/src/core/land.test.ts#L100-L101\nhttps://github.com/AlexisBalayre/pupitre/blob/1c26673e8f8871464fa7188136f0f18f3a8f62dc/src/core/fix-round.test.ts#L147-L149\n\n**How it fails.** A developer runs `pnpm test` directly while two workers' `pup session test` runs hold both slots. Each in-test gate writes `gate-<pid>-<token>.wait` into the real slots directory, then waits up to `GATE_SLOT_WAIT_MS` (10 min). The tests fail at their 20 s and 30 s timeouts. Until the vitest worker exits, those wait files make every real worker defer under the gate-first rule. When the slots are free, the tests still take real machine slots, labelled with fixture session ids. Runs under `pup session test` (which sets `PUP_TEST_SLOT`) and sandboxed gates (EPERM fallback) escape this. Direct runs do not.\n\n**Fix.** Add the same stub to both files' `beforeEach`:\n\n```ts\nimport { HELD_SLOT_ENV } from './test-slot.service.js';\n// ...\nvi.stubEnv(HELD_SLOT_ENV, 'land.test'); // and 'fix-round.test'\n```",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "280",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`if (isUnwritable(error)) return fn();` also applies to workers and to an unsandboxed gate, and it says nothing. So a slots directory a session chmod-ed (EACCES) makes every `pup session test` run without a slot silently, though decision 96 says a worker fails on unusable slots. The gate likewise skips its `onSlotsUnusable` message. Consider limiting the silent bypass to the sandboxed case, or routing EACCES/EPERM/EROFS through `onSlotsUnusable` when it is set.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "41-49",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The GATE_SLOT_WAIT_MS rationale says a holder that keeps a slot longer than one stage timeout is hung. But a gate legitimately holds its slot for the flaky-test rerun (two timeouts) plus every nested package's suite. So another project's waiting gate will routinely give up and run without a slot (over-subscription) while a healthy gate still holds one. The bound or the comment should account for that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "302-306, 505-509",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In a repo whose first adapter has no `test` stage (for example a TypeScript repo with vitest but no `test` script), sessions can no longer run any tests. The guard still refuses `vitest`/`npx vitest`, and the protocol's only alternative, `pup session test`, refuses with \"No test command to run\". The guard's fixed runner patterns could be left out when `testCommand` is undefined.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "204",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`writeFileSync(maxSessionsFile(req.repoPath), `${cap}\\n`)` opens the cap file without the care the read path takes. Reads go through `readPlainFile` so a fifo planted there is never blocked on, but this write would hang `pup conductor start` on a planted fifo, and it would follow a planted symlink.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "111-115, 123",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `readRecord` doc says anything pup did not write reads as a dead holder's. That is false for a file containing the JSON literal `null`: `JSON.parse('null')` succeeds, and `record.kind` then throws an uncaught TypeError instead of reading as dead. Guard with `typeof raw !== 'object' || raw === null`, or narrow the doc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "209-213, 140-156",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Staged files (`stage-<hex>.tmp`) and reclaim leftovers (`slot-N.lock.reclaim-<token>`) are never swept. A pup killed between staging and the unlink in `finally`, or between the rename and unlink in `reclaim`, leaves them in `~/.pupitre/slots` for good. Nothing breaks, but they pile up, and decision 96 does not list this among its ceilings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1316-1318, 1351-1354",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Coverage-directory cleanup now lives in two places: the suites closure's `finally` and a second `covered?.dispose()` in the slot wrapper's `.catch`, which relies on `dispose` being safe to call twice. A single `.finally(() => covered?.dispose())` around the suites promise would own it once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "161, 220",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The slot file name `join(dir, `slot-${index}.lock`)` is built separately in `liveHolders` and `take`. The two must agree, so a `slotPath(dir, index)` helper (like `slotsDir()`) would keep the name in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "210, 274",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The module mints fresh names two ways: `stage` uses `randomBytes(8).toString('hex')`, and the record token uses `Date.now().toString(36)` plus `Math.random()`. The token is published in the gate's wait-file name. Using `randomBytes` for both removes the question of whether the difference matters.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3940-3942, 3962-3964",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two gate-slot tests repeat the same `while (!readdirSync(slots).some((name) => name.endsWith('.wait'))) { ... }` polling loop word for word. A local `untilGateWaits()` helper next to `settledWithin` would hold it once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "495-527",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The core profile compiler, language-neutral until now, hard-codes JS runners and package managers in `TEST_RUNNER_PATTERNS` (vitest, jest, pnpm/yarn/npm/bun test), though adapters own runner knowledge. A new ecosystem's runner now means editing the compiler too. Letting the adapter declare its direct-run patterns next to `gateCommands` would keep the compiler to escaping and joining.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "176-178",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New request fields are bolted on as inline intersections instead of declared on the documented request types. `StartConductorRequest & { maxSessions?: number }` is one, and `ConductorCompileInput & { maxSessions: number }` appears twice in profile-compiler. A private `CapOverride` is intersected onto `LaunchTaskRequest`/`NewSessionRequest`, and the CLI writes it out again. Declare `maxSessions`/`overCap` in `src/core/types/*.types.ts` with the other fields.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "321",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "general.md says boolean names start with `is`/`has`/`should`/`can`, but `let told = false;` (and the tests' `ran`, `settled`, `workerRan` locals) do not. `hasAnnouncedWait`, for example, would fit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "978-980",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment 'All of them in one of the machine's test slots, which the gate is served before any worker (decision 96); the wait is not the stage's time. No suite to run takes no slot.' restates `withTestSlot`'s JSDoc and the `hasSuite` ternary. Keep only the 'wait is not the stage's time' fact, or delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "371-376",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `sessionTestCommand` JSDoc says the command is read from the main checkout 'so it is the command the session's profile refuses to run directly'. That 'so' does not follow. The real reason is that the session's worktree holds config the session can edit, so it is not trusted. Reword to say that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5133-5145",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Several lines in decision 96 break the file's ~100-column wrap. One example is the ~170-column line ending 'A release removes the slot only while it still holds the run's own token. While it waits, the', followed by ragged short lines such as 'it cannot change. A gate'. Reflow the paragraph.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.446212299999999,
+  "duration_ms": 569611,
+  "num_turns": 19,
+  "tokens": {
+    "input": 12,
+    "output": 22341,
+    "cache_read": 303110,
+    "cache_creation": 71645,
+    "total": 397108
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 290,
+      "output": 144631,
+      "cache_read": 6034039,
+      "cache_creation": 513237,
+      "cost_usd": 6.881707800000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 18734,
+      "cache_read": 672070,
+      "cache_creation": 123943,
+      "cost_usd": 0.5645045000000001
+    }
+  ],
+  "permission_denials": []
+}
