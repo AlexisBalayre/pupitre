@@ -315,6 +315,18 @@ describe('launchSession', () => {
     vi.unstubAllEnvs();
   });
 
+  /** The `-e` pairs the launch handed tmux, as the window's process sees them. */
+  function launchedWindowEnv(): Record<string, string> {
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    return Object.fromEntries(
+      spawn.flatMap((arg, i) => (spawn[i - 1] === '-e' ? [arg.split(/=(.*)/s).slice(0, 2)] : [])),
+    ) as Record<string, string>;
+  }
+
   it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary under nice -n 10, and returns the pane it printed', () => {
     const pane = launchSession(opts);
 
@@ -339,14 +351,9 @@ describe('launchSession', () => {
       opts.worktreePath,
       '-e',
       `PUP_SESSION_ID=${opts.sessionId}`,
-      // Git pinned to the dirs pup trusts, for Claude Code's own startup git
-      // and everything the window runs after it (decision 101).
-      '-e',
-      `GIT_DIR=${join(repo, '.git', 'worktrees', 'wt')}`,
-      '-e',
-      `GIT_COMMON_DIR=${join(repo, '.git')}`,
-      '-e',
-      `GIT_WORK_TREE=${opts.worktreePath}`,
+      // The submodule config, and never GIT_DIR, GIT_COMMON_DIR or
+      // GIT_WORK_TREE, which every process the window runs would inherit
+      // (decision 101).
       ...WINDOW_GIT_CONFIG_ARGS,
       '-e',
       `PUP_BIN=${process.argv[1] ?? 'pup'}`,
@@ -379,20 +386,13 @@ describe('launchSession', () => {
 
   // Claude Code's startup git and the code graph's run on the window's
   // environment alone, outside the Bash sandbox. A gitlink over a `.git` the
-  // session made would have their status and diff run a child git there, past
-  // the pins, so the window skips submodules too (decision 101).
+  // session made would have their status and diff run a child git there, so
+  // the window skips submodules (decision 101).
   // The window's config narrows the exposure and does not close it: a
   // `.gitmodules` override outranks it, and only a command-line flag beats that.
   it("runs no child git in a gitlink under the window's own environment, until .gitmodules overrides it", () => {
     launchSession(opts);
-    const spawn =
-      vi
-        .mocked(execFileSync)
-        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
-      [];
-    const windowEnv = Object.fromEntries(
-      spawn.flatMap((arg, i) => (spawn[i - 1] === '-e' ? [arg.split(/=(.*)/s).slice(0, 2)] : [])),
-    ) as Record<string, string>;
+    const windowEnv = launchedWindowEnv();
     const marker = join(tempDir('pup-marker-'), 'fired');
     const sub = join(opts.worktreePath, 'sub');
     mkdirSync(sub);
@@ -421,7 +421,7 @@ describe('launchSession', () => {
       ['status', '--short'],
       ['diff', '--stat'],
     ]) {
-      // The plant is live: plain git with the pins alone runs it.
+      // The plant is live: plain git in the worktree runs it.
       utimesSync(join(sub, 'f'), later(), later());
       execFileSync('git', args, {
         cwd: opts.worktreePath,
@@ -441,6 +441,30 @@ describe('launchSession', () => {
     utimesSync(join(sub, 'f'), later(), later());
     execFileSync('git', ['status', '--short'], { cwd: opts.worktreePath, env: asWindow });
     expect(existsSync(marker)).toBe(true);
+  });
+
+  // Every process the session runs inherits the window's environment: a test
+  // or a package manager that runs `git init` in a dir of its own must act on
+  // that dir. Under GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE it would write
+  // `core.worktree` into the config the main checkout and every session share.
+  it("lets a child git init in a temp dir leave the repo's shared config untouched", () => {
+    launchSession(opts);
+    const asWindow = { ...GIT_ENV, ...launchedWindowEnv() };
+    const config = join(repo, '.git', 'config');
+    const before = readFileSync(config, 'utf8');
+
+    // The exposure is live: with the three variables set, the init writes there.
+    execFileSync('git', ['init', '-q'], {
+      cwd: tempDir('pup-child-'),
+      env: { ...asWindow, ...verifiedWorktreeGitEnv(repo, opts.worktreePath) },
+    });
+    expect(readFileSync(config, 'utf8')).toContain(`worktree = ${opts.worktreePath}`);
+    writeFileSync(config, before);
+
+    const child = tempDir('pup-child-');
+    execFileSync('git', ['init', '-q'], { cwd: child, env: asWindow });
+    expect(readFileSync(config, 'utf8')).toBe(before);
+    expect(existsSync(join(child, '.git', 'HEAD'))).toBe(true);
   });
 
   // `pup launch` and `pup new` are the conductor's to run, and they run in its

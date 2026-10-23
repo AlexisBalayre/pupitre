@@ -53,6 +53,13 @@ function commitAll(repo: string, message: string): void {
   sh(repo, 'git', 'commit', '-m', message);
 }
 
+/** Whether the git on PATH is at least `major.minor`. */
+function gitAtLeast(major: number, minor: number): boolean {
+  const version = /(\d+)\.(\d+)/.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }));
+  const [got, gotMinor] = [Number(version?.[1]), Number(version?.[2])];
+  return got > major || (got === major && gotMinor >= minor);
+}
+
 describe('gitDiffAddedLines', () => {
   it('reports modified and appended line numbers per file, skipping pure deletions', () => {
     const repo = makeRepo();
@@ -884,5 +891,47 @@ describe('worktree git pins (decision 101)', () => {
     expect(armedGitDrivers(worktree, worktreeGitEnv(repo, worktree))).toEqual([
       'filter.real.smudge',
     ]);
+  });
+
+  // Git 2.48+ writes `gitdir: ../../.git/worktrees/<id>` under the operator's
+  // global `worktree.useRelativePaths`, which the exact checks refuse as a
+  // rewrite. pup's own `worktree add` pins the option off instead.
+  describe('with worktree.useRelativePaths on in the global config', () => {
+    let globalConfig: string;
+
+    beforeEach(() => {
+      globalConfig = join(tempDir('pup-global-'), 'gitconfig');
+      writeFileSync(globalConfig, '[worktree]\n\tuseRelativePaths = true\n');
+      vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("has pup's worktree add write the absolute gitfile the check accepts", () => {
+      const added = join(repo, '.worktrees', 's-2');
+      runGit(repo, ['worktree', 'add', '-b', 'pup/s-2', added, 'HEAD']);
+
+      expect(readFileSync(join(added, '.git'), 'utf8')).toBe(
+        `gitdir: ${join(repo, '.git', 'worktrees', 's-2')}\n`,
+      );
+      expect(verifiedWorktreeGitEnv(repo, added).GIT_WORK_TREE).toBe(added);
+    });
+
+    // An older git knows no such option, so the plant is live from 2.48 on only.
+    it.runIf(gitAtLeast(2, 48))(
+      'is live: plain git writes a relative gitfile, which the check refuses',
+      () => {
+        const added = join(repo, '.worktrees', 's-3');
+        execFileSync('git', ['worktree', 'add', '-q', '-b', 'pup/s-3', added], {
+          cwd: repo,
+          env: { ...GIT_ENV, GIT_CONFIG_GLOBAL: globalConfig },
+        });
+
+        expect(readFileSync(join(added, '.git'), 'utf8')).toMatch(/^gitdir: \.\./);
+        expect(() => verifiedWorktreeGitEnv(repo, added)).toThrow(WorktreeRepointedError);
+      },
+    );
   });
 });

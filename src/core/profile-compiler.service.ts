@@ -295,11 +295,6 @@ function buildContextMarkdown(
     peersSection(input.peers ?? []),
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
-      "- Your window's git is pinned to this worktree by `GIT_DIR`, `GIT_COMMON_DIR` and " +
-      '`GIT_WORK_TREE`. For a git command aimed at another repo (a clone, a `git init` in a ' +
-      'temp dir), clear them for that command alone: `env -u GIT_DIR -u GIT_COMMON_DIR -u ' +
-      'GIT_WORK_TREE git …`. Run with them set, a clone fails and an init writes ' +
-      '`core.worktree` into the shared config. Never unset them for the whole shell.\n' +
       '- Run only the tests related to what you changed: the test runner’s related-tests form ' +
       'when it has one (e.g. `vitest related <files>`), else the test files by name. Leave the ' +
       'full suite to the merge gate, which runs it.\n' +

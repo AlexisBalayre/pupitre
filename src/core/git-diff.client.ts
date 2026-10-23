@@ -142,8 +142,8 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
       `its .git no longer names ${sanitizeReason(env.GIT_DIR)}, or that admin dir's ` +
         `commondir no longer names ${sanitizeReason(env.GIT_COMMON_DIR)}. A session can ` +
         'rewrite both from inside its sandbox, and any git that followed them would run the ' +
-        'filters of a repo it chose. Restore them (`git worktree repair` from the main ' +
-        'checkout) and retry',
+        'filters of a repo it chose. Restore them (`git -c worktree.useRelativePaths=false ' +
+        'worktree repair` from the main checkout) and retry',
     );
   }
   if (
@@ -221,7 +221,10 @@ function worktreeConfigOn(worktreePath: string, env: WorktreeGitEnv): boolean {
  * fast-forwards with plumbing that never reads it (decision 80).
  * `submodule.recurse` would have the rebase and that checkout recurse into a
  * `.git/modules/<name>` repo whose own config and attributes no driver check
- * reads, so it is pinned off (decision 80).
+ * reads, so it is pinned off (decision 80). `worktree.useRelativePaths` is
+ * pinned off so pup's `worktree add` writes the absolute gitfile the pointer
+ * checks match exactly, whatever the operator's global config says (Git 2.48+;
+ * an older git ignores the key; decision 101).
  * `core.useReplaceRefs` is off because a session can write `refs/replace/`
  * in the shared ref store: a replacement for the target's tip would hand
  * every diff, and the scope audit reading it, a tree the session chose in
@@ -260,6 +263,8 @@ export const GIT_SAFE_CONFIG = [
   'submodule.recurse=false',
   '-c',
   'core.useReplaceRefs=false',
+  '-c',
+  'worktree.useRelativePaths=false',
   '-c',
   'filter.lfs.required=false',
   '-c',

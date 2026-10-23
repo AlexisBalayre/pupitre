@@ -365,8 +365,9 @@ function spawnDetachedSession(
  * 2.1.218: a trusted worktree under an untrusted repo still shows the dialog,
  * and accepting it writes `hasTrustDialogAccepted` on the repo root) — so both
  * paths are seeded. `claudeJsonPath` is overridable for tests only. A session
- * window passes its pins, and the root is then their common dir's: asked of
- * git, it would be whatever repo the worktree's pointers name (decision 101).
+ * window passes its checked dirs, and the root is then their common dir's:
+ * asked of git, it would be whatever repo the worktree's pointers name
+ * (decision 101).
  */
 export function preseedTrust(
   worktreePath: string,
@@ -453,11 +454,13 @@ interface ClaudeWindowOptions {
    */
   caller: Record<string, string>;
   /**
-   * A session window's git pins (decision 101), so the git Claude Code runs
-   * at startup, and everything it spawns in the worktree after, reads the
-   * admin and common dirs pup trusts rather than whatever the worktree's
-   * pointers name by then. Absent for the conductor, whose checkout is no
-   * linked worktree of a session's.
+   * A session window's admin and common dirs, checked before it opens
+   * (decision 101): trust is seeded on their repo, and the window gets
+   * `WINDOW_GIT_CONFIG`. Never the window's environment itself: every process
+   * the session runs would inherit them, and a `git init` or `git clone` a
+   * test or a package manager runs in another dir would act on the session's
+   * repo. Absent for the conductor, whose checkout is no linked worktree of a
+   * session's.
    */
   git?: WorktreeGitEnv;
   /** The tmux server to open it on: the conductor's own, or the default one. */
@@ -467,13 +470,13 @@ interface ClaudeWindowOptions {
 }
 
 /**
- * Config a session window's git takes from its environment, beside the pins
- * (decision 101). A gitlink in the index over a `.git` of the session's makes
- * `status` and `diff` run a child git in it, with the submodule's own GIT_DIR,
- * which the pins do not reach. This narrows that for Claude Code's startup git
- * and the code graph's, which run outside the Bash sandbox, and does not close
- * it: a per-submodule `ignore` in `.gitmodules` outranks it, and `diff-files`
- * and `diff-index` never read it. pup's own git passes `--ignore-submodules=all`
+ * Config a session window's git takes from its environment (decision 101). A
+ * gitlink in the index over a `.git` of the session's makes `status` and
+ * `diff` run a child git in it, which reads that repo's config and runs its
+ * filters. This narrows that for Claude Code's startup git and the code
+ * graph's, which run outside the Bash sandbox, and does not close it: a
+ * per-submodule `ignore` in `.gitmodules` outranks it, and `diff-files` and
+ * `diff-index` never read it. pup's own git passes `--ignore-submodules=all`
  * instead. `status.submoduleSummary` because the summary spawns git in each
  * submodule whatever `diff.ignoreSubmodules` says.
  */
@@ -508,7 +511,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
     window: WINDOW_SIZE,
     env: {
       ...opts.caller,
-      ...(opts.git ? { ...opts.git, ...WINDOW_GIT_CONFIG } : {}),
+      ...(opts.git ? WINDOW_GIT_CONFIG : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',
@@ -537,8 +540,9 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_SESSION_ID: opts.sessionId },
     // Checked before the window opens, so a respawn over pointers the last
-    // window rewrote is refused rather than run on them. A session's worktree
-    // is `<repo>/.worktrees/<session-id>`, the one place `startSession` puts it.
+    // window rewrote is refused rather than have Claude Code's startup git
+    // follow them. A session's worktree is `<repo>/.worktrees/<session-id>`,
+    // the one place `startSession` puts it.
     git: verifiedWorktreeGitEnv(dirname(dirname(opts.worktreePath)), opts.worktreePath),
     niceness: SESSION_NICENESS,
   });
