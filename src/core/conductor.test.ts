@@ -471,6 +471,54 @@ describe('startConductor code graph', () => {
     );
   });
 
+  // A session can write under `<common>/worktrees/`, so the checkout's first cut
+  // must leave nothing for git to do before the pointers are checked: a plain
+  // add's own checkout reads the admin dir's `commondir` back (decision 101).
+  it('refuses a first cut whose commondir is rewritten right after the add', () => {
+    fakeCodegraph(INDEXES);
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    const armed = tempDir('pup-armed-');
+    gitIn(armed, 'init', '-q');
+    const fsmonitor = join(armed, 'fsmonitor.sh');
+    writeFileSync(fsmonitor, `#!/bin/sh\necho fired >> ${marker}\n`, { mode: 0o755 });
+    gitIn(armed, 'config', 'core.fsmonitor', fsmonitor);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    const listing = join(shim, 'listing');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `${realGit} "$@" || exit $?`,
+        'prev=; add=; dir=',
+        'for a in "$@"; do',
+        '  if [ -n "$add" ] && [ -z "$dir" ]; then case "$a" in -*) ;; *) dir=$a ;; esac; fi',
+        '  [ "$prev $a" = "worktree add" ] && add=1',
+        '  prev=$a',
+        'done',
+        '[ -n "$dir" ] || exit 0',
+        `ls -A "$dir" > ${listing}`,
+        `echo ${armed}/.git > "${join(repo, '.git', 'worktrees')}/$(basename "$dir")/commondir"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
+
+    start();
+
+    // The add checked nothing out, so no git read the rewritten pointer.
+    expect(readFileSync(listing, 'utf8')).toBe('.git\n');
+    expect(existsSync(marker)).toBe(false);
+    expect(cgCalls()).toEqual([]);
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(
+      /Could not index .*: launching without a code graph\. Refusing to run git in /,
+    );
+    // The plant is live: plain git reading the checkout's index runs it.
+    gitIn(checkout(), 'ls-files');
+    expect(existsSync(marker)).toBe(true);
+  });
+
   // Clearing `~/.pupitre` leaves the worktree registration behind, and
   // `worktree add` refuses the path forever once it does. Without the prune the
   // conductor silently never gets a graph again.

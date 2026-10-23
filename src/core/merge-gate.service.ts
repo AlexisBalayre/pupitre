@@ -36,6 +36,7 @@ import { draftDecisionRecord } from './decision-record.service.js';
 import {
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -429,13 +430,7 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
 function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  const git = verifiedWorktreeGitEnv(repoPath, dir);
-  runGit(
-    dir,
-    ['read-tree', '--no-recurse-submodules', '--no-sparse-checkout', '--reset', '-u', sha],
-    { env: { ...git } },
-  );
-  refuseEscapingLinks(dir, sha, git);
+  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
   return dir;
 }
 

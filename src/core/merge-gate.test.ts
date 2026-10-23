@@ -1952,6 +1952,46 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
 
+    // The gate's checkout gets its admin dir beside the sessions' own, so the
+    // add must leave nothing for git to do before the pointers are checked.
+    it('refuses its checkout when the commondir is rewritten between the add and the read-tree', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const armed = armedRepo(tempDir('pup-armed-'), 'src/app.ts');
+      sh(armed, 'git', 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${marker}; cat'`);
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const gitDir = tempDir('pup-git-');
+      const listing = join(gitDir, 'listing');
+      writeFileSync(
+        join(gitDir, 'git'),
+        [
+          '#!/bin/sh',
+          `${realGit} "$@" || exit $?`,
+          'prev=; add=; dir=',
+          'for a in "$@"; do',
+          '  if [ -n "$add" ] && [ -z "$dir" ]; then case "$a" in -*) ;; *) dir=$a ;; esac; fi',
+          '  [ "$prev $a" = "worktree add" ] && add=1',
+          '  prev=$a',
+          'done',
+          '[ -n "$dir" ] || exit 0',
+          `ls -A "$dir" > ${listing}`,
+          `echo ${armed} > "${join(repo, '.git', 'worktrees')}/$(basename "$dir")/commondir"`,
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${gitDir}:${originalPath}`;
+      onTestFinished(() => {
+        process.env.PATH = originalPath;
+      });
+
+      await expect(merge()).rejects.toThrow(WorktreeRepointedError);
+      // The add checked nothing out, so no git read the rewritten pointer.
+      expect(readFileSync(listing, 'utf8')).toBe('.git\n');
+      expect(existsSync(marker)).toBe(false);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
     it('holds the pins when the gitfile is swapped after each check', async () => {
       const worktree = seedSession(db, repo);
       commitIn(repo, 'README.md', '# hello\n');

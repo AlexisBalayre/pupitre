@@ -11,6 +11,7 @@ import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
+  checkoutPinned,
   rethrowIfKilled,
   runGit,
 } from './git-diff.client.js';
@@ -398,12 +399,16 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): v
   // exist, and blame a worker that never ran (decision 101).
   assertNoWorktreeConfig(repoPath);
   assertNoArmedGitDrivers(repoPath);
+  // `--no-checkout`: the add's own checkout would read the admin dir's
+  // `commondir` before any check of it, so the files come from a pinned
+  // read-tree of the head the branch holds either way.
   runGit(
     repoPath,
     tip === undefined
-      ? ['worktree', 'add', '-b', session.branch, session.worktree_path, head]
-      : ['worktree', 'add', session.worktree_path, session.branch],
+      ? ['worktree', 'add', '--no-checkout', '-b', session.branch, session.worktree_path, head]
+      : ['worktree', 'add', '--no-checkout', session.worktree_path, session.branch],
   );
+  checkoutPinned(repoPath, session.worktree_path, head);
 }
 
 /**

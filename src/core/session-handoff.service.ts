@@ -307,7 +307,15 @@ function relaunchWindow(
   // ever see again. The pointers it may have rewritten are checked before the
   // index, whose git runs outside any sandbox, and a rewrite refuses the
   // respawn, as the window's own check would (decision 101).
-  const git = verifiedWorktreeGitEnv(repoPath, session.worktree_path);
+  let git: WorktreeGitEnv;
+  try {
+    git = verifiedWorktreeGitEnv(repoPath, session.worktree_path);
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message += ' Its old window is already gone, and no new one was opened.';
+    }
+    throw error;
+  }
   const mcpConfigPath = graphForRespawn(repoPath, git, compiledDir);
   const pane = launchSession({
     sessionId,

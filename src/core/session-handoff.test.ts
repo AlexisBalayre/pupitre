@@ -411,8 +411,16 @@ describe('session handoff', () => {
       expect(existsSync(marker)).toBe(true);
       rmSync(marker);
 
-      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
-        WorktreeRepointedError,
+      let refusal: unknown;
+      try {
+        hardRespawnSession(db, repoPath, 's1', stateBase);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(WorktreeRepointedError);
+      // Refused after the kill: the operator must not look for the old window.
+      expect((refusal as Error).message).toMatch(
+        /Its old window is already gone, and no new one was opened\.$/,
       );
       expect(cgCalls()).toEqual([]);
       expect(launchSession).not.toHaveBeenCalled();

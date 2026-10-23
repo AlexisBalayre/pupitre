@@ -181,6 +181,29 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
 }
 
 /**
+ * Check out `rev` into a worktree `worktree add --no-checkout` just cut, with
+ * git pinned to the dirs pup trusts, checked first (decision 101). A plain add
+ * writes the admin dir's `commondir`, then checks out in a child git that
+ * reads it back before any check could run, and a session can write under
+ * `<common>/worktrees/`. `--no-sparse-checkout`, because a planted
+ * `core.sparseCheckout` would leave committed files out; `--reset`, because
+ * the new index is empty.
+ */
+export function checkoutPinned(
+  repoPath: string,
+  worktreePath: string,
+  rev: string,
+): WorktreeGitEnv {
+  const git = verifiedWorktreeGitEnv(repoPath, worktreePath);
+  runGit(
+    worktreePath,
+    ['read-tree', '--no-recurse-submodules', '--no-sparse-checkout', '--reset', '-u', rev],
+    { env: { ...git } },
+  );
+  return git;
+}
+
+/**
  * Refuse a launch while git would read per-worktree config in the repo: the
  * extension is on in its `.git/config`, or `.git/config.worktree` exists.
  * `verifiedWorktreeGitEnv` refuses such a repo too, but only once `startSession`
