@@ -5128,7 +5128,10 @@ changes back into those docs is pending.
     untouched; a script that does not use them runs as it would in the gate. A slot is a lock file
     `slot-N.lock` in `~/.pupitre/slots` holding the holder's kind, label, pid and a token. A take
     writes a staged file and hard-links it into a free slot name, so two takers cannot both win
-    one. A slot is reclaimed when its pid is not a live process of this user (`kill(pid, 0)`;
+    one. A staged file gets a fresh random name, never the token a gate's wait file publishes,
+    and an exclusive open (`wx`), so a fifo or a symlink a session plants at one fails at once
+    and is neither blocked on, which would freeze the gate's wait past its bound and its
+    signals, nor followed. A slot is reclaimed when its pid is not a live process of this user (`kill(pid, 0)`;
     EPERM means another user's, such as pid 1, which holds no slot under this home), or when it
     is not a regular file or its record does not parse: renamed aside, re-read, and linked back
     if its holder turns out alive. Slot and wait files are read only after a non-blocking open
@@ -5140,8 +5143,9 @@ changes back into those docs is pending.
     signals forwarded, and its exit status (128 plus the signal's number when killed) becomes the
     command's. Ctrl-C or SIGTERM during the wait ends it with exit 130 and no run.
     The gate first. The gate's test run, the root's and every touched nested package's together,
-    takes one slot too, and only when there is a suite to run. A waiting gate writes
-    `gate-<pid>-<token>.wait`; no worker takes a free slot while a live gate's wait file exists,
+    takes one slot too, and only when there is a suite to run. A waiting gate stages
+    `gate-<pid>-<token>.wait` the same way and renames it in, so no worker reads it empty and
+    removes it as a dead gate's; no worker takes a free slot while a live gate's wait file exists,
     and a dead gate's file is removed. Waiting gates race among themselves, as do waiting workers.
     The gate waits under the merge lock and the slots are every project's, so its wait is
     bounded: after a stage's own timeout, 10 minutes (`GATE_SLOT_WAIT_MS`), it prints `No test
@@ -5210,7 +5214,9 @@ changes back into those docs is pending.
     takes real slots unless `PUP_TEST_SLOT` is set.
     Tests: three runs with two slots run two and start the third when one ends; a dead holder's
     slot is reclaimed and a live foreign holder's is not, while one naming pid 1 or planted as a
-    fifo is reclaimed without blocking (the fifo test hangs on the old read); a gate is served
+    fifo is reclaimed without blocking (the fifo test hangs on the old read); a fifo planted at a
+    staged file fails a gate's wait and a worker's take at once, the gate running without a slot
+    (the test hangs on a plain open); a gate is served
     before a worker that waited longer and is named to it; a dead gate's wait file, and a live
     one's older than the bound, are ignored; a run whose longest wait runs out runs without a
     slot and says so, and so does a gate, merging with both slots still held; a file planted where

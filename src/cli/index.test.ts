@@ -2542,6 +2542,32 @@ describe('CLI commands', () => {
       expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
     });
 
+    it("prints a planned task's goal and scope-in before it launches", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const { db, repoPath } = resolveProject();
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-abc',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({
+          id: 't-abc',
+          goal: 'queue the test runs',
+          scopeIn: ['src/core/**', 'docs/**'],
+          acceptance: ['tests pass'],
+        }),
+      });
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(logs.slice(0, 3)).toEqual([
+        'goal: queue the test runs',
+        'scope-in: src/core/**, docs/**',
+        'Launched session t-abc-0 (tmux: pup-t-abc-0).',
+      ]);
+    });
+
     it('hands an --effort to the launch, which records it as an override', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');

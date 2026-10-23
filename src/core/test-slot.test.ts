@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -8,7 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
@@ -16,10 +17,16 @@ import {
   HELD_SLOT_ENV,
   runSessionTest,
   type SlotHolder,
+  SlotWaitInterruptedError,
   type TestSlotOptions,
   vmStatAvailableBytes,
   withTestSlot,
 } from './test-slot.service.js';
+
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return { ...actual, randomBytes: vi.fn(actual.randomBytes) };
+});
 
 /** A run that holds its slot until the test ends it. */
 function heldRun(): { end: () => void; done: Promise<void> } {
@@ -49,6 +56,7 @@ describe('withTestSlot (decision 96)', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.mocked(randomBytes).mockReset();
     // Writable again before the temp dir's removal, which runs after this.
     chmodSync(dir, 0o700);
   });
@@ -172,6 +180,24 @@ describe('withTestSlot (decision 96)', () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  it('ends its wait on an interrupt, running nothing and leaving no wait file', async () => {
+    const log: string[] = [];
+    const first = run('worker', 's1', log);
+    const second = run('worker', 's2', log);
+    await tick();
+    const before = process.listeners('SIGTERM');
+    const gate = run('gate', 'gate s9', log);
+    await tick();
+    const [listener] = process.listeners('SIGTERM').filter((fn) => !before.includes(fn));
+    (listener as NodeJS.SignalsListener)('SIGTERM');
+
+    await expect(gate.settled).rejects.toEqual(new SlotWaitInterruptedError('SIGTERM'));
+    expect(log).toEqual(['s1', 's2']);
+    expect(readdirSync(dir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+    for (const held of [first, second]) held.end();
+    await Promise.all([first.settled, second.settled]);
+  });
+
   it('names the gate a worker waits behind', async () => {
     const log: string[] = [];
     const gatesSeen: SlotHolder[][] = [];
@@ -239,6 +265,32 @@ describe('withTestSlot (decision 96)', () => {
     expect(log).toEqual(['s1']);
     held.end();
     await held.settled;
+  });
+
+  it('fails at once on a fifo planted at its staged file, never blocking on it', async () => {
+    const planted = (() => Buffer.from('planted!')) as never;
+    // The gate stages its wait file first, the worker its take.
+    vi.mocked(randomBytes).mockImplementationOnce(planted).mockImplementationOnce(planted);
+    const fifo = join(dir, `stage-${Buffer.from('planted!').toString('hex')}.tmp`);
+    execFileSync('mkfifo', [fifo]);
+    const unusable = vi.fn();
+    let ran = false;
+    await withTestSlot(
+      { kind: 'gate', label: 'gate s1' },
+      async () => {
+        ran = true;
+      },
+      { ...options, onSlotsUnusable: unusable },
+    );
+    const worker = vi.fn(async () => undefined);
+
+    expect(ran).toBe(true);
+    expect(unusable).toHaveBeenCalledWith(expect.objectContaining({ code: 'EEXIST' }));
+    await expect(withTestSlot({ kind: 'worker', label: 's1' }, worker, options)).rejects.toThrow(
+      expect.objectContaining({ code: 'EEXIST' }),
+    );
+    expect(worker).not.toHaveBeenCalled();
+    expect(readdirSync(dir)).toEqual([basename(fifo)]);
   });
 
   it("ignores a live gate's wait file older than a gate ever waits", async () => {

@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   linkSync,
   mkdirSync,
@@ -21,7 +22,7 @@ import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 // machine, so it lives here too.
 
 /** How many test runs the machine takes at once, the gate's among them (decision 96). */
-export const TEST_SLOTS = 2;
+const TEST_SLOTS = 2;
 
 /** A launch is refused below this much available memory (decision 96). */
 export const MIN_AVAILABLE_MEMORY_BYTES = 1.5 * 1024 ** 3;
@@ -48,7 +49,7 @@ const POLL_MS = 1000;
 export const GATE_SLOT_WAIT_MS = GATE_COMMAND_TIMEOUT_MS;
 
 /** Who takes a slot: the merge gate goes first, a worker's `pup session test` after it. */
-export type SlotHolderKind = 'gate' | 'worker';
+type SlotHolderKind = 'gate' | 'worker';
 
 export interface SlotHolder {
   kind: SlotHolderKind;
@@ -83,7 +84,7 @@ export interface TestSlotOptions {
  * Derived here rather than added to `projectPaths`: the slots are the
  * machine's, not a project's, and this module is their only reader.
  */
-export function slotsDir(): string {
+function slotsDir(): string {
   return join(homedir(), '.pupitre', 'slots');
 }
 
@@ -118,7 +119,7 @@ function readRecord(path: string): SlotRecord | undefined {
     raw = JSON.parse(readPlainFile(path));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    // Written whole by a link, so unparseable text is not a take in progress.
+    // Put in place whole by a link or a rename, so unparseable text is no write in progress.
     return { kind: 'worker', label: '', pid: 0, token: '' };
   }
   const record = raw as Partial<SlotRecord>;
@@ -199,10 +200,21 @@ function isUnwritable(error: unknown): boolean {
   return code === 'EPERM' || code === 'EACCES' || code === 'EROFS';
 }
 
+/**
+ * Write `record` to a new file in `dir` for a link or a rename to put in place
+ * whole, answering its path. The name is fresh, not the record's token, which a
+ * gate's wait file publishes, and the open is exclusive, so a fifo or a link
+ * planted at it fails at once rather than blocking the wait or being followed.
+ */
+function stage(dir: string, record: SlotRecord): string {
+  const staged = join(dir, `stage-${randomBytes(8).toString('hex')}.tmp`);
+  writeFileSync(staged, JSON.stringify(record), { flag: 'wx' });
+  return staged;
+}
+
 /** Take the first free slot, answering its path, or undefined when every one is held. */
 function take(dir: string, slots: number, record: SlotRecord): string | undefined {
-  const staged = join(dir, `take-${record.pid}-${record.token}.tmp`);
-  writeFileSync(staged, JSON.stringify(record));
+  const staged = stage(dir, record);
   try {
     for (let index = 0; index < slots; index++) {
       const path = join(dir, `slot-${index}.lock`);
@@ -303,7 +315,8 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
   try {
-    if (waitFile) writeFileSync(waitFile, JSON.stringify(record));
+    // Staged and renamed in, so no worker reads it empty and removes it as a dead gate's.
+    if (waitFile) renameSync(stage(dir, record), waitFile);
     const deadline = Date.now() + (options.maxWaitMs ?? Number.POSITIVE_INFINITY);
     let told = false;
     for (;;) {
