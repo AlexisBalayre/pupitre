@@ -18,6 +18,7 @@ import {
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import {
   assertNoArmedGitDrivers,
+  checkoutPinned,
   currentBranch,
   runGit,
   verifiedWorktreeGitEnv,
@@ -137,8 +138,17 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   // heals that and touches nothing that still exists.
   runGit(repoPath, ['worktree', 'prune']);
   mkdirSync(dirname(checkoutDir), { recursive: true });
-  runGit(repoPath, ['worktree', 'add', '--detach', checkoutDir, `refs/heads/${target}`]);
-  return verifiedWorktreeGitEnv(repoPath, checkoutDir);
+  // `--no-checkout`: the add's own checkout would read the admin dir's
+  // `commondir` before any check of it (decision 101).
+  runGit(repoPath, [
+    'worktree',
+    'add',
+    '--detach',
+    '--no-checkout',
+    checkoutDir,
+    `refs/heads/${target}`,
+  ]);
+  return checkoutPinned(repoPath, checkoutDir, `refs/heads/${target}`);
 }
 
 /**

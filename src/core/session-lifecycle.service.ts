@@ -22,6 +22,7 @@ import { windowFailureOf } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
+  checkoutPinned,
   runGit,
   verifiedWorktreeGitEnv,
 } from './git-diff.client.js';
@@ -557,7 +558,10 @@ function startSession(
     peers,
   );
   const { compiled } = compile;
-  runGit(req.repoPath, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
+  // `--no-checkout`: the add's own checkout would read the admin dir's
+  // `commondir` before any check of it (decision 101).
+  runGit(req.repoPath, ['worktree', 'add', '--no-checkout', '-b', branch, worktreePath, 'HEAD']);
+  checkoutPinned(req.repoPath, worktreePath, `refs/heads/${branch}`);
   const { settingsPath, mcpConfigPath } = writeSessionProfile(
     compile,
     req.repoPath,

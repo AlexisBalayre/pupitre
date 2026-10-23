@@ -5599,7 +5599,12 @@ changes back into those docs is pending.
     (5) The gate's checkout and the conductor's sit under `<common>/worktrees/` beside the
     sessions' admin dirs, whose `commondir` a session can rewrite. Their git after the add now
     runs pinned, after the same check: the gate's `read-tree -u` and `ls-tree`, the conductor's
-    `checkout --detach` and its index. The gate's checkout is named after its `mkdtemp` root,
+    `checkout --detach` and its index. The add itself is no exception: a plain `worktree add`
+    writes the admin dir's `commondir`, then checks out in a child git that reads it back before
+    any check could run. So every add pup runs over the repo takes `--no-checkout`, and
+    `checkoutPinned` fills the tree with a pinned `read-tree -u` once the pointers are checked:
+    the gate's checkout, the conductor's first cut, a launch's worktree and a fix round's
+    (conductor review of t-mve8vgej). The gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
     `--work-tree`, which was there to outrank a `core.worktree` in the shared config.
@@ -5665,6 +5670,10 @@ changes back into those docs is pending.
     from a `--separate-git-dir` checkout, and `assertNoWorktreeConfig` on a linked worktree,
     are refused before any row, worktree or branch exists. The gate merges while another
     worktree holds the admin dir `checkout`, and fails with its checkout named `checkout`.
+    A git that rewrites the new admin dir's `commondir` as soon as `worktree add` returns gets a
+    refusal from the gate and the conductor's first cut, with nothing fired, no index and only
+    `.git` in the tree the add left; with the add's own checkout back, the tree holds the files.
+    A respawn refused after the kill says the old window is gone.
 102. **While the project's conductor runs, a session awaiting review is left out of the
     needs-you inbox (2026-10-23).**
     Amends decisions 83 and 97. The inbox listed every `awaiting-review` session with `pup review
