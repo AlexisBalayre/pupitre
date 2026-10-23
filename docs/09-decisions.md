@@ -4354,6 +4354,8 @@ changes back into those docs is pending.
     `landed` event after it, and an older PR under a newer local merge are not listed; a planted url
     is scrubbed. `pup status` prints the inbox before the overdue debt line, prints no header when
     nothing waits, hides merged and killed rows by default and prints them with `--history`.
+    *Amended by decision 102:* while the project's conductor runs, an awaiting-review session is
+    left out of the inbox unless its gate was refused.
 
 84. **`pup land <session>` closes the GitHub half of a `--pr` merge, and the conductor may run it
     (2026-10-14).**
@@ -5328,6 +5330,8 @@ changes back into those docs is pending.
     Tests: each fleet state writes fixed title and status bytes; a question holding `ESC ] 0 ;
     … BEL`, `\u009b`, DEL and `;status=idle` comes out inert; no TTY, `TMUX` and the opt-out each
     write nothing; stop and unmount pop the title and clear the status once.
+    *Amended by decision 102:* an awaiting-review session counts toward `need you` and sets the
+    `needs you` status only with no conductor running, or once its gate was refused.
 
 101. **Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18).**
     Extends decision 50. A linked worktree finds its repo through two files: its `.git` gitfile
@@ -5476,9 +5480,9 @@ changes back into those docs is pending.
     gitfile. Each swap test fails with the pins taken out of `safe_git` or out of the gate.
 102. **While the project's conductor runs, a session awaiting review is left out of the
     needs-you inbox (2026-10-23).**
-    Amends decision 83. The inbox listed every `awaiting-review` session with `pup review <id>
-    then pup merge <id> --pr`, which predates the conductor gating its own branches (decision 74
-    onward) and running `pup merge <id> --pr` on every finished one (the kickoff since #140).
+    Amends decisions 83 and 97. The inbox listed every `awaiting-review` session with `pup review
+    <id> then pup merge <id> --pr`, which predates the conductor gating its own branches (decision
+    75 onward) and running `pup merge <id> --pr` on every finished one (the kickoff since #140).
     With a conductor up, that line asked the operator for a step the conductor was already
     taking, and an operator who ran it would race the conductor to the same gate.
     `needsYou` now reads `snapshot.conductor.running`, the answer `buildDashboardSnapshot`
@@ -5489,9 +5493,25 @@ changes back into those docs is pending.
     the PR. A question, block or stall on the session still leads, as before. Every surface
     reads the same function, so `pup status`, `pup ui`, the terminal tab's need
     count and the web dashboard's inbox agree. With no conductor running, the line is unchanged.
+    A gate refused on flagged debt is the exception (found on CI review). It writes a
+    `gate_result` with `outcome: 'refused'` and leaves the session in awaiting-review, and
+    accepting the debt takes a named human (decision 75), so the conductor cannot take it further
+    and the session would have dropped off every surface but the table. The snapshot marks an
+    awaiting-review session `gateRefused` while that refusal is the newest of its `gate_result`,
+    `steer` and `session_done` events: a steer answers it, as it answers a question, and a new
+    `pup session done` is new work to gate, and neither logs a transition, since the state does
+    not move. Such a session is listed, conductor or not, as `gate refused on flagged debt` with
+    `pup merge <id> --pr --accept-debt "<reason>" --review-by "<condition>", or pup steer <id>
+    "..."`, the two ways out the refusal itself prints. Two cases stay unseen. A `--pr` merge that
+    throws before the gate writes anything, a missing push target among them, leaves nothing in
+    the store, and the conductor reports the error it was handed. The store does not record who
+    launched a session, so one the operator launched while the conductor runs is left to the
+    conductor too, whose prompt has it gate any awaiting-review session that meets its criteria.
     *Tests.* In `dashboard.test.ts`, with the conductor running, an awaiting-review session is
     absent from `needsYou` and present among the snapshot's sessions, and an open PR still
-    leads. With it stopped, the review-then-merge need is unchanged. `pup status` with a
+    leads. With it stopped, the review-then-merge need is unchanged. With it running, a refused
+    gate keeps the session in `needsYou` with the accept-debt answer, and a steer or a new
+    `session_done` after the refusal hands it back to the conductor. `pup status` with a
     conductor prints the session in its table and not in the inbox; without one it prints the
     need. The terminal tab counts the session only with no conductor, and the web dashboard
     prints the need's command only then.

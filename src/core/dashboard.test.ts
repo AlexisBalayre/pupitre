@@ -1239,6 +1239,52 @@ describe('needsYou', () => {
       ]);
     });
 
+    // A refused gate leaves the session in awaiting-review, and accepting the
+    // debt it flagged takes a human, so the conductor cannot take it further.
+    describe('after a refused gate', () => {
+      function seedRefused(sessionId: string): void {
+        seedIn(sessionId, ['running', 'awaiting-review']);
+        appendEvent(db, sessionId, 'gate_result', {
+          outcome: 'refused',
+          report: {
+            sessionId,
+            passed: false,
+            sandbox: 'none',
+            stages: [{ stage: 'diff-size', status: 'flagged', detail: '900 lines' }],
+          },
+        });
+      }
+
+      it("is the operator's call on the debt while the conductor runs", () => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        seedRefused('s-review');
+
+        expect(inbox()).toEqual([
+          {
+            kind: 'awaiting-review',
+            sessionId: 's-review',
+            label: 's-review',
+            reason: 'gate refused on flagged debt',
+            answer:
+              'pup merge s-review --pr --accept-debt "<reason>" --review-by "<condition>", ' +
+              'or pup steer s-review "..."',
+          },
+        ]);
+      });
+
+      // Neither moves the state, so neither logs a transition after the refusal.
+      it.each([
+        ['a steer', (id: string) => appendEvent(db, id, 'steer', { kind: 'message' })],
+        ['a new finish', (id: string) => appendEvent(db, id, 'session_done', { summary: 'x' })],
+      ])("is the conductor's again after %s", (_, after) => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        seedRefused('s-review');
+        after('s-review');
+
+        expect(inbox()).toEqual([]);
+      });
+    });
+
     // The conductor holds the branch until the gate opens its PR; from there
     // the merge click is the operator's whoever gated it.
     it('still lists an open PR while the conductor runs', () => {
