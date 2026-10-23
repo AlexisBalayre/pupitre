@@ -110,13 +110,14 @@ function isAlive(pid: number): boolean {
 
 /**
  * A slot or wait file's record; undefined when it is gone. Anything pup did
- * not write, unparseable text or a file that is not a regular one, reads as a
- * dead holder's, so it is reclaimed: a fifo is never opened to block on.
+ * not write, unparseable text, a symlink or a file that is not a regular one,
+ * reads as a dead holder's, so it is reclaimed: a fifo is never opened to
+ * block on, nor a link followed.
  */
 function readRecord(path: string): SlotRecord | undefined {
   let raw: unknown;
   try {
-    raw = JSON.parse(readPlainFile(path));
+    raw = JSON.parse(readPlainFile(path, { followLinks: false }));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     // Put in place whole by a link or a rename, so unparseable text is no write in progress.

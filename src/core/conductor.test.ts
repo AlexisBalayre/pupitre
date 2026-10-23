@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -232,6 +232,17 @@ describe('startConductor', () => {
       const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
       rmSync(file);
       execFileSync('mkfifo', [file]);
+
+      expect(maxSessions(REPO)).toBe(4);
+    });
+
+    it('reads the default for a symlink planted as the cap, never following it', () => {
+      start({ maxSessions: 7 });
+      const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
+      const target = join(tempDir('pup-planted-'), 'cap');
+      writeFileSync(target, '9\n');
+      rmSync(file);
+      symlinkSync(target, file);
 
       expect(maxSessions(REPO)).toBe(4);
     });

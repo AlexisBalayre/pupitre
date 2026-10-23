@@ -57,13 +57,14 @@ function maxSessionsFile(repoPath: string): string {
 /**
  * The most live sessions a launch may reach in this project: the cap the last
  * conductor start stored, else `DEFAULT_MAX_SESSIONS`. A file that holds no
- * positive whole number, or is not a regular file, reads as the default
- * rather than as no cap; a fifo planted there is never opened to block on.
+ * positive whole number, a symlink, or one that is not a regular file, reads
+ * as the default rather than as no cap; a fifo planted there is never opened
+ * to block on, nor a link followed.
  */
 export function maxSessions(repoPath: string): number {
   let stored: number;
   try {
-    stored = Number(readPlainFile(maxSessionsFile(repoPath)).trim());
+    stored = Number(readPlainFile(maxSessionsFile(repoPath), { followLinks: false }).trim());
   } catch {
     return DEFAULT_MAX_SESSIONS;
   }

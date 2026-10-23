@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -320,6 +321,27 @@ describe('withTestSlot (decision 96)', () => {
     await tick();
 
     expect(log).toEqual(['s1']);
+    held.end();
+    await held.settled;
+  });
+
+  it("reclaims a symlink planted as a slot without following it, even to a live holder's record", async () => {
+    const target = join(tempDir('pup-planted-'), 'record.json');
+    const record = JSON.stringify({
+      kind: 'worker',
+      label: 'planted',
+      pid: process.pid,
+      token: 'x',
+    });
+    writeFileSync(target, record);
+    symlinkSync(target, join(dir, 'slot-0.lock'));
+    symlinkSync(target, join(dir, 'slot-1.lock'));
+    const log: string[] = [];
+    const held = run('worker', 's1', log);
+    await tick();
+
+    expect(log).toEqual(['s1']);
+    expect(readFileSync(target, 'utf8')).toBe(record);
     held.end();
     await held.settled;
   });

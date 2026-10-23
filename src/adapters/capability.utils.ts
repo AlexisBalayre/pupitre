@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import type { CapabilityContext, CapabilityUnavailable } from './types/adapter.types.js';
 
 /** Larger than any manifest, config or record pup reads this way. */
@@ -9,16 +9,28 @@ const PLAIN_FILE_MAX_BYTES = 1 << 20;
  * measured checkout, a slot or the session cap under the store (decision 96).
  * Opening a fifo or a device would block the event loop, and timeouts and
  * interrupt forwarding with it, so only a regular file is read, checked on the
- * descriptor opened without blocking. Throws otherwise.
+ * descriptor opened without blocking. The read stops at the size cap rather
+ * than at EOF: a procfs file is regular and reports size 0, yet
+ * `/proc/self/pagemap` streams for hundreds of gigabytes. Throws otherwise.
+ *
+ * `followLinks: false` refuses a symlink outright, for files only pup writes,
+ * which are never one; a checkout's config may be a tracked link.
  */
-export function readPlainFile(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+export function readPlainFile(path: string, { followLinks = true } = {}): string {
+  const noFollow = followLinks ? 0 : constants.O_NOFOLLOW;
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > PLAIN_FILE_MAX_BYTES) {
       throw new Error(`${path} is not a plain file`);
     }
-    return readFileSync(fd, 'utf8');
+    const buffer = Buffer.alloc(PLAIN_FILE_MAX_BYTES + 1);
+    let length = 0;
+    for (let read = -1; read !== 0 && length < buffer.length; length += read) {
+      read = readSync(fd, buffer, length, buffer.length - length, null);
+    }
+    if (length > PLAIN_FILE_MAX_BYTES) throw new Error(`${path} is not a plain file`);
+    return buffer.toString('utf8', 0, length);
   } finally {
     closeSync(fd);
   }

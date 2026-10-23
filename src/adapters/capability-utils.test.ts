@@ -1,11 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { existsSync, fstatSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   brokenPackageManagerInstall,
   failureSummary,
   isUnavailable,
   localContext,
+  readPlainFile,
   sanitizeReason,
 } from './capability.utils.js';
+
+// Real unless a test makes a file report a size it does not hold.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, fstatSync: vi.fn(actual.fstatSync) };
+});
 
 describe('isUnavailable', () => {
   it('separates a reason from a real measurement', () => {
@@ -80,6 +91,48 @@ describe('sanitizeReason', () => {
     expect([...capped]).toHaveLength(300);
     expect(capped.endsWith('🙂')).toBe(true);
   });
+});
+
+describe('readPlainFile', () => {
+  it('reads a regular file, through a link unless told not to follow one', () => {
+    const dir = tempDir('pup-plain-');
+    writeFileSync(join(dir, 'config.json'), '{"a":1}');
+    symlinkSync(join(dir, 'config.json'), join(dir, 'link.json'));
+
+    expect(readPlainFile(join(dir, 'config.json'))).toBe('{"a":1}');
+    expect(readPlainFile(join(dir, 'link.json'))).toBe('{"a":1}');
+    expect(() => readPlainFile(join(dir, 'link.json'), { followLinks: false })).toThrow(
+      expect.objectContaining({ code: 'ELOOP' }),
+    );
+  });
+
+  it('refuses a fifo without blocking on it, and a file past the size cap', () => {
+    const dir = tempDir('pup-plain-');
+    execFileSync('mkfifo', [join(dir, 'fifo')]);
+    writeFileSync(join(dir, 'big'), 'x'.repeat((1 << 20) + 1));
+
+    expect(() => readPlainFile(join(dir, 'fifo'))).toThrow('is not a plain file');
+    expect(() => readPlainFile(join(dir, 'big'))).toThrow('is not a plain file');
+  });
+
+  it('stops at the size cap on a file that reports less than it holds', () => {
+    const file = join(tempDir('pup-plain-'), 'streams');
+    writeFileSync(file, 'x'.repeat(2 << 20));
+    const actual = vi.mocked(fstatSync).getMockImplementation() as typeof fstatSync;
+    vi.mocked(fstatSync).mockImplementationOnce(((fd: number) =>
+      Object.assign(actual(fd), { size: 0 })) as typeof fstatSync);
+
+    expect(() => readPlainFile(file)).toThrow('is not a plain file');
+  });
+
+  // Regular and sized 0, yet it streams 8 bytes per page of the reader's own
+  // address space: a read to EOF would never end.
+  it.runIf(existsSync('/proc/self/pagemap'))(
+    'stops at the size cap on a procfs file that reports size 0',
+    () => {
+      expect(() => readPlainFile('/proc/self/pagemap')).toThrow('is not a plain file');
+    },
+  );
 });
 
 describe('brokenPackageManagerInstall', () => {
