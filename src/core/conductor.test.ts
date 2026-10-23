@@ -441,6 +441,36 @@ describe('startConductor code graph', () => {
     expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
   });
 
+  // The checkout's admin dir sits under `<common>/worktrees/` beside the
+  // sessions' own, where a session can rewrite its `commondir` from inside the
+  // sandbox. The refresh's git runs pinned after a check, so the rewrite costs
+  // the graph and runs nothing (decision 101).
+  it('refuses a checkout whose commondir names another repo, running nothing it arms', () => {
+    fakeCodegraph(INDEXES);
+    start();
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    const armed = tempDir('pup-armed-');
+    gitIn(armed, 'init', '-q');
+    const fsmonitor = join(armed, 'fsmonitor.sh');
+    writeFileSync(fsmonitor, `#!/bin/sh\necho fired >> ${marker}\n`, { mode: 0o755 });
+    gitIn(armed, 'config', 'core.fsmonitor', fsmonitor);
+    writeFileSync(join(repo, '.git', 'worktrees', 'checkout', 'commondir'), `${armed}/.git\n`);
+    // The plant is live: plain git reading the checkout's index runs it.
+    gitIn(checkout(), 'ls-files');
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    writeFileSync(cgLog, '');
+
+    start();
+
+    expect(existsSync(marker)).toBe(false);
+    expect(cgCalls()).toEqual([]);
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(
+      /Could not index .*: launching without a code graph\. Refusing to run git in /,
+    );
+  });
+
   // Clearing `~/.pupitre` leaves the worktree registration behind, and
   // `worktree add` refuses the path forever once it does. Without the prune the
   // conductor silently never gets a graph again.

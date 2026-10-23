@@ -649,6 +649,35 @@ describe('launchTask worktree-config guard', () => {
     expect(launch()).toBe('t-1');
   });
 
+  // Every path pup trusts is built as `<repo>/.git/...`. Under a gitfile those
+  // name nothing, so the config check above would read nothing and the
+  // window's pointer check would refuse only after the row and the worktree
+  // exist; the gitfile is refused first (decision 101).
+  it('refuses a repo whose .git is a gitfile before any row, worktree or branch', () => {
+    const separate = tempDir('pup-wtconfig-separate-');
+    const gitfileRepo = tempDir('pup-wtconfig-gitfile-');
+    gitIn(gitfileRepo, 'init', '-b', 'main', `--separate-git-dir=${join(separate, 'git')}`);
+    gitIn(gitfileRepo, 'config', 'user.email', 't@t');
+    gitIn(gitfileRepo, 'config', 'user.name', 't');
+    commitIn(gitfileRepo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(gitfileRepo), gitfileRepo);
+    planTask(db, { repoPath: gitfileRepo, task: spec() });
+
+    expect(() =>
+      launchTask(db, {
+        repoPath: gitfileRepo,
+        base: DEFAULT_BASE_PROFILE,
+        taskId: 't-1',
+        claudeUserDir: join(gitfileRepo, '.claude'),
+      }),
+    ).toThrow(/its \.git is not a directory\. pup pins a session to the repository/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(existsSync(join(gitfileRepo, '.worktrees'))).toBe(false);
+    expect(gitIn(gitfileRepo, 'branch', '--list', 'pup/t-1')).toBe('');
+  });
+
   it('writes no task row when `pup new` is refused', () => {
     expect(() =>
       createSession(db, {

@@ -5564,22 +5564,57 @@ changes back into those docs is pending.
     compromised. Its unset runs `git -C / config --file <repo>/.git/config`, from outside the
     repo, because git will not open a repo whose value it cannot read, not even for `--file`
     (security review, 2026-10-23). The in-window check stays as
-    it is, for an extension turned on after the launch. A fix round's `worktree add` still
-    comes before that check, a follow-up.
+    it is, for an extension turned on after the launch. `pup fix` asks the same before its
+    `worktree add` (t-mve8vgej), where it would otherwise fail late or read as a compromised
+    worker.
+    *Gitfile repos refused.* Every path pup trusts is built as `<repo>/.git/...`, the pins
+    included. A repo whose `.git` is a gitfile (a linked worktree, a submodule, a
+    `--separate-git-dir` clone) has none of them: the config read above misses, and the pointer
+    check refuses only after the row and the worktree exist. `assertNoWorktreeConfig` refuses
+    such a repo first, with a message asking for the main checkout. Resolving the gitfile was
+    the alternative, but it would take the repo from a pointer file rather than from pup's own
+    path.
+    *The respawn, the code graph and the checkouts (security review, 2026-10-23).* Reproduced on
+    Apple Git 2.39.5 with codegraph 1.6.0. A respawn indexed the worktree before any check, and
+    the indexer's environment carried no `GIT_*`. codegraph runs `ls-files --recurse-submodules`
+    and `status` over the tree, outside the sandbox, and again with the cwd in every nested repo
+    it finds. So a repointed gitfile, or an untracked `<wt>/lib/x/.git` naming a repo the session
+    built, had it run that repo's fsmonitor. Five changes. (1) `relaunchWindow` runs
+    `assertMintedRow` before anything is killed, and `verifiedWorktreeGitEnv` after the kill and
+    before the index; a rewrite refuses the respawn. (2) The indexer's git runs pinned:
+    `prepareGraph` takes the pins as a thunk, evaluated inside its failure envelope once a binary
+    is found, and `indexEnv` hands codegraph `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE`. With
+    all three set, every git codegraph runs reads the trusted repo whatever its cwd, so a nested
+    repo's `.git` is never followed. Nested repos are neither excluded nor refused, which
+    codegraph's own `codegraph.json` could undo; the pins make their `.git` inert. (3) codegraph's
+    argv is not pup's, so it gets `GIT_SAFE_CONFIG` as command-scope config through
+    `GIT_CONFIG_COUNT`, with `diff.ignoreSubmodules=all` and `status.submoduleSummary=false`. A
+    `.gitmodules` `ignore = none` still outranks that, and a submodule's child git clears the
+    pins, so a tree whose index holds a gitlink is not indexed: the launch, respawn or fix round
+    opens without a graph and says so. Without a gitlink, `.gitmodules` names nothing git would
+    enter. (4) `launchSession` takes the project's `repoPath` from its three callers
+    (session-lifecycle, session-handoff, fix-round), and never derives it from the row's
+    `worktree_path`. A row naming `/tmp/x/.worktrees/<id>` beside a session-built `/tmp/x/.git`
+    is checked against the project's admin dir, which its gitfile does not name, and is refused.
+    (5) The gate's checkout and the conductor's sit under `<common>/worktrees/` beside the
+    sessions' admin dirs, whose `commondir` a session can rewrite. Their git after the add now
+    runs pinned, after the same check: the gate's `read-tree -u` and `ls-tree`, the conductor's
+    `checkout --detach` and its index. The gate's checkout is named after its `mkdtemp` root,
+    since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
+    `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
+    `--work-tree`, which was there to outrank a `core.worktree` in the shared config.
     *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
-    pick another name, because a stale admin dir held it, is refused at launch, never followed.
-    The hooks and the gate take the repo from the project path they are given. A launch takes it
-    from the worktree path, `<repo>/.worktrees/<session-id>`, the one layout `startSession` uses,
-    because `launchSession`'s callers (session-lifecycle and session-handoff) pass no project
-    path. Passing it through is a follow-up. Until then, a row whose worktree path names
-    another repo's layout is checked against that repo, and trust is seeded on it. Two other
-    follow-ups are open: the codegraph indexing a respawn runs in the worktree, and the
-    conductor checkout's git, both still unpinned. The git that runs outside the Bash sandbox
-    without pup's pins or flags follows the pointers: any git Claude Code runs after its
-    startup, and the code graph server's `git status`, which goes with t-mve8vgej. A rewrite after
-    the launch reaches them, and so does a planted gitlink with a `.gitmodules` override. With
+    pick another name, because a stale admin dir held it, is refused at launch, never followed;
+    a conductor checkout whose admin dir is not `checkout` costs the conductor its graph until
+    the checkout is deleted and re-cut. The served code graph server gets the git config but not
+    the pins: `codegraphMcpConfig` is handed no repo path, and the profile compiler, which has
+    one, is the follow-up. Its `git status` runs outside the sandbox for the whole session, so a
+    gitfile rewritten after the launch, or a gitlink planted with a `.gitmodules` override, still
+    reaches it, as it reaches any git Claude Code runs after its startup. The config disarms a
+    planted fsmonitor there, and no clean filter. With
     `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
-    gate's scope audit, on the branch's own diff, still does.
+    gate's scope audit, on the branch's own diff, still does. A project that commits submodules
+    gets no code graph.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
     between still blocks until the hook timeout, as decision 99's MERGE_HEAD read does. A
     session's own `pup session done` runs `runGit` with the GIT_DIR family scrubbed, inside the
@@ -5615,6 +5650,21 @@ changes back into those docs is pending.
     restores the trusted gitfile around each check and puts the armed one back after it, leaves
     no marker. The gate merges, and only the teardown's `worktree remove` refuses the swapped
     gitfile. Each swap test fails with the pins taken out of `safe_git` or out of the gate.
+    A respawn over a repointed gitfile whose repo's fsmonitor fires under plain `git status` is
+    refused before codegraph runs or a window opens, and a respawn over an untracked nested repo
+    naming the same armed repo indexes without firing it. The fake codegraph runs 1.6.0's git
+    calls, in the tree and in the nested repo, and fires it on a plain environment. That test
+    fails with the pins taken out of `indexEnv`. A respawn of a row naming an unminted worktree is
+    refused before the kill. codegraph is handed the three pins and the config, and is never run
+    over an index holding a gitlink or after a refused pin check. The served config carries the
+    git config and no pins. A launch over a row naming another repo's valid worktree opens
+    nothing, while the same worktree checks clean against its own repo. A conductor checkout
+    whose `commondir` names an armed repo fires it under plain `ls-files`, and a start then
+    fires nothing, indexes nothing and launches without a graph. `pup fix` with the extension
+    on refuses before any worktree add or event, and fails without the new call. A `pup launch`
+    from a `--separate-git-dir` checkout, and `assertNoWorktreeConfig` on a linked worktree,
+    are refused before any row, worktree or branch exists. The gate merges while another
+    worktree holds the admin dir `checkout`, and fails with its checkout named `checkout`.
 102. **While the project's conductor runs, a session awaiting review is left out of the
     needs-you inbox (2026-10-23).**
     Amends decisions 83 and 97. The inbox listed every `awaiting-review` session with `pup review

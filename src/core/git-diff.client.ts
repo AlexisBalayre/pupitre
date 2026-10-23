@@ -9,6 +9,7 @@ import {
   readFileSync,
   readSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
@@ -188,9 +189,22 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
  * `git sparse-checkout` is the usual cause, not the only one: a session that
  * can write the shared config can turn the extension on and arm a driver in
  * `config.worktree`, which this refusal then meets before the driver check.
+ * A repo whose `.git` is a gitfile is refused here too, before anything is
+ * written: none of the paths pup trusts exists under it.
  */
 export function assertNoWorktreeConfig(repoPath: string): void {
   const dotGit = join(repoPath, '.git');
+  // Every path pup trusts is built as `<repo>/.git/...`, the pins included.
+  // Under a gitfile those name nothing: this check would read no config, and
+  // the pointer check would refuse only once the row and the worktree exist.
+  if (!statSync(dotGit, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(
+      `Refusing to launch a session in ${sanitizeReason(repoPath)}: its .git is not a ` +
+        'directory. pup pins a session to the repository at <repo>/.git (decision 101), so it ' +
+        'launches from a main checkout only, never from a linked worktree, a submodule or a ' +
+        '`--separate-git-dir` clone, whose .git is a gitfile. Run it from the main checkout.',
+    );
+  }
   if (lstatSync(join(dotGit, 'config.worktree'), { throwIfNoEntry: false })) {
     throw new WorktreeConfigError(
       repoPath,
