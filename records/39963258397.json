@@ -1,0 +1,318 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-23T13:50:49.116Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39963258397",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39963258397",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6498ed72a75011d99cd3e280d5425a535558a358",
+  "source": "pr",
+  "pr_number": 170,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "203-222",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`take()` writes its staged file with a plain `writeFileSync`, which follows symlinks and blocks on a fifo. The gate's staged name `take-<pid>-<token>.tmp` uses the same pid and token as its wait file `gate-<pid>-<token>.wait`, which is in the slots directory for as long as the gate waits. So a session can read the name and `mkfifo` it first. The gate's next poll then hangs forever under the merge lock: the slot-wait limit and Ctrl-C both stop working.",
+      "body": "**A session can hang the merge gate indefinitely by planting a fifo at the gate's predictable staged-take path.**\n\nDecision 96 promises two things here: a fifo planted in the slots directory is never blocked on, and the gate's slot wait is bounded so no stuck run can hold the merge lock. The read side keeps the first promise via `readPlainFile`, but the write in `take()` breaks both:\n\n```ts\n// test-slot.service.ts L203-L205\nfunction take(dir: string, slots: number, record: SlotRecord): string | undefined {\n  const staged = join(dir, `take-${record.pid}-${record.token}.tmp`);\n  writeFileSync(staged, JSON.stringify(record));\n```\n\nThe wait file at L292-L293 / L306 (`gate-${record.pid}-${record.token}.wait`) is written before the wait loop and uses the same `record`, so the staged name is readable from `~/.pupitre/slots` for the whole wait.\n\n**Attack** (only abilities decision 96 already grants a session):\n1. Keep both slots busy, so `pup merge` sits in `acquire()` with its wait file published.\n2. List `~/.pupitre/slots`, read `gate-<pid>-<token>.wait`, and `mkfifo ~/.pupitre/slots/take-<pid>-<token>.tmp`.\n3. Free a slot. On the gate's next poll `take()` calls `writeFileSync` on the fifo: `open(O_WRONLY|O_CREAT|O_TRUNC)` with no reader blocks the main thread inside a sync call.\n4. With the event loop blocked, the `maxWaitMs` deadline check never runs again, the lint/typecheck stage timers can't fire, and the SIGINT/SIGTERM listeners never run, so Ctrl-C does nothing. Only SIGKILL ends it, which skips `withMergeLock`'s `finally`.\n\nNone of decision 96's listed ceilings covers an unbounded stall. A planted symlink at the same name also gets followed and overwritten.\n\n**Fix:** open with `O_CREAT|O_EXCL` (`flag: 'wx'`). An existing fifo, symlink or file then fails with `EEXIST` before any blocking open. The write sits before the `try`, so the planted file isn't unlinked. The error propagates through `acquire` (whose `finally` removes the wait file) to `withTestSlot`, where the gate's `onSlotsUnusable` runs its tests without a slot and a worker's run fails, as decision 96 specifies for a broken slots path. The token is random per call, so the flag never collides in normal use.\n\n<https://github.com/AlexisBalayre/pupitre/blob/6498ed72a75011d99cd3e280d5425a535558a358/src/core/test-slot.service.ts#L203-L222>",
+      "suggestion": "  writeFileSync(staged, JSON.stringify(record), { flag: 'wx' });"
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "115-123, 175-191, 306",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A gate's wait file is written in place with a plain writeFileSync, unlike slot files, which appear whole through a hard link. A worker polling waitingGates can read the file in the moment between its creation and the write, while it is still empty. JSON.parse('') then fails and readRecord returns pid 0. isAlive(0) is false, so the worker unlinks the live gate's wait file, and that gate loses its priority over workers for the rest of its wait. The window is microseconds and the gate's wait is capped at GATE_SLOT_WAIT_MS, so the effect is limited. The comment in readRecord, 'Written whole by a link, so unparseable text is not a take in progress', is wrong for wait files. Fix: stage the wait file and rename it into place, the way take() stages slot files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "500-508",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test guard matches separators inside quoted text too, so a routine commit like `git commit -m \"Fix flaky slot test (vitest fake timers)\"` or `-m \"bump deps; jest 30\"` is refused with exit 2 and the \"run tests with pup session test\" message. The worker has to reword its commit message to get past it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2416-2448",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The root program defines `--project <id>`, and without `enablePositionalOptions` commander 15 lets root options be consumed even after the subcommand. So `pup session test --project unit src/a.test.ts` (vitest's own workspace `--project` filter) never reaches vitest. Instead `project()` treats it as pup's `--project` and refuses it as operator-only. Because the guard also blocks running vitest directly, a session has no way to filter by vitest project.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "128-130",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The cap is checked long before the new row exists, with the compile, `git worktree add` and code-graph prep in between. Two launches running at the same time (for example the operator's `pup launch` while the conductor fills free places) can both read `cap-1` and both proceed, ending at `cap+1`. This race is not among the ceilings listed in decision 96.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "110-112",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Any available figure in [1.45, 1.5) GiB is refused with \"Only 1.5 GB of memory is available, under the 1.5 GB a launch needs\". The rounded figure equals the floor, so the refusal looks self-contradictory. Showing two decimals, or rounding the figure down, would avoid it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "87-96",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same cap refusal now reaches three paths that have no `--over-cap` and can't follow its advice: `pup audit --sweep` (`src/cli/index.ts` ~2377, via `createOrRefuse`), `pup fix` (via `recompileSessionProfile`), and the TUI launch (`src/cli/ui/actions.service.ts:99`). For `audit --sweep` the operator has to re-run the whole audit after freeing a session, because the sweep task is never planned.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "495-515",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test-runner guard pattern is a best-effort denylist that misses `pnpm -r test`, `pnpm --filter x test`, `npx --no vitest` and `nice -n 10 vitest`, because the wrappers allow no flags between the package manager and the runner.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5115, 5167",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 96 rewrites the session-protocol test line that decision 94 introduced (the runner's related-tests form, `vitest related`) without saying it supersedes that part of 94, so a reader of 94 alone gets the old rule; add 'supersedes the test-line wording of 94'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "932-936",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Duplicated Code. The conductor's kickoff text hard-codes the memory floor as a literal, `` `${cap} sessions are live, and while the machine has under 1.5 GB of memory available. ` ``. The real value is `MIN_AVAILABLE_MEMORY_BYTES = 1.5 * 1024 ** 3` in `src/core/test-slot.service.ts:27`, and `LowMemoryError` already prints it from that constant through `gigabytes()` (`src/core/session-lifecycle.service.ts`). If someone changes the constant, the conductor will be told a floor the launch no longer enforces. Build the text from the constant, as `LowMemoryError` does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "50-62",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "docs/conventions/general.md §Type separation says 'Never inline an exported `type`/`interface` in a `*.service.ts`', but this file exports `SlotHolderKind`, `SlotHolder` and `TestSlotOptions` inline; move them to `src/core/types/test-slot.types.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "26-41",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "docs/conventions/general.md §No hardcoded values says thresholds, timeouts and path fragments 'go in the area's `*.constants.ts` as a named export', but `TEST_SLOTS`, `MIN_AVAILABLE_MEMORY_BYTES`, `HELD_SLOT_ENV`, `POLL_MS` and `GATE_SLOT_WAIT_MS` are defined in the service. Inline values in the same file (`age >= -1000` in `waitingGates`, `?? 4096` in `vmStatAvailableBytes`) and `DEFAULT_MAX_SESSIONS` in `conductor.service.ts` have the same problem. Move them to `test-slot.constants.ts` and `conductor.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "86-108",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SessionCapReachedError` and `LowMemoryError` are exported error classes defined in the service, but the sibling `src/core/session-lifecycle.errors.ts` holds this module's other launch refusals (`TaskAlreadyClaimedError`, `UnknownTaskError`). general.md §Type safety names the `*.errors.ts` file as the home for typed `Error` subclasses, so these belong there. Likewise `SlotWaitInterruptedError` in `test-slot.service.ts` (around line 207) belongs in a `test-slot.errors.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/capability.utils.ts",
+      "line": "4-26",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/conventions/naming.md, role `utils`, says '**Pure functions only.**', but `readPlainFile` does file I/O (`openSync`, `fstatSync`, `readFileSync`, `closeSync`). It was moved here from the adapter and is now shared with core, so it needs a non-utils home (a `*.client.ts` or similar).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1329-1360",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comments 'Bounded, as the wait holds the merge lock (decision 96)' and 'A wait that ended before the suites ran leaves the coverage run's directory to this' partly restate the `withTestSlot` and `GATE_SLOT_WAIT_MS` JSDoc (the merge-lock reasoning). The seam-duplication test in general.md §Comments says to delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1345",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment `// A slots path a session broke must not fail every gate on the machine.` repeats the `onSlotsUnusable` JSDoc in `TestSlotOptions` (\"the run goes ahead without a slot when the slots cannot be used at all, such as a file or a loop planted where their directory goes\") and the matching paragraph in decision 96. Delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5134",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The sentence \"A release removes the slot only while it still holds the run's own token. While it waits, the\" is an over-long line, about 160 columns, in a file wrapped at about 100. The same paragraph then continues on a short line, so the wrap is broken. Re-wrap it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "234-240",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `SlotWaitInterruptedError` copies the existing `GateInterruptedError` (`src/core/sandbox.utils.ts:400`, which also carries `readonly signal: InterruptSignal`). The two signal types differ: the new one is a local union and drops SIGHUP. Because of the split, the gate has to translate one error into the other in a `.catch`. The CLI also maps each class to an exit code separately: `fatalExitCode` uses `128 + osConstants.signals[...]`, while `session test` hard-codes `130`, so a SIGTERM exits as 130. Duplicated Code across the error classes, plus the repeated mapping; reusing or subclassing the existing error would remove the translation step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "358-368",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sessionTestCommand` re-implements the gate's own lookup (`merge-gate.service.ts` L1258, L1280-1281, L1298: `const [primary] = req.adapters; ... primary?.gateCommands(req.repoPath) ... commands.find((c) => c.stage === stage)`). Its docblock promises it returns the command \"as the gate resolves it\", but nothing in the code keeps the two in step. If the gate's lookup changes, the command the session guard refuses and `pup session test` runs will drift without anyone noticing. Duplicated Code; the gate could call the same helper for its root test command.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "26-27, 420-452",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new slot-lock module also holds the launch memory guard (`MIN_AVAILABLE_MEMORY_BYTES`, `availableMemoryBytes`, `vmStatAvailableBytes`, used only by `session-lifecycle.service.ts:132`) and adapter command resolution (`sessionTestCommand`). Divergent Change: a macOS memory-reporting fix and a slot-locking fix now land in the same file. Also, `session-lifecycle.test.ts` has to mock the whole `test-slot.service.js` just to stub memory (L30, L85).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1337",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Both callers pass the same `onWait` lambda word for word, so the callback hook plus the exported `describeSlotWait` give a caller nothing to configure. Speculative Generality with Duplicated Code at the call sites; a default inside `withTestSlot` (or exporting the callback itself) would remove the copies.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1332-1334",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `hasSuite` check repeats the nested test-stage filter that `runSuites` already applies at L1320 (`pkg.commands.filter((c) => c.stage === 'test')`). Two copies of \"which suites run\" must now agree, or the gate takes a slot for no suite, or runs suites without a slot. Computing the nested test commands once and reusing them in both places would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1124-1127",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Validation in the wrong layer. The CLI checks the cap itself: `if (!Number.isInteger(maxSessions) || maxSessions < 1) { return refuse('--max-sessions takes a whole number of at least 1.'); }`. Core's `maxSessions()` reader checks the same thing (`Number.isInteger(stored) && stored > 0`), but `startConductor` writes `req.maxSessions` to the file without checking it. So core's own entry point accepts a cap its reader then silently replaces with the default. The other caller (`src/cli/ui/actions.service.ts:237`) only stays safe because it passes no cap. The CLI applies the default too (`opts.maxSessions ?? DEFAULT_MAX_SESSIONS`), and so does `startConductor` (`req.maxSessions ?? DEFAULT_MAX_SESSIONS`). The check belongs in `startConductor`, so the CLI stays thin and one predicate guards both the write and the read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "126-127",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"operator only\" rule for `--over-cap` is enforced in two places, by two different tests. The CLI refuses it outright from the conductor (`refusedOverCap` in `src/cli/index.ts`, checking `callingConductor()`). Core then silently ignores it, deciding who is calling from two fields that exist to record attribution: `const byOperator = req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';`. No in-repo caller ever passes `overCap: true` with conductor attribution, since the CLI refuses first and the UI never sets `overCap`. That makes the core branch a defensive path nothing reaches, and it ties the cap rule to overlap/override bookkeeping. Keep one authority, or pass an explicit \"who is launching\" value instead of reading it off attribution fields.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.446181799999999,
+  "duration_ms": 517083,
+  "num_turns": 16,
+  "tokens": {
+    "input": 10,
+    "output": 20995,
+    "cache_read": 204228,
+    "cache_creation": 58701,
+    "total": 283934
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 242,
+      "output": 122087,
+      "cache_read": 4995787,
+      "cache_creation": 452458,
+      "cost_usd": 5.880258399999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 15398,
+      "cache_read": 593564,
+      "cache_creation": 140998,
+      "cost_usd": 0.5659234
+    }
+  ],
+  "permission_denials": []
+}
