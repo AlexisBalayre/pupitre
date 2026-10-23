@@ -18,7 +18,7 @@ import {
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { windowFailureOf } from './dashboard.service.js';
-import { assertNoArmedGitDrivers, runGit } from './git-diff.client.js';
+import { assertNoArmedGitDrivers, assertNoWorktreeConfig, runGit } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
@@ -122,7 +122,10 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   // smudge filter on each one with the operator's environment. The shared
   // config and `info/attributes` arm it, `.git/**` is untracked, and the
   // driver name is chosen by whoever wrote it, so there is nothing to disarm
-  // — only a refusal (decision 50).
+  // — only a refusal (decision 50). Per-worktree config is refused here too:
+  // the launch's own check would refuse it only once the worktree and the row
+  // exist, and they then block a retry (decision 101).
+  assertNoWorktreeConfig(req.repoPath);
   assertNoArmedGitDrivers(req.repoPath);
   // Not a refusal: workers share files and agree between themselves who
   // changes what (decision 99, superseding decision 41's refusal). Measured
@@ -203,6 +206,7 @@ export function createSession(db: Database, req: NewSessionRequest): string {
   // but here it would leave the spec they just abandoned sitting in the
   // backlog — unclaimed, attributed to them, and listed as planned work until
   // someone notices and drops it (decision 50).
+  assertNoWorktreeConfig(req.repoPath);
   assertNoArmedGitDrivers(req.repoPath);
   planTask(db, req);
   return launchTask(db, { ...req, taskId: req.task.id });
