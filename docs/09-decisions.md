@@ -5135,8 +5135,13 @@ changes back into those docs is pending.
     EPERM means another user's, such as pid 1, which holds no slot under this home), or when it
     is not a regular file or its record does not parse: renamed aside, re-read, and linked back
     if its holder turns out alive. Slot and wait files are read only after a non-blocking open
-    shows a regular file (`readPlainFile`, moved from the TypeScript adapter to the capability
-    utils for this), so a fifo planted there is reclaimed, never blocked on. A release removes the slot only while it still holds the run's own token. While it waits, the
+    that does not follow a symlink (`O_NOFOLLOW`) shows a regular file (`readPlainFile`, moved
+    from the TypeScript adapter to the capability utils for this), and the read stops at 1 MiB
+    rather than at EOF, since a procfs file such as `/proc/self/pagemap` is regular, reports
+    size 0 and streams for hundreds of gigabytes. So a fifo, a link or a procfs file planted
+    there is reclaimed, never blocked on, followed or read without end. The TypeScript adapter's
+    reads keep the size cap but follow links, as a checkout may track its config as one. A
+    release removes the slot only while it still holds the run's own token. While it waits, the
     run prints once whom it waits for, `Waiting for a test slot, held by session t-1 (pid 4242)
     and the merge gate for t-2 (pid 4343); the merge gate for t-3 waits first.`, labels passed
     through `sanitizeReason`, and polls each second. The child runs with `PUP_TEST_SLOT` set, its
@@ -5167,7 +5172,12 @@ changes back into those docs is pending.
     The guard. Every compiled session profile adds a Bash PreToolUse hook, `test-guard.sh`, that
     refuses with exit 2 a command matching a pattern in its sidecar `test-runner.pat`: vitest or
     jest run directly, through npx, bunx, pnpx, a package manager's exec, dlx or x, or a bin path;
-    `pnpm|yarn|npm|bun [run] test`; and the adapter's own test command, its words escaped. A
+    `pnpm|yarn|npm|bun [run] test`; and the adapter's own test command, its words escaped. For a
+    custom adapter's `sh -c '<script>'` those are the script's own words, the ones a session
+    types, less a trailing `"$@"`. A one-word script is refused only bare, followed by nothing
+    but a separator or a redirection, since the word may be a driver like `make` whose other
+    targets are no test run. A script that is more than plain words (quotes, `$`, operators, a
+    line break) gets no pattern. A
     pattern matches at a command's start or after `;`, `&`, `|`, `(` or a backtick, behind any
     `VAR=value`, `env`, `exec`, `command`, `time` or `nice`. The message names
     `pup session test`. The session protocol's test line now says to run tests only with
@@ -5177,8 +5187,8 @@ changes back into those docs is pending.
     stores the cap in `~/.pupitre/<project>/conductor/max-sessions` and prints it. `pup launch`
     and `pup new` count the project's sessions in a holding state and refuse, before anything is
     written, once that count reaches the cap, for the conductor and the operator alike. A
-    missing file, one holding no positive whole number, or one that is not a regular file, means
-    4. `--over-cap` lets the operator past it. The conductor passing it
+    missing file, one holding no positive whole number, a symlink, or one that is not a regular
+    file, means 4, read the way slot files are. `--over-cap` lets the operator past it. The conductor passing it
     is refused at the CLI, and a launch made through the conductor ignores it.
     Decision 99 puts no cap on how many sessions may share a file; this cap counts every live
     session, overlapping or not. A `pup fix` round (decision 90) brings a merged session, which
@@ -5199,7 +5209,8 @@ changes back into those docs is pending.
     effort, as is the gate's priority: both are fairness among cooperating sessions, not a
     boundary. A script that runs the test runner, or a route the patterns miss (`node
     node_modules/vitest/vitest.mjs`, `pnpm -C . test`, `npx --yes vitest`, `sh -c 'vitest'`),
-    runs unqueued; a session that sets `PUP_TEST_SLOT` skips the wait; one that forges a slot
+    runs unqueued, as does a custom adapter's script beyond plain words, or its words with other
+    arguments in place of its own (`go test ./pkg` for `go test ./...`); a session that sets `PUP_TEST_SLOT` skips the wait; one that forges a slot
     naming a live process of its own, or backgrounds a hung `pup session test`, holds slots
     until the gate's bound runs out; one that breaks the slots path makes every gate run without
     a slot and every worker's `pup session test` fail until the operator removes what it
@@ -5214,7 +5225,10 @@ changes back into those docs is pending.
     takes real slots unless `PUP_TEST_SLOT` is set.
     Tests: three runs with two slots run two and start the third when one ends; a dead holder's
     slot is reclaimed and a live foreign holder's is not, while one naming pid 1 or planted as a
-    fifo is reclaimed without blocking (the fifo test hangs on the old read); a fifo planted at a
+    fifo is reclaimed without blocking (the fifo test hangs on the old read), and so is a symlink
+    to a live holder's record, its target untouched; `readPlainFile` refuses a link only when
+    told to, and stops at the cap on a file that reports size 0 while holding 2 MiB (the test
+    fails on a read to EOF) and on `/proc/self/pagemap` where there is one; a fifo planted at a
     staged file fails a gate's wait and a worker's take at once, the gate running without a slot
     (the test hangs on a plain open); a gate is served
     before a worker that waited longer and is named to it; a dead gate's wait file, and a live
@@ -5226,12 +5240,14 @@ changes back into those docs is pending.
     run without a slot. In the gate, a gate with both slots held waits and prints whom for, and a
     worker stays waiting behind it after a slot frees. The compiled settings refuse pnpm test,
     vitest, npx vitest, wrapped and chained forms and the adapter's command, allow the rest, and
-    wire the guard. Launch and `pup new` refuse at the cap for both callers with nothing launched,
+    wire the guard. A custom adapter's `sh -c` script, read from a real `adapter.yml`, is refused
+    on its own words less `"$@"`, a one-word `make` only bare (`make build` passes), and a script
+    beyond plain words, `"$@"` alone or a blank one gets no pattern and lets `git status` through. Launch and `pup new` refuse at the cap for both callers with nothing launched,
     killed sessions are not counted, the operator's `--over-cap` passes and the conductor's never
     does; a fix round's recompile goes ahead below the cap and is refused at it and under the
     floor; under 1.5 GB, read from a faked figure, a launch refuses naming it, even with
-    `--over-cap`. The cap is stored and read back with its default, also for a fifo planted as
-    the file; the CLI passes and refuses
+    `--over-cap`. The cap is stored and read back with its default, also for a fifo or a symlink
+    planted as the file; the CLI passes and refuses
     the flags, and `pup session test` passes its arguments and exit status.
 
 99. **Workers share files and collaborate: a launch overlapping a live session is never refused,
