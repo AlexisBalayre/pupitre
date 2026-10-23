@@ -225,7 +225,11 @@ import {
   sessionPane,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { runSessionTest, sessionTestCommand } from '../core/test-slot.service.js';
+import {
+  runSessionTest,
+  SlotWaitInterruptedError,
+  sessionTestCommand,
+} from '../core/test-slot.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
@@ -5272,6 +5276,54 @@ describe('CLI commands', () => {
           sessionId: 's1',
         });
         expect(process.exitCode).toBe(3);
+      });
+
+      it('prints once whom the run waits for', async () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+        vi.mocked(runSessionTest).mockImplementationOnce(async ({ slots }) => {
+          slots?.onWait?.(
+            [{ kind: 'worker', label: 't-2', pid: 4242 }],
+            [{ kind: 'gate', label: 't-3', pid: 4343 }],
+          );
+          return 0;
+        });
+
+        await buildProgram().parseAsync(['session', 'test'], { from: 'user' });
+
+        expect(errors).toEqual([
+          'Waiting for a test slot, held by session t-2 (pid 4242); the merge gate for t-3 (pid 4343) waits first.',
+        ]);
+        expect(process.exitCode).toBe(0);
+      });
+
+      it('exits 130 with nothing run when an interrupt ends the wait', async () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+        vi.mocked(runSessionTest).mockRejectedValueOnce(new SlotWaitInterruptedError('SIGINT'));
+
+        await buildProgram().parseAsync(['session', 'test'], { from: 'user' });
+
+        expect(errors).toEqual([
+          'Interrupted by SIGINT while waiting for a test slot; nothing ran.',
+        ]);
+        expect(process.exitCode).toBe(130);
+      });
+
+      it('lets any other failure of the run through', async () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+        vi.mocked(runSessionTest).mockRejectedValueOnce(new Error('spawn pnpm ENOENT'));
+
+        await expect(
+          buildProgram().parseAsync(['session', 'test'], { from: 'user' }),
+        ).rejects.toThrow('spawn pnpm ENOENT');
       });
 
       it('requires PUP_SESSION_ID', async () => {
