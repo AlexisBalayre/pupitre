@@ -369,11 +369,12 @@ pinned_worktree() {
       "$WORKTREE" "$GIT_ADMIN" >&2
     return 1
   fi
-  # Exit 1 is "no such key"; a value git cannot read as a boolean counts as on.
-  EXTENSION=$(safe_git config --file "$GIT_COMMON/config" --type bool --get extensions.worktreeConfig 2>/dev/null)
-  case "$?/$EXTENSION" in
-    1/|0/false) [ ! -e "$GIT_ADMIN/config.worktree" ] && [ ! -L "$GIT_ADMIN/config.worktree" ] && return 0 ;;
-  esac
+  # The file first, as the TypeScript check does, so no git runs while it is
+  # there. Exit 1 is "no such key"; a value git cannot read as a boolean counts as on.
+  if [ ! -e "$GIT_ADMIN/config.worktree" ] && [ ! -L "$GIT_ADMIN/config.worktree" ]; then
+    EXTENSION=$(safe_git config --file "$GIT_COMMON/config" --type bool --get extensions.worktreeConfig 2>/dev/null)
+    case "$?/$EXTENSION" in 1/|0/false) return 0 ;; esac
+  fi
   printf 'BLOCKED: git would read %s/config.worktree, which the session can write; no git runs in this worktree until it is gone and extensions.worktreeConfig is off.\\n' \\
     "$GIT_ADMIN" >&2
   return 1

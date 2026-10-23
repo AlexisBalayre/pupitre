@@ -381,7 +381,9 @@ describe('launchSession', () => {
   // environment alone, outside the Bash sandbox. A gitlink over a `.git` the
   // session made would have their status and diff run a child git there, past
   // the pins, so the window skips submodules too (decision 101).
-  it("runs no child git in a gitlink under the window's own environment", () => {
+  // The window's config narrows the exposure and does not close it: a
+  // `.gitmodules` override outranks it, and only a command-line flag beats that.
+  it("runs no child git in a gitlink under the window's own environment, until .gitmodules overrides it", () => {
     launchSession(opts);
     const spawn =
       vi
@@ -432,6 +434,13 @@ describe('launchSession', () => {
       execFileSync('git', args, { cwd: opts.worktreePath, env: asWindow });
       expect(existsSync(marker)).toBe(false);
     }
+    writeFileSync(
+      join(opts.worktreePath, '.gitmodules'),
+      '[submodule "sub"]\n\tpath = sub\n\tignore = none\n',
+    );
+    utimesSync(join(sub, 'f'), later(), later());
+    execFileSync('git', ['status', '--short'], { cwd: opts.worktreePath, env: asWindow });
+    expect(existsSync(marker)).toBe(true);
   });
 
   // `pup launch` and `pup new` are the conductor's to run, and they run in its

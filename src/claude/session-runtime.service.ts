@@ -470,9 +470,12 @@ interface ClaudeWindowOptions {
  * Config a session window's git takes from its environment, beside the pins
  * (decision 101). A gitlink in the index over a `.git` of the session's makes
  * `status` and `diff` run a child git in it, with the submodule's own GIT_DIR,
- * which the pins do not reach; Claude Code's startup git and the code graph's
- * run outside the Bash sandbox on this environment alone. `status.submoduleSummary`
- * because the summary spawns git in each submodule whatever `diff.ignoreSubmodules` says.
+ * which the pins do not reach. This narrows that for Claude Code's startup git
+ * and the code graph's, which run outside the Bash sandbox, and does not close
+ * it: a per-submodule `ignore` in `.gitmodules` outranks it, and `diff-files`
+ * and `diff-index` never read it. pup's own git passes `--ignore-submodules=all`
+ * instead. `status.submoduleSummary` because the summary spawns git in each
+ * submodule whatever `diff.ignoreSubmodules` says.
  */
 const WINDOW_GIT_CONFIG = {
   GIT_CONFIG_COUNT: '2',

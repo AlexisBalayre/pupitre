@@ -616,6 +616,7 @@ describe('generated bash re-check (decision 63)', () => {
   // from inside the sandbox, and the hook runs outside it: git that followed
   // either would run a clean filter armed in the repo they name (decision 101).
   describe('over git pointers the session rewrote', () => {
+    const IGNORE_NONE = '[submodule "sub"]\n\tpath = src/net/sub\n\tignore = none\n';
     let marker: string;
     const plainGit = (cwd: string, ...args: string[]) =>
       spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' });
@@ -752,6 +753,37 @@ describe('generated bash re-check (decision 63)', () => {
       expectPlainGitFires(join(sub, 'src/net/client.ts'));
 
       expect(bash('echo hi').status).toBe(0);
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    // A per-submodule `ignore` outranks diff.ignoreSubmodules from any config;
+    // only the hook's own --ignore-submodules=all beats it.
+    it.each([
+      ['in the worktree', () => writeFileSync(join(worktree, '.gitmodules'), IGNORE_NONE)],
+      [
+        'in the index alone',
+        () => {
+          const blob = join(root, 'gitmodules');
+          writeFileSync(blob, IGNORE_NONE);
+          const id = plainGit(worktree, 'hash-object', '-w', '--', blob).stdout.trim();
+          plainGit(worktree, 'update-index', '--add', '--cacheinfo', `100644,${id},.gitmodules`);
+        },
+      ],
+    ])('runs no child git in a gitlink under a .gitmodules override %s', (_, plant) => {
+      const sub = join(worktree, 'src/net/sub');
+      armedRepo(sub);
+      const head = plainGit(sub, 'rev-parse', 'HEAD').stdout.trim();
+      plainGit(worktree, 'update-index', '--add', '--cacheinfo', `160000,${head},src/net/sub`);
+      plant();
+      const stale = join(sub, 'src/net/client.ts');
+      const later = () => new Date(Date.now() + 60_000);
+      utimesSync(stale, later(), later());
+      plainGit(worktree, '-c', 'diff.ignoreSubmodules=all', 'status', '--porcelain');
+      expect(existsSync(marker)).toBe(true);
+      unlinkSync(marker);
+      utimesSync(stale, later(), later());
+
+      expect(bash('echo hi').status).not.toBeNull();
       expect(existsSync(marker)).toBe(false);
     });
   });

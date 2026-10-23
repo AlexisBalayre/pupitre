@@ -1960,6 +1960,39 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await merge()).status).toBe('merged');
       expect(existsSync(marker)).toBe(false);
     });
+
+    // A per-submodule `ignore` outranks diff.ignoreSubmodules from any config;
+    // only the gate's own --ignore-submodules=all beats it. Committed, it rides
+    // the rebase to the scope audit; in the index alone, the worktree-clean
+    // stage refuses it.
+    it.each([
+      ['committed on the branch', true],
+      ['in the index alone', false],
+    ])('runs no child git in a gitlink under a .gitmodules override %s', async (_, committed) => {
+      const worktree = seedSession(db, repo);
+      commitIn(repo, 'README.md', '# hello\n');
+      const sub = join(worktree, 'src/sub');
+      armedRepo(sub, 'app.ts');
+      const head = sh(sub, 'git', 'rev-parse', 'HEAD').trim();
+      sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},src/sub`);
+      const blob = join(dirname(marker), 'gitmodules');
+      writeFileSync(blob, '[submodule "sub"]\n\tpath = src/sub\n\tignore = none\n');
+      const id = sh(worktree, 'git', 'hash-object', '-w', '--', blob).trim();
+      if (committed)
+        sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `100644,${id},.gitmodules`);
+      sh(worktree, 'git', 'commit', '-q', '-m', 'gitlink');
+      if (!committed)
+        sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `100644,${id},.gitmodules`);
+      const later = () => new Date(Date.now() + 60_000);
+      utimesSync(join(sub, 'app.ts'), later(), later());
+      sh(worktree, 'git', '-c', 'diff.ignoreSubmodules=all', 'status', '--porcelain');
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+      utimesSync(join(sub, 'app.ts'), later(), later());
+
+      expect((await merge()).status).toBe('rejected');
+      expect(existsSync(marker)).toBe(false);
+    });
   });
 
   it('hard-fails changes outside the task scope', async () => {

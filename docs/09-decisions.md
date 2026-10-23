@@ -5340,8 +5340,14 @@ changes back into those docs is pending.
     cannot take a flag, so it gets the same rule as command-scope config through tmux `-e`:
     `GIT_CONFIG_COUNT=2` with `diff.ignoreSubmodules=all` and `status.submoduleSummary=false`.
     The second is needed because a submodule summary runs child gits even with the first set.
-    Config from the environment outranks every config file, so a session cannot turn either
-    back on. pup's own git drops `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`
+    This narrows the exposure and does not close it (reproduced): a per-submodule `ignore =
+    none` or `untracked` in `.gitmodules`, in the worktree or only in the index, outranks
+    `diff.ignoreSubmodules` from any config, the environment's included. The plumbing
+    `diff-files` and `diff-index` never read `diff.ignoreSubmodules` at all. Only a command-line
+    `--ignore-submodules` beats the override. So pup's safety rests on its own calls, never on
+    the window's config: every status and diff it or the hooks run over the worktree passes
+    `--ignore-submodules=all`, none uses `diff-files` or `diff-index`, and the rebase, checked
+    with the override planted, runs no child. pup's own git drops `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`
     and `GIT_CONFIG_PARAMETERS` with the GIT_DIR family, so the scope audit's diff, run from a
     shell that inherited the window's environment, still lists a gitlink change.
     *No worktree config.* With `extensions.worktreeConfig` on, git also reads
@@ -5367,8 +5373,10 @@ changes back into those docs is pending.
     path. Passing it through is a follow-up. Until then, a row whose worktree path names
     another repo's layout pins the window to that repo. Two other follow-ups are open: the
     codegraph indexing a respawn runs in the worktree, and the conductor checkout's git, both
-    still unpinned. With `all`, the hooks and the gate's worktree-clean stage no
-    longer see a gitlink change. The gate's scope audit, on the branch's own diff, still does.
+    still unpinned. The git that runs in the window without pup's flags stays exposed to a
+    planted gitlink with a `.gitmodules` override: Claude Code's own startup git, and the code
+    graph server's `git status`, which goes with t-mve8vgej. With `all`, the hooks and the
+    gate's worktree-clean stage no longer see a gitlink change. The gate's scope audit, on the branch's own diff, still does.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
     between still blocks until the hook timeout, as decision 99's MERGE_HEAD read does. A
     session's own `pup session done` runs `runGit` with the GIT_DIR family scrubbed, inside the
@@ -5383,7 +5391,12 @@ changes back into those docs is pending.
     config whatever the gitfile names. A launch passes the three variables and the submodule
     config to tmux, and opens nothing over either rewritten pointer. In a gitlink over an armed
     `.git`, `status` and `diff` run under the window's own environment leave no marker, while a
-    control with `GIT_CONFIG_COUNT=0` fires it. A `config.worktree` arming the filter, with the
+    control with `GIT_CONFIG_COUNT=0` fires it, and so does the window's `status` once
+    `.gitmodules` sets `ignore = none`. Under that override, in the worktree or in the index
+    alone, git with `diff.ignoreSubmodules=all` fires the filter, and a re-check run and a gate
+    (rejecting at its worktree-clean stage, or at its scope audit after the rebase) leave no
+    marker. Each gitlink test in the hooks and the gate fails with `--ignore-submodules=all`
+    taken out of the status it runs. A `config.worktree` arming the filter, with the
     extension on, fires it under plain status and is refused by both checks. So is the file
     alone, the extension alone, and an unreadable value. A swap after the check, by a `head` on
     the hook's PATH that shows the check the trusted gitfile, and in the gate by a wrapper that
