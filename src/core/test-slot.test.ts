@@ -3,21 +3,25 @@ import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { freemem } from 'node:os';
 import { basename, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
+  availableMemoryBytes,
   GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
   runSessionTest,
   type SlotHolder,
   SlotWaitInterruptedError,
+  sessionTestCommand,
   type TestSlotOptions,
   vmStatAvailableBytes,
   withTestSlot,
@@ -26,6 +30,15 @@ import {
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
   return { ...actual, randomBytes: vi.fn(actual.randomBytes) };
+});
+// The memory reading's sources, real unless a test says otherwise.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, freemem: vi.fn(actual.freemem) };
 });
 
 /** A run that holds its slot until the test ends it. */
@@ -130,6 +143,50 @@ describe('withTestSlot (decision 96)', () => {
     expect(log).toEqual(['s1']);
     held.end();
     await held.settled;
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "leaves a dead holder's slot it may not move, and runs without one",
+    async () => {
+      const dead = { kind: 'worker', label: 'gone', pid: deadPid(), token: 'x' };
+      writeFileSync(join(dir, 'slot-0.lock'), JSON.stringify(dead));
+      chmodSync(dir, 0o500);
+      let ran = false;
+      await withTestSlot(
+        { kind: 'worker', label: 's1' },
+        async () => {
+          ran = true;
+        },
+        options,
+      );
+
+      expect(ran).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toEqual(dead);
+    },
+  );
+
+  it('puts back a slot whose holder turns out alive as it is reclaimed, and waits on it', async () => {
+    const live = { kind: 'worker', label: 'live', pid: process.pid, token: 'x' };
+    writeFileSync(join(dir, 'slot-0.lock'), JSON.stringify(live));
+    // Dead at the first look, alive by the time the reclaim re-reads it.
+    const kill = vi.spyOn(process, 'kill').mockImplementationOnce(() => {
+      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    });
+    onTestFinished(() => kill.mockRestore());
+    const expired = vi.fn();
+    let ran = false;
+    await withTestSlot(
+      { kind: 'worker', label: 's1' },
+      async () => {
+        ran = true;
+      },
+      { ...options, slots: 1, maxWaitMs: 50, onWaitExpired: expired },
+    );
+
+    expect(ran).toBe(true);
+    expect(expired).toHaveBeenCalledOnce();
+    expect(readdirSync(dir)).toEqual(['slot-0.lock']);
+    expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toEqual(live);
   });
 
   it('waits on a slot whose holder is alive in another process', async () => {
@@ -432,6 +489,85 @@ describe('runSessionTest (decision 96)', () => {
 
     expect(status).toBe(0);
     expect(readFileSync(out, 'utf8')).toBe('a.test.ts\nb c.test.ts\n');
+  });
+
+  it('passes a stop on to the run, answering the status of a run a signal ended', async () => {
+    const dir = tempDir('pup-session-test-');
+    const before = process.listeners('SIGTERM');
+    const status = runSessionTest({
+      command: { stage: 'test', command: 'sleep', args: ['10'] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: join(dir, 'slots'), pollMs: 10 },
+    });
+    let forward: NodeJS.SignalsListener | undefined;
+    while (!forward) {
+      await tick(20);
+      [forward] = process
+        .listeners('SIGTERM')
+        .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
+    }
+    forward('SIGTERM');
+
+    expect(await status).toBe(143);
+    expect(process.listeners('SIGTERM')).toEqual(before);
+    expect(readdirSync(join(dir, 'slots'))).toEqual([]);
+  });
+
+  it('fails with the error of a command that cannot start, freeing its slot', async () => {
+    const dir = tempDir('pup-session-test-');
+    const before = process.listeners('SIGINT');
+
+    await expect(
+      runSessionTest({
+        command: { stage: 'test', command: join(dir, 'no-such-runner'), args: [] },
+        args: [],
+        cwd: dir,
+        sessionId: 's1',
+        slots: { dir: join(dir, 'slots'), pollMs: 10 },
+      }),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(process.listeners('SIGINT')).toEqual(before);
+    expect(readdirSync(join(dir, 'slots'))).toEqual([]);
+  });
+});
+
+describe('sessionTestCommand (decision 96)', () => {
+  /** A repo whose custom adapter declares `config`. */
+  function repoWith(config: string): string {
+    const repo = tempDir('pup-test-command-');
+    mkdirSync(join(repo, '.pupitre'));
+    writeFileSync(join(repo, '.pupitre', 'adapter.yml'), config);
+    return repo;
+  }
+
+  it("answers the first adapter's test command", () => {
+    expect(sessionTestCommand(repoWith('test: make check\n'))).toEqual({
+      stage: 'test',
+      command: 'sh',
+      args: ['-c', 'make check'],
+    });
+  });
+
+  it('answers nothing when the adapter declares no test command', () => {
+    expect(sessionTestCommand(repoWith('lint: make lint\n'))).toBeUndefined();
+  });
+});
+
+describe('availableMemoryBytes (decision 96)', () => {
+  it("reads the kernel's free memory on macOS when vm_stat cannot run", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+    onTestFinished(() => {
+      Object.defineProperty(process, 'platform', platform);
+    });
+    vi.mocked(execFileSync).mockImplementationOnce(() => {
+      throw new Error('spawn /usr/bin/vm_stat ENOENT');
+    });
+    vi.mocked(freemem).mockReturnValueOnce(123);
+
+    expect(availableMemoryBytes()).toBe(123);
   });
 });
 

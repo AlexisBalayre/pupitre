@@ -1565,6 +1565,18 @@ describe('launch capacity (decision 96)', () => {
     expect(launch('operator')).toBe('t-1');
   });
 
+  it('launches when the adapter fails to load, its test guard refusing the runners alone', () => {
+    commitIn(repo, '.pupitre/adapter.yml', 'test: [unclosed\n');
+
+    expect(launch('operator')).toBe('t-1');
+    const patterns = readFileSync(
+      join(projectPaths(repo).compiledDir('t-1'), 'hooks', 'test-runner.pat'),
+      'utf8',
+    );
+    expect(patterns).toContain('vitest');
+    expect(patterns).not.toContain('unclosed');
+  });
+
   describe("a fix round's relaunch", () => {
     /** `t-1`'s session, merged, as a fix round finds it. */
     function mergedSession(): SessionRow {

@@ -3953,6 +3953,29 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(workerRan).toBe(true);
     });
 
+    it("waits for a slot for a nested package's suite when the root has none", async () => {
+      const scripts = { test: 'true', typecheck: 'true' };
+      commitIn(repo, 'tools/review/package.json', JSON.stringify({ scripts }));
+      const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'tools/**'] });
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const adapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'true', args: [] }],
+        touchedNestedPackages: typescriptAdapter.touchedNestedPackages,
+      };
+
+      const gate = merge(adapter);
+      while (!readdirSync(slots).some((name) => name.endsWith('.wait'))) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      rmSync(join(slots, 'slot-1.lock'));
+
+      const outcome = await gate;
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages.map((stage) => stage.stage)).toContain('test (tools/review)');
+    });
+
     it('runs its tests without a slot once its wait runs out, saying so', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
