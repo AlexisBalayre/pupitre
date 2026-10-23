@@ -115,11 +115,16 @@ export class WorktreeRepointedError extends Error {
 export class WorktreeConfigError extends Error {
   constructor(repoPath: string, problem: string) {
     super(
-      `Refusing to launch a session in ${sanitizeReason(repoPath)}: ${problem}. Git turns ` +
-        'per-worktree config on for `git sparse-checkout` and `git clone --sparse`, and with ' +
+      `Refusing to launch a session in ${sanitizeReason(repoPath)}: ${problem}. Usually ` +
+        '`git sparse-checkout` or `git clone --sparse` turned per-worktree config on, and with ' +
         "it on a session's git would read a config.worktree the session can write (decision " +
-        '101). Run `git sparse-checkout disable` if the checkout is sparse, then `git config ' +
-        '--unset extensions.worktreeConfig` and remove .git/config.worktree, and retry.',
+        '101). If no sparse checkout ran here, a session may have written it: inspect ' +
+        '.git/config and .git/config.worktree before removing anything, and treat a session ' +
+        'that wrote them as compromised. Otherwise run `git sparse-checkout disable` if the ' +
+        'checkout is sparse, then `git -C / config --file ' +
+        `${sanitizeReason(join(repoPath, '.git', 'config'))} --unset extensions.worktreeConfig\` ` +
+        '(`-C /`: git will not open the repo while the value is unreadable) and ' +
+        'remove .git/config.worktree, and retry.',
     );
     this.name = 'WorktreeConfigError';
   }
@@ -179,8 +184,10 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
  * extension is on in its `.git/config`, or `.git/config.worktree` exists.
  * `verifiedWorktreeGitEnv` refuses such a repo too, but only once `startSession`
  * has added the worktree and written the session row, which then block a
- * retry, so a launch asks here before either (decision 101). The config is the
- * operator's, not a session's: `git sparse-checkout` turns the extension on.
+ * retry, so a launch asks here before either (decision 101). The operator's
+ * `git sparse-checkout` is the usual cause, not the only one: a session that
+ * can write the shared config can turn the extension on and arm a driver in
+ * `config.worktree`, which this refusal then meets before the driver check.
  */
 export function assertNoWorktreeConfig(repoPath: string): void {
   const dotGit = join(repoPath, '.git');

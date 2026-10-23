@@ -577,7 +577,7 @@ describe('launchTask armed-driver guard', () => {
   });
 });
 
-// The operator's config, not a session's: `git sparse-checkout` turns
+// Usually the operator's config: `git sparse-checkout` turns
 // `extensions.worktreeConfig` on, and the launch's own check refused it only
 // once the worktree and the row existed, which then blocked every retry
 // (decision 101).
@@ -624,7 +624,16 @@ describe('launchTask worktree-config guard', () => {
 
     // Cleared as the refusal says; nothing left behind claims the task.
     gitIn(repo, 'sparse-checkout', 'disable');
-    gitIn(repo, 'config', '--unset', 'extensions.worktreeConfig');
+    gitIn(
+      repo,
+      '-C',
+      '/',
+      'config',
+      '--file',
+      join(repo, '.git/config'),
+      '--unset',
+      'extensions.worktreeConfig',
+    );
     unlinkSync(join(repo, '.git', 'config.worktree'));
     expect(launch()).toBe('t-1');
   });

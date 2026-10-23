@@ -5406,17 +5406,23 @@ changes back into those docs is pending.
     The checks stay exact and do not resolve a relative gitfile, so a worktree added with
     relative paths outside pup is refused. The refusal's repair hint carries the same `-c`,
     because `worktree repair` also rewrites links to match the option.
-    *Worktree config refused before anything is written.* The extension is the operator's own
-    config wherever `git sparse-checkout` or `clone --sparse` ever ran. git turns it on in the
+    *Worktree config refused before anything is written.* The extension is on wherever `git
+    sparse-checkout` or `clone --sparse` ever ran, the usual cause. git turns it on in the
     shared config, and `sparse-checkout disable` leaves it on, with `.git/config.worktree`
-    (Apple Git 2.39.5). The in-window check refused such a repo only after `startSession` had
+    (Apple Git 2.39.5). It is not the only cause: a session that can write the shared config
+    (decision 41's exposure) can turn it on and arm a driver in `config.worktree`. The in-window check refused such a repo only after `startSession` had
     added the worktree and written its row. A relaunch then hit `TaskAlreadyClaimedError`, each
     retry after `pup kill` left another worktree and branch, and the message blamed a session
     that never ran (CI review, 2026-10-23). So `pup launch` and `pup new` call
     `assertNoWorktreeConfig` beside `assertNoArmedGitDrivers`, before anything is written. It
     refuses while the extension is on in `<repo>/.git/config`, or holds a value git cannot read
-    as a boolean, or while `<repo>/.git/config.worktree` exists. Its message names sparse
-    checkout and how to turn the extension off, not a compromise. The in-window check stays as
+    as a boolean, or while `<repo>/.git/config.worktree` exists. It runs before the driver
+    check, so it is what meets a driver a session armed there. Its message names sparse checkout
+    as the usual cause and, where none ran, asks the operator to inspect `.git/config` and
+    `.git/config.worktree` before removing anything and to treat a session that wrote them as
+    compromised. Its unset runs `git -C / config --file <repo>/.git/config`, from outside the
+    repo, because git will not open a repo whose value it cannot read, not even for `--file`
+    (security review, 2026-10-23). The in-window check stays as
     it is, for an extension turned on after the launch. A fix round's `worktree add` still
     comes before that check, a follow-up.
     *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
@@ -5460,8 +5466,9 @@ changes back into those docs is pending.
     taken out of the status it runs. A `config.worktree` arming the filter, with the
     extension on, fires it under plain status and is refused by both checks. So is the file
     alone, the extension alone, and an unreadable value. `assertNoWorktreeConfig` refuses a repo
-    `git sparse-checkout set` left, before and after `disable`, with no word of a compromise, and
-    refuses `<repo>/.git/config.worktree` alone, the extension alone and an unreadable value. A
+    `git sparse-checkout set` left, before and after `disable`, asking for both files to be
+    inspected before anything is removed, and refuses `<repo>/.git/config.worktree` alone, the
+    extension alone and an unreadable value, which its own unset hint then clears. A
     `pup launch` and a `pup new` it refuses leave no session row, worktree or branch. A swap after the check, by a `head` on
     the hook's PATH that shows the check the trusted gitfile, and in the gate by a wrapper that
     restores the trusted gitfile around each check and puts the armed one back after it, leaves

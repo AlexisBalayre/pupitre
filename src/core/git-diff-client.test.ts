@@ -938,9 +938,11 @@ describe('worktree git pins (decision 101)', () => {
   });
 });
 
-// The operator's config, not a session's: `git sparse-checkout` turns the
-// extension on and writes `config.worktree`, which the launch's own check
-// would refuse only once the worktree and the session row exist (decision 101).
+// Usually the operator's config: `git sparse-checkout` turns the extension on
+// and writes `config.worktree`, which the launch's own check would refuse only
+// once the worktree and the session row exist (decision 101). A session that
+// can write the shared config can do the same, so the refusal asks for both
+// files to be read before anything is removed.
 describe('assertNoWorktreeConfig', () => {
   let repo: string;
 
@@ -956,7 +958,9 @@ describe('assertNoWorktreeConfig', () => {
     sh(repo, 'git', 'sparse-checkout', 'set', 'src');
     expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
     expect(() => assertNoWorktreeConfig(repo)).toThrow(/git sparse-checkout/);
-    expect(() => assertNoWorktreeConfig(repo)).not.toThrow(/compromised/);
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(
+      /inspect \.git\/config and \.git\/config\.worktree before removing anything/,
+    );
 
     // `disable` leaves both the extension and the file behind.
     sh(repo, 'git', 'sparse-checkout', 'disable');
@@ -983,7 +987,13 @@ describe('assertNoWorktreeConfig', () => {
     setExtension('true');
     expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on/);
     setExtension('maybe');
-    expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
+    const unset = ['-C', '/', 'config', '--file', join(repo, '.git/config')];
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(
+      `git ${unset.join(' ')} --unset extensions.worktreeConfig`,
+    );
+    // The hint's unset works on a value git cannot read, run from inside the repo too.
+    sh(repo, 'git', ...unset, '--unset', 'extensions.worktreeConfig');
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
     setExtension('false');
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
