@@ -11,6 +11,7 @@ import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
 import { type LiveRow, type PlannedRow, useControls } from './use-controls.hook.js';
 import { type DashboardReading, type ProjectReading, useSnapshot } from './use-snapshot.hook.js';
+import { useTerminalStatus } from './use-terminal-status.hook.js';
 
 /**
  * `pup ui`'s whole layout. The two hooks below hold everything that changes:
@@ -36,6 +37,7 @@ export interface AppProps {
 export function App({ read, showAttach, readOnlyReason }: AppProps) {
   const { reading, readAt, refresh } = useSnapshot(read);
   const { projects, unreadable } = reading;
+  useTerminalStatus(reading);
   const isFleet = projects.length > 1;
   // Merged and killed sessions are counted, not listed, and the cursor never
   // lands on one: this view is for the work a person can still change, and
