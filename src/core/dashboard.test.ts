@@ -1205,6 +1205,50 @@ describe('needsYou', () => {
     expect(inbox().map((need) => need.kind)).toEqual(['question']);
   });
 
+  // Decision 102: a running conductor gates its own branches, so a finished
+  // session is its work; with none running, the review is the operator's.
+  describe('awaiting review', () => {
+    afterEach(() => {
+      vi.mocked(hasConductorWindow).mockReturnValue(false);
+    });
+
+    it('leaves the session to a running conductor and keeps it among the sessions', () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-blocked', ['running', 'blocked']);
+
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      expect(needsYou(snapshot).map((need) => need.sessionId)).toEqual(['s-blocked']);
+      expect(snapshot.sessions).toContainEqual(
+        expect.objectContaining({ id: 's-review', state: 'awaiting-review' }),
+      );
+    });
+
+    it("is the operator's review and merge with no conductor running", () => {
+      seedIn('s-review', ['running', 'awaiting-review']);
+
+      expect(inbox()).toEqual([
+        {
+          kind: 'awaiting-review',
+          sessionId: 's-review',
+          label: 's-review',
+          reason: 'awaiting review',
+          answer: 'pup review s-review then pup merge s-review --pr',
+        },
+      ]);
+    });
+
+    // The conductor holds the branch until the gate opens its PR; from there
+    // the merge click is the operator's whoever gated it.
+    it('still lists an open PR while the conductor runs', () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+
+      expect(inbox().map((need) => need.kind)).toEqual(['pr-open']);
+    });
+  });
+
   // A local fast-forward is already on the target: there is no PR to land.
   it('leaves out a merge that carried no PR', () => {
     seedMerge('s-local');

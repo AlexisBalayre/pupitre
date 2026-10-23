@@ -283,18 +283,15 @@ describe('startWebDashboard', () => {
       const snapshot = buildDashboardSnapshot(db, repo, Date.now());
       const at = (text: string): number => page.indexOf(escapeHtml(text));
 
-      // The inbox leads, in its own order, each line with its answer.
+      // The inbox leads, in its own order, each line with its answer; the
+      // review is the running conductor's to gate (decision 102).
       const needs = needsYou(snapshot);
-      expect(needs.map((need) => need.kind)).toEqual([
-        'question',
-        'blocked',
-        'awaiting-review',
-        'pr-open',
-      ]);
+      expect(needs.map((need) => need.kind)).toEqual(['question', 'blocked', 'pr-open']);
       for (const need of needs) {
         expect(page).toContain(escapeHtml(need.reason));
         expect(page).toContain(escapeHtml(need.answer));
       }
+      expect(page).not.toContain(escapeHtml('pup review s-review'));
       expect(at('Needs you')).toBeLessThan(at('Conductor'));
       expect(at('Conductor')).toBeLessThan(at('Sessions'));
       // The conductor, attach command included: only the operator serves this page.
@@ -317,6 +314,14 @@ describe('startWebDashboard', () => {
       expect(page).toContain('t-planned');
       expect(page).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
       expect(page).toContain('accepted by alexis, review by 2000-01-01');
+    });
+
+    it('puts the review in the inbox when no conductor runs to gate it', async () => {
+      seedSession('s-review', ['running', 'awaiting-review']);
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).toContain(escapeHtml('pup review s-review then pup merge s-review --pr'));
     });
 
     it('escapes a goal and a question holding markup and control characters', async () => {

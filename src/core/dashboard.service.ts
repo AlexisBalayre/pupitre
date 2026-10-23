@@ -377,10 +377,12 @@ export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview
  * kind, the snapshot's own row order. `ciReview` is GitHub's answer for an
  * open PR, asked only by `pup status`, the one reader that may wait on gh, so
  * the CI line appears there alone; without it, or without an answer, an open
- * PR keeps its plain line.
+ * PR keeps its plain line. While the project's conductor runs, a session
+ * awaiting review is the conductor's to gate, not the operator's (decision 102).
  */
 export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup): DashboardNeed[] {
-  const needs = snapshot.sessions.flatMap((session) => needOf(session, ciReview) ?? []);
+  const gating = snapshot.conductor.running;
+  const needs = snapshot.sessions.flatMap((session) => needOf(session, gating, ciReview) ?? []);
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
 
@@ -393,7 +395,11 @@ export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup)
 const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
-function needOf(session: DashboardSession, ciReview?: CiReviewLookup): DashboardNeed | undefined {
+function needOf(
+  session: DashboardSession,
+  gating: boolean,
+  ciReview?: CiReviewLookup,
+): DashboardNeed | undefined {
   const { id } = session;
   const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
     kind,
@@ -437,7 +443,10 @@ function needOf(session: DashboardSession, ciReview?: CiReviewLookup): Dashboard
       command(`pup steer ${id} "..."`),
     );
   }
-  if (session.state === 'awaiting-review') {
+  // A running conductor gates its own branches and opens their PRs (decision
+  // 102): a finished session is its work, and the operator's turn comes at
+  // the open PR.
+  if (session.state === 'awaiting-review' && !gating) {
     return need(
       'awaiting-review',
       'awaiting review',
