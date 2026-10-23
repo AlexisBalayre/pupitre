@@ -40,7 +40,9 @@ import { tempDir } from '../test/temp-dir.mock.js';
 import {
   ConductorTellRefusedError,
   conductorCheckoutDir,
+  DEFAULT_MAX_SESSIONS,
   isConductorRunning,
+  maxSessions,
   startConductor,
   stopConductor,
   TELL_MAX_CHARS,
@@ -92,7 +94,9 @@ describe('startConductor', () => {
     vi.mocked(console.error).mockRestore();
   });
 
-  function start(overrides: { model?: string; effort?: string; workerModel?: string } = {}) {
+  function start(
+    overrides: { model?: string; effort?: string; workerModel?: string; maxSessions?: number } = {},
+  ) {
     return startConductor({
       db,
       repoPath: REPO,
@@ -193,6 +197,35 @@ describe('startConductor', () => {
     expect(killConductor).toHaveBeenCalledWith(projectId(REPO));
     expect(error.refusal).toBe(thrown);
     expect(error.rolledBack).toBe('Conductor launch rolled back (window killed)');
+  });
+
+  // Decision 96: the start stores the cap every launch is held to, and the
+  // kickoff names it with the rule the conductor fills free places by.
+  describe('the session cap', () => {
+    it('stores the cap it was given, and the kickoff names it', () => {
+      start({ maxSessions: 7 });
+
+      expect(maxSessions(REPO)).toBe(7);
+      expect(String(vi.mocked(kickoff).mock.calls[0]?.[1])).toContain('Keep 7 sessions live');
+    });
+
+    it('stores the default on a start without one, replacing an earlier cap', () => {
+      start({ maxSessions: 7 });
+      start();
+
+      expect(maxSessions(REPO)).toBe(DEFAULT_MAX_SESSIONS);
+      expect(DEFAULT_MAX_SESSIONS).toBe(4);
+    });
+
+    it('reads the default before any start, and for a file holding no positive whole number', () => {
+      expect(maxSessions(REPO)).toBe(4);
+
+      start();
+      for (const garbage of ['0', '-3', '2.5', 'lots', '']) {
+        writeFileSync(join(projectPaths(REPO).root, 'conductor', 'max-sessions'), garbage);
+        expect(maxSessions(REPO)).toBe(4);
+      }
+    });
   });
 
   it('writes nothing to the store: the conductor is not a session', () => {

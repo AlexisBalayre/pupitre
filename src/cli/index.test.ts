@@ -71,6 +71,7 @@ vi.mock('ink', async (importOriginal) => ({
 }));
 vi.mock('../core/conductor.service.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
+  DEFAULT_MAX_SESSIONS: 4,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
@@ -107,17 +108,28 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
-vi.mock('../core/session-lifecycle.service.js', () => ({
+vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
+  LowMemoryError: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+    .LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   markSessionQuestion: vi.fn(),
   planTask: vi.fn(),
   recordSteerMessage: vi.fn(),
+  SessionCapReachedError: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).SessionCapReachedError,
   sessionPane: vi.fn(),
   steerSession: vi.fn(),
+}));
+// The run and its slot are test-slot.test.ts's; here only what the command hands them.
+vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
+  runSessionTest: vi.fn(async () => 0),
+  sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
@@ -209,9 +221,11 @@ import {
   markSessionQuestion,
   planTask,
   recordSteerMessage,
+  SessionCapReachedError,
   sessionPane,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { runSessionTest, sessionTestCommand } from '../core/test-slot.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
@@ -2628,6 +2642,46 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    // Decision 96: the cap is the operator's to exceed, never the conductor's.
+    it("hands the operator's --over-cap to the launch", () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--over-cap'], { from: 'user' });
+
+      expect(firstCall(launchTask)[1]).toMatchObject({ overCap: true, overrideVia: 'operator' });
+      expect(logs).toContain('Launched session t-abc-0 (tmux: pup-t-abc-0).');
+    });
+
+    it.each([
+      ['launch', ['launch', 't-abc', '--over-cap']],
+      ['new', ['new', 'a goal', '--scope', 'src/**', '--over-cap']],
+    ])('refuses the conductor `pup %s --over-cap`, launching nothing', (command, argv) => {
+      useCwd(initRepo());
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(argv, { from: 'user' });
+
+      expect(errors).toEqual([
+        `\`pup ${command} --over-cap\` is operator-only; the conductor launches within the cap.`,
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(launchTask).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('prints a launch refused at the cap and exits 1 rather than throwing', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new SessionCapReachedError(4, 4);
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(errors).toEqual([new SessionCapReachedError(4, 4).message]);
+      expect(process.exitCode).toBe(1);
+    });
+
     it('prints no notice for a plain launch', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockReturnValue('t-abc-0');
@@ -2702,7 +2756,10 @@ describe('CLI commands', () => {
       expect(logs[1]).toMatch(
         /^Attach with: tmux -L pup-conductor-([0-9a-f]{12}) attach -t '=pup-conductor-\1:'$/,
       );
-      expect(logs).toHaveLength(2);
+      expect(logs[2]).toBe(
+        "Session cap: 4; `pup launch` and `pup new` refuse past it, and only the operator's --over-cap goes beyond.",
+      );
+      expect(logs).toHaveLength(3);
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -2732,10 +2789,36 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['conductor', 'start'], { from: 'user' });
 
-      expect(logs[2]).toBe(
+      expect(logs[3]).toBe(
         'Conflict radar started with it (tmux: pup-watch-p1) — it runs the turn watchdog.',
       );
-      expect(logs).toHaveLength(3);
+      expect(logs).toHaveLength(4);
+    });
+
+    // Decision 96: the start stores the cap every launch is held to.
+    it('hands the start the --max-sessions cap, and 4 without the flag', () => {
+      useCwd(initRepo());
+      vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
+
+      buildProgram().parse(['conductor', 'start', '--max-sessions', '7'], { from: 'user' });
+      buildProgram().parse(['conductor', 'start'], { from: 'user' });
+
+      const calls = vi.mocked(startConductor).mock.calls;
+      expect(calls[0]?.[0]).toMatchObject({ maxSessions: 7 });
+      expect(calls[1]?.[0]).toMatchObject({ maxSessions: 4 });
+      expect(logs).toContain(
+        "Session cap: 7; `pup launch` and `pup new` refuse past it, and only the operator's --over-cap goes beyond.",
+      );
+    });
+
+    it.each(['0', '-2', '2.5', 'many'])('refuses --max-sessions %s, starting nothing', (cap) => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['conductor', 'start', '--max-sessions', cap], { from: 'user' });
+
+      expect(errors).toEqual(['--max-sessions takes a whole number of at least 1.']);
+      expect(process.exitCode).toBe(1);
+      expect(startConductor).not.toHaveBeenCalled();
     });
 
     it('stops the conductor', () => {
@@ -5143,6 +5226,55 @@ describe('CLI commands', () => {
   });
 
   describe('session', () => {
+    // Decision 96: a session's tests run in one of the machine's test slots.
+    describe('test', () => {
+      it("runs the project's test command with the runner's own arguments, exiting as it did", async () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+        vi.mocked(runSessionTest).mockResolvedValue(3);
+
+        await buildProgram().parseAsync(['session', 'test', 'src/a.test.ts', '-t', 'slots'], {
+          from: 'user',
+        });
+
+        expect(firstCall(runSessionTest)[0]).toMatchObject({
+          command: { stage: 'test', command: 'pnpm', args: ['run', 'test'] },
+          args: ['src/a.test.ts', '-t', 'slots'],
+          cwd: process.cwd(),
+          sessionId: 's1',
+        });
+        expect(process.exitCode).toBe(3);
+      });
+
+      it('requires PUP_SESSION_ID', async () => {
+        useCwd(initRepo());
+        vi.stubEnv('PUP_SESSION_ID', '');
+
+        await buildProgram().parseAsync(['session', 'test'], { from: 'user' });
+
+        expect(errors).toEqual([
+          'pup session test must run inside a Pupitre session (PUP_SESSION_ID unset).',
+        ]);
+        expect(runSessionTest).not.toHaveBeenCalled();
+      });
+
+      it('refuses when no adapter declares a test command', async () => {
+        const repo = initRepo();
+        seedSession(repo, 's1');
+        useCwd(worktreeOf(repo, 's1'));
+        vi.stubEnv('PUP_SESSION_ID', 's1');
+        vi.mocked(sessionTestCommand).mockReturnValueOnce(undefined);
+
+        await buildProgram().parseAsync(['session', 'test'], { from: 'user' });
+
+        expect(errors[0]).toMatch(/^No test command to run/);
+        expect(process.exitCode).toBe(1);
+        expect(runSessionTest).not.toHaveBeenCalled();
+      });
+    });
+
     describe('done', () => {
       it('requires PUP_SESSION_ID', () => {
         useCwd(initRepo());

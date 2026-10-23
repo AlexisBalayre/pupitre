@@ -23,6 +23,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   transcriptDir: vi.fn(() => '/transcripts'),
 }));
 
+// The machine's memory reading only: a launch test must not depend on how
+// much the machine running it has free (decision 96).
+vi.mock('./test-slot.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./test-slot.service.js')>()),
+  availableMemoryBytes: vi.fn(() => 64 * 1024 ** 3),
+}));
+
 import {
   interruptPane,
   kickoff,
@@ -65,13 +72,17 @@ import {
   fixRoundRoute,
   interruptSession,
   killSession,
+  LowMemoryError,
   launchTask,
   markSessionQuestion,
   planTask,
+  recompileSessionProfile,
   recordSteerMessage,
+  SessionCapReachedError,
   sessionPane,
   steerSession,
 } from './session-lifecycle.service.js';
+import { availableMemoryBytes } from './test-slot.service.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
@@ -1417,5 +1428,179 @@ describe('launchTask and the project brief', () => {
 
     expect(kickoffContext()).not.toContain('Project brief');
     expect(kickoffContext()).toContain('## Goal');
+  });
+});
+
+describe('launch capacity (decision 96)', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', tempDir('pup-cap-home-'));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = tempDir('pup-cap-');
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** `count` sessions in `state`, each on a task of its own sharing no file with `t-1`. */
+  function seedSessions(count: number, state: 'running' | 'killed' = 'running'): void {
+    for (let index = 0; index < count; index++) {
+      const id = `s-${state}-${index}`;
+      insertTask(db, {
+        id: `t-${id}`,
+        projectId: projectId(repo),
+        spec: JSON.stringify({ id: `t-${id}`, goal: 'elsewhere', scopeIn: ['docs/**'] }),
+      });
+      insertSession(db, {
+        id,
+        taskId: `t-${id}`,
+        worktreePath: join(repo, '.worktrees', id),
+        branch: `pup/${id}`,
+        profileHash: 'hash',
+      });
+      transitionSession(db, id, 'running');
+      if (state === 'killed') transitionSession(db, id, 'killed');
+    }
+  }
+
+  const launch = (by: 'operator' | 'conductor', overCap = false): string => {
+    planTask(db, { repoPath: repo, task: spec() });
+    return launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+      overlapVia: by,
+      overrideVia: by,
+      overCap,
+    });
+  };
+
+  it('launches below the default cap of four', () => {
+    seedSessions(3);
+
+    expect(launch('operator')).toBe('t-1');
+  });
+
+  it.each(['operator', 'conductor'] as const)(
+    'refuses the %s at the cap, naming it and launching nothing',
+    (by) => {
+      seedSessions(4);
+
+      expect(() => launch(by)).toThrow(
+        "4 sessions are live, at this project's cap of 4 (`pup conductor start --max-sessions` " +
+          'sets it); nothing was launched.',
+      );
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(getSession(db, 't-1')).toBeUndefined();
+      expect(listBacklogTasks(db, projectId(repo)).map((t) => t.id)).toContain('t-1');
+    },
+  );
+
+  it('lets the operator past the cap with --over-cap', () => {
+    seedSessions(4);
+
+    expect(launch('operator', true)).toBe('t-1');
+  });
+
+  it('never lets the conductor past the cap, --over-cap or not', () => {
+    seedSessions(4);
+
+    expect(() => launch('conductor', true)).toThrow(SessionCapReachedError);
+    expect(() =>
+      launchTask(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        taskId: 't-1',
+        claudeUserDir: join(repo, '.claude'),
+        overlapVia: 'conductor',
+        overCap: true,
+      }),
+    ).toThrow(SessionCapReachedError);
+  });
+
+  it('counts live sessions only, not killed ones', () => {
+    seedSessions(3);
+    seedSessions(2, 'killed');
+
+    expect(launch('operator')).toBe('t-1');
+  });
+
+  it('refuses `pup new` at the cap before writing its task', () => {
+    seedSessions(4);
+
+    expect(() =>
+      createSession(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        task: spec(),
+        claudeUserDir: join(repo, '.claude'),
+      }),
+    ).toThrow(SessionCapReachedError);
+    expect(getTask(db, 't-1')).toBeUndefined();
+  });
+
+  it('refuses under 1.5 GB of available memory, naming the figure, --over-cap or not', () => {
+    vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.2 * 1024 ** 3);
+
+    expect(() => launch('operator', true)).toThrow(
+      'Only 1.2 GB of memory is available, under the 1.5 GB a launch needs; nothing was launched.',
+    );
+    expect(launchSession).not.toHaveBeenCalled();
+  });
+
+  it('launches with 1.5 GB available', () => {
+    vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.5 * 1024 ** 3);
+
+    expect(launch('operator')).toBe('t-1');
+  });
+
+  describe("a fix round's relaunch", () => {
+    /** `t-1`'s session, merged, as a fix round finds it. */
+    function mergedSession(): SessionRow {
+      launch('operator');
+      transitionSession(db, 't-1', 'awaiting-review');
+      transitionSession(db, 't-1', 'merged');
+      return getSession(db, 't-1') as SessionRow;
+    }
+
+    const recompile = (session: SessionRow) =>
+      recompileSessionProfile(
+        db,
+        { repoPath: repo, base: DEFAULT_BASE_PROFILE, claudeUserDir: join(repo, '.claude') },
+        session,
+        projectPaths(repo),
+      );
+
+    it('goes ahead below the cap, its own merged session not counted', () => {
+      const session = mergedSession();
+      seedSessions(3);
+
+      expect(recompile(session).compiled.hash).toBeTruthy();
+    });
+
+    it('is refused at the cap', () => {
+      const session = mergedSession();
+      seedSessions(4);
+
+      expect(() => recompile(session)).toThrow(SessionCapReachedError);
+    });
+
+    it('is refused under 1.5 GB of available memory', () => {
+      const session = mergedSession();
+      vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.2 * 1024 ** 3);
+
+      expect(() => recompile(session)).toThrow(LowMemoryError);
+    });
   });
 });

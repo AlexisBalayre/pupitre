@@ -5114,6 +5114,85 @@ changes back into those docs is pending.
     escalation), and `pup` exits 129 on SIGHUP. An ENOTEMPTY on the gate checkout prints the
     warning and leaves the build failure as the result.
 
+96. **Test runs queue for a few machine-wide slots, the gate's first; launches stop at a
+    per-project session cap and under 1.5 GB of available memory; the conductor fills the cap
+    with tasks that share no source file (2026-10-18).**
+    The aim is 6 to 8 workers on one machine. What limits them is the CPU of test runs, not the
+    sessions, which spend most of their time thinking and editing. So test runs wait their turn
+    and sessions do not.
+    Slots. `pup session test [args]` runs the test command of the repo's first adapter, the same
+    one the gate's test stage runs (decision 22), with the arguments appended, only once it holds
+    one of the machine's test slots, 2 by default. There is no related-test form in the adapter
+    yet, so a worker names its test files; npm gets a `--` before them. A slot is a lock file
+    `slot-N.lock` in `~/.pupitre/slots` holding the holder's kind, label, pid and a token. A take
+    writes a staged file and hard-links it into a free slot name, so two takers cannot both win
+    one. A slot whose pid is dead (`kill(pid, 0)`, EPERM counted alive) or whose record does not
+    parse is reclaimed: renamed aside, re-read, and linked back if its holder turns out alive. A
+    release removes the slot only while it still holds the run's own token. While it waits, the
+    run prints once whom it waits for, `Waiting for a test slot, held by session t-1 (pid 4242)
+    and the merge gate for t-2 (pid 4343); the merge gate for t-3 waits first.`, labels passed
+    through `sanitizeReason`, and polls each second. The child runs with `PUP_TEST_SLOT` set, its
+    signals forwarded, and its exit status (128 plus the signal's number when killed) becomes the
+    command's. Ctrl-C or SIGTERM during the wait ends it with exit 130 and no run.
+    The gate first. The gate's test run, the root's and every touched nested package's together,
+    takes one slot too, and only when there is a suite to run. A waiting gate writes
+    `gate-<pid>-<token>.wait`; no worker takes a free slot while a live gate's wait file exists,
+    and a dead gate's file is removed. Waiting gates race among themselves, as do waiting workers.
+    The wait happens before the test stage starts, so it is not part of the stage's time. The
+    merge lock's listener (decision 84) holds signals, so the wait listens for SIGINT and SIGTERM
+    itself and ends the gate as `GateInterruptedError` would, removing the coverage run's report
+    directory. A run with `PUP_TEST_SLOT` already set takes none, so a gate run inside a session's
+    test run does not wait on the slot its parent holds. A gate inside a sandbox that keeps
+    `~/.pupitre` from it (EPERM, EACCES or EROFS on the slots directory) runs without one.
+    The guard. Every compiled session profile adds a Bash PreToolUse hook, `test-guard.sh`, that
+    refuses with exit 2 a command matching a pattern in its sidecar `test-runner.pat`: vitest or
+    jest run directly, through npx, bunx, pnpx, a package manager's exec, dlx or x, or a bin path;
+    `pnpm|yarn|npm|bun [run] test`; and the adapter's own test command, its words escaped. A
+    pattern matches at a command's start or after `;`, `&`, `|`, `(` or a backtick, behind any
+    `VAR=value`, `env`, `exec`, `command`, `time` or `nice`. The message names
+    `pup session test`. The session protocol's test line now says to run tests only with
+    `pup session test <test files>`, naming the tests related to the change. The conductor's
+    context says a session waiting on a slot is not stalled.
+    The cap. `pup conductor start --max-sessions <n>` (default 4, a whole number of at least 1)
+    stores the cap in `~/.pupitre/<project>/conductor/max-sessions` and prints it. `pup launch`
+    and `pup new` count the project's sessions in a holding state and refuse, before anything is
+    written, once that count reaches the cap, for the conductor and the operator alike. A missing
+    or unreadable file means 4. `--over-cap` lets the operator past it. The conductor passing it
+    is refused at the CLI, and a launch made through the conductor ignores it.
+    Decision 99 puts no cap on how many sessions may share a file; this cap counts every live
+    session, overlapping or not. A `pup fix` round (decision 90) brings a merged session, which
+    is not counted, back to a live window, so it meets the cap and the memory floor below before
+    anything is written, and has no `--over-cap`: the operator waits, or restarts the conductor
+    with a larger cap.
+    Memory. A launch also refuses when the machine has under 1.5 GB of memory available, naming
+    the figure in GB. On macOS that is free, inactive and speculative pages from `vm_stat` at its
+    page size, and elsewhere, or when `vm_stat` gives nothing, `os.freemem()`. `--over-cap` does
+    not lift it.
+    Scheduling. The conductor's protocol keeps the cap's number of sessions live. Whenever fewer
+    are live, it fills the free places with planned tasks whose scope-in globs share no source
+    file with a running session's, at most one session per task. The decisions document and the
+    file that registers CLI commands do not count as shared. A task that shares other files
+    waits until every planned task does, and is then launched under decision 99.
+    Ceilings: a reused pid keeps a dead holder's slot looking alive until that process exits. Two
+    reclaimers racing over one dead slot can over-subscribe it by one run. The guard is best
+    effort: a script that runs the test runner, or a route the patterns miss, runs unqueued. The
+    cap file and the store are writable by session code, as decision 46 says of the store. A gate
+    run outside any sandbox and outside `pup session test`, such as a test that runs the gate,
+    takes real slots unless `PUP_TEST_SLOT` is set.
+    Tests: three runs with two slots run two and start the third when one ends; a dead holder's
+    slot is reclaimed and a live foreign holder's is not; a gate is served before a worker that
+    waited longer and is named to it; a dead gate's wait file is ignored; a slot is freed on a
+    throw and left alone once another run took it; `PUP_TEST_SLOT` and an unwritable directory
+    run without a slot. In the gate, a gate with both slots held waits and prints whom for, and a
+    worker stays waiting behind it after a slot frees. The compiled settings refuse pnpm test,
+    vitest, npx vitest, wrapped and chained forms and the adapter's command, allow the rest, and
+    wire the guard. Launch and `pup new` refuse at the cap for both callers with nothing launched,
+    killed sessions are not counted, the operator's `--over-cap` passes and the conductor's never
+    does; a fix round's recompile goes ahead below the cap and is refused at it and under the
+    floor; under 1.5 GB, read from a faked figure, a launch refuses naming it, even with
+    `--over-cap`. The cap is stored and read back with its default; the CLI passes and refuses
+    the flags, and `pup session test` passes its arguments and exit status.
+
 99. **Workers share files and collaborate: a launch overlapping a live session is never refused,
     with no cap, and introduces the two (2026-10-18, supersedes decision 41's refusal).**
     Decision 41 refused a launch whose scope claimed tracked files a live session already held,

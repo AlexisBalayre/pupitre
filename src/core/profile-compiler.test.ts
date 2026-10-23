@@ -113,14 +113,16 @@ describe('compileProfile', () => {
   });
 
   // Decision 94: a worker's full suite competes with the gate's for the CPU,
-  // and the gate runs the full suite anyway.
-  it('tells the session to run related tests only and leave the full suite to the gate', () => {
+  // and the gate runs the full suite anyway; decision 96 queues every run.
+  it('tells the session to run related tests through `pup session test` only', () => {
     const compiled = ProfileCompiler.compileProfile(makeInput());
 
     expect(compiled.contextMarkdown).toContain(
-      '- Run only the tests related to what you changed: the test runner’s related-tests form ' +
-        'when it has one (e.g. `vitest related <files>`), else the test files by name. Leave the ' +
-        'full suite to the merge gate, which runs it.',
+      '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
+        'command on the files you name once one of the machine’s test slots is free, and says ' +
+        'whom it is waiting for. Running the test runner directly is refused. Name only the ' +
+        'tests related to what you changed: the test files for the code you touched and for ' +
+        'the code that imports it. Leave the full suite to the merge gate, which runs it.',
     );
   });
 
@@ -1260,6 +1262,7 @@ describe('the project brief in a compiled context', () => {
     userConfigHash: 'user-hash-a',
     outDir: '/state/conductor/compiled',
     checkoutPath: '/state/conductor/checkout',
+    maxSessions: 4,
   };
 
   /** Writes the brief for `/repo`, the repo path both fixtures above compile for. */
@@ -1429,6 +1432,7 @@ describe('compileConductorProfile', () => {
     userConfigHash: 'user-hash-a',
     outDir: '/state/conductor/compiled',
     checkoutPath: '/state/conductor/checkout',
+    maxSessions: 4,
   };
 
   function runConductorHook(script: string, payload: object): number | null {
@@ -1442,8 +1446,9 @@ describe('compileConductorProfile', () => {
   }
 
   // Decision 99 retired decision 41's refusal, so the conductor launches
-  // overlapping tasks rather than holding them back or narrowing them.
-  it('launches overlapping tasks freely, with no wait-or-re-scope rule', () => {
+  // overlapping tasks rather than narrowing them; decision 96 only has it fill
+  // free places with tasks that share nothing first.
+  it('launches overlapping tasks, with no wait-or-re-scope rule', () => {
     const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
 
     expect(context).toContain(
@@ -1451,7 +1456,7 @@ describe('compileConductorProfile', () => {
         'agree between themselves who changes what.',
     );
     expect(context).toContain(
-      'a task whose scope overlaps a live session launches like any other.',
+      'Launch one that shares other files only once every planned task does',
     );
     for (const retired of ['--allow-overlap', 're-scope', 'disjoint', 'refused overlap']) {
       expect(context).not.toContain(retired);
@@ -1650,5 +1655,101 @@ describe('compileConductorProfile', () => {
         base: { name: 'base', conventions: 'x'.repeat(40_000), contextBudget: 100 },
       }),
     ).toThrow(ContextBudgetExceededError);
+  });
+});
+
+describe('test runs queue for a slot (decision 96)', () => {
+  const guard = (command: string, overrides: Partial<CompileInput> = {}) =>
+    runHook('hooks/test-guard.sh', { tool_input: { command } }, overrides);
+
+  it.each([
+    'pnpm test',
+    'pnpm run test src/core/a.test.ts',
+    'pnpm test:watch',
+    'npm test',
+    'yarn test',
+    'vitest',
+    'vitest related src/core/a.ts',
+    'pnpm vitest run',
+    'pnpm exec vitest run src/core/a.test.ts',
+    'npx vitest run',
+    'npx jest',
+    './node_modules/.bin/vitest run',
+    'cd src && vitest run',
+    'git stash list; pnpm test',
+    'CI=1 vitest run',
+    'env CI=1 npx vitest',
+    'echo $(vitest run)',
+  ])('refuses `%s`, naming pup session test', (command) => {
+    const { status, stderr } = guard(command);
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('pup session test');
+  });
+
+  it.each([
+    'pup session test src/core/a.test.ts',
+    'node "$PUP_BIN" session test src/core/a.test.ts',
+    'cat vitest.config.ts',
+    'grep -n vitest package.json',
+    'pnpm run build',
+    'pnpm biome check src',
+    'git log --oneline',
+  ])('lets `%s` through', (command) => {
+    expect(guard(command).status).toBe(0);
+  });
+
+  it("refuses the adapter's own test command, its words matched as words", () => {
+    const testCommand = { stage: 'test' as const, command: 'uv', args: ['run', 'pytest'] };
+
+    expect(guard('uv run pytest -k slots', { testCommand } as Partial<CompileInput>).status).toBe(
+      2,
+    );
+    expect(guard('uv run pytest', { testCommand } as Partial<CompileInput>).status).toBe(2);
+    expect(guard('uv run pytester', { testCommand } as Partial<CompileInput>).status).toBe(0);
+    expect(guard('uv run ruff check', { testCommand } as Partial<CompileInput>).status).toBe(0);
+  });
+
+  it('escapes the adapter command, so its punctuation is matched literally', () => {
+    const testCommand = { stage: 'test' as const, command: 'make', args: ['test.unit'] };
+
+    expect(guard('make test.unit', { testCommand } as Partial<CompileInput>).status).toBe(2);
+    expect(guard('make testXunit', { testCommand } as Partial<CompileInput>).status).toBe(0);
+  });
+
+  it('leaves out an adapter command holding a line break rather than refuse every call', () => {
+    const testCommand = { stage: 'test' as const, command: 'make', args: ['\n'] };
+
+    expect(guard('git status', { testCommand } as Partial<CompileInput>).status).toBe(0);
+    expect(guard('pnpm test', { testCommand } as Partial<CompileInput>).status).toBe(2);
+  });
+
+  it('runs the guard on every Bash call, beside the .claude/ guard', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+    const bash = compiled.settings.hooks.PreToolUse?.find((entry) => entry.matcher === 'Bash');
+
+    expect(bash?.hooks.map((hook) => hook.command.split('/').at(-1))).toContain('test-guard.sh');
+  });
+
+  it('gives the conductor its cap and the rule it fills free places by', () => {
+    const context = ProfileCompiler.compileConductorProfile({
+      base: { name: 'base' },
+      repoPath: '/repo',
+      projectId: 'proj-1',
+      conductorName: 'pup-conductor-proj-1',
+      userConfigHash: 'user-hash-a',
+      outDir: '/state/conductor/compiled',
+      checkoutPath: '/state/conductor/checkout',
+      maxSessions: 7,
+    }).contextMarkdown;
+
+    expect(context).toContain('It is refused once 7 sessions are live');
+    expect(context).toContain(
+      'Keep 7 sessions live: whenever fewer are, fill the free places with planned tasks whose ' +
+        "scope-in globs share no source file with a running session's. The project's decisions " +
+        'document and the file that registers CLI commands do not count as shared.',
+    );
+    expect(context).toContain('`--over-cap`');
+    expect(context).toContain('A session waiting there is not stalled.');
   });
 });

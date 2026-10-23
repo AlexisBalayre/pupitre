@@ -17,6 +17,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
+import { maxSessions } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, assertNoWorktreeConfig, runGit } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
@@ -39,6 +40,7 @@ import {
   getTask,
   insertSession,
   insertTask,
+  listSessions,
   listTaskSessions,
   readTaskSpec,
   type SessionRoute,
@@ -56,8 +58,13 @@ import {
   UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
-import { FIX_ROUND_EDGE, isTerminal } from './session-state.utils.js';
+import { FIX_ROUND_EDGE, holdingStates, isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
+import {
+  availableMemoryBytes,
+  MIN_AVAILABLE_MEMORY_BYTES,
+  sessionTestCommand,
+} from './test-slot.service.js';
 import type { ScopeConflict } from './types/overlap.types.js';
 import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
 import type {
@@ -67,6 +74,64 @@ import type {
   RouteOverride,
   SessionPeer,
 } from './types/session-lifecycle.types.js';
+
+/**
+ * `--over-cap`: the operator's word that one more session may go past the cap
+ * (decision 96). Only the operator's: a launch the conductor makes ignores it.
+ */
+interface CapOverride {
+  overCap?: boolean;
+}
+
+/** A launch refused because the project already has as many live sessions as its cap. */
+export class SessionCapReachedError extends Error {
+  constructor(live: number, cap: number) {
+    super(
+      `${live} sessions are live, at this project's cap of ${cap} (\`pup conductor start ` +
+        '--max-sessions` sets it); nothing was launched. Wait for one to finish, or, as the ' +
+        'operator, pass --over-cap to `pup launch` or `pup new`.',
+    );
+    this.name = 'SessionCapReachedError';
+  }
+}
+
+/** A launch refused because the machine has too little memory available for another window. */
+export class LowMemoryError extends Error {
+  constructor(available: number) {
+    super(
+      `Only ${gigabytes(available)} GB of memory is available, under the ` +
+        `${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB a launch needs; nothing was launched. ` +
+        'Wait for a session or a test run to finish, then launch again.',
+    );
+    this.name = 'LowMemoryError';
+  }
+}
+
+function gigabytes(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1);
+}
+
+/**
+ * Refuse a launch past the project's session cap or into a machine short of
+ * memory (decision 96). Asked before anything is built, and before `pup new`
+ * writes its task, so a refusal leaves nothing behind. `--over-cap` lifts the
+ * cap for the operator alone and never the memory floor: memory is the
+ * machine's limit, the cap only the operator's choice of one.
+ */
+function assertRoomToLaunch(
+  db: Database,
+  repoPath: string,
+  req: CapOverride & Pick<LaunchTaskRequest, 'overlapVia' | 'overrideVia'>,
+): void {
+  const byOperator = req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';
+  if (!(req.overCap && byOperator)) {
+    const live = listSessions(db, holdingStates()).length;
+    const cap = maxSessions(repoPath);
+    if (live >= cap) throw new SessionCapReachedError(live, cap);
+  }
+  const available = availableMemoryBytes();
+  if (available < MIN_AVAILABLE_MEMORY_BYTES) throw new LowMemoryError(available);
+}
 
 /** A short, filesystem- and tmux-safe id derived from the task id and a counter. */
 function sessionSlug(taskId: string, existing: number): string {
@@ -105,7 +170,7 @@ export function planTask(db: Database, req: PlanTaskRequest): string {
  * on between planning a task and launching it, so a slice captured with the
  * intent would describe a repo that no longer exists.
  */
-export function launchTask(db: Database, req: LaunchTaskRequest): string {
+export function launchTask(db: Database, req: LaunchTaskRequest & CapOverride): string {
   const pid = projectId(req.repoPath);
   const row = getTask(db, req.taskId);
   if (!row) throw new UnknownTaskError(req.taskId);
@@ -114,6 +179,7 @@ export function launchTask(db: Database, req: LaunchTaskRequest): string {
   // (decision 7). Only a killed session leaves its task launchable again.
   const claimedBy = claimingSession(db, row.id);
   if (claimedBy) throw new TaskAlreadyClaimedError(row.id, claimedBy);
+  assertRoomToLaunch(db, req.repoPath, req);
   // Validated before the conflict check, the first thing to read the stored
   // spec's globs: a row written before `pup plan add` validated would otherwise
   // reach `scopedPaths` with no `scopeIn` and throw a bare TypeError.
@@ -200,7 +266,7 @@ function introduceToPeers(db: Database, newcomer: string, conflicts: ScopeConfli
  * Plan and launch in one step — the assembly line behind `pup new`, unchanged
  * from the operator's side. Returns the created session id.
  */
-export function createSession(db: Database, req: NewSessionRequest): string {
+export function createSession(db: Database, req: NewSessionRequest & CapOverride): string {
   // Asked before the row is written, not only inside `launchTask`: a refusal
   // costs an operator nothing on `pup launch`, where the task already existed,
   // but here it would leave the spec they just abandoned sitting in the
@@ -208,8 +274,23 @@ export function createSession(db: Database, req: NewSessionRequest): string {
   // someone notices and drops it (decision 50).
   assertNoWorktreeConfig(req.repoPath);
   assertNoArmedGitDrivers(req.repoPath);
+  assertRoomToLaunch(db, req.repoPath, req);
   planTask(db, req);
   return launchTask(db, { ...req, taskId: req.task.id });
+}
+
+/**
+ * The project's test command, which the session's test guard refuses beside
+ * the runners it always does (decision 96). Best effort, as the knowledge
+ * slice is: an adapter that fails to load costs the guard one pattern, never
+ * the launch.
+ */
+function testCommandFor(repoPath: string): ReturnType<typeof sessionTestCommand> {
+  try {
+    return sessionTestCommand(repoPath);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -380,6 +461,7 @@ function compileSessionProfile(
     outDir: compiledDir,
     codegraphBinary: binary,
     peers,
+    testCommand: testCommandFor(source.repoPath),
   });
   return { compiled, binary };
 }
@@ -389,7 +471,9 @@ function compileSessionProfile(
  * compiles it, with the knowledge slice and the peers sharing its files as of
  * now, returned for `recordOverlaps` once the kickoff lands (decision 90). The
  * compiled dir under the store is one the conductor's shell can write
- * (decision 47), so a round never relaunches from what it holds.
+ * (decision 47), so a round never relaunches from what it holds. A merged
+ * session is not live, so a round adds a window as a launch does, and meets the
+ * same cap and memory floor first, with no `--over-cap` (decision 96).
  */
 export function recompileSessionProfile(
   db: Database,
@@ -397,6 +481,7 @@ export function recompileSessionProfile(
   session: SessionRow,
   paths: ProjectPaths,
 ): SessionCompile & { conflicts: ScopeConflict[] } {
+  assertRoomToLaunch(db, source.repoPath, {});
   const task = readTaskSpec(db, session.task_id);
   task.knowledgeSlice = knowledgeSliceFor(
     db,

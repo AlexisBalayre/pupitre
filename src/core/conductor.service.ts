@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { failureSummary } from '../adapters/capability.utils.js';
@@ -40,6 +40,33 @@ import type { ConductorHandle, StartConductorRequest } from './types/conductor.t
  */
 export function conductorCheckoutDir(repoPath: string): string {
   return join(projectPaths(repoPath).root, 'conductor', 'checkout');
+}
+
+/** How many live sessions a launch may reach when no conductor start set it (decision 96). */
+export const DEFAULT_MAX_SESSIONS = 4;
+
+/**
+ * Where `pup conductor start --max-sessions` keeps the cap, beside the
+ * conductor's other state; derived here for the reason `conductorCheckoutDir`
+ * is.
+ */
+function maxSessionsFile(repoPath: string): string {
+  return join(projectPaths(repoPath).root, 'conductor', 'max-sessions');
+}
+
+/**
+ * The most live sessions a launch may reach in this project: the cap the last
+ * conductor start stored, else `DEFAULT_MAX_SESSIONS`. A file that holds no
+ * positive whole number reads as the default rather than as no cap.
+ */
+export function maxSessions(repoPath: string): number {
+  let stored: number;
+  try {
+    stored = Number(readFileSync(maxSessionsFile(repoPath), 'utf8').trim());
+  } catch {
+    return DEFAULT_MAX_SESSIONS;
+  }
+  return Number.isInteger(stored) && stored > 0 ? stored : DEFAULT_MAX_SESSIONS;
 }
 
 /**
@@ -145,8 +172,11 @@ function graphForConductor(
  * start that succeeds brings the conflict radar up with it (`startRadarWith`)
  * and says in the handle whether it did.
  */
-export function startConductor(req: StartConductorRequest): ConductorHandle {
+export function startConductor(
+  req: StartConductorRequest & { maxSessions?: number },
+): ConductorHandle {
   const pid = projectId(req.repoPath);
+  const cap = req.maxSessions ?? DEFAULT_MAX_SESSIONS;
   const name = conductorName(pid);
   const outDir = projectPaths(req.repoPath).conductorCompiledDir;
   const checkoutDir = conductorCheckoutDir(req.repoPath);
@@ -164,9 +194,13 @@ export function startConductor(req: StartConductorRequest): ConductorHandle {
     outDir,
     codegraphBinary: binary,
     checkoutPath: checkoutDir,
+    maxSessions: cap,
   });
   mkdirSync(outDir, { recursive: true });
   writeCompiledProfile(compiled, outDir);
+  // Stored on every start, a start without the flag included: the cap the
+  // conductor's kickoff names is the one every launch is held to (decision 96).
+  writeFileSync(maxSessionsFile(req.repoPath), `${cap}\n`);
   // Cut and indexed before the launch, so the window opens on a graph that is
   // already there.
   const mcpConfigPath = graphForConductor(binary, req.repoPath, checkoutDir, outDir);

@@ -35,14 +35,14 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Onboard a repo (operator only) | `pup init` in the repo; `pup init --gate-env A,B` for gate env vars |
 | Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"... [--tier critical|standard]` |
 | Backlog | `pup plan` (list, with each task's tier), `pup plan drop|edit <task>` |
-| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches |
+| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor |
 | Who needs me | `pup status`, `pup ui` (live), `pup dashboard --open` (live page in the browser, read-only, operator-only), `pup watch` (conflict radar) |
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn <session>`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
 | Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |
 | Debt and decisions | `pup debt`, `pup debt close <n>`, `pup log [module]`, `pup audit` |
-| Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override), `pup conductor stop` |
+| Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override; `--max-sessions <n>` sets the session cap, default 4), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |
 | Reports | `pup report --open`, `pup map [module] --open` |
 

@@ -98,6 +98,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
+import { describeSlotWait, SlotWaitInterruptedError, withTestSlot } from './test-slot.service.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type {
@@ -1296,7 +1297,7 @@ export async function measureBranch(
   // The suites run one after another, never two at once: the root's, then each
   // nested package's (decision 59), each stopping the chain where its failure
   // stops the report.
-  const suites = (async () => {
+  const runSuites = async () => {
     const results = new Map<string, GateStageResult>();
     let folded: CoverageReport | CapabilityUnavailable | undefined;
     try {
@@ -1319,7 +1320,26 @@ export async function measureBranch(
       }
     }
     return { results, folded };
-  })();
+  };
+  // All of them in one of the machine's test slots, which the gate is served
+  // before any worker (decision 96); the wait is not the stage's time. No
+  // suite to run takes no slot.
+  const hasSuite =
+    test !== undefined ||
+    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
+  const suites = hasSuite
+    ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
+        onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
+      }).catch((error: unknown) => {
+        // A wait that ended before the suites ran leaves the coverage run's
+        // directory to this; a second dispose after theirs removes nothing.
+        covered?.dispose();
+        // Unwound like a stage child's interrupt, which every reader below expects.
+        throw error instanceof SlotWaitInterruptedError
+          ? new GateInterruptedError(error.signal)
+          : error;
+      })
+    : runSuites();
   // Alongside the suites: every stage that only reads the checkout, each in a
   // child of its own as before (decision 95).
   const lint = commandFor('lint');
