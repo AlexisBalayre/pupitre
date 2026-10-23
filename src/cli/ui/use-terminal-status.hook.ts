@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react';
-import { createTerminalStatus } from './terminal-status.utils.js';
+import { createTerminalStatus } from './terminal-status.manager.js';
 import type { DashboardReading } from './use-snapshot.hook.js';
 
 type StatusStream = { isTTY?: boolean; write: (chunk: string) => unknown };

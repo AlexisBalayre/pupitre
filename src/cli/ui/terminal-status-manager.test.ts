@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import type { ActionDeps } from './actions.service.js';
-import { createTerminalStatus } from './terminal-status.utils.js';
+import { createTerminalStatus } from './terminal-status.manager.js';
 import type { DashboardReading } from './use-snapshot.hook.js';
 import { useTerminalStatus } from './use-terminal-status.hook.js';
 

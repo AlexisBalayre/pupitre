@@ -5315,7 +5315,7 @@ changes back into those docs is pending.
     rung or awaiting review, with the inbox's first line as the detail; `working` in blue while
     sessions run; `idle` in green otherwise. The title is pushed on the xterm stack (`CSI 22 ; 0
     t`) before the first write and popped (`CSI 23 ; 0 t`) on the way out, with every status key
-    set empty, so the shell gets its own title back. The writer is `terminal-status.utils.ts`;
+    set empty, so the shell gets its own title back. The writer is `terminal-status.manager.ts`;
     `useTerminalStatus` holds one for the life of `App`, so `q`, Ctrl-C and the SIGINT/SIGTERM
     unmount all run the restore.
     Every interpolated value loses C0, ESC, BEL, DEL and the C1 range, removed rather than
