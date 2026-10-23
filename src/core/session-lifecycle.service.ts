@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
@@ -528,6 +528,29 @@ export function writeSessionProfile(
   };
 }
 
+/**
+ * Undo a `worktree add` whose pinned checkout threw: a rewritten `commondir`,
+ * a full disk, an interrupt. Left behind, the worktree and branch would refuse
+ * the retry, which mints the same id (decision 40). No git runs in the
+ * worktree: the directory goes first, so the prune drops its registration,
+ * and the branch goes only while it still holds the commit the add cut it at.
+ * Swallowed: a cleanup failure must not replace the refusal.
+ */
+function dropUncheckedWorktree(
+  repoPath: string,
+  worktreePath: string,
+  branch: string,
+  head: string,
+): void {
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+    runGit(repoPath, ['worktree', 'prune']);
+    runGit(repoPath, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, head]);
+  } catch {
+    // see above
+  }
+}
+
 function startSession(
   db: Database,
   req: LaunchTaskRequest & { task: TaskSpec },
@@ -560,8 +583,14 @@ function startSession(
   const { compiled } = compile;
   // `--no-checkout`: the add's own checkout would read the admin dir's
   // `commondir` before any check of it (decision 101).
-  runGit(req.repoPath, ['worktree', 'add', '--no-checkout', '-b', branch, worktreePath, 'HEAD']);
-  checkoutPinned(req.repoPath, worktreePath, `refs/heads/${branch}`);
+  const head = runGit(req.repoPath, ['rev-parse', '--verify', 'HEAD^{commit}']).trim();
+  runGit(req.repoPath, ['worktree', 'add', '--no-checkout', '-b', branch, worktreePath, head]);
+  try {
+    checkoutPinned(req.repoPath, worktreePath, head);
+  } catch (error) {
+    dropUncheckedWorktree(req.repoPath, worktreePath, branch, head);
+    throw error;
+  }
   const { settingsPath, mcpConfigPath } = writeSessionProfile(
     compile,
     req.repoPath,

@@ -393,6 +393,40 @@ describe('startConductor code graph', () => {
     expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
   });
 
+  // The add and the checkout of the first cut are two git runs: a target that
+  // moved between them would leave HEAD at the old tip and the index at the
+  // new one, and every later start's `checkout --detach` would refuse.
+  it('cuts its first checkout at one sha when the target moves after the add', () => {
+    fakeCodegraph(INDEXES);
+    const tip = gitIn(repo, 'rev-parse', 'main');
+    writeFileSync(join(repo, 'later.ts'), 'export const later = 1;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'later');
+    const later = gitIn(repo, 'rev-parse', 'main');
+    gitIn(repo, 'reset', '-q', '--hard', tip);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `${realGit} "$@" || exit $?`,
+        `case " $* " in *" worktree add "*) ${realGit} -C ${repo} update-ref refs/heads/main ${later} ;; esac`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
+
+    start();
+
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(tip);
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    fakeCodegraph(INDEXES);
+    start();
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(later);
+  });
+
   // The finding, in one test: a session's Bash is only guarded against
   // `.claude/`, so it can write into the repo root from its own worktree. An
   // untracked source file is returned VERBATIM into the context of the agent
