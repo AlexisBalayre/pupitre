@@ -1,12 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  assertNoWorktreeConfig,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -14,6 +24,10 @@ import {
   gitDiffPaths,
   rethrowIfKilled,
   runGit,
+  verifiedWorktreeGitEnv,
+  WorktreeConfigError,
+  WorktreeRepointedError,
+  worktreeGitEnv,
 } from './git-diff.client.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
@@ -39,6 +53,13 @@ function makeRepo(): string {
 function commitAll(repo: string, message: string): void {
   sh(repo, 'git', 'add', '.');
   sh(repo, 'git', 'commit', '-m', message);
+}
+
+/** Whether the git on PATH is at least `major.minor`. */
+function gitAtLeast(major: number, minor: number): boolean {
+  const version = /(\d+)\.(\d+)/.exec(execFileSync('git', ['--version'], { encoding: 'utf8' }));
+  const [got, gotMinor] = [Number(version?.[1]), Number(version?.[2])];
+  return got > major || (got === major && gotMinor >= minor);
 }
 
 describe('gitDiffAddedLines', () => {
@@ -675,5 +696,305 @@ describe('rethrowIfKilled', () => {
   it("leaves git's own failure and a crash to the caller's catch", () => {
     expect(() => rethrowIfKilled(failureOf('exit 1'))).not.toThrow();
     expect(() => rethrowIfKilled(failureOf('kill -SEGV $$'))).not.toThrow();
+  });
+});
+
+// A session can rewrite its worktree's `.git` gitfile and its admin dir's
+// `commondir` from inside the sandbox, and an index read that followed either
+// would run a clean filter armed in the repo they name (decision 101).
+describe('worktree git pins (decision 101)', () => {
+  let repo: string;
+  let worktree: string;
+  let marker: string;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src/app.ts'), 'export const app = 1;\n');
+    commitAll(repo, 'base');
+    worktree = join(repo, '.worktrees', 's-1');
+    sh(repo, 'git', 'worktree', 'add', '-q', '-b', 'pup/s-1', worktree);
+    marker = join(tempDir('pup-marker-'), 'fired');
+  });
+
+  /** Arms a clean filter on every path of the repo at `gitDir`, writing `marker` if it runs. */
+  function plantCleanFilter(gitDir: string): void {
+    sh(
+      gitDir,
+      'git',
+      'config',
+      '--file',
+      join(gitDir, 'config'),
+      'filter.pwn.clean',
+      `sh -c 'echo pwned >> ${marker}; cat'`,
+    );
+    mkdirSync(join(gitDir, 'info'), { recursive: true });
+    writeFileSync(join(gitDir, 'info', 'attributes'), '* filter=pwn\n');
+  }
+
+  /** A repo of the session's own, holding the worktree's file and an armed filter. */
+  function plantedRepo(): string {
+    const elsewhere = makeRepo();
+    mkdirSync(join(elsewhere, 'src'));
+    writeFileSync(join(elsewhere, 'src/app.ts'), 'export const app = 1;\n');
+    commitAll(elsewhere, 'planted');
+    plantCleanFilter(join(elsewhere, '.git'));
+    return join(elsewhere, '.git');
+  }
+
+  /** Same size, new mtime: git must re-read the file, through the filter, to compare it. */
+  function touchLater(file: string): void {
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(file, later, later);
+  }
+
+  /** The plant is live: plain git in the worktree runs it. Then reset for the pinned run. */
+  function expectPlainGitFires(stale: string): void {
+    touchLater(stale);
+    sh(worktree, 'git', 'status', '--porcelain');
+    expect(existsSync(marker)).toBe(true);
+    unlinkSync(marker);
+    touchLater(stale);
+  }
+
+  const pinnedStatus = () =>
+    runGit(worktree, ['status', '--porcelain', '--ignore-submodules=all'], {
+      env: { ...worktreeGitEnv(repo, worktree) },
+    });
+
+  it('names the admin and common dirs of a worktree whose pointers are untouched', () => {
+    expect(verifiedWorktreeGitEnv(repo, worktree)).toEqual({
+      GIT_DIR: join(repo, '.git', 'worktrees', 's-1'),
+      GIT_COMMON_DIR: join(repo, '.git'),
+      GIT_WORK_TREE: worktree,
+    });
+  });
+
+  it.each([
+    ['a repointed gitfile', (planted: string) => [join(worktree, '.git'), `gitdir: ${planted}\n`]],
+    [
+      'a rewritten commondir',
+      (planted: string) => [join(repo, '.git', 'worktrees', 's-1', 'commondir'), `${planted}\n`],
+    ],
+  ])('refuses %s, and pinned git never runs its clean filter', (_, pointer) => {
+    const [file, content] = pointer(plantedRepo()) as [string, string];
+    writeFileSync(file, content);
+    expectPlainGitFires(join(worktree, 'src/app.ts'));
+
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    // Pinned, git reads neither pointer: a rewrite after the check changes nothing.
+    pinnedStatus();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('never runs a child git in a gitlink over a .git of the session', () => {
+    const sub = join(worktree, 'sub');
+    mkdirSync(sub);
+    sh(sub, 'git', 'init', '-q');
+    writeFileSync(join(sub, 'f'), 'a\n');
+    sh(sub, 'git', 'add', 'f');
+    sh(sub, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'sub');
+    plantCleanFilter(join(sub, '.git'));
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sub,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    }).trim();
+    sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},sub`);
+    expectPlainGitFires(join(sub, 'f'));
+
+    pinnedStatus();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  // Pinned git still reads `<admin>/config.worktree` while the extension is on,
+  // and the file sits beside commondir, where the session can write it.
+  it('refuses while git would read the worktree config, and runs no filter from it', () => {
+    const worktreeConfig = join(repo, '.git/worktrees/s-1/config.worktree');
+    sh(
+      repo,
+      'git',
+      'config',
+      '--file',
+      worktreeConfig,
+      'filter.pwn.clean',
+      `sh -c 'echo pwned >> ${marker}; cat'`,
+    );
+    writeFileSync(join(worktree, '.gitattributes'), '* filter=pwn\n');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(/config\.worktree/);
+
+    sh(repo, 'git', 'config', 'extensions.worktreeConfig', 'true');
+    touchLater(join(worktree, 'src/app.ts'));
+    pinnedStatus();
+    // The plant is live: with the extension on, pinned git runs it.
+    expect(existsSync(marker)).toBe(true);
+    unlinkSync(worktreeConfig);
+    // Written from outside the repo, which git refuses to open once the value is unreadable.
+    const setExtension = (value: string) =>
+      sh(
+        dirname(marker),
+        'git',
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        value,
+      );
+    // The extension alone refuses too: a file written after the check would be read.
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(/extensions\.worktreeConfig/);
+    setExtension('maybe');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    setExtension('false');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).not.toThrow();
+  });
+
+  // A session window sets `diff.ignoreSubmodules=all` through the environment,
+  // and pup run from it, its tests included, must not inherit that into the
+  // scope audit's diff, where it would hide a gitlink change.
+  it("leaves out the config a caller's environment hands git", () => {
+    vi.stubEnv('GIT_CONFIG_COUNT', '1');
+    vi.stubEnv('GIT_CONFIG_KEY_0', 'diff.ignoreSubmodules');
+    vi.stubEnv('GIT_CONFIG_VALUE_0', 'all');
+    vi.stubEnv('GIT_CONFIG_PARAMETERS', "'diff.ignoresubmodules'='all'");
+    const sub = makeRepo();
+    writeFileSync(join(sub, 'f'), 'a\n');
+    commitAll(sub, 'sub');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sub,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    });
+    sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head.trim()},vendored`);
+    sh(repo, 'git', 'commit', '-q', '-m', 'gitlink');
+
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['vendored']);
+    vi.unstubAllEnvs();
+  });
+
+  it('refuses a gitfile that is a symlink or a fifo, without blocking on the fifo', () => {
+    const copy = join(tempDir('pup-gitfile-'), 'gitfile');
+    writeFileSync(copy, readFileSync(join(worktree, '.git')));
+    unlinkSync(join(worktree, '.git'));
+    symlinkSync(copy, join(worktree, '.git'));
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+
+    unlinkSync(join(worktree, '.git'));
+    sh(worktree, 'mkfifo', '.git');
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+  });
+
+  // The gate's driver check runs pinned, as the rebase it guards does: unpinned,
+  // it would read whichever repo the pointer named at that moment.
+  it('reads armed drivers from the trusted dirs, whatever the gitfile names', () => {
+    sh(repo, 'git', 'config', 'filter.real.smudge', 'cat');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${plantedRepo()}\n`);
+
+    expect(armedGitDrivers(worktree, worktreeGitEnv(repo, worktree))).toEqual([
+      'filter.real.smudge',
+    ]);
+  });
+
+  // Git 2.48+ writes `gitdir: ../../.git/worktrees/<id>` under the operator's
+  // global `worktree.useRelativePaths`, which the exact checks refuse as a
+  // rewrite. pup's own `worktree add` pins the option off instead.
+  describe('with worktree.useRelativePaths on in the global config', () => {
+    let globalConfig: string;
+
+    beforeEach(() => {
+      globalConfig = join(tempDir('pup-global-'), 'gitconfig');
+      writeFileSync(globalConfig, '[worktree]\n\tuseRelativePaths = true\n');
+      vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("has pup's worktree add write the absolute gitfile the check accepts", () => {
+      const added = join(repo, '.worktrees', 's-2');
+      runGit(repo, ['worktree', 'add', '-b', 'pup/s-2', added, 'HEAD']);
+
+      expect(readFileSync(join(added, '.git'), 'utf8')).toBe(
+        `gitdir: ${join(repo, '.git', 'worktrees', 's-2')}\n`,
+      );
+      expect(verifiedWorktreeGitEnv(repo, added).GIT_WORK_TREE).toBe(added);
+    });
+
+    // An older git knows no such option, so the plant is live from 2.48 on only.
+    it.runIf(gitAtLeast(2, 48))(
+      'is live: plain git writes a relative gitfile, which the check refuses',
+      () => {
+        const added = join(repo, '.worktrees', 's-3');
+        execFileSync('git', ['worktree', 'add', '-q', '-b', 'pup/s-3', added], {
+          cwd: repo,
+          env: { ...GIT_ENV, GIT_CONFIG_GLOBAL: globalConfig },
+        });
+
+        expect(readFileSync(join(added, '.git'), 'utf8')).toMatch(/^gitdir: \.\./);
+        expect(() => verifiedWorktreeGitEnv(repo, added)).toThrow(WorktreeRepointedError);
+      },
+    );
+  });
+});
+
+// Usually the operator's config: `git sparse-checkout` turns the extension on
+// and writes `config.worktree`, which the launch's own check would refuse only
+// once the worktree and the session row exist (decision 101). A session that
+// can write the shared config can do the same, so the refusal asks for both
+// files to be read before anything is removed.
+describe('assertNoWorktreeConfig', () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = makeRepo();
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src/app.ts'), 'export const app = 1;\n');
+    writeFileSync(join(repo, 'README.md'), 'readme\n');
+    commitAll(repo, 'base');
+  });
+
+  it('refuses a repo sparse-checkout has touched, disabled or not, naming it', () => {
+    sh(repo, 'git', 'sparse-checkout', 'set', 'src');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/git sparse-checkout/);
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(
+      /inspect \.git\/config and \.git\/config\.worktree before removing anything/,
+    );
+
+    // `disable` leaves both the extension and the file behind.
+    sh(repo, 'git', 'sparse-checkout', 'disable');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(WorktreeConfigError);
+  });
+
+  it('refuses the file alone, the extension alone and a value git cannot read', () => {
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+    writeFileSync(join(repo, '.git/config.worktree'), '');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/config\.worktree exists/);
+    unlinkSync(join(repo, '.git/config.worktree'));
+
+    // Written from outside the repo, which git refuses to open once the value is unreadable.
+    const setExtension = (value: string) =>
+      sh(
+        dirname(repo),
+        'git',
+        'config',
+        '--file',
+        join(repo, '.git/config'),
+        'extensions.worktreeConfig',
+        value,
+      );
+    setExtension('true');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on/);
+    setExtension('maybe');
+    const unset = ['-C', '/', 'config', '--file', join(repo, '.git/config')];
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(
+      `git ${unset.join(' ')} --unset extensions.worktreeConfig`,
+    );
+    // The hint's unset works on a value git cannot read, run from inside the repo too.
+    sh(repo, 'git', ...unset, '--unset', 'extensions.worktreeConfig');
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+    setExtension('false');
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
 });

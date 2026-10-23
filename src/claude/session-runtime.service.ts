@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { runGit } from '../core/git-diff.client.js';
+import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
@@ -364,14 +364,22 @@ function spawnDetachedSession(
  * keys the dialog on the git common-dir ROOT, not the launch cwd (verified on
  * 2.1.218: a trusted worktree under an untrusted repo still shows the dialog,
  * and accepting it writes `hasTrustDialogAccepted` on the repo root) — so both
- * paths are seeded. `claudeJsonPath` is overridable for tests only.
+ * paths are seeded. `claudeJsonPath` is overridable for tests only. A session
+ * window passes its checked dirs, and the root is then their common dir's:
+ * asked of git, it would be whatever repo the worktree's pointers name
+ * (decision 101).
  */
-export function preseedTrust(worktreePath: string, claudeJsonPath = CLAUDE_JSON): void {
+export function preseedTrust(
+  worktreePath: string,
+  claudeJsonPath = CLAUDE_JSON,
+  git?: WorktreeGitEnv,
+): void {
   const config = existsSync(claudeJsonPath)
     ? (JSON.parse(readFileSync(claudeJsonPath, 'utf8')) as Record<string, unknown>)
     : {};
   const projects = (config.projects ?? {}) as Record<string, Record<string, unknown>>;
-  for (const path of new Set([worktreePath, ...mainRepoRoot(worktreePath)])) {
+  const roots = git ? [dirname(git.GIT_COMMON_DIR)] : mainRepoRoot(worktreePath);
+  for (const path of new Set([worktreePath, ...roots])) {
     projects[path] = { ...projects[path], hasTrustDialogAccepted: true };
   }
   config.projects = projects;
@@ -445,11 +453,40 @@ interface ClaudeWindowOptions {
    * conductor's: the guards tell the two apart by which is set (decision 47).
    */
   caller: Record<string, string>;
+  /**
+   * A session window's admin and common dirs, checked before it opens
+   * (decision 101): trust is seeded on their repo, and the window gets
+   * `WINDOW_GIT_CONFIG`. Never the window's environment itself: every process
+   * the session runs would inherit them, and a `git init` or `git clone` a
+   * test or a package manager runs in another dir would act on the session's
+   * repo. Absent for the conductor, whose checkout is no linked worktree of a
+   * session's.
+   */
+  git?: WorktreeGitEnv;
   /** The tmux server to open it on: the conductor's own, or the default one. */
   socket?: string;
   /** `nice -n` level for the window's `claude`; unset runs it at pup's own priority. */
   niceness?: string;
 }
+
+/**
+ * Config a session window's git takes from its environment (decision 101). A
+ * gitlink in the index over a `.git` of the session's makes `status` and
+ * `diff` run a child git in it, which reads that repo's config and runs its
+ * filters. This narrows that for Claude Code's startup git and the code
+ * graph's, which run outside the Bash sandbox, and does not close it: a
+ * per-submodule `ignore` in `.gitmodules` outranks it, and `diff-files` and
+ * `diff-index` never read it. pup's own git passes `--ignore-submodules=all`
+ * instead. `status.submoduleSummary` because the summary spawns git in each
+ * submodule whatever `diff.ignoreSubmodules` says.
+ */
+const WINDOW_GIT_CONFIG = {
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'diff.ignoreSubmodules',
+  GIT_CONFIG_VALUE_0: 'all',
+  GIT_CONFIG_KEY_1: 'status.submoduleSummary',
+  GIT_CONFIG_VALUE_1: 'false',
+};
 
 /**
  * How far below normal a session's `claude` runs, and so every test, build and
@@ -467,13 +504,14 @@ const SESSION_NICENESS = '10';
  * and hand the process the same bypass-permissions, user-setting-sources argv.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
-  preseedTrust(opts.cwd);
+  preseedTrust(opts.cwd, CLAUDE_JSON, opts.git);
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
       ...opts.caller,
+      ...(opts.git ? WINDOW_GIT_CONFIG : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',
@@ -501,6 +539,11 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_SESSION_ID: opts.sessionId },
+    // Checked before the window opens, so a respawn over pointers the last
+    // window rewrote is refused rather than have Claude Code's startup git
+    // follow them. A session's worktree is `<repo>/.worktrees/<session-id>`,
+    // the one place `startSession` puts it.
+    git: verifiedWorktreeGitEnv(dirname(dirname(opts.worktreePath)), opts.worktreePath),
     niceness: SESSION_NICENESS,
   });
 }

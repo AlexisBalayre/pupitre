@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,7 +36,7 @@ import { tempDir } from '../test/temp-dir.mock.js';
 import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { ArmedGitDriverError } from './git-diff.client.js';
+import { ArmedGitDriverError, WorktreeConfigError } from './git-diff.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
@@ -567,6 +574,82 @@ describe('launchTask armed-driver guard', () => {
 
     expect(launch()).toBe('t-1');
     expect(existsSync(fired)).toBe(false);
+  });
+});
+
+// Usually the operator's config: `git sparse-checkout` turns
+// `extensions.worktreeConfig` on, and the launch's own check refused it only
+// once the worktree and the row existed, which then blocked every retry
+// (decision 101).
+describe('launchTask worktree-config guard', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', tempDir('pup-wtconfig-home-'));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = tempDir('pup-wtconfig-');
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+    gitIn(repo, 'sparse-checkout', 'set', 'src');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const launch = () =>
+    launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+    });
+
+  it('refuses before any row, worktree or branch, and a retry once cleared launches', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+
+    expect(launch).toThrow(WorktreeConfigError);
+    expect(launch).toThrow(/git sparse-checkout/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(existsSync(join(repo, '.worktrees', 't-1'))).toBe(false);
+    expect(gitIn(repo, 'worktree', 'list', '--porcelain')).not.toContain('.worktrees');
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
+
+    // Cleared as the refusal says; nothing left behind claims the task.
+    gitIn(repo, 'sparse-checkout', 'disable');
+    gitIn(
+      repo,
+      '-C',
+      '/',
+      'config',
+      '--file',
+      join(repo, '.git/config'),
+      '--unset',
+      'extensions.worktreeConfig',
+    );
+    unlinkSync(join(repo, '.git', 'config.worktree'));
+    expect(launch()).toBe('t-1');
+  });
+
+  it('writes no task row when `pup new` is refused', () => {
+    expect(() =>
+      createSession(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        task: spec(),
+        claudeUserDir: join(repo, '.claude'),
+      }),
+    ).toThrow(WorktreeConfigError);
+    expect(getTask(db, 't-1')).toBeUndefined();
+    expect(listBacklogTasks(db, projectId(repo))).toEqual([]);
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
   });
 });
 

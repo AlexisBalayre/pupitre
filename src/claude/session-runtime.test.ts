@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,6 +52,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
 });
 
+import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
@@ -140,6 +149,21 @@ describe('preseedTrust', () => {
     expect(config.numStartups).toBe(3);
     const projects = readProjects(claudeJson);
     expect(projects[repo]).toEqual({ hasTrustDialogAccepted: true, allowedTools: ['Read'] });
+  });
+
+  // A session window passes its pins: asked of git, the root would be the repo
+  // the worktree's pointers name, which the session can choose (decision 101).
+  it("seeds the pins' repo root, whatever the worktree's gitfile names", () => {
+    const { repo, worktree } = initRepoWithWorktree();
+    const pins = verifiedWorktreeGitEnv(repo, worktree);
+    const elsewhere = tempDir('pup-elsewhere-');
+    sh(elsewhere, 'git', 'init', '-q');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${join(elsewhere, '.git')}\n`);
+    const claudeJson = join(tempDir('pup-cfg-'), 'claude.json');
+
+    preseedTrust(worktree, claudeJson, pins);
+
+    expect(Object.keys(readProjects(claudeJson)).sort()).toEqual([repo, worktree].sort());
   });
 
   it('seeds only the launch path when it is not a git checkout', () => {
@@ -262,17 +286,49 @@ const FAKE_NICE_BIN = '/fake/bin/nice';
  * three literal copies of them read as a clone of the production call itself
  * (addendum to decision 47).
  */
+/** The `-e` pairs of a session window's git config (decision 101). */
+const WINDOW_GIT_CONFIG_ARGS = [
+  'GIT_CONFIG_COUNT=2',
+  'GIT_CONFIG_KEY_0=diff.ignoreSubmodules',
+  'GIT_CONFIG_VALUE_0=all',
+  'GIT_CONFIG_KEY_1=status.submoduleSummary',
+  'GIT_CONFIG_VALUE_1=false',
+].flatMap((pair) => ['-e', pair]);
+
 function spawnPrefix(name: string): string[] {
   return ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name];
 }
 
 describe('launchSession', () => {
+  // A real linked worktree: the launch checks its git pointers before the
+  // window opens (decision 101).
+  let repo: string;
+  let opts: typeof OPTS;
+
+  beforeEach(() => {
+    const made = initRepoWithWorktree();
+    repo = made.repo;
+    opts = { ...OPTS, worktreePath: made.worktree };
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
+  /** The `-e` pairs the launch handed tmux, as the window's process sees them. */
+  function launchedWindowEnv(): Record<string, string> {
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    return Object.fromEntries(
+      spawn.flatMap((arg, i) => (spawn[i - 1] === '-e' ? [arg.split(/=(.*)/s).slice(0, 2)] : [])),
+    ) as Record<string, string>;
+  }
+
   it('kills any stale session, then spawns tmux with the window size, env, and resolved claude binary under nice -n 10, and returns the pane it printed', () => {
-    const pane = launchSession(OPTS);
+    const pane = launchSession(opts);
 
     // The pane id, not the session name: it is what every later steer,
     // interrupt and capture is addressed to (decision 46).
@@ -292,17 +348,123 @@ describe('launchSession', () => {
       '-y',
       '50',
       '-c',
-      OPTS.worktreePath,
+      opts.worktreePath,
       '-e',
-      `PUP_SESSION_ID=${OPTS.sessionId}`,
+      `PUP_SESSION_ID=${opts.sessionId}`,
+      // The submodule config, and never GIT_DIR, GIT_COMMON_DIR or
+      // GIT_WORK_TREE, which every process the window runs would inherit
+      // (decision 101).
+      ...WINDOW_GIT_CONFIG_ARGS,
       '-e',
       `PUP_BIN=${process.argv[1] ?? 'pup'}`,
       FAKE_NICE_BIN,
       '-n',
       '10',
       FAKE_CLAUDE_BIN,
-      ...launchArgs(OPTS),
+      ...launchArgs(opts),
     ]);
+  });
+
+  // A respawn opens a window on a worktree the last one could write: one whose
+  // pointers name another repo would have Claude Code's startup git run that
+  // repo's filters, so nothing is opened at all.
+  it.each([
+    ['a repointed gitfile', '.git', (elsewhere: string) => `gitdir: ${elsewhere}\n`],
+    ['a rewritten commondir', '', (elsewhere: string) => `${elsewhere}\n`],
+  ])('opens no window over %s', (_, pointer, content) => {
+    const elsewhere = tempDir('pup-elsewhere-');
+    sh(elsewhere, 'git', 'init', '-q');
+    const target = pointer
+      ? join(opts.worktreePath, pointer)
+      : join(repo, '.git', 'worktrees', 'wt', 'commondir');
+    writeFileSync(target, content(join(elsewhere, '.git')));
+
+    expect(() => launchSession(opts)).toThrow(WorktreeRepointedError);
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toEqual([]);
+  });
+
+  // Claude Code's startup git and the code graph's run on the window's
+  // environment alone, outside the Bash sandbox. A gitlink over a `.git` the
+  // session made would have their status and diff run a child git there, so
+  // the window skips submodules (decision 101).
+  // The window's config narrows the exposure and does not close it: a
+  // `.gitmodules` override outranks it, and only a command-line flag beats that.
+  it("runs no child git in a gitlink under the window's own environment, until .gitmodules overrides it", () => {
+    launchSession(opts);
+    const windowEnv = launchedWindowEnv();
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    const sub = join(opts.worktreePath, 'sub');
+    mkdirSync(sub);
+    sh(sub, 'git', 'init', '-q');
+    writeFileSync(join(sub, 'f'), 'a\n');
+    sh(sub, 'git', 'add', 'f');
+    sh(sub, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'sub');
+    sh(sub, 'git', 'config', 'filter.pwn.clean', `sh -c 'echo pwned >> ${marker}; cat'`);
+    writeFileSync(join(sub, '.git/info/attributes'), '* filter=pwn\n');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: sub,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    });
+    sh(
+      opts.worktreePath,
+      'git',
+      'update-index',
+      '--add',
+      '--cacheinfo',
+      `160000,${head.trim()},sub`,
+    );
+    const later = () => new Date(Date.now() + 60_000);
+    const asWindow = { ...GIT_ENV, ...windowEnv };
+    for (const args of [
+      ['status', '--short'],
+      ['diff', '--stat'],
+    ]) {
+      // The plant is live: plain git in the worktree runs it.
+      utimesSync(join(sub, 'f'), later(), later());
+      execFileSync('git', args, {
+        cwd: opts.worktreePath,
+        env: { ...asWindow, GIT_CONFIG_COUNT: '0' },
+      });
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+
+      utimesSync(join(sub, 'f'), later(), later());
+      execFileSync('git', args, { cwd: opts.worktreePath, env: asWindow });
+      expect(existsSync(marker)).toBe(false);
+    }
+    writeFileSync(
+      join(opts.worktreePath, '.gitmodules'),
+      '[submodule "sub"]\n\tpath = sub\n\tignore = none\n',
+    );
+    utimesSync(join(sub, 'f'), later(), later());
+    execFileSync('git', ['status', '--short'], { cwd: opts.worktreePath, env: asWindow });
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  // Every process the session runs inherits the window's environment: a test
+  // or a package manager that runs `git init` in a dir of its own must act on
+  // that dir. Under GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE it would write
+  // `core.worktree` into the config the main checkout and every session share.
+  it("lets a child git init in a temp dir leave the repo's shared config untouched", () => {
+    launchSession(opts);
+    const asWindow = { ...GIT_ENV, ...launchedWindowEnv() };
+    const config = join(repo, '.git', 'config');
+    const before = readFileSync(config, 'utf8');
+
+    // The exposure is live: with the three variables set, the init writes there.
+    execFileSync('git', ['init', '-q'], {
+      cwd: tempDir('pup-child-'),
+      env: { ...asWindow, ...verifiedWorktreeGitEnv(repo, opts.worktreePath) },
+    });
+    expect(readFileSync(config, 'utf8')).toContain(`worktree = ${opts.worktreePath}`);
+    writeFileSync(config, before);
+
+    const child = tempDir('pup-child-');
+    execFileSync('git', ['init', '-q'], { cwd: child, env: asWindow });
+    expect(readFileSync(config, 'utf8')).toBe(before);
+    expect(existsSync(join(child, '.git', 'HEAD'))).toBe(true);
   });
 
   // `pup launch` and `pup new` are the conductor's to run, and they run in its
@@ -315,7 +477,7 @@ describe('launchSession', () => {
     vi.stubEnv('PUP_CONDUCTOR', 'proj-1');
     vi.stubEnv('PUP_SESSION_ID', 'someone-else');
 
-    const pane = launchSession(OPTS);
+    const pane = launchSession(opts);
 
     expect(pane.socket).toBeUndefined();
     for (const [, args, options] of vi
@@ -351,7 +513,7 @@ describe('launchSession', () => {
     vi.stubEnv('NODE_OPTIONS', '--require /tmp/evil.js');
     vi.stubEnv('TMUX_TMPDIR', '/private/tmp');
 
-    launchSession(OPTS);
+    launchSession(opts);
 
     for (const [, , options] of vi
       .mocked(execFileSync)
@@ -376,7 +538,7 @@ describe('launchSession', () => {
         : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
     );
     try {
-      expect(() => launchSession(OPTS)).toThrow('tmux new-session printed "", not a pane id.');
+      expect(() => launchSession(opts)).toThrow('tmux new-session printed "", not a pane id.');
     } finally {
       vi.mocked(execFileSync).mockImplementation(original as never);
     }

@@ -11,7 +11,12 @@ import {
 import { shellWord } from '../claude/session-runtime.service.js';
 import { readBrief, workerBrief } from './brief.service.js';
 import { codegraphMcpConfig } from './codegraph.client.js';
-import { GIT_SAFE_CONFIG } from './git-diff.client.js';
+import {
+  GIT_SAFE_CONFIG,
+  POINTER_MAX_BYTES,
+  type WorktreeGitEnv,
+  worktreeGitEnv,
+} from './git-diff.client.js';
 import { globsToGrepFile } from './glob.utils.js';
 import {
   CHARS_PER_TOKEN,
@@ -88,7 +93,7 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-function validateInput(input: CompileInput): void {
+function validateInput(input: CompileInput, git: WorktreeGitEnv): void {
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());
   if (scopeIn.length === 0) {
     throw new InvalidProfileError(
@@ -110,6 +115,9 @@ function validateInput(input: CompileInput): void {
     ['worktreePath', input.worktreePath],
     ['eventsFile', input.eventsFile],
     ['outDir', input.outDir],
+    // Resolved from `repoPath`, so a symlink on the way can bring in what the
+    // worktree path was checked for.
+    ['the common dir', git.GIT_COMMON_DIR],
   ] as const) {
     if (SHELL_UNSAFE_PATH.test(path)) {
       throw new InvalidProfileError(
@@ -314,7 +322,18 @@ function buildContextMarkdown(
 
 /**
  * Shell both worktree hooks share (decision 99). `safe_git` is git under the
- * pins `runGit` applies, each a Pupitre constant single-quoted into the script.
+ * pins `runGit` applies, each a Pupitre constant single-quoted into the script,
+ * and pinned to the admin and common dirs pup trusts for this worktree, rendered
+ * here (decision 101): the session can rewrite the `.git` gitfile and the
+ * `commondir` that would otherwise choose them, and so the config whose clean
+ * filter or fsmonitor an index read runs, outside the sandbox. `status` and
+ * `diff` skip submodules too, since a gitlink over a `.git` of the session's
+ * runs a child git there that drops the pins. `pinned_worktree` checks both
+ * pointers with filesystem reads alone and fails when either names another
+ * dir, so a rewrite is refused loudly rather than ignored, and fails while git
+ * would read the admin dir's session-writable `config.worktree`, as
+ * `verifiedWorktreeGitEnv` does; both hooks call it before their first `safe_git`.
+ *
  * `merge_of_target` prints MERGE_HEAD while a merge of the target's tip is in
  * progress in the worktree, and fails otherwise. The target is the branch the
  * main checkout has out, the one the gate merges into, and MERGE_HEAD must be
@@ -326,7 +345,35 @@ function buildContextMarkdown(
  * can move the target's branch itself, so the gate's scope audit, on the
  * branch's own diff, is what holds (decisions 6, 63).
  */
-const MERGE_OF_TARGET_SHELL = `safe_git() { git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"; }
+function worktreeGitShell(git: WorktreeGitEnv): string {
+  return `GIT_ADMIN='${git.GIT_DIR}'
+GIT_COMMON='${git.GIT_COMMON_DIR}'
+safe_git() {
+  GIT_DIR="$GIT_ADMIN" GIT_COMMON_DIR="$GIT_COMMON" GIT_WORK_TREE="$WORKTREE" \\
+    git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"
+}
+unset CDPATH
+pinned_worktree() {
+  if ! { [ -f "$WORKTREE/.git" ] && [ ! -L "$WORKTREE/.git" ] &&
+    [ "$(head -c ${POINTER_MAX_BYTES} -- "$WORKTREE/.git")" = "gitdir: $GIT_ADMIN" ] &&
+    [ "$(cd -P -- "$GIT_ADMIN" && pwd -P)" = "$GIT_ADMIN" ] &&
+    [ -f "$GIT_ADMIN/commondir" ] && [ ! -L "$GIT_ADMIN/commondir" ] &&
+    [ "$(cd -P -- "$GIT_ADMIN" && cd -P -- "$(head -c ${POINTER_MAX_BYTES} commondir)" && pwd -P)" = "$GIT_COMMON" ]
+  } 2>/dev/null; then
+    printf 'BLOCKED: %s/.git or its commondir no longer names %s; no git runs in this worktree until both are restored.\\n' \\
+      "$WORKTREE" "$GIT_ADMIN" >&2
+    return 1
+  fi
+  # The file first, as the TypeScript check does, so no git runs while it is
+  # there. Exit 1 is "no such key"; a value git cannot read as a boolean counts as on.
+  if [ ! -e "$GIT_ADMIN/config.worktree" ] && [ ! -L "$GIT_ADMIN/config.worktree" ]; then
+    EXTENSION=$(safe_git config --file "$GIT_COMMON/config" --type bool --get extensions.worktreeConfig 2>/dev/null)
+    case "$?/$EXTENSION" in 1/|0/false) return 0 ;; esac
+  fi
+  printf 'BLOCKED: git would read %s/config.worktree, which the session can write; no git runs in this worktree until it is gone and extensions.worktreeConfig is off.\\n' \\
+    "$GIT_ADMIN" >&2
+  return 1
+}
 merge_of_target() {
   HEAD_FILE=$(safe_git -C "$WORKTREE" rev-parse --path-format=absolute --git-path MERGE_HEAD 2>/dev/null) || return 1
   [ -f "$HEAD_FILE" ] || return 1
@@ -336,6 +383,7 @@ merge_of_target() {
   TIP=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'main-worktree/HEAD^{commit}' 2>/dev/null) || return 1
   [ "$MERGING" = "$TIP" ] && printf '%s\\n' "$MERGING"
 }`;
+}
 
 /**
  * Scope enforcement. Task-controlled patterns live in sidecar files read via
@@ -343,7 +391,7 @@ merge_of_target() {
  * Pupitre-owned, validated paths are. REL is normalized and parent traversal
  * is denied before matching.
  */
-function buildScopeHookScript(input: CompileInput): string {
+function buildScopeHookScript(input: CompileInput, git: WorktreeGitEnv): string {
   const hooksDir = join(input.outDir, 'hooks');
   return `#!/bin/sh
 # PreToolUse(Edit|Write) scope enforcement — generated by the Pupitre profile compiler.
@@ -366,7 +414,7 @@ case "/$REL/" in *"/../"*) echo "BLOCKED: path traversal is not allowed." >&2; e
 if printf '%s\\n' "$REL" | grep -qiE '^\\.claude/'; then
   echo "BLOCKED: .claude/ is owned by Pupitre and read-only for sessions." >&2; exit 2
 fi
-${MERGE_OF_TARGET_SHELL}
+${worktreeGitShell(git)}
 # Out of scope, an Edit still goes through when all it does is resolve a conflict
 # a merge of the target left in the file (decision 99). The replaced text is
 # exactly one conflict block, from its <<<<<<< line to its >>>>>>> line, with one
@@ -402,6 +450,7 @@ def resolutions:
   and (.tool_input.new_string as $new | any(.tool_input.old_string | resolutions; . == $new))'
 resolves_conflict() {
   [ "$(printf '%s' "$INPUT" | jq -r "$RESOLUTION")" = true ] || return 1
+  pinned_worktree || return 1
   MERGED=$(merge_of_target) || return 1
   STAGES=$(safe_git -C "$WORKTREE" --literal-pathspecs ls-files -u -- "$REL") || return 1
   OURS=$(printf '%s\\n' "$STAGES" | awk '$3 == 2 { print $2 }')
@@ -445,7 +494,7 @@ exit 0
  * scope_violation, logged and refused. Paths come from `git status -z` and only
  * ever reach the shell as quoted data; scope patterns stay in the sidecar files.
  */
-function buildBashRecheckScript(input: CompileInput): string {
+function buildBashRecheckScript(input: CompileInput, git: WorktreeGitEnv): string {
   const hooksDir = join(input.outDir, 'hooks');
   return `#!/bin/sh
 # Bash write re-check — generated by the Pupitre profile compiler (decision 63).
@@ -483,7 +532,7 @@ WORK=$(mkdir -p "$SNAPSHOTS" && mktemp -d "$SNAPSHOTS/work.XXXXXX") || {
   [ "$PHASE" = PreToolUse ] && exit 0
   echo "SCOPE CHECK FAILED: bash re-check could not make its scratch dir." >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
-${MERGE_OF_TARGET_SHELL}
+${worktreeGitShell(git)}
 
 # One line per dirty path outside this task's scope: "<fingerprint> <reason> <path>".
 # Returns 1 when git cannot be read and 2 when there are too many paths to check;
@@ -497,15 +546,17 @@ ${MERGE_OF_TARGET_SHELL}
 # tip, asked of git once rather than path by path, which would outrun the hook's
 # timeout on a merge that brings in many files.
 out_of_scope() {
+  pinned_worktree || return 1
   MERGED=$(merge_of_target) || MERGED=
   safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
-    --no-renames > "$WORK/status" || return 1
+    --no-renames --ignore-submodules=all > "$WORK/status" || return 1
   # An ignored path is in no listing above, and the ignore rule can be the session's
   # own: .git/info/exclude is not a worktree path, so writing it is invisible. Under
   # .claude/ the ignored files are listed too, and only those (!!) are kept from this
   # pass, since everything else in it is already in the first.
   safe_git -C "$WORKTREE" status --porcelain=v1 -z --untracked-files=all \\
-    --ignored=traditional --no-renames -- ':(icase).claude' > "$WORK/protected" || return 1
+    --ignored=traditional --no-renames --ignore-submodules=all -- ':(icase).claude' \\
+    > "$WORK/protected" || return 1
   { tr '\\n\\000' '\\001\\n' < "$WORK/status"
     tr '\\n\\000' '\\001\\n' < "$WORK/protected" | grep '^!! '
   } > "$WORK/records"
@@ -514,7 +565,7 @@ out_of_scope() {
   [ "$(wc -l < "$WORK/records")" -le ${RECHECK_MAX_DIRTY_PATHS} ] || return 2
   if [ -n "$MERGED" ]; then
     safe_git -C "$WORKTREE" diff --no-ext-diff --no-textconv --no-renames --name-only -z \\
-      "$MERGED" -- > "$WORK/merged" || return 1
+      --ignore-submodules=all "$MERGED" -- > "$WORK/merged" || return 1
     tr '\\n\\000' '\\001\\n' < "$WORK/merged" > "$WORK/differs"
   fi
   while IFS= read -r ENTRY; do
@@ -603,7 +654,8 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  * compiled into the context and its hash rather than stored with the task.
  */
 export function compileProfile(input: CompileInput & { peers?: SessionPeer[] }): CompiledProfile {
-  validateInput(input);
+  const git = worktreeGitEnv(input.repoPath, input.worktreePath);
+  validateInput(input, git);
   const merged = mergeLayers(input.base, input.role);
   // Read at compile time, which is what makes an edit take effect at the next
   // launch and never in a window already running (decision 57).
@@ -689,9 +741,9 @@ export function compileProfile(input: CompileInput & { peers?: SessionPeer[] }):
     ...(input.codegraphBinary
       ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.worktreePath) }
       : {}),
-    'hooks/scope-enforce.sh': buildScopeHookScript(input),
+    'hooks/scope-enforce.sh': buildScopeHookScript(input, git),
     'hooks/bash-guard.sh': buildBashGuardScript(),
-    'hooks/bash-recheck.sh': buildBashRecheckScript(input),
+    'hooks/bash-recheck.sh': buildBashRecheckScript(input, git),
     'hooks/event-log.sh': buildEventHookScript(input),
     'hooks/scope-in.pat': globsToGrepFile(scopeIn),
     'hooks/scope-out.pat': scopeOut.length ? globsToGrepFile(scopeOut) : '',
