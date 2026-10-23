@@ -5346,8 +5346,8 @@ changes back into those docs is pending.
     the name `worktree add` gives it. Both come from pup's own paths, never from the files.
     The hooks get them rendered at compile time, inside `safe_git`. The gate pins its
     worktree-clean status, its rebase and `--abort`, and its driver check, which now reads the
-    config the rebase will use. The session window gets all three through tmux `-e`, so Claude
-    Code's own startup git, and everything the window runs in the worktree, is pinned too.
+    config the rebase will use. The session window gets none of the three (*The window keeps
+    its own git*, below).
     *Checked, so a rewrite is loud.* Pinned git would ignore a rewritten pointer. But the
     operator's shell and anything else that runs git there unpinned would follow it. So before
     the pinned calls, `verifiedWorktreeGitEnv` (and `pinned_worktree` in the hooks) checks with
@@ -5372,9 +5372,10 @@ changes back into those docs is pending.
     `--ignore-submodules` beats the override. So pup's safety rests on its own calls, never on
     the window's config: every status and diff it or the hooks run over the worktree passes
     `--ignore-submodules=all`, none uses `diff-files` or `diff-index`, and the rebase, checked
-    with the override planted, runs no child. pup's own git drops `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`
-    and `GIT_CONFIG_PARAMETERS` with the GIT_DIR family, so the scope audit's diff, run from a
-    shell that inherited the window's environment, still lists a gitlink change.
+    with the override planted, runs no child. pup's own git drops `GIT_CONFIG_COUNT`,
+    `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n` and `GIT_CONFIG_PARAMETERS` with the GIT_DIR family,
+    so the scope audit's diff, run from a shell that inherited the window's environment, still
+    lists a gitlink change.
     *No worktree config.* With `extensions.worktreeConfig` on, git also reads
     `<admin dir>/config.worktree`, a file inside the admin dir the session can write, which
     would arm a driver under the pins. So the check refuses while that file exists, or while
@@ -5382,26 +5383,43 @@ changes back into those docs is pending.
     git reads the extension from that file alone, never through an include. The fix assumes
     `<common>/config` is out of the session's reach. Where it is not, which is decision 41's
     exposure, a session arms a driver there directly and no pin holds.
-    *Trust seeded for the pinned repo.* `preseedTrust` marks the root of the pins' common dir
+    *Trust seeded for the checked repo.* `preseedTrust` marks the root of the checked common dir
     as trusted, not the repo `git rev-parse --git-common-dir` names from inside the worktree,
-    so a launch runs no unpinned git there either.
-    *Other repos from the window.* With the three variables set, `git clone` fails with "working
-    tree already exists", and `git init` in another directory writes `core.worktree=<worktree>`
-    into the shared `<common>/config` (reproduced). The kickoff tells the session to clear them
-    for that one command (`env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE git …`), and never
-    for the whole shell.
+    so seeding trust runs no git that follows the pointers.
+    *The window keeps its own git.* The window's environment carries none of `GIT_DIR`,
+    `GIT_COMMON_DIR` and `GIT_WORK_TREE` (CI review, 2026-10-23). The first cut set all three
+    through tmux `-e` to pin Claude Code's startup git. But every process the session runs
+    inherits the window's environment (vitest, `pnpm install`, any build tool), and nothing the
+    kickoff tells the agent reaches them. Under the three variables, a `git init` in a temp dir
+    writes `core.worktree=<worktree>` into the shared `<common>/config` (reproduced), and then
+    the operator's own git in the main checkout works against the session's worktree. A `git
+    commit` from that temp dir lands on the session's branch, a `git clone` fails with "working
+    tree already exists", and `git -C <other>` reads the session's repo. So the pins stay with
+    pup's own git and the hooks', and the window gets only the submodule config. Claude Code's
+    startup git follows the pointers, which the launch has just checked. The kickoff line that
+    told the agent to clear the three for such commands is gone with them.
+    *Absolute gitfiles.* Git 2.48's `worktree.useRelativePaths` has `worktree add` write
+    `gitdir: ../../.git/worktrees/<id>`, which the exact checks refuse as a rewrite, after
+    `startSession` has added the worktree and written its row (CI review). `GIT_SAFE_CONFIG` pins
+    the key to `false`, so pup's `worktree add` (`startSession` and a fix round) writes the
+    absolute gitfile whatever the operator's global config says. An older git ignores the key.
+    The checks stay exact and do not resolve a relative gitfile, so a worktree added with
+    relative paths outside pup is refused. The refusal's repair hint carries the same `-c`,
+    because `worktree repair` also rewrites links to match the option.
     *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
     pick another name, because a stale admin dir held it, is refused at launch, never followed.
     The hooks and the gate take the repo from the project path they are given. A launch takes it
     from the worktree path, `<repo>/.worktrees/<session-id>`, the one layout `startSession` uses,
     because `launchSession`'s callers (session-lifecycle and session-handoff) pass no project
     path. Passing it through is a follow-up. Until then, a row whose worktree path names
-    another repo's layout pins the window to that repo. Two other follow-ups are open: the
-    codegraph indexing a respawn runs in the worktree, and the conductor checkout's git, both
-    still unpinned. The git that runs in the window without pup's flags stays exposed to a
-    planted gitlink with a `.gitmodules` override: Claude Code's own startup git, and the code
-    graph server's `git status`, which goes with t-mve8vgej. With `all`, the hooks and the
-    gate's worktree-clean stage no longer see a gitlink change. The gate's scope audit, on the branch's own diff, still does.
+    another repo's layout is checked against that repo, and trust is seeded on it. Two other
+    follow-ups are open: the codegraph indexing a respawn runs in the worktree, and the
+    conductor checkout's git, both still unpinned. The git that runs outside the Bash sandbox
+    without pup's pins or flags follows the pointers: any git Claude Code runs after its
+    startup, and the code graph server's `git status`, which goes with t-mve8vgej. A rewrite after
+    the launch reaches them, and so does a planted gitlink with a `.gitmodules` override. With
+    `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
+    gate's scope audit, on the branch's own diff, still does.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
     between still blocks until the hook timeout, as decision 99's MERGE_HEAD read does. A
     session's own `pup session done` runs `runGit` with the GIT_DIR family scrubbed, inside the
@@ -5413,8 +5431,13 @@ changes back into those docs is pending.
     session-made `.git` with the same filter fires it under plain status, and leaves no marker
     after a re-check run, a pinned status, or a gate that merges the branch holding it. A
     symlinked or fifo gitfile is refused without blocking. The driver check reads the trusted
-    config whatever the gitfile names. A launch passes the three variables and the submodule
-    config to tmux, and opens nothing over either rewritten pointer. In a gitlink over an armed
+    config whatever the gitfile names. A launch passes the submodule config to tmux and none of
+    the three variables, and opens nothing over either rewritten pointer. A `git init` in a temp
+    dir under the window's environment leaves `<common>/config` untouched, while the same init
+    with the three variables added writes `core.worktree` there. With `worktree.useRelativePaths`
+    on in the global config, `runGit`'s `worktree add` writes an absolute gitfile the check
+    accepts. From Git 2.48, plain git writes a relative one, which the check refuses (skipped on
+    an older git, which has no such option). In a gitlink over an armed
     `.git`, `status` and `diff` run under the window's own environment leave no marker, while a
     control with `GIT_CONFIG_COUNT=0` fires it, and so does the window's `status` once
     `.gitmodules` sets `ignore = none`. Under that override, in the worktree or in the index
