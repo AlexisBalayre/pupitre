@@ -1,0 +1,258 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-23T08:47:55.025Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39926088428",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39926088428",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4ac0cadc7aa8ee7761421598ad1f094f624826bd",
+  "source": "pr",
+  "pr_number": 169,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "542-546",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "In a repo with extensions.worktreeConfig on (e.g. after `git sparse-checkout`), every launch is now refused after `worktree add` and the session row are already written. That leaves a stuck `queued` row, so a relaunch fails with TaskAlreadyClaimedError, plus an orphan worktree and branch. The refusal also tells the operator a session is compromised.",
+      "body": "**A legitimate repo config now fails every launch after the worktree and session row exist**\n\n`verifiedWorktreeGitEnv` refuses while `extensions.worktreeConfig` is on in `<common>/config` (or `<admin>/config.worktree` exists). That is the normal state of a repo where the operator ever ran `git sparse-checkout init/set` or cloned with `--sparse`: git turns the extension on in the shared config. Before this PR such repos launched fine.\n\nThe check runs here, inside `launchSession`:\n\n```ts\ngit: verifiedWorktreeGitEnv(dirname(dirname(opts.worktreePath)), opts.worktreePath),\n```\n\n`startSession` (`src/core/session-lifecycle.service.ts` L461-485) reaches it via `launchSession`, *after* `runGit(... ['worktree', 'add', ...])` and `insertSession(...)`, with no rollback around them. So the throw leaves:\n- a `queued` session row. `claimedStates()` is every state except `killed` (`session-state.utils.ts:47-49`), so a relaunch raises `TaskAlreadyClaimedError` until the operator runs `pup kill`;\n- the worktree and its `pup/<id>` branch. Each retry after `pup kill` adds another, since the extension is still on;\n- a `WorktreeRepointedError` telling the operator to \"treat the session that did it as compromised\", though no session ever ran.\n\nThe only pre-write guard on the launch path, `assertNoArmedGitDrivers(req.repoPath)` in `launchTask`, never looks at `extensions.worktreeConfig`. Decision 101 already treats this failure shape (refused \"after `startSession` has added the worktree and written its row\") as a bug for relative gitfiles and fixed that case with the `useRelativePaths` pin; the worktree-config case has the same shape and no fix.\n\nSuggested fix: refuse up front in `launchTask`, next to `assertNoArmedGitDrivers(req.repoPath)` and before anything is written, when `extensions.worktreeConfig` is on in `<repo>/.git/config` or `<repo>/.git/config.worktree` exists, with its own message aimed at the operator's sparse-checkout/worktree config rather than a compromised session.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4ac0cadc7aa8ee7761421598ad1f094f624826bd/src/claude/session-runtime.service.ts#L542-L546",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "924-928",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--ignore-submodules=all` also hides a staged or unstaged gitlink pointer change, so worktree-clean now passes it and teardown's `worktree remove --force` silently drops it. `--ignore-submodules=dirty` should still report pointer changes while spawning no child git, since it skips `is_submodule_modified` and reads the submodule's HEAD in-process (from git internals, not checked against source).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "130-150",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the worktree directory is simply gone (removed by hand, or never re-added), `readPointer` returns undefined, and `pup merge` / launch now throw WorktreeRepointedError telling the operator to 'treat the session that did it as compromised'. Before, git's 'cannot change to' error made the cause obvious. Checking `existsSync(worktreePath)` first and giving a missing-worktree message would avoid the false alarm.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "29-38",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`scrubbedGitEnv` now drops every `GIT_CONFIG_COUNT/KEY_n/VALUE_n/PARAMETERS` for all of pup's git calls, including the gate's rebase and push and the `gh` calls in `github.client.ts`. An operator who supplies `user.email`, `safe.directory` or push auth that way (container or CI setups) now gets failures; a rebase failure, for example, is reported as 'Auto-rebase ... hit conflicts'. Dropping only the window's two submodule keys would keep the decision-101 fix without this.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "483-489",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The window's `diff.ignoreSubmodules=all` also hides submodule bumps from the session's own `git status` and `git diff`, so in a repo with submodules a task that updates one sees it as clean and can leave the gitlink change out of its commit. Decision 101 covers only pup's own view of this, not the agent's.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "63",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`worktreeGitEnv` inlines `existsSync(dotGit) ? realpathSync(dotGit) : dotGit`, a near-copy of `resolvePath` in `src/core/sandbox-profile.utils.ts:183-185`; use `resolvePath(join(repoPath, '.git'))` so the two copies of that rule cannot drift.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "546",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`launchSession` derives the repo path via `dirname(dirname(opts.worktreePath))`, encoding core's `<repo>/.worktrees/<session-id>` layout in `src/claude`; if the layout changes every respawn is refused as repointed. All three callers already have the repo path, so pass `repoPath` (or the verified `WorktreeGitEnv`) in `LaunchOptions`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "758-761, 788-806",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test \"never runs a child git in a gitlink over a .git of the session\" passes `--ignore-submodules=all` itself via `pinnedStatus` and calls no production code that adds the flag, so it tests git rather than pup and would still pass if the gate dropped the flag; delete it or route it through the production status call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "852-871",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In \"leaves out the config a caller's environment hands git\", `vi.unstubAllEnvs()` is the last line of the body with no `afterEach`, so a failing assertion leaks `GIT_CONFIG_*` into later tests; and there is no step proving the stubbed config would hide the gitlink, so the test can pass vacuously.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "worktreeConfigOn declaration",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`worktreeConfigOn` returns a boolean but lacks the `is`/`has`/`should`/`can` prefix that `docs/conventions/general.md` §Type safety requires for boolean names; e.g. `isWorktreeConfigOn`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "324-335",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `worktreeGitShell` JSDoc runs the `safe_git` pins and the `pinned_worktree` check together in one sentence with passive clauses that don't parse (\"`safe_git` is git under the pins `runGit` applies, each a Pupitre constant single-quoted into the script, and pinned to…\"); split it into one sentence per function.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "355",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The generated `unset CDPATH` line has no WHY; a reader can't tell that a set `CDPATH` makes `cd -P` print the directory and break the `pwd -P` comparison in `pinned_worktree`. Add a short comment or put it in the JSDoc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "367-368",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The generated-shell comment \"The file first, as the TypeScript check does, so no git runs while it is there\" points at code a reader of the hook can't see; drop the \"as the TypeScript check does\" clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5427-5453",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 101's ~27-line \"Tests:\" paragraph enumerates every test scenario, restating the test files and likely to drift from them; trim it to the invariants each group of tests proves.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "480-490",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` need git ≥ 2.31 and an older git ignores them silently, leaving the window without submodule narrowing; decision 101 documents the floor for `worktree.useRelativePaths` but not this one. One sentence in decision 101 would cover it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "412-425",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The gate's own checkout is a linked worktree (admin dir `<common>/worktrees/checkout`) whose unpinned `read-tree -u` (which runs smudge filters) follows that admin dir's `commondir`, so a live session that swaps it between `worktree add` and `read-tree` gets its repo's filter run outside the sandbox; decision 101's ceilings don't name this checkout, and pinning the call with the three vars would close it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "177-184, 506-518",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Session windows open on the shared default tmux server, so a session holding `$TMUX` can `tmux set-environment -g GIT_CONFIG_PARAMETERS=…` and every later window, including its compiled hooks' `safe_git` (which pins the three dirs but doesn't scrub other inherited `GIT_*` as `runGit` does), inherits it; decision 101's hook pins only hold as long as that server's global environment does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "337-346",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The `merge_of_target` paragraph now sits under the broader `worktreeGitShell` JSDoc, mixing MERGE_HEAD details with the pin prose, and its \"write. Best effort: a session\" line is a far over-long reflow accident.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.0761593000000005,
+  "duration_ms": 498409,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 20181,
+    "cache_read": 265366,
+    "cache_creation": 76343,
+    "total": 361902
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 222,
+      "output": 140723,
+      "cache_read": 4986329,
+      "cache_creation": 514621,
+      "cost_usd": 6.6147478
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 10288,
+      "cache_read": 570350,
+      "cache_creation": 120565,
+      "cost_usd": 0.4614115000000001
+    }
+  ],
+  "permission_denials": []
+}
