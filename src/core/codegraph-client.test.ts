@@ -11,6 +11,7 @@ import {
   indexDirectory,
   prepareGraph,
 } from './codegraph.client.js';
+import { type WorktreeGitEnv, WorktreeRepointedError } from './git-diff.client.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -36,6 +37,25 @@ function makeRepo(): string {
   sh(repo, 'git', 'add', '-A');
   sh(repo, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
   return repo;
+}
+
+/**
+ * The pins for a main checkout, which indexes the same way as a linked
+ * worktree: the tests here are about what codegraph is handed, not about
+ * which dirs those are.
+ */
+function pins(repo: string): WorktreeGitEnv {
+  return { GIT_DIR: join(repo, '.git'), GIT_COMMON_DIR: join(repo, '.git'), GIT_WORK_TREE: repo };
+}
+
+/** The command-scope config an environment hands git, as key -> value. */
+function gitConfigOf(env: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(
+    Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, index) => [
+      env[`GIT_CONFIG_KEY_${index}`] ?? '',
+      env[`GIT_CONFIG_VALUE_${index}`] ?? '',
+    ]),
+  );
 }
 
 /**
@@ -138,7 +158,7 @@ describe('indexDirectory', () => {
     const fake = fakeCodegraph(LOGGING_CODEGRAPH);
     const repo = makeRepo();
 
-    indexDirectory(join(fake.dir, 'codegraph'), repo);
+    indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
 
     expect(fake.calls()).toEqual([`init ${repo} --yes telemetry=0`]);
   });
@@ -149,7 +169,7 @@ describe('indexDirectory', () => {
     const repo = makeRepo();
     fakeIndexDir(repo);
 
-    indexDirectory(join(fake.dir, 'codegraph'), repo);
+    indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
 
     expect(fake.calls()).toEqual([`index ${repo} --quiet telemetry=0`]);
   });
@@ -172,9 +192,54 @@ describe('indexDirectory', () => {
     vi.stubEnv('PUP_TEST_SECRET', 'hunter2');
     vi.stubEnv('CODEGRAPH_DOWNLOAD_BASE', 'https://attacker.example');
 
-    indexDirectory(join(fake.dir, 'codegraph'), tempDir('pup-cg-dir-'));
+    indexDirectory(join(fake.dir, 'codegraph'), pins(makeRepo()));
 
     expect(fake.calls()).toEqual(['node_options=[] secret=[] download=[] nodl=[1]']);
+  });
+
+  // codegraph runs `ls-files` and `status` outside any sandbox, in the tree
+  // and with the cwd in every nested repo it finds. Pinned, each of those reads
+  // the dirs pup trusts, whatever `.git` the cwd holds; the config disarms an
+  // fsmonitor and keeps git out of submodules (decision 101).
+  it("pins the binary's git to the dirs it is handed, under pup's git config", () => {
+    const fake = fakeCodegraph(
+      [
+        '#!/bin/sh',
+        'printf "%s|%s|%s\\n" "$GIT_DIR" "$GIT_COMMON_DIR" "$GIT_WORK_TREE" >> __LOG__',
+        'env | grep "^GIT_CONFIG_" >> __LOG__',
+        'exit 0',
+      ].join('\n'),
+    );
+    const repo = makeRepo();
+
+    indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
+
+    const [pinned, ...config] = fake.calls();
+    expect(pinned).toBe(`${join(repo, '.git')}|${join(repo, '.git')}|${repo}`);
+    expect(
+      gitConfigOf(Object.fromEntries(config.map((line) => line.split(/=(.*)/s).slice(0, 2)))),
+    ).toMatchObject({
+      'core.fsmonitor': '',
+      'core.hooksPath': '/dev/null',
+      'diff.ignoreSubmodules': 'all',
+      'status.submoduleSummary': 'false',
+    });
+  });
+
+  // Over a gitlink, `status` runs a child git in the submodule's directory,
+  // which clears the pins, and a `.gitmodules` `ignore = none` outranks any
+  // config: only a command-line flag beats it, and codegraph's argv is not
+  // pup's (decision 101).
+  it('refuses a tree whose index holds a gitlink, before the binary runs', () => {
+    const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+    const repo = makeRepo();
+    const head = sh(repo, 'git', 'rev-parse', 'HEAD');
+    sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},lib/sub`);
+
+    expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(
+      /lib\/sub is a gitlink in the index/,
+    );
+    expect(fake.calls()).toEqual([]);
   });
 
   /**
@@ -206,7 +271,7 @@ describe('indexDirectory', () => {
       const fake = fakeCodegraph(LOGGING_CODEGRAPH);
       const { repo } = plantedLink('.codegraph');
 
-      expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow(
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(
         /refusing to index through it/,
       );
       // The point of the guard: the binary never ran, so the victim's database
@@ -220,7 +285,7 @@ describe('indexDirectory', () => {
       const fake = fakeCodegraph(LOGGING_CODEGRAPH);
       const { repo } = plantedLink('codegraph.db');
 
-      expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow(
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(
         /refusing to index through it/,
       );
       expect(fake.calls()).toEqual([]);
@@ -233,7 +298,7 @@ describe('indexDirectory', () => {
       const repo = makeRepo();
       fakeIndexDir(repo);
 
-      indexDirectory(join(fake.dir, 'codegraph'), repo);
+      indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
 
       expect(fake.calls()).toEqual([`index ${repo} --quiet telemetry=0`]);
     });
@@ -244,7 +309,7 @@ describe('indexDirectory', () => {
       const { repo, victim } = plantedLink('.codegraph');
       rmSync(victim, { recursive: true, force: true });
 
-      expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow(
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(
         /refusing to index through it/,
       );
       expect(fake.calls()).toEqual([]);
@@ -255,7 +320,7 @@ describe('indexDirectory', () => {
     const fake = fakeCodegraph('#!/bin/sh\necho "boom" >&2\nexit 1\n');
     const repo = makeRepo();
 
-    expect(() => indexDirectory(join(fake.dir, 'codegraph'), repo)).toThrow();
+    expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow();
   });
 });
 
@@ -314,10 +379,13 @@ describe('codegraphMcpConfig', () => {
   // child, so it would inherit the peer credentials that address other sessions
   // and the conductor — which decision 47 keeps off the tmux server. An `env`
   // block overrides what is inherited.
+  // Its `git status` runs outside the sandbox for the whole session, so it
+  // gets the indexer's git config, which disarms a planted fsmonitor in
+  // whatever repo it reads (decision 101).
   it('serves the session worktree with telemetry and peer credentials off', () => {
-    expect(
-      JSON.parse(codegraphMcpConfig('/bin/codegraph', '/repo/.worktrees/s-1')).mcpServers.codegraph,
-    ).toEqual({
+    const server = JSON.parse(codegraphMcpConfig('/bin/codegraph', '/repo/.worktrees/s-1'))
+      .mcpServers.codegraph;
+    expect(server).toMatchObject({
       type: 'stdio',
       command: '/bin/codegraph',
       args: ['serve', '--mcp', '--path', '/repo/.worktrees/s-1'],
@@ -327,6 +395,12 @@ describe('codegraphMcpConfig', () => {
         CLAUDE_CODE_MESSAGING_TOKEN: '',
       },
     });
+    expect(gitConfigOf(server.env)).toMatchObject({
+      'core.fsmonitor': '',
+      'diff.ignoreSubmodules': 'all',
+      'status.submoduleSummary': 'false',
+    });
+    expect(Object.keys(server.env).filter((key) => /^GIT_(?!CONFIG_)/.test(key))).toEqual([]);
   });
 });
 
@@ -391,7 +465,7 @@ describe('prepareGraph', () => {
     const fake = fakeCodegraph(INDEXES);
     const repo = makeRepo();
 
-    expect(prepareGraph(join(fake.dir, 'codegraph'), repo, repo)).toBe(true);
+    expect(prepareGraph(join(fake.dir, 'codegraph'), repo, repo, () => pins(repo))).toBe(true);
 
     expect(sh(repo, 'git', 'status', '--porcelain')).toBe('');
     expect(errors).not.toHaveBeenCalled();
@@ -401,10 +475,15 @@ describe('prepareGraph', () => {
   it('withholds the graph and says so once when the operator has no binary', () => {
     const errors = quiet();
 
-    expect(prepareGraph(undefined, makeRepo(), makeRepo())).toBe(false);
+    const repo = makeRepo();
+    const pinned = vi.fn(() => pins(repo));
+
+    expect(prepareGraph(undefined, repo, repo, pinned)).toBe(false);
 
     expect(errors.mock.calls.flat().join(' ')).toContain('without a code graph');
     expect(errors).toHaveBeenCalledTimes(1);
+    // With no binary, the pins' check (and the conductor's checkout) never run.
+    expect(pinned).not.toHaveBeenCalled();
     errors.mockRestore();
   });
 
@@ -416,12 +495,31 @@ describe('prepareGraph', () => {
     const fake = fakeCodegraph('#!/bin/sh\nprintf "out \\033[31mof\\033[0m disk\\n" >&2\nexit 1');
     const repo = makeRepo();
 
-    expect(prepareGraph(join(fake.dir, 'codegraph'), repo, repo)).toBe(false);
+    expect(prepareGraph(join(fake.dir, 'codegraph'), repo, repo, () => pins(repo))).toBe(false);
 
     const printed = errors.mock.calls.flat().join(' ');
     expect(printed).toContain('out');
     expect(printed).toContain('disk');
     expect(printed).not.toContain('\u001b');
+    errors.mockRestore();
+  });
+
+  // A check that refuses the pins costs the graph, never the window: the
+  // window's own check then decides whether it opens (decision 101).
+  it('withholds the graph, indexing nothing, when the pins are refused', () => {
+    const errors = quiet();
+    const fake = fakeCodegraph(INDEXES);
+    const repo = makeRepo();
+
+    expect(
+      prepareGraph(join(fake.dir, 'codegraph'), repo, repo, () => {
+        throw new WorktreeRepointedError(repo, 'its .git no longer names the admin dir');
+      }),
+    ).toBe(false);
+
+    // The fake writes the index when it runs; none was written.
+    expect(existsSync(join(repo, '.codegraph'))).toBe(false);
+    expect(errors.mock.calls.flat().join(' ')).toContain('without a code graph');
     errors.mockRestore();
   });
 });

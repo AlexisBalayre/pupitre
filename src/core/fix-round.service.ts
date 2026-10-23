@@ -8,7 +8,12 @@ import {
   type SessionPane,
 } from '../claude/session-runtime.service.js';
 import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
-import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.client.js';
+import {
+  assertNoArmedGitDrivers,
+  assertNoWorktreeConfig,
+  rethrowIfKilled,
+  runGit,
+} from './git-diff.client.js';
 import {
   assertGhAvailable,
   originRepoSlug,
@@ -388,7 +393,10 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): v
   }
   // `worktree add` checks out every file and runs a smudge filter on each
   // with the operator's environment, so it is refused while one is armed
-  // (decision 50).
+  // (decision 50). Per-worktree config first, as a launch asks it: the
+  // window's own check would refuse it only once the worktree and the round
+  // exist, and blame a worker that never ran (decision 101).
+  assertNoWorktreeConfig(repoPath);
   assertNoArmedGitDrivers(repoPath);
   runGit(
     repoPath,
@@ -518,6 +526,7 @@ function relaunchWorker(
     killTmux(session.id);
     pane = launchSession({
       sessionId: session.id,
+      repoPath,
       worktreePath: session.worktree_path,
       settingsPath,
       route: routeFor(route.tier, route.rung, route),

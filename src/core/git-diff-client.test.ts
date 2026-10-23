@@ -997,4 +997,17 @@ describe('assertNoWorktreeConfig', () => {
     setExtension('false');
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
+
+  // Under a gitfile, `<repo>/.git/config` names nothing: the check would read
+  // no config and pass, and the pins built from the same path would be refused
+  // only once the row and the worktree exist (decision 101).
+  it('refuses a repo whose .git is a gitfile, as a linked worktree has', () => {
+    const linked = join(repo, '.worktrees', 'linked');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', linked);
+
+    expect(() => assertNoWorktreeConfig(linked)).toThrow(
+      /its \.git is not a directory\. pup pins a session to the repository at <repo>\/\.git/,
+    );
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
 });

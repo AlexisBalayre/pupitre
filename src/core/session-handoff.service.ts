@@ -9,6 +9,8 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
+import { verifiedWorktreeGitEnv, type WorktreeGitEnv } from './git-diff.client.js';
+import { assertMintedRow } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
@@ -257,24 +259,27 @@ export function hardRespawnSession(
  * index the session's own commits have outrun answers its questions out of code
  * that is no longer there. Withheld when the operator's codegraph has gone
  * since, so a window is never pointed at a server that cannot start
- * (decision 51).
+ * (decision 51). Its git runs pinned to `git`, which the caller checked
+ * (decision 101).
  */
 function graphForRespawn(
   repoPath: string,
-  worktreePath: string,
+  git: WorktreeGitEnv,
   compiledDir: string,
 ): string | undefined {
   const mcpConfigPath = join(compiledDir, 'mcp.json');
   if (!existsSync(mcpConfigPath)) return undefined;
-  return prepareGraph(codegraphBinary(repoPath), repoPath, worktreePath)
+  return prepareGraph(codegraphBinary(repoPath), repoPath, git.GIT_WORK_TREE, () => git)
     ? mcpConfigPath
     : undefined;
 }
 
 /**
- * What both respawns share. The session must be running; `extrasFor` is then
- * handed the project's paths to build what the kickoff adds, and may refuse,
- * before anything is read for the launch or killed.
+ * What both respawns share. The session must be running, on the worktree and
+ * branch its launch minted: the row is store text a session can write, and a
+ * respawn indexes and opens a window over the path it names (decision 101).
+ * `extrasFor` is then handed the project's paths to build what the kickoff
+ * adds, and may refuse, before anything is read for the launch or killed.
  */
 function relaunchWindow(
   db: Database,
@@ -288,6 +293,7 @@ function relaunchWindow(
   },
 ): void {
   const session = requireRunning(db, sessionId);
+  assertMintedRow(repoPath, session, 'Nothing was respawned.');
   const paths = projectPaths(repoPath, pathsBase);
   const extras = extrasFor(paths);
   const compiledDir = paths.compiledDir(sessionId);
@@ -298,10 +304,14 @@ function relaunchWindow(
   killTmux(sessionId, session.tmux_target);
   // After the kill: the previous run writes to this worktree until it dies, and
   // an index taken while it is still editing is an index of a tree nothing will
-  // ever see again.
-  const mcpConfigPath = graphForRespawn(repoPath, session.worktree_path, compiledDir);
+  // ever see again. The pointers it may have rewritten are checked before the
+  // index, whose git runs outside any sandbox, and a rewrite refuses the
+  // respawn, as the window's own check would (decision 101).
+  const git = verifiedWorktreeGitEnv(repoPath, session.worktree_path);
+  const mcpConfigPath = graphForRespawn(repoPath, git, compiledDir);
   const pane = launchSession({
     sessionId,
+    repoPath,
     worktreePath: session.worktree_path,
     settingsPath: join(compiledDir, 'settings.json'),
     route: routeFor(route.tier, route.rung, route),

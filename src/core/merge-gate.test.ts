@@ -183,9 +183,12 @@ function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> = {}): 
   return worktree;
 }
 
-/** Where the gate cuts its detached checkout of the pinned sha (decision 81). */
+/**
+ * Where the gate cuts its detached checkout of the pinned sha (decision 81),
+ * named after its root so its admin dir is its own (decision 101).
+ */
 const GATE_CHECKOUT = new RegExp(
-  `^${realpathSync(tmpdir()).replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')}/pup-gate-checkout-[^/]+/checkout$`,
+  `^${realpathSync(tmpdir()).replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')}/(pup-gate-checkout-[^/]+)/\\1$`,
 );
 
 /** The reason the last transition into `blocked` recorded, as the gate wrote it. */
@@ -306,6 +309,20 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(worktree)).toBe(false);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+  });
+
+  // git names a worktree's admin dir after its basename, so a gate checkout named
+  // `checkout` would take `checkout1` beside the conductor's, and the pinned
+  // read-tree would refuse its own checkout (decision 101).
+  it('merges while another worktree already holds the admin dir named checkout', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', join(repo, '.pup', 'checkout'));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(sh(repo, 'git', 'log', '--oneline', 'main')).toContain('edit src/feature.ts');
   });
 
   // A session can write any merge option into the target's `mergeOptions` in the
@@ -2590,7 +2607,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.status).toBe('rejected');
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'typecheck (tools/review)',
-        detail: expect.stringMatching(/\/pup-gate-checkout-[^/]+\/checkout\/tools\/review/),
+        detail: expect.stringMatching(/\/(pup-gate-checkout-[^/]+)\/\1\/tools\/review/),
       });
     });
 
