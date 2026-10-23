@@ -562,6 +562,38 @@ describe('launchTask armed-driver guard', () => {
     expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
   });
 
+  // The add comes before the pinned checkout (decision 101), so a checkout that
+  // throws (a commondir rewritten in between, a full disk) must take the
+  // worktree and branch with it, or the retry fails on both (decision 40).
+  it('undoes the add when its checkout fails, so the retry launches', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    const once = join(shim, 'fail-once');
+    writeFileSync(once, '');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+        `exec ${realGit} "$@"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
+
+    expect(launch).toThrow(/No space left on device/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(existsSync(join(repo, '.worktrees', 't-1'))).toBe(false);
+    expect(gitIn(repo, 'worktree', 'list', '--porcelain')).not.toContain('.worktrees');
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
+
+    expect(launch()).toBe('t-1');
+    expect(existsSync(join(repo, '.worktrees', 't-1', 'src/core/github.client.ts'))).toBe(true);
+  });
+
   // A refusal inside `launchTask` alone would leave the spec the operator just
   // abandoned in the backlog, unclaimed and attributed to them (decision 41).
   it('writes no task row when `pup new` is refused', () => {

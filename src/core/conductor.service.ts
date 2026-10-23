@@ -139,16 +139,12 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   runGit(repoPath, ['worktree', 'prune']);
   mkdirSync(dirname(checkoutDir), { recursive: true });
   // `--no-checkout`: the add's own checkout would read the admin dir's
-  // `commondir` before any check of it (decision 101).
-  runGit(repoPath, [
-    'worktree',
-    'add',
-    '--detach',
-    '--no-checkout',
-    checkoutDir,
-    `refs/heads/${target}`,
-  ]);
-  return checkoutPinned(repoPath, checkoutDir, `refs/heads/${target}`);
+  // `commondir` before any check of it (decision 101). One sha for both: a
+  // target that moved between them would leave HEAD at the old tip and the
+  // index at the new one.
+  const tip = runGit(repoPath, ['rev-parse', '--verify', `refs/heads/${target}^{commit}`]).trim();
+  runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', checkoutDir, tip]);
+  return checkoutPinned(repoPath, checkoutDir, tip);
 }
 
 /**
