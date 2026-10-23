@@ -1,0 +1,147 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-23T12:59:03.665Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "39956957155",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/39956957155",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d80985192bb40c371e62250672838348ba9b0354",
+  "source": "pr",
+  "pr_number": 169,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4ac0cadc7aa8ee7761421598ad1f094f624826bd",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "542-546",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "200-205",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When the value is one git can't read as a boolean (e.g. `maybe`), the refusal still says \"extensions.worktreeConfig is on\". The hint then tells the operator to run `git sparse-checkout disable` before the `-C /` unset, but git refuses to open the repo with that value, so `disable` fails. Saying \"is on, or holds a value git cannot read\" in the problem text, or putting the unset first for that case, would match decision 101's wording.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "124-125",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The WorktreeConfigError hint puts the repo path unquoted into a command the operator is asked to paste (`git -C / config --file ${sanitizeReason(...)} --unset ...`); sanitizeReason does not shell-quote, so a path with a space, `;`, `$(` or a backtick splits or runs on paste. The path is the operator's own registered repo, so this is not session-reachable, but merge-gate.service.ts:745 already wraps paste-ready repo paths in shellWord(); do the same here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "125-127",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new sentence in `launchTask`'s comment (\"Per-worktree config is refused here too: the launch's own check would refuse it only once the worktree and the row exist, and they then block a retry\") restates `assertNoWorktreeConfig`'s JSDoc; general.md §Comments' seam-duplication test and AGENTS.md §Comments say to delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "212",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`worktreeConfigOn(gitPath, commonDir, env?)`: `verifiedWorktreeGitEnv` passes `env.GIT_COMMON_DIR` and `env` together, so the two can disagree with no stated winner, and `gitPath` is really `runGit`'s cwd (repo path in one caller, worktree path in the other); rename it `cwd`, or drop it since `--file` makes the cwd irrelevant.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "167, 194",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertNoWorktreeConfig` and `verifiedWorktreeGitEnv` open-code the same `lstatSync(join(<dir>, 'config.worktree')) || worktreeConfigOn(...)` test, differing only in base dir and error class; if the check grows (another config file), both copies need the same edit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5412-5422, 5472",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new decision 101 sentences were spliced into wrapped paragraphs without reflowing: the line ending \"...The in-window check refused such a repo only after `startSession` had\" and the one ending \"...A swap after the check, by a `head` on\" run well past the file's ~100-column wrap, and \"(security review, 2026-10-23). The in-window check stays as\" is left short; reflow both paragraphs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5411",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"git turns it on in the shared config, and `sparse-checkout disable` leaves it on, with `.git/config.worktree` (Apple Git 2.39.5)\" is ambiguous about whether git writes the file or disable leaves it behind; say that `disable` leaves both the extension and `.git/config.worktree` in place, as observed on Apple Git 2.39.5.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7963969999999998,
+  "duration_ms": 176707,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 9185,
+    "cache_read": 260627,
+    "cache_creation": 69493,
+    "total": 339317
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 28162,
+      "cache_read": 638017,
+      "cache_creation": 141194,
+      "cost_usd": 1.6054763999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 6226,
+      "cache_read": 127241,
+      "cache_creation": 46357,
+      "cost_usd": 0.19092060000000002
+    }
+  ],
+  "permission_denials": []
+}
