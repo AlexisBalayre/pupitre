@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadCustomAdapter } from '../adapters/custom.adapter.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
@@ -1722,6 +1723,54 @@ describe('test runs queue for a slot (decision 96)', () => {
 
     expect(guard('git status', { testCommand } as Partial<CompileInput>).status).toBe(0);
     expect(guard('pnpm test', { testCommand } as Partial<CompileInput>).status).toBe(2);
+  });
+
+  describe("a custom adapter's sh -c script", () => {
+    /** The compile input of a project whose `.pupitre/adapter.yml` declares `test: <script>`. */
+    function customTest(script: string): Partial<CompileInput> {
+      const repo = tempDir('pup-custom-');
+      mkdirSync(join(repo, '.pupitre'));
+      // JSON is YAML, and keeps the script's quotes and line breaks intact.
+      writeFileSync(join(repo, '.pupitre', 'adapter.yml'), JSON.stringify({ test: script }));
+      const testCommand = loadCustomAdapter(repo)
+        ?.gateCommands(repo)
+        .find((command) => command.stage === 'test');
+      return { testCommand } as Partial<CompileInput>;
+    }
+
+    it("refuses the script's words run directly, less the files it takes", () => {
+      const overrides = customTest('go test ./... "$@"');
+
+      expect(guard('go test ./...', overrides).status).toBe(2);
+      expect(guard('go test ./... -run TestSlots 2>&1 | tail -20', overrides).status).toBe(2);
+      expect(guard('cd pkg && go test ./...', overrides).status).toBe(2);
+      expect(guard('go vet ./...', overrides).status).toBe(0);
+      expect(guard('pup session test ./pkg', overrides).status).toBe(0);
+    });
+
+    it('refuses a one-word script only bare, so its other uses go through', () => {
+      const overrides = customTest('make');
+
+      expect(guard('make', overrides).status).toBe(2);
+      expect(guard('make 2>&1 | tail -20', overrides).status).toBe(2);
+      expect(guard('git status && make', overrides).status).toBe(2);
+      expect(guard('make build', overrides).status).toBe(0);
+      expect(guard('makefile-lint', overrides).status).toBe(0);
+    });
+
+    it.each([
+      'go vet ./... && go test ./...',
+      'pytest -m "not slow"',
+      'cargo test $CARGO_FLAGS',
+      '"$@"',
+      '   ',
+      'go test\n./...',
+    ])('leaves out %j, more than plain words, rather than refuse every call', (script) => {
+      const overrides = customTest(script);
+
+      expect(guard('git status', overrides).status).toBe(0);
+      expect(guard('pnpm test', overrides).status).toBe(2);
+    });
   });
 
   it('runs the guard on every Bash call, beside the .claude/ guard', () => {

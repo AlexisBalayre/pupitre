@@ -507,23 +507,45 @@ const TEST_RUNNER_PATTERNS = [
   `${COMMAND_START}(pnpm|yarn|npm|bun)[[:space:]]+(run[[:space:]]+)?test([[:space:]:]|$)`,
 ];
 
+/** A script that is one simple command of plain words: no quote, expansion, operator or line break. */
+const PLAIN_SCRIPT = /^[\w./:=@%+,-]+([ \t]+[\w./:=@%+,-]+)*$/;
+
 /**
- * The test guard's patterns, one ERE a line: the runners above and the
- * project's own test command, its words escaped. A command holding a line
- * break is left out rather than split, since a blank pattern line would
- * refuse every Bash call.
+ * What ends a one-word script's command when it runs bare: the line's end, a
+ * separator, or a redirection such as `2>&1`.
  */
+const BARE_COMMAND_END = '[[:space:]]*($|[;&|)`<>]|[0-9]+>)';
+
+/**
+ * The test guard's own pattern for the project's test command, its words
+ * escaped, or undefined when there is nothing safe to match. A custom
+ * adapter's `sh -c '<script>'` is matched on the script's words, which is what
+ * a session types, less the `"$@"` that takes `pup session test`'s files. A
+ * script of one word is matched only bare, since the word may be a driver like
+ * `make` whose other targets are no test run, and a script beyond plain words
+ * is left out. An argv word holding a line break is left out rather than
+ * split, since a blank pattern line would refuse every Bash call.
+ */
+function ownTestCommandPattern(testCommand: GateCommand): string | undefined {
+  const { command, args } = testCommand;
+  let words = [command, ...args];
+  let end = '([[:space:]]|$)';
+  if (command === 'sh' && args.length === 2 && args[0] === '-c') {
+    const script = (args[1] as string).trim().replace(/[ \t]+("\$@"|\$@)$/, '');
+    if (!PLAIN_SCRIPT.test(script)) return undefined;
+    words = script.split(/[ \t]+/);
+    if (words.length === 1) end = BARE_COMMAND_END;
+  } else if (words.some((word) => /[\r\n\0]/.test(word))) {
+    return undefined;
+  }
+  const escaped = words.map((word) => word.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&'));
+  return `${COMMAND_START}${escaped.join('[[:space:]]+')}${end}`;
+}
+
+/** The test guard's patterns, one ERE a line: the runners above and the project's own test command. */
 function testRunnerPatterns(testCommand: GateCommand | undefined): string {
-  const words = testCommand ? [testCommand.command, ...testCommand.args] : [];
-  const own =
-    words.length > 0 && !words.some((word) => /[\r\n\0]/.test(word))
-      ? [
-          `${COMMAND_START}${words
-            .map((word) => word.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&'))
-            .join('[[:space:]]+')}([[:space:]]|$)`,
-        ]
-      : [];
-  return `${[...TEST_RUNNER_PATTERNS, ...own].join('\n')}\n`;
+  const own = testCommand ? ownTestCommandPattern(testCommand) : undefined;
+  return `${[...TEST_RUNNER_PATTERNS, ...(own ? [own] : [])].join('\n')}\n`;
 }
 
 /**
