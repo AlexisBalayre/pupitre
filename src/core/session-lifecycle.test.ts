@@ -43,7 +43,11 @@ import { tempDir } from '../test/temp-dir.mock.js';
 import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { ArmedGitDriverError, WorktreeConfigError } from './git-diff.client.js';
+import {
+  ArmedGitDriverError,
+  WorktreeConfigError,
+  WorktreeRepointedError,
+} from './git-diff.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
@@ -564,25 +568,40 @@ describe('launchTask armed-driver guard', () => {
 
   // The add comes before the pinned checkout (decision 101), so a checkout that
   // throws (a commondir rewritten in between, a full disk) must take the
-  // worktree and branch with it, or the retry fails on both (decision 40).
-  it('undoes the add when its checkout fails, so the retry launches', () => {
+  // worktree and branch with it, or the retry fails on both (decision 40), and
+  // the refusal must say so rather than ask for a repair of what is gone.
+  it.each([
+    [
+      'a read-tree that fails',
+      (once: string) =>
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+      /No space left on device/,
+    ],
+    [
+      'a commondir rewritten right after the add',
+      (once: string) =>
+        `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; ${realGit()} "$@" || exit $?; echo ${tempDir('pup-elsewhere-')}/.git > ${join(repo, '.git', 'worktrees', 't-1', 'commondir')}; exit 0; fi ;; esac`,
+      WorktreeRepointedError,
+    ],
+  ])('undoes the add on %s, says so, and the retry launches', (_, shimCase, refusal) => {
     planTask(db, { repoPath: repo, task: spec() });
-    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     const shim = tempDir('pup-git-');
-    const once = join(shim, 'fail-once');
+    const once = join(shim, 'once');
     writeFileSync(once, '');
     writeFileSync(
       join(shim, 'git'),
-      [
-        '#!/bin/sh',
-        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
-        `exec ${realGit} "$@"`,
-      ].join('\n'),
+      ['#!/bin/sh', shimCase(once), `exec ${realGit()} "$@"`].join('\n'),
       { mode: 0o755 },
     );
     vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
 
-    expect(launch).toThrow(/No space left on device/);
+    const error = caught(launch);
+    expect(() => {
+      throw error;
+    }).toThrow(refusal);
+    expect((error as Error).message).toMatch(
+      /The launch's new worktree and its branch pup\/t-1 were removed, so nothing needs restoring: retry the launch once the cause is cleared\.$/,
+    );
     expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
       n: 0,
     });
@@ -724,6 +743,11 @@ describe('launchTask worktree-config guard', () => {
     expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
   });
 });
+
+/** The git a shim on PATH hands every call it does not intercept to. */
+function realGit(): string {
+  return execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+}
 
 /** What `act` threw, for the assertions a `toThrow` matcher cannot make. */
 function caught(act: () => unknown): unknown {
