@@ -406,7 +406,7 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
     );
     const detail = fresh.get(t.stage)?.detail;
     if (t.delta === 'regressed' && detail)
-      console.log(`    ${sanitizeReason(detail.split('\n').at(-1) ?? '')}`);
+      for (const line of detail.split('\n')) console.log(`    ${sanitizeReason(line)}`);
   }
   if (report.unmeasured.length > 0) {
     // The drift, not the tail: the tail describes a baseline that was not stored.
