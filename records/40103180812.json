@@ -1,0 +1,216 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-24T14:45:07.391Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40103180812",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40103180812",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a81cec5abb606ad9b3fe266120be5b3e96f0c5ad",
+  "source": "pr",
+  "pr_number": 173,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/git-tree.client.ts",
+      "line": "39",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Decision 101 item (5) says the gate checkout's git after the add now runs pinned. `committedPackageDirs` still runs plain `runGit` with the gate checkout as its cwd and no pins. `capabilityContext.measurePath` is the gate's `checkoutDir`, and `nestedPackages(ctx)` calls it in pup's own process, outside the sandbox. It runs once right after `cutGateCheckout` (`touchedNestedPackages`, L1275), and again in the coverage, dep-graph and source-walk capabilities after the build and test stages, minutes later. Through that whole window a live session can rewrite `<common>/worktrees/pup-gate-checkout-XXXXXX/commondir` and that admin dir's `HEAD`. Unpinned git follows them and reads config from a repo the session chose. That is the exposure decision 101 exists to close, and the decision's list of pinned gate calls does not mention this one.",
+      "body": "`cutGateCheckout` now pins the gate checkout's `read-tree` and its `ls-tree` in `refuseEscapingLinks` (decision 101 item 5: \"Their git after the add now runs pinned … the gate's `read-tree -u` and `ls-tree`\"). One git call in that checkout is still unpinned:\n\n- **The call.** `committedPackageDirs` runs `runGit(checkout, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'], …)` with no `env`.\n- **Why it isn't pinned.** `runGit`'s `scrubbedGitEnv()` drops `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE`. git therefore finds its repo from the cwd, through the gitfile and the admin dir's `commondir`.\n- **Where it runs.** `typescript.adapter.ts` `nestedPackages()` passes it `measurePath`, which is the gate's `checkoutDir` (`merge-gate.service.ts` L1268-1272). It runs outside the sandbox:\n  - right after the cut (`touchedNestedPackages`, L1275);\n  - again in the coverage, static-debt and complexity capabilities (L1305, L1376, L1392), after build and test, minutes later, with no fresh pointer check.\n- **Why a session can reach it.** The new `cutGateCheckout` JSDoc itself says this admin dir \"sits under `<common>/worktrees/` beside the sessions' own, and a session can rewrite its `commondir` from inside the sandbox\". A rewrite at any point during the gate is followed by this call, so git reads the config and objects of a repo the session chose. That is the same class of problem this PR closes for the sibling `ls-tree`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a81cec5abb606ad9b3fe266120be5b3e96f0c5ad/src/adapters/git-tree.client.ts#L34-L45\nhttps://github.com/AlexisBalayre/pupitre/blob/a81cec5abb606ad9b3fe266120be5b3e96f0c5ad/src/core/merge-gate.service.ts#L1268-L1275\n\n**Suggested fix:**\n- Keep the `WorktreeGitEnv` that `checkoutPinned` returns, carry it on `CapabilityContext` for the measured checkout (the `configPath` side is the trusted main checkout), and pass it as `env` to this `runGit`.\n- Add the decision's swap-test shape: rewrite `commondir` after the cut and expect no marker.\n- If this is meant to be out of scope, record it under decision 101's ceilings instead.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "402-411",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`restoreWorktree` now cuts the worktree in two steps: `worktree add --no-checkout`, then `checkoutPinned`. Nothing undoes the add if the second step throws, which happens on a pointer refusal (a rewritten `commondir`, a planted `config.worktree`) or a failed `read-tree` (full disk, a path the filesystem refuses). A registered worktree is left at `.worktrees/<id>` holding only `.git` and no index. The refusal also lacks `NOT_STARTED` and carries the default `worktree repair … and retry` advice. If the operator repairs and retries, the retry is still refused by the survivor check (\"found .worktrees/<id> left from an earlier round\"). The plain `worktree add` before this PR removed its own leftovers when its checkout failed (git's internal cleanup, so medium confidence on that half). The launch path in this same PR got exactly this undo (`dropUncheckedWorktree`, session-lifecycle.service.ts:542-562, used at :598-607); the fix round did not. No test covers it.",
+      "body": "`restoreWorktree` now runs `worktree add --no-checkout` and then `checkoutPinned` as two separate steps, and nothing undoes the add when `checkoutPinned` throws.\n\n- **When it throws.** A pointer refusal (a `commondir` rewritten between the add and the check, or a planted `config.worktree`), or a failed `read-tree` (full disk, an interrupt, a path the filesystem refuses).\n- **What's left behind.** A registered `.worktrees/<id>` holding only `.git` and no index.\n- **What the operator sees.** Neither `startFixRound`, `withMergeLock` nor the CLI catch adds anything, so the refusal arrives without `NOT_STARTED` and with the default `worktree repair … and retry` advice.\n- **Why the retry fails.** The retry's `worktree prune` keeps the registration because the directory still exists. Then the survivor check (`isRegistered || existsSync(session.worktree_path)`, L389) refuses with \"left from an earlier round\", so the operator has to clean up by hand.\n- **The launch path already has the undo.** It got it in this same PR: `dropUncheckedWorktree` (`session-lifecycle.service.ts` L542-562, used at L598-607).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a81cec5abb606ad9b3fe266120be5b3e96f0c5ad/src/core/fix-round.service.ts#L402-L411\n\n**Suggested shape:**\n- Wrap `checkoutPinned` in a try/catch. In the catch, `rmSync` the worktree and run `worktree prune`, and swallow any cleanup failure so it can't replace the refusal.\n- Then re-raise:\n  - a `WorktreeRepointedError` with advice saying the fix round's worktree was removed, plus `NOT_STARTED`;\n  - any other error with `NOT_STARTED` appended.\n- A branch that `-b` created can stay: it sits at `head`, which the retry's `tip === head` path accepts.\n- No test covers this path yet.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "594-595",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Call-site comments restate `checkoutPinned`'s JSDoc (\"`--no-checkout`: the add's own checkout would read the admin dir's `commondir` before any check of it\") in startSession (session-lifecycle.service.ts ~L594), restoreWorktree (fix-round.service.ts ~L397-404) and refreshConductorCheckout (conductor.service.ts), and the cutGateCheckout/refreshConductorCheckout doc blocks repeat the same rationale; per docs/conventions/general.md §Comments seam-duplication test, keep only each site's extra fact (e.g. the conductor's one-sha sentence) and drop the restated sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "395-399",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Stale comments still say `worktree add` checks out files and runs the smudge filter (fix-round.service.ts L395-399, session-lifecycle.service.ts L194-195, git-diff.client.ts L653-654); every add is now `--no-checkout`, so the smudge runs in `checkoutPinned`'s `read-tree -u`. Reword to name the checkout (`read-tree -u` after the add).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "533-542",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`dropUncheckedWorktree`'s JSDoc says it \"Returns what it undid, as the advice the refusal closes with\", but its catch branch returns what it could not remove; say it returns the advice: what was removed, or what the operator must remove.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "548-555",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`dropUncheckedWorktree` trusts `git worktree prune`, which exits 0 even when it keeps an entry (e.g. an admin dir whose `gitdir` a session rewrote to an existing path). `.git/worktrees/<id>` can then survive while the advice says nothing needs restoring, and each retry's add gets admin dir `<id>1` and is refused again. The refusal holds; only the advice is wrong. Checking the admin dir is gone before returning the success advice would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "128-133",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refresh path now requires the conductor checkout's admin dir to be named `checkout`. A conductor checkout first cut while a gate (whose checkout was also named `checkout` before this PR) was running got `checkout1`, and is now refused on every `pup conductor start` with the default REPAIR_ADVICE (\"worktree repair … treat the session as compromised\"). Repair can't rename the admin dir; only removing the checkout dir fixes it, so conductor-specific advice would end the loop. Similarly, the gate's refusal advises restoring a checkout `dropGateCheckout` already deleted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "605",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`error.message += ` ${undone}.`` in startSession (and the similar append in session-handoff.service.ts ~L316) appends to an arbitrary error's message; when it ends in a period or git stderr's trailing newline, the result reads `..` or puts the advice on a stray line. The WorktreeRepointedError path composes cleanly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "45-58",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`codegraphGitConfig` restates `diff.ignoreSubmodules=all` / `status.submoduleSummary=false` as literals while its JSDoc calls them \"the submodule pair a session window gets\"; the window's copy is a separate hand-numbered `WINDOW_GIT_CONFIG` in src/claude/session-runtime.service.ts:490-496. Tightening one silently misses the other; exporting the pair once from git-diff.client.ts beside GIT_SAFE_CONFIG would give one source.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "594-607",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `worktree add --no-checkout` + `checkoutPinned` pair is now spelled out at four sites (startSession, refreshConductorCheckout, restoreWorktree, cutGateCheckout), and the \"never let the add check out\" rule lives only in repeated comments and each caller's argv; a future add that forgets `--no-checkout` reintroduces the unpinned checkout with nothing at the seam to catch it. Past the third-use threshold, a helper next to `checkoutPinned` could own it (the add args do differ per caller, so this is a judgment call).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5545-5667",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 101's edits leave several over-long or oddly broken lines (e.g. \"…and the conductor's) writes the absolute gitfile whatever the operator's global config says. An older git ignores the key.\" and \"…follow-up task in the profile compiler. With `all`, the hooks…\") where the rest of the file wraps near 100 columns; the decision has also grown into a dense wall of repeated provenance notes that is hard to scan.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "608-632",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The launch's new rollback only covers a `checkoutPinned` throw. A `commondir` rewritten during writeSessionProfile's up-to-180s codegraph index makes `launchSession`'s own pointer check throw after `insertSession` wrote a queued row, leaving the worktree, the `pup/<id>` branch and a row that claims the task (a plain retry hits TaskAlreadyClaimedError). The same window-time check after insertSession existed on main.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "69-81",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "indexEnv passes the operator's PATH through unchanged. codegraph runs `git` by name with its cwd set to the session worktree (and to nested repos), so a relative PATH entry such as `./node_modules/.bin` (the `pnpm dev` case codegraphBinary already guards against) resolves to a session-writable `<worktree>/node_modules/.bin/git`. That binary runs outside the sandbox, where the GIT_DIR pins give no protection. The gap predates this PR and also applies to the served server. Keeping only absolute PATH entries outside the repo would close it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "Security reviewer (direction B: git-diff/merge-gate/conductor/fix-round) reported a safety classifier cut one of its turns short, so some planned reads never ran; it completed using what it had already read."
+    },
+    {
+      "component": "conventions",
+      "description": "Conventions reviewer reported the docs/conventions rules did not auto-load on Read (only @ references appeared), so it read the conventions docs directly."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.933251499999998,
+  "duration_ms": 525742,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 20639,
+    "cache_read": 287515,
+    "cache_creation": 65768,
+    "total": 373934
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 298,
+      "output": 154654,
+      "cache_read": 6825764,
+      "cache_creation": 573005,
+      "cost_usd": 7.521753799999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 10634,
+      "cache_read": 381557,
+      "cache_creation": 106780,
+      "cost_usd": 0.41149769999999997
+    }
+  ],
+  "permission_denials": []
+}
