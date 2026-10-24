@@ -1744,6 +1744,8 @@ describe('test runs queue for a slot (decision 96)', () => {
       expect(guard('go test ./...', overrides).status).toBe(2);
       expect(guard('go test ./... -run TestSlots 2>&1 | tail -20', overrides).status).toBe(2);
       expect(guard('cd pkg && go test ./...', overrides).status).toBe(2);
+      expect(guard('go test ./...;echo', overrides).status).toBe(2);
+      expect(guard('go test ./...|tail', overrides).status).toBe(2);
       expect(guard('go vet ./...', overrides).status).toBe(0);
       expect(guard('pup session test ./pkg', overrides).status).toBe(0);
     });

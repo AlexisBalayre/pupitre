@@ -529,7 +529,7 @@ const BARE_COMMAND_END = '[[:space:]]*($|[;&|)`<>]|[0-9]+>)';
 function ownTestCommandPattern(testCommand: GateCommand): string | undefined {
   const { command, args } = testCommand;
   let words = [command, ...args];
-  let end = '([[:space:]]|$)';
+  let end = '([[:space:];&|)`<>]|$)';
   if (command === 'sh' && args.length === 2 && args[0] === '-c') {
     const script = (args[1] as string).trim().replace(/[ \t]+("\$@"|\$@)$/, '');
     if (!PLAIN_SCRIPT.test(script)) return undefined;

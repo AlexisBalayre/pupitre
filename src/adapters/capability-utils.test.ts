@@ -128,9 +128,10 @@ describe('readPlainFile', () => {
   // Regular and sized 0, yet it streams 8 bytes per page of the reader's own
   // address space: a read to EOF would never end.
   it.runIf(existsSync('/proc/self/pagemap'))(
-    'stops at the size cap on a procfs file that reports size 0',
+    'refuses a procfs file that reports size 0, at the size cap or on the read',
     () => {
-      expect(() => readPlainFile('/proc/self/pagemap')).toThrow('is not a plain file');
+      // No Linux runner checks which the kernel gives, so either refusal passes.
+      expect(() => readPlainFile('/proc/self/pagemap')).toThrow(/is not a plain file|EINVAL/);
     },
   );
 });

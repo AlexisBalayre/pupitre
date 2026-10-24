@@ -5228,7 +5228,8 @@ changes back into those docs is pending.
     fifo is reclaimed without blocking (the fifo test hangs on the old read), and so is a symlink
     to a live holder's record, its target untouched; `readPlainFile` refuses a link only when
     told to, and stops at the cap on a file that reports size 0 while holding 2 MiB (the test
-    fails on a read to EOF) and on `/proc/self/pagemap` where there is one; a fifo planted at a
+    fails on a read to EOF), and refuses `/proc/self/pagemap` where there is one, at the cap or
+    on the kernel's refusal of the read, since no Linux runner checks which; a fifo planted at a
     staged file fails a gate's wait and a worker's take at once, the gate running without a slot
     (the test hangs on a plain open); a gate is served
     before a worker that waited longer and is named to it; a dead gate's wait file, and a live

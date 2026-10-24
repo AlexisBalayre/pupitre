@@ -11,7 +11,9 @@ const PLAIN_FILE_MAX_BYTES = 1 << 20;
  * interrupt forwarding with it, so only a regular file is read, checked on the
  * descriptor opened without blocking. The read stops at the size cap rather
  * than at EOF: a procfs file is regular and reports size 0, yet
- * `/proc/self/pagemap` streams for hundreds of gigabytes. Throws otherwise.
+ * `/proc/self/pagemap` streams for hundreds of gigabytes. Throws on any other
+ * file, past the cap, or when the kernel refuses the read, as it may refuse a
+ * procfs file's before the cap is reached.
  *
  * `followLinks: false` refuses a symlink outright, for files only pup writes,
  * which are never one; a checkout's config may be a tracked link.
@@ -24,7 +26,8 @@ export function readPlainFile(path: string, { followLinks = true } = {}): string
     if (!stat.isFile() || stat.size > PLAIN_FILE_MAX_BYTES) {
       throw new Error(`${path} is not a plain file`);
     }
-    const buffer = Buffer.alloc(PLAIN_FILE_MAX_BYTES + 1);
+    // procfs pagemap refuses a read that is not a multiple of 8 bytes.
+    const buffer = Buffer.alloc(PLAIN_FILE_MAX_BYTES + 8);
     let length = 0;
     for (let read = -1; read !== 0 && length < buffer.length; length += read) {
       read = readSync(fd, buffer, length, buffer.length - length, null);
