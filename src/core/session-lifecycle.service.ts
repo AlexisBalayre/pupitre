@@ -534,6 +534,8 @@ export function writeSessionProfile(
  * the retry, which mints the same id (decision 40). No git runs in the
  * worktree: the directory goes first, so the prune drops its registration,
  * and the branch goes only while it still holds the commit the add cut it at.
+ * Returns what it undid, for the refusal to carry: a rewritten pointer's asks
+ * for a `worktree repair`, which no longer fits once the worktree is gone.
  * Swallowed: a cleanup failure must not replace the refusal.
  */
 function dropUncheckedWorktree(
@@ -541,13 +543,20 @@ function dropUncheckedWorktree(
   worktreePath: string,
   branch: string,
   head: string,
-): void {
+): string {
   try {
     rmSync(worktreePath, { recursive: true, force: true });
     runGit(repoPath, ['worktree', 'prune']);
     runGit(repoPath, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, head]);
+    return (
+      ` The launch's new worktree and its branch ${sanitizeReason(branch)} were removed, so ` +
+      'nothing needs restoring: retry the launch once the cause is cleared.'
+    );
   } catch {
-    // see above
+    return (
+      ` The launch could not remove its new worktree ${sanitizeReason(worktreePath)} and ` +
+      `branch ${sanitizeReason(branch)}: remove both, then retry the launch.`
+    );
   }
 }
 
@@ -588,7 +597,8 @@ function startSession(
   try {
     checkoutPinned(req.repoPath, worktreePath, head);
   } catch (error) {
-    dropUncheckedWorktree(req.repoPath, worktreePath, branch, head);
+    const undone = dropUncheckedWorktree(req.repoPath, worktreePath, branch, head);
+    if (error instanceof Error) error.message += undone;
     throw error;
   }
   const { settingsPath, mcpConfigPath } = writeSessionProfile(

@@ -5542,8 +5542,8 @@ changes back into those docs is pending.
     *Absolute gitfiles.* Git 2.48's `worktree.useRelativePaths` has `worktree add` write
     `gitdir: ../../.git/worktrees/<id>`, which the exact checks refuse as a rewrite, after
     `startSession` has added the worktree and written its row (CI review). `GIT_SAFE_CONFIG` pins
-    the key to `false`, so pup's `worktree add` (`startSession` and a fix round) writes the
-    absolute gitfile whatever the operator's global config says. An older git ignores the key.
+    the key to `false`, so pup's `worktree add` (`startSession`, a fix round, the gate's checkout
+    and the conductor's) writes the absolute gitfile whatever the operator's global config says. An older git ignores the key.
     The checks stay exact and do not resolve a relative gitfile, so a worktree added with
     relative paths outside pup is refused. The refusal's repair hint carries the same `-c`,
     because `worktree repair` also rewrites links to match the option.
@@ -5609,7 +5609,8 @@ changes back into those docs is pending.
     review found no way for it to run code. The add and its checkout each take one sha resolved
     before both, so a target that moves between them cannot leave HEAD and the index apart. A
     launch whose checkout throws removes the directory, prunes, and deletes the branch while it
-    still holds that sha, so the retry that mints the same id adds it again (decision 40). The
+    still holds that sha, so the retry that mints the same id adds it again (decision 40). Its
+    refusal then says the worktree and branch were removed, rather than asking for a repair. The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
@@ -5622,8 +5623,12 @@ changes back into those docs is pending.
     one, is the follow-up. Its `git status` runs outside the sandbox for the whole session, so a
     gitfile rewritten after the launch, or a gitlink planted with a `.gitmodules` override, still
     reaches it, as it reaches any git Claude Code runs after its startup. The config disarms a
-    planted fsmonitor there, and no clean filter. With
-    `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
+    planted fsmonitor there, and no clean filter. The worst case is the conductor's: its server
+    runs `--path <checkout>` with unpinned `git status` for the conductor's whole life, so a
+    session that rewrites `<common>/worktrees/checkout/commondir` and that admin dir's `index`
+    toward a repo it armed with a `filter.<x>.clean` gets that filter run outside the sandbox.
+    That was already true on main before this change. Pinning the served server is a follow-up
+    task in the profile compiler. With `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
     gate's scope audit, on the branch's own diff, still does. A project that commits submodules
     gets no code graph.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
@@ -5680,7 +5685,8 @@ changes back into those docs is pending.
     refusal from the gate and the conductor's first cut, with nothing fired, no index and only
     `.git` in the tree the add left; with the add's own checkout back, the tree holds the files.
     A respawn refused after the kill says the old window is gone. A launch whose `read-tree`
-    fails once leaves no row, worktree, registration or branch, and the retry launches. A
+    fails once, or whose `commondir` is rewritten right after the add, leaves no row, worktree,
+    registration or branch, says they were removed, and the retry launches. A
     conductor whose target moves right after the add cuts a clean checkout at the old tip, and
     the next start moves it to the new one.
 102. **While the project's conductor runs, a session awaiting review is left out of the
