@@ -2,6 +2,7 @@ import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -72,6 +73,18 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   };
 });
 
+// Shortened by the one test of a gate that runs out its wait for a test slot.
+const slotWait = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('./test-slot.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./test-slot.service.js')>();
+  return {
+    ...actual,
+    get GATE_SLOT_WAIT_MS() {
+      return slotWait.ms ?? actual.GATE_SLOT_WAIT_MS;
+    },
+  };
+});
+
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import {
@@ -105,6 +118,7 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
+import { HELD_SLOT_ENV, withTestSlot } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
@@ -237,6 +251,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     db = openStore(':memory:');
     repo = initRepo();
     ghLog = join(tempDir('pup-ghlog-'), 'calls');
+    // As inside a slot already held, so a gate here never queues behind the
+    // machine's real test runs; the slot tests clear it (decision 96).
+    vi.stubEnv(HELD_SLOT_ENV, 'merge-gate.test');
   });
 
   /**
@@ -3852,6 +3869,144 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ),
     ).rejects.toThrow('origin');
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  describe("the gate's test run takes a test slot (decision 96)", () => {
+    let slots: string;
+
+    beforeEach(() => {
+      const home = tempDir('pup-slot-home-');
+      vi.stubEnv('HOME', home);
+      vi.stubEnv(HELD_SLOT_ENV, '');
+      slots = join(home, '.pupitre', 'slots');
+      mkdirSync(slots, { recursive: true });
+      // Both slots held by a live process that is not this one.
+      for (const index of [0, 1]) {
+        writeFileSync(
+          join(slots, `slot-${index}.lock`),
+          JSON.stringify({
+            kind: 'worker',
+            label: 's-other',
+            pid: process.ppid,
+            token: `t${index}`,
+          }),
+        );
+      }
+    });
+
+    const settledWithin = async (gate: Promise<unknown>, ms: number): Promise<boolean> => {
+      let settled = false;
+      void gate.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return settled;
+    };
+
+    it('waits while every slot is held, saying for whom, and merges once one frees', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+
+      const gate = merge();
+
+      expect(await settledWithin(gate, 1500)).toBe(false);
+      expect(errors.mock.calls.flat().join('\n')).toContain(
+        `Waiting for a test slot, held by session s-other (pid ${process.ppid}) and session ` +
+          `s-other (pid ${process.ppid}).`,
+      );
+      rmSync(join(slots, 'slot-1.lock'));
+      expect((await gate).status).toBe('merged');
+      expect(existsSync(join(slots, 'slot-1.lock'))).toBe(false);
+    });
+
+    it('is served the freed slot before a worker that was waiting first', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let workerRan = false;
+      const worker = withTestSlot(
+        { kind: 'worker', label: 's-waiting' },
+        async () => {
+          workerRan = true;
+        },
+        { pollMs: 10 },
+      );
+
+      const gate = merge();
+      while (!readdirSync(slots).some((name) => name.endsWith('.wait'))) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      rmSync(join(slots, 'slot-1.lock'));
+      // The worker polls a hundred times faster than the gate, and still waits.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(workerRan).toBe(false);
+
+      expect((await gate).status).toBe('merged');
+      await worker;
+      expect(workerRan).toBe(true);
+    });
+
+    it("waits for a slot for a nested package's suite when the root has none", async () => {
+      const scripts = { test: 'true', typecheck: 'true' };
+      commitIn(repo, 'tools/review/package.json', JSON.stringify({ scripts }));
+      const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'tools/**'] });
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const adapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'true', args: [] }],
+        touchedNestedPackages: typescriptAdapter.touchedNestedPackages,
+      };
+
+      const gate = merge(adapter);
+      while (!readdirSync(slots).some((name) => name.endsWith('.wait'))) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      rmSync(join(slots, 'slot-1.lock'));
+
+      const outcome = await gate;
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages.map((stage) => stage.stage)).toContain('test (tools/review)');
+    });
+
+    it('runs its tests without a slot once its wait runs out, saying so', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      slotWait.ms = 1000;
+      onTestFinished(() => {
+        slotWait.ms = undefined;
+      });
+
+      expect((await merge()).status).toBe('merged');
+      expect(errors.mock.calls.flat().join('\n')).toContain(
+        'No test slot came free in 1.0s; the gate runs its tests without one.',
+      );
+      // Both still held by their live holder, and no wait left behind.
+      expect(readdirSync(slots).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+    });
+
+    it('runs its tests without a slot when a session planted a file where the slots go', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      rmSync(slots, { recursive: true });
+      writeFileSync(slots, '');
+
+      expect((await merge()).status).toBe('merged');
+      expect(errors.mock.calls.flat().join('\n')).toMatch(
+        /The test slots could not be used \(.+\); the gate runs its tests without one\./,
+      );
+    });
   });
 });
 

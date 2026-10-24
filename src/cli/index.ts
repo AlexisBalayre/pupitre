@@ -28,6 +28,7 @@ import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
 import {
   ConductorTellRefusedError,
+  DEFAULT_MAX_SESSIONS,
   isConductorRunning,
   NO_CONDUCTOR_RUNNING,
   startConductor,
@@ -113,13 +114,21 @@ import {
   interruptSession,
   killedFixRoundMessage,
   killSession,
+  LowMemoryError,
   launchTask,
   markSessionDone,
   markSessionQuestion,
   planTask,
   recordSteerMessage,
+  SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import {
+  describeSlotWait,
+  runSessionTest,
+  SlotWaitInterruptedError,
+  sessionTestCommand,
+} from '../core/test-slot.service.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
@@ -461,6 +470,19 @@ function noteAllowOverlap(passed: boolean | undefined): void {
   }
 }
 
+// Decision 96: the cap is the operator's to set, and so to exceed.
+const OVER_CAP_DESCRIPTION = 'launch past the session cap (operator only)';
+
+/** The launch errors that say the machine or the project has no room: refused, not crashed. */
+const NO_ROOM_ERRORS = [SessionCapReachedError, LowMemoryError];
+
+/** Refuses `--over-cap` from the conductor, which never lifts its own cap; true when refused. */
+function refusedOverCap(passed: boolean | undefined, command: string): boolean {
+  if (!(passed && callingConductor())) return false;
+  refuse(`\`pup ${command} --over-cap\` is operator-only; the conductor launches within the cap.`);
+  return true;
+}
+
 // A window's model and effort are routed by its task's tier and rung (decision
 // 92); either flag is the operator's override, recorded on the session.
 const MODEL_OVERRIDE_DESCRIPTION = 'claude model for the window, over the routed one';
@@ -630,9 +652,11 @@ function createOrRefuse(
   db: Database,
   repoPath: string,
   task: TaskSpec,
-  fields: Pick<NewSessionRequest, 'model' | 'effort' | 'origin' | 'overlapVia'>,
+  fields: Pick<NewSessionRequest, 'model' | 'effort' | 'origin' | 'overlapVia'> & {
+    overCap?: boolean;
+  },
 ): string | undefined {
-  return launchOrRefuse(task.id, [InvalidProfileError], () =>
+  return launchOrRefuse(task.id, [InvalidProfileError, ...NO_ROOM_ERRORS], () =>
     createSession(db, {
       repoPath,
       base: DEFAULT_BASE_PROFILE,
@@ -758,6 +782,7 @@ interface ConductorOptions {
   model?: string;
   effort?: string;
   workerModel?: string;
+  maxSessions?: string;
 }
 
 interface PlanOptions {
@@ -867,6 +892,7 @@ export function buildProgram(): Command {
     .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
     .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
+    .option('--over-cap', OVER_CAP_DESCRIPTION)
     .action((goal: string, opts: Record<string, string[] | string | boolean | undefined>) => {
       const { repoPath, db } = project();
       // `pup new` is `pup plan add` plus a launch, so it carries the same rule:
@@ -883,10 +909,12 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
+      if (refusedOverCap(opts.overCap === true, 'new')) return;
       noteAllowOverlap(opts.allowOverlap === true);
       const sessionId = createOrRefuse(db, repoPath, task, {
         model: opts.model as string | undefined,
         effort: opts.effort as string | undefined,
+        overCap: opts.overCap === true,
         ...conductorAttribution(),
       });
       if (sessionId === undefined) return;
@@ -1009,40 +1037,51 @@ export function buildProgram(): Command {
     .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
     .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
-    .action((taskId: string, opts: RouteOverride & { allowOverlap?: boolean }) => {
-      const { repoPath, db } = project();
-      // Admitting work belongs to the operator and the conductor: a session
-      // launching one would mint itself a fresh session past decision 7's
-      // reject cap — the same rule and detection that keep `--pr` and spec
-      // authoring operator-only (decisions 26, 42).
-      if (callingSession(db)) {
-        return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
-      }
-      noteAllowOverlap(opts.allowOverlap);
-      const planned = getTask(db, taskId);
-      if (planned) {
-        const spec = taskSpecForDisplay(planned);
-        console.log(`goal: ${sanitizeReason(spec.goal ?? '')}`);
-        console.log(`scope-in: ${sanitizeReason((spec.scopeIn ?? []).join(', '))}`);
-      }
-      const sessionId = launchOrRefuse(
-        taskId,
-        [UnknownTaskError, TaskAlreadyClaimedError, InvalidProfileError, TopRungReachedError],
-        () =>
-          launchTask(db, {
-            repoPath,
-            base: DEFAULT_BASE_PROFILE,
-            taskId,
-            claudeUserDir: join(homedir(), '.claude'),
-            model: opts.model,
-            effort: opts.effort,
-            overlapVia: conductorAttribution().overlapVia,
-            overrideVia: callingConductor() ? 'conductor' : 'operator',
-          }),
-      );
-      if (sessionId === undefined) return;
-      reportLaunched(sessionId);
-    });
+    .option('--over-cap', OVER_CAP_DESCRIPTION)
+    .action(
+      (taskId: string, opts: RouteOverride & { allowOverlap?: boolean; overCap?: boolean }) => {
+        const { repoPath, db } = project();
+        // Admitting work belongs to the operator and the conductor: a session
+        // launching one would mint itself a fresh session past decision 7's
+        // reject cap — the same rule and detection that keep `--pr` and spec
+        // authoring operator-only (decisions 26, 42).
+        if (callingSession(db)) {
+          return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
+        }
+        if (refusedOverCap(opts.overCap, 'launch')) return;
+        noteAllowOverlap(opts.allowOverlap);
+        const planned = getTask(db, taskId);
+        if (planned) {
+          const spec = taskSpecForDisplay(planned);
+          console.log(`goal: ${sanitizeReason(spec.goal ?? '')}`);
+          console.log(`scope-in: ${sanitizeReason((spec.scopeIn ?? []).join(', '))}`);
+        }
+        const sessionId = launchOrRefuse(
+          taskId,
+          [
+            UnknownTaskError,
+            TaskAlreadyClaimedError,
+            InvalidProfileError,
+            TopRungReachedError,
+            ...NO_ROOM_ERRORS,
+          ],
+          () =>
+            launchTask(db, {
+              repoPath,
+              base: DEFAULT_BASE_PROFILE,
+              taskId,
+              claudeUserDir: join(homedir(), '.claude'),
+              model: opts.model,
+              effort: opts.effort,
+              overlapVia: conductorAttribution().overlapVia,
+              overrideVia: callingConductor() ? 'conductor' : 'operator',
+              overCap: opts.overCap === true,
+            }),
+        );
+        if (sessionId === undefined) return;
+        reportLaunched(sessionId);
+      },
+    );
 
   program
     .command('conductor [action] [message]')
@@ -1054,6 +1093,10 @@ export function buildProgram(): Command {
     .option(
       '--worker-model <model>',
       'claude model the conductor launches every session on, over the routed one',
+    )
+    .option(
+      '--max-sessions <n>',
+      `most live sessions any launch may reach, stored for the project (default ${DEFAULT_MAX_SESSIONS})`,
     )
     .action((action: string | undefined, message: string | undefined, opts: ConductorOptions) => {
       const { repoPath, db } = project();
@@ -1078,6 +1121,10 @@ export function buildProgram(): Command {
       if (verb !== 'start') {
         return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell).`);
       }
+      const maxSessions = Number(opts.maxSessions ?? DEFAULT_MAX_SESSIONS);
+      if (!Number.isInteger(maxSessions) || maxSessions < 1) {
+        return refuse('--max-sessions takes a whole number of at least 1.');
+      }
       let handle: ConductorHandle;
       try {
         handle = startConductor({
@@ -1088,6 +1135,7 @@ export function buildProgram(): Command {
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,
+          maxSessions,
         });
       } catch (error) {
         if (!(error instanceof LaunchRolledBackError)) throw error;
@@ -1106,6 +1154,9 @@ export function buildProgram(): Command {
       // it pastes into the operator's shell as it stands.
       console.log(
         `Attach with: ${sanitizeReason(attachCommand({ conductorOf: projectId(repoPath) }))}`,
+      );
+      console.log(
+        `Session cap: ${maxSessions}; \`pup launch\` and \`pup new\` refuse past it, and only the operator's --over-cap goes beyond.`,
       );
       // The start brings a radar up with it unless one is already sweeping —
       // the operator asked for a fleet that runs itself, not for two commands
@@ -2360,6 +2411,40 @@ export function buildProgram(): Command {
       if (!question.trim()) return refuse('pup session ask needs the question itself.');
       markSessionQuestion(db, sessionId, question);
       console.log(`Session ${sanitizeReason(sessionId)} asked: ${sanitizeReason(question)}`);
+    });
+  session
+    .command('test [args...]')
+    .description(
+      "Run the project's test command once a machine-wide test slot is free (run by the agent)",
+    )
+    // The runner's own flags (`-t <name>`) belong to it, not to pup.
+    .allowUnknownOption()
+    .helpOption(false)
+    .action(async (args: string[] = []) => {
+      const { repoPath, db } = project();
+      const sessionId = ownSession(db, 'test');
+      if (!sessionId) return;
+      const command = sessionTestCommand(repoPath);
+      if (!command) {
+        return refuse(
+          'No test command to run: no adapter in this repo declares one, and the merge gate measures none either.',
+        );
+      }
+      try {
+        process.exitCode = await runSessionTest({
+          command,
+          args,
+          cwd: process.cwd(),
+          sessionId,
+          slots: {
+            onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof SlotWaitInterruptedError)) throw error;
+        console.error(error.message);
+        process.exitCode = 130;
+      }
     });
   session
     .command('handoff-done')
