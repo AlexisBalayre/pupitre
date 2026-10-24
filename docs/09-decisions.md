@@ -5610,7 +5610,9 @@ changes back into those docs is pending.
     before both, so a target that moves between them cannot leave HEAD and the index apart. A
     launch whose checkout throws removes the directory, prunes, and deletes the branch while it
     still holds that sha, so the retry that mints the same id adds it again (decision 40). Its
-    refusal then says the worktree and branch were removed, rather than asking for a repair. The
+    refusal then says the worktree and branch were removed: a rewritten pointer's refusal is
+    raised again with that in place of its `worktree repair` advice, and any other failure
+    carries it appended. The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
@@ -5686,7 +5688,9 @@ changes back into those docs is pending.
     `.git` in the tree the add left; with the add's own checkout back, the tree holds the files.
     A respawn refused after the kill says the old window is gone. A launch whose `read-tree`
     fails once, or whose `commondir` is rewritten right after the add, leaves no row, worktree,
-    registration or branch, says they were removed, and the retry launches. A
+    registration or branch, says they were removed, and the retry launches; the commondir
+    case's refusal names no `worktree repair`. A refusal raised with no advice of its own still
+    closes on the repair advice, word for word. A
     conductor whose target moves right after the add cuts a clean checkout at the old tip, and
     the next start moves it to the new one.
 102. **While the project's conductor runs, a session awaiting review is left out of the

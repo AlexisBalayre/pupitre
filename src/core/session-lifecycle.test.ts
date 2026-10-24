@@ -600,8 +600,10 @@ describe('launchTask armed-driver guard', () => {
       throw error;
     }).toThrow(refusal);
     expect((error as Error).message).toMatch(
-      /The launch's new worktree and its branch pup\/t-1 were removed, so nothing needs restoring: retry the launch once the cause is cleared\.$/,
+      /The launch's new worktree and its branch pup\/t-1 were removed, so nothing needs restoring: retry the launch once the cause is cleared[.,]/,
     );
+    // In place of the refusal's own advice, never beside it.
+    expect((error as Error).message).not.toMatch(/worktree repair/);
     expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
       n: 0,
     });
