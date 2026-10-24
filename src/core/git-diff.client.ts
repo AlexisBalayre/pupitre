@@ -9,6 +9,7 @@ import {
   readFileSync,
   readSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
@@ -102,11 +103,25 @@ function realpathOrUndefined(path: string): string | undefined {
   }
 }
 
+/** What a refusal over rewritten pointers asks the operator to do, unless its caller knows better. */
+const REPAIR_ADVICE =
+  'Restore them (`git -c worktree.useRelativePaths=false worktree repair` from the main ' +
+  'checkout) and retry';
+
+/**
+ * Kept in its parts, so a caller that has already undone what `advice` would
+ * fix (a launch that removed its new worktree) re-raises the same refusal with
+ * advice of its own, rather than one message asking for both.
+ */
 export class WorktreeRepointedError extends Error {
-  constructor(worktreePath: string, problem: string) {
+  constructor(
+    readonly worktreePath: string,
+    readonly problem: string,
+    advice: string = REPAIR_ADVICE,
+  ) {
     super(
-      `Refusing to run git in ${sanitizeReason(worktreePath)}: ${problem}, and treat the ` +
-        'session that did it as compromised.',
+      `Refusing to run git in ${sanitizeReason(worktreePath)}: ${problem}. ${advice}, and ` +
+        'treat the session that did it as compromised.',
     );
     this.name = 'WorktreeRepointedError';
   }
@@ -160,8 +175,7 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
       `its .git no longer names ${sanitizeReason(env.GIT_DIR)}, or that admin dir's ` +
         `commondir no longer names ${sanitizeReason(env.GIT_COMMON_DIR)}. A session can ` +
         'rewrite both from inside its sandbox, and any git that followed them would run the ' +
-        'filters of a repo it chose. Restore them (`git -c worktree.useRelativePaths=false ' +
-        'worktree repair` from the main checkout) and retry',
+        'filters of a repo it chose',
     );
   }
   if (
@@ -172,11 +186,34 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
       worktreePath,
       `git would read ${sanitizeReason(join(env.GIT_DIR, 'config.worktree'))}, which a ` +
         'session can write from inside its sandbox: the file exists, or ' +
-        `extensions.worktreeConfig is on in ${sanitizeReason(join(env.GIT_COMMON_DIR, 'config'))}. ` +
-        'Remove the file and turn the extension off, then retry',
+        `extensions.worktreeConfig is on in ${sanitizeReason(join(env.GIT_COMMON_DIR, 'config'))}`,
+      'Remove the file and turn the extension off, then retry',
     );
   }
   return env;
+}
+
+/**
+ * Check out `rev` into a worktree `worktree add --no-checkout` just cut, with
+ * git pinned to the dirs pup trusts, checked first (decision 101). A plain add
+ * writes the admin dir's `commondir`, then checks out in a child git that
+ * reads it back before any check could run, and a session can write under
+ * `<common>/worktrees/`. `--no-sparse-checkout`, because a planted
+ * `core.sparseCheckout` would leave committed files out; `--reset`, because
+ * the new index is empty.
+ */
+export function checkoutPinned(
+  repoPath: string,
+  worktreePath: string,
+  rev: string,
+): WorktreeGitEnv {
+  const git = verifiedWorktreeGitEnv(repoPath, worktreePath);
+  runGit(
+    worktreePath,
+    ['read-tree', '--no-recurse-submodules', '--no-sparse-checkout', '--reset', '-u', rev],
+    { env: { ...git } },
+  );
+  return git;
 }
 
 /**
@@ -188,9 +225,22 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
  * `git sparse-checkout` is the usual cause, not the only one: a session that
  * can write the shared config can turn the extension on and arm a driver in
  * `config.worktree`, which this refusal then meets before the driver check.
+ * A repo whose `.git` is a gitfile is refused here too, before anything is
+ * written: none of the paths pup trusts exists under it.
  */
 export function assertNoWorktreeConfig(repoPath: string): void {
   const dotGit = join(repoPath, '.git');
+  // Every path pup trusts is built as `<repo>/.git/...`, the pins included.
+  // Under a gitfile those name nothing: this check would read no config, and
+  // the pointer check would refuse only once the row and the worktree exist.
+  if (!statSync(dotGit, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(
+      `Refusing to launch a session in ${sanitizeReason(repoPath)}: its .git is not a ` +
+        'directory. pup pins a session to the repository at <repo>/.git (decision 101), so it ' +
+        'launches from a main checkout only, never from a linked worktree, a submodule or a ' +
+        '`--separate-git-dir` clone, whose .git is a gitfile. Run it from the main checkout.',
+    );
+  }
   if (lstatSync(join(dotGit, 'config.worktree'), { throwIfNoEntry: false })) {
     throw new WorktreeConfigError(
       repoPath,

@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
@@ -19,7 +19,14 @@ import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { maxSessions } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
-import { assertNoArmedGitDrivers, assertNoWorktreeConfig, runGit } from './git-diff.client.js';
+import {
+  assertNoArmedGitDrivers,
+  assertNoWorktreeConfig,
+  checkoutPinned,
+  runGit,
+  verifiedWorktreeGitEnv,
+  WorktreeRepointedError,
+} from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
@@ -500,7 +507,10 @@ export function recompileSessionProfile(
  * Write a compile into the session's compiled dir and prepare its code graph
  * on the worktree, which must exist by now, so the window opens on a graph of
  * its own branch (decision 51). The MCP config is offered only from this
- * compile's binary, never from an `mcp.json` found on disk.
+ * compile's binary, never from an `mcp.json` found on disk. The indexer's git
+ * is pinned to the dirs pup trusts, once the pointers are checked (decision
+ * 101); a check that fails costs the graph, and the window's own check then
+ * refuses the launch.
  */
 export function writeSessionProfile(
   { compiled, binary }: SessionCompile,
@@ -511,10 +521,44 @@ export function writeSessionProfile(
   writeCompiledProfile(compiled, compiledDir);
   return {
     settingsPath: join(compiledDir, 'settings.json'),
-    mcpConfigPath: prepareGraph(binary, repoPath, worktreePath)
+    mcpConfigPath: prepareGraph(binary, repoPath, worktreePath, () =>
+      verifiedWorktreeGitEnv(repoPath, worktreePath),
+    )
       ? join(compiledDir, 'mcp.json')
       : undefined,
   };
+}
+
+/**
+ * Undo a `worktree add` whose pinned checkout threw: a rewritten `commondir`,
+ * a full disk, an interrupt. Left behind, the worktree and branch would refuse
+ * the retry, which mints the same id (decision 40). No git runs in the
+ * worktree: the directory goes first, so the prune drops its registration,
+ * and the branch goes only while it still holds the commit the add cut it at.
+ * Returns what it undid, as the advice the refusal closes with: a rewritten
+ * pointer's own asks for a `worktree repair`, which no longer fits once the
+ * worktree is gone. Swallowed: a cleanup failure must not replace the refusal.
+ */
+function dropUncheckedWorktree(
+  repoPath: string,
+  worktreePath: string,
+  branch: string,
+  head: string,
+): string {
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+    runGit(repoPath, ['worktree', 'prune']);
+    runGit(repoPath, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, head]);
+    return (
+      `The launch's new worktree and its branch ${sanitizeReason(branch)} were removed, so ` +
+      'nothing needs restoring: retry the launch once the cause is cleared'
+    );
+  } catch {
+    return (
+      `The launch could not remove its new worktree ${sanitizeReason(worktreePath)} and ` +
+      `branch ${sanitizeReason(branch)}: remove both, then retry the launch`
+    );
+  }
 }
 
 function startSession(
@@ -547,7 +591,20 @@ function startSession(
     peers,
   );
   const { compiled } = compile;
-  runGit(req.repoPath, ['worktree', 'add', '-b', branch, worktreePath, 'HEAD']);
+  // `--no-checkout`: the add's own checkout would read the admin dir's
+  // `commondir` before any check of it (decision 101).
+  const head = runGit(req.repoPath, ['rev-parse', '--verify', 'HEAD^{commit}']).trim();
+  runGit(req.repoPath, ['worktree', 'add', '--no-checkout', '-b', branch, worktreePath, head]);
+  try {
+    checkoutPinned(req.repoPath, worktreePath, head);
+  } catch (error) {
+    const undone = dropUncheckedWorktree(req.repoPath, worktreePath, branch, head);
+    if (error instanceof WorktreeRepointedError) {
+      throw new WorktreeRepointedError(error.worktreePath, error.problem, undone);
+    }
+    if (error instanceof Error) error.message += ` ${undone}.`;
+    throw error;
+  }
   const { settingsPath, mcpConfigPath } = writeSessionProfile(
     compile,
     req.repoPath,
@@ -567,6 +624,7 @@ function startSession(
 
   const pane = launchSession({
     sessionId,
+    repoPath: req.repoPath,
     worktreePath,
     settingsPath,
     route: routeFor(route.tier, route.rung, route),

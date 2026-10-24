@@ -19,6 +19,13 @@ import {
 
 export interface LaunchOptions {
   sessionId: string;
+  /**
+   * The project's main checkout, as the caller was handed it: the repo the
+   * window's pointers are checked against and trust is seeded on. Never
+   * derived from `worktreePath`, which a respawn reads from a store row a
+   * session can write (decision 101).
+   */
+  repoPath: string;
   worktreePath: string;
   /** Compiled settings.json path, passed to `claude --settings`. */
   settingsPath: string;
@@ -541,9 +548,9 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     caller: { PUP_SESSION_ID: opts.sessionId },
     // Checked before the window opens, so a respawn over pointers the last
     // window rewrote is refused rather than have Claude Code's startup git
-    // follow them. A session's worktree is `<repo>/.worktrees/<session-id>`,
-    // the one place `startSession` puts it.
-    git: verifiedWorktreeGitEnv(dirname(dirname(opts.worktreePath)), opts.worktreePath),
+    // follow them. Against the project's own repo: a row naming a worktree of
+    // a repo the session built is refused, since its gitfile names that repo.
+    git: verifiedWorktreeGitEnv(opts.repoPath, opts.worktreePath),
     niceness: SESSION_NICENESS,
   });
 }

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { failureSummary, readPlainFile } from '../adapters/capability.utils.js';
+import { readPlainFile } from '../adapters/capability.utils.js';
 import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
 import {
   conductorName,
@@ -16,7 +16,14 @@ import {
   submitPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { assertNoArmedGitDrivers, currentBranch, runGit } from './git-diff.client.js';
+import {
+  assertNoArmedGitDrivers,
+  checkoutPinned,
+  currentBranch,
+  runGit,
+  verifiedWorktreeGitEnv,
+  type WorktreeGitEnv,
+} from './git-diff.client.js';
 import { getWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -98,8 +105,15 @@ export function maxSessions(repoPath: string): number {
  * the moment the window opened, which the context section says in as many words.
  * `pup conductor stop` leaves it in place — it is a cache, and re-cutting it on
  * every start is the expensive half.
+ *
+ * Its admin dir sits under `<common>/worktrees/` beside the sessions' own,
+ * where a session can rewrite its `commondir` from inside the sandbox. So the
+ * checkout's git and the indexer's run pinned to the dirs pup trusts, checked
+ * first, and the pins are what this answers (decision 101). The admin dir is
+ * taken to be the checkout's basename, as `worktree add` names it; one that
+ * had to take another name is refused, which costs the graph.
  */
-function refreshConductorCheckout(repoPath: string, checkoutDir: string): string {
+function refreshConductorCheckout(repoPath: string, checkoutDir: string): WorktreeGitEnv {
   // A checkout runs smudge filters, so it is exactly the operation decision 50's
   // guard exists for. Inside the caller's try: an armed driver costs the
   // conductor its graph, not its window.
@@ -112,25 +126,32 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): string
     throw new Error(`Main worktree at ${repoPath} is not on a branch; no merge target to index.`);
   }
   if (existsSync(join(checkoutDir, '.git'))) {
+    const git = verifiedWorktreeGitEnv(repoPath, checkoutDir);
     // `refs/heads/`: a bare name resolves a same-named tag first (decision 80).
-    runGit(checkoutDir, ['checkout', '--detach', `refs/heads/${target}`]);
-  } else {
-    // An operator who clears `~/.pupitre` leaves the registration behind, and
-    // `worktree add` then refuses the path forever ("missing but already
-    // registered") — the conductor would silently never get a graph again.
-    // Prune drops only registrations whose directory is already gone, so it
-    // heals that and touches nothing that still exists.
-    runGit(repoPath, ['worktree', 'prune']);
-    mkdirSync(dirname(checkoutDir), { recursive: true });
-    runGit(repoPath, ['worktree', 'add', '--detach', checkoutDir, `refs/heads/${target}`]);
+    runGit(checkoutDir, ['checkout', '--detach', `refs/heads/${target}`], { env: { ...git } });
+    return git;
   }
-  return checkoutDir;
+  // An operator who clears `~/.pupitre` leaves the registration behind, and
+  // `worktree add` then refuses the path forever ("missing but already
+  // registered") — the conductor would silently never get a graph again.
+  // Prune drops only registrations whose directory is already gone, so it
+  // heals that and touches nothing that still exists.
+  runGit(repoPath, ['worktree', 'prune']);
+  mkdirSync(dirname(checkoutDir), { recursive: true });
+  // `--no-checkout`: the add's own checkout would read the admin dir's
+  // `commondir` before any check of it (decision 101). One sha for both: a
+  // target that moved between them would leave HEAD at the old tip and the
+  // index at the new one.
+  const tip = runGit(repoPath, ['rev-parse', '--verify', `refs/heads/${target}^{commit}`]).trim();
+  runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', checkoutDir, tip]);
+  return checkoutPinned(repoPath, checkoutDir, tip);
 }
 
 /**
  * The conductor's graph, or undefined when it gets none. Cutting the checkout is
- * inside the same failure envelope as the index: either step failing costs the
- * graph and prints one line, never the window.
+ * inside the same failure envelope as the index, and runs only once a binary
+ * is found: either step failing costs the graph and prints one line, never the
+ * window.
  */
 function graphForConductor(
   binary: string | undefined,
@@ -138,20 +159,11 @@ function graphForConductor(
   checkoutDir: string,
   outDir: string,
 ): string | undefined {
-  if (binary) {
-    try {
-      refreshConductorCheckout(repoPath, checkoutDir);
-    } catch (error) {
-      // Through `failureSummary` like every other shell-out (decision 29): git's
-      // stderr on its way to the terminal an operator reads a decision from.
-      console.error(
-        `Could not refresh ${checkoutDir}: launching without a code graph. ${failureSummary(error)}`,
-      );
-      return undefined;
-    }
-  }
-  // With no binary this is the one call that prints the "no codegraph" line.
-  return prepareGraph(binary, repoPath, checkoutDir) ? join(outDir, 'mcp.json') : undefined;
+  return prepareGraph(binary, repoPath, checkoutDir, () =>
+    refreshConductorCheckout(repoPath, checkoutDir),
+  )
+    ? join(outDir, 'mcp.json')
+    : undefined;
 }
 
 /**

@@ -753,6 +753,27 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     await expectRefusedUnwritten(SURVIVOR_REFUSAL);
   });
 
+  // The window's own check would refuse per-worktree config only once the
+  // worktree and the round exist, and blame a worker that never ran, so the
+  // round asks before its `worktree add`, as a launch does (decision 101).
+  it('refuses a repo with extensions.worktreeConfig on before any worktree add', async () => {
+    seedPrMerge();
+    sh(
+      dirname(repo),
+      'git',
+      'config',
+      '--file',
+      join(repo, '.git', 'config'),
+      'extensions.worktreeConfig',
+      'true',
+    );
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await expectRefusedUnwritten(/extensions\.worktreeConfig is on/);
+    expect(existsSync(worktree)).toBe(false);
+    expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(worktree);
+  });
+
   it('refuses on the top rung unless the operator names a route', async () => {
     seedPrMerge();
     recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));

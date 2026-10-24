@@ -782,6 +782,10 @@ describe('worktree git pins (decision 101)', () => {
     expectPlainGitFires(join(worktree, 'src/app.ts'));
 
     expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    // The repair advice unless a caller passes its own (a launch that removed the worktree).
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(
+      /a repo it chose\. Restore them \(`git -c worktree\.useRelativePaths=false worktree repair` from the main checkout\) and retry, and treat the session that did it as compromised\.$/,
+    );
     // Pinned, git reads neither pointer: a rewrite after the check changes nothing.
     pinnedStatus();
     expect(existsSync(marker)).toBe(false);
@@ -995,6 +999,19 @@ describe('assertNoWorktreeConfig', () => {
     sh(repo, 'git', ...unset, '--unset', 'extensions.worktreeConfig');
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
     setExtension('false');
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // Under a gitfile, `<repo>/.git/config` names nothing: the check would read
+  // no config and pass, and the pins built from the same path would be refused
+  // only once the row and the worktree exist (decision 101).
+  it('refuses a repo whose .git is a gitfile, as a linked worktree has', () => {
+    const linked = join(repo, '.worktrees', 'linked');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', linked);
+
+    expect(() => assertNoWorktreeConfig(linked)).toThrow(
+      /its \.git is not a directory\. pup pins a session to the repository at <repo>\/\.git/,
+    );
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
 });

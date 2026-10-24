@@ -10,7 +10,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
@@ -36,6 +36,7 @@ import { draftDecisionRecord } from './decision-record.service.js';
 import {
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -44,6 +45,7 @@ import {
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
+  type WorktreeGitEnv,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -381,7 +383,10 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     // resolved, because the sandbox matches resolved paths.
     const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
     try {
-      const checkoutDir = join(checkoutRoot, 'checkout');
+      // Named after its root, so the admin dir `worktree add` names after it is
+      // this gate's alone: as `checkout` it took `checkout1` whenever the
+      // conductor's checkout held `checkout`, a name the pins cannot predict.
+      const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
       return await (regate
         ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
         : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
@@ -409,26 +414,23 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
  * dropped before it is released, since it must hold the one sha this gate lands.
  *
  * `--no-checkout` then a `read-tree` of our own, for the reasons `fastForward`
- * gives: `--work-tree`, because `core.worktree` in the shared config would aim
- * the writes elsewhere, and `--no-sparse-checkout`, because a planted
- * `core.sparseCheckout` would leave out committed files no stage would then
- * see. The checkout runs a smudge filter on every file it writes, so the drivers
- * are checked again right before it, as they are before the fast-forward.
+ * gives: `--no-sparse-checkout`, because a planted `core.sparseCheckout` would
+ * leave out committed files no stage would then see. The checkout runs a
+ * smudge filter on every file it writes, so the drivers are checked again
+ * right before it, as they are before the fast-forward.
+ *
+ * Its git after the add runs pinned to the dirs pup trusts, checked first
+ * (decision 101): the admin dir sits under `<common>/worktrees/` beside the
+ * sessions' own, and a session can rewrite its `commondir` from inside the
+ * sandbox in the moment between the add and the read, or plant
+ * `config.worktree` there. `GIT_WORK_TREE` also does what `--work-tree` did,
+ * outranking a `core.worktree` in the shared config that would aim the writes
+ * elsewhere.
  */
 function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  runGit(dir, [
-    '--work-tree',
-    dir,
-    'read-tree',
-    '--no-recurse-submodules',
-    '--no-sparse-checkout',
-    '--reset',
-    '-u',
-    sha,
-  ]);
-  refuseEscapingLinks(dir, sha);
+  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
   return dir;
 }
 
@@ -448,9 +450,11 @@ function escapesCheckout(inside: string, path: string): boolean {
  * .env.local`, a build output) adds no reach and is kept; one pointing out is
  * refused like a resolving one (decision 81).
  */
-function refuseEscapingLinks(checkout: string, sha: string): void {
+function refuseEscapingLinks(checkout: string, sha: string, git: WorktreeGitEnv): void {
   const inside = realpathSync(checkout);
-  const entries = runGit(checkout, ['ls-tree', '-r', '-z', sha]).split('\0').filter(Boolean);
+  const entries = runGit(checkout, ['ls-tree', '-r', '-z', sha], { env: { ...git } })
+    .split('\0')
+    .filter(Boolean);
   for (const entry of entries) {
     // The path is everything after the first tab: mode, type and oid never hold
     // one, a path can.

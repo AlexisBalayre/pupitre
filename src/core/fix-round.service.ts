@@ -8,7 +8,13 @@ import {
   type SessionPane,
 } from '../claude/session-runtime.service.js';
 import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
-import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.client.js';
+import {
+  assertNoArmedGitDrivers,
+  assertNoWorktreeConfig,
+  checkoutPinned,
+  rethrowIfKilled,
+  runGit,
+} from './git-diff.client.js';
 import {
   assertGhAvailable,
   originRepoSlug,
@@ -388,14 +394,21 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): v
   }
   // `worktree add` checks out every file and runs a smudge filter on each
   // with the operator's environment, so it is refused while one is armed
-  // (decision 50).
+  // (decision 50). Per-worktree config first, as a launch asks it: the
+  // window's own check would refuse it only once the worktree and the round
+  // exist, and blame a worker that never ran (decision 101).
+  assertNoWorktreeConfig(repoPath);
   assertNoArmedGitDrivers(repoPath);
+  // `--no-checkout`: the add's own checkout would read the admin dir's
+  // `commondir` before any check of it, so the files come from a pinned
+  // read-tree of the head the branch holds either way.
   runGit(
     repoPath,
     tip === undefined
-      ? ['worktree', 'add', '-b', session.branch, session.worktree_path, head]
-      : ['worktree', 'add', session.worktree_path, session.branch],
+      ? ['worktree', 'add', '--no-checkout', '-b', session.branch, session.worktree_path, head]
+      : ['worktree', 'add', '--no-checkout', session.worktree_path, session.branch],
   );
+  checkoutPinned(repoPath, session.worktree_path, head);
 }
 
 /**
@@ -518,6 +531,7 @@ function relaunchWorker(
     killTmux(session.id);
     pane = launchSession({
       sessionId: session.id,
+      repoPath,
       worktreePath: session.worktree_path,
       settingsPath,
       route: routeFor(route.tier, route.rung, route),
