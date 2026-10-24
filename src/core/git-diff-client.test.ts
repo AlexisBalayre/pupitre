@@ -782,6 +782,10 @@ describe('worktree git pins (decision 101)', () => {
     expectPlainGitFires(join(worktree, 'src/app.ts'));
 
     expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    // The repair advice unless a caller passes its own (a launch that removed the worktree).
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(
+      /a repo it chose\. Restore them \(`git -c worktree\.useRelativePaths=false worktree repair` from the main checkout\) and retry, and treat the session that did it as compromised\.$/,
+    );
     // Pinned, git reads neither pointer: a rewrite after the check changes nothing.
     pinnedStatus();
     expect(existsSync(marker)).toBe(false);

@@ -25,6 +25,7 @@ import {
   checkoutPinned,
   runGit,
   verifiedWorktreeGitEnv,
+  WorktreeRepointedError,
 } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
@@ -534,9 +535,9 @@ export function writeSessionProfile(
  * the retry, which mints the same id (decision 40). No git runs in the
  * worktree: the directory goes first, so the prune drops its registration,
  * and the branch goes only while it still holds the commit the add cut it at.
- * Returns what it undid, for the refusal to carry: a rewritten pointer's asks
- * for a `worktree repair`, which no longer fits once the worktree is gone.
- * Swallowed: a cleanup failure must not replace the refusal.
+ * Returns what it undid, as the advice the refusal closes with: a rewritten
+ * pointer's own asks for a `worktree repair`, which no longer fits once the
+ * worktree is gone. Swallowed: a cleanup failure must not replace the refusal.
  */
 function dropUncheckedWorktree(
   repoPath: string,
@@ -549,13 +550,13 @@ function dropUncheckedWorktree(
     runGit(repoPath, ['worktree', 'prune']);
     runGit(repoPath, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, head]);
     return (
-      ` The launch's new worktree and its branch ${sanitizeReason(branch)} were removed, so ` +
-      'nothing needs restoring: retry the launch once the cause is cleared.'
+      `The launch's new worktree and its branch ${sanitizeReason(branch)} were removed, so ` +
+      'nothing needs restoring: retry the launch once the cause is cleared'
     );
   } catch {
     return (
-      ` The launch could not remove its new worktree ${sanitizeReason(worktreePath)} and ` +
-      `branch ${sanitizeReason(branch)}: remove both, then retry the launch.`
+      `The launch could not remove its new worktree ${sanitizeReason(worktreePath)} and ` +
+      `branch ${sanitizeReason(branch)}: remove both, then retry the launch`
     );
   }
 }
@@ -598,7 +599,10 @@ function startSession(
     checkoutPinned(req.repoPath, worktreePath, head);
   } catch (error) {
     const undone = dropUncheckedWorktree(req.repoPath, worktreePath, branch, head);
-    if (error instanceof Error) error.message += undone;
+    if (error instanceof WorktreeRepointedError) {
+      throw new WorktreeRepointedError(error.worktreePath, error.problem, undone);
+    }
+    if (error instanceof Error) error.message += ` ${undone}.`;
     throw error;
   }
   const { settingsPath, mcpConfigPath } = writeSessionProfile(

@@ -103,11 +103,25 @@ function realpathOrUndefined(path: string): string | undefined {
   }
 }
 
+/** What a refusal over rewritten pointers asks the operator to do, unless its caller knows better. */
+const REPAIR_ADVICE =
+  'Restore them (`git -c worktree.useRelativePaths=false worktree repair` from the main ' +
+  'checkout) and retry';
+
+/**
+ * Kept in its parts, so a caller that has already undone what `advice` would
+ * fix (a launch that removed its new worktree) re-raises the same refusal with
+ * advice of its own, rather than one message asking for both.
+ */
 export class WorktreeRepointedError extends Error {
-  constructor(worktreePath: string, problem: string) {
+  constructor(
+    readonly worktreePath: string,
+    readonly problem: string,
+    advice: string = REPAIR_ADVICE,
+  ) {
     super(
-      `Refusing to run git in ${sanitizeReason(worktreePath)}: ${problem}, and treat the ` +
-        'session that did it as compromised.',
+      `Refusing to run git in ${sanitizeReason(worktreePath)}: ${problem}. ${advice}, and ` +
+        'treat the session that did it as compromised.',
     );
     this.name = 'WorktreeRepointedError';
   }
@@ -161,8 +175,7 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
       `its .git no longer names ${sanitizeReason(env.GIT_DIR)}, or that admin dir's ` +
         `commondir no longer names ${sanitizeReason(env.GIT_COMMON_DIR)}. A session can ` +
         'rewrite both from inside its sandbox, and any git that followed them would run the ' +
-        'filters of a repo it chose. Restore them (`git -c worktree.useRelativePaths=false ' +
-        'worktree repair` from the main checkout) and retry',
+        'filters of a repo it chose',
     );
   }
   if (
@@ -173,8 +186,8 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
       worktreePath,
       `git would read ${sanitizeReason(join(env.GIT_DIR, 'config.worktree'))}, which a ` +
         'session can write from inside its sandbox: the file exists, or ' +
-        `extensions.worktreeConfig is on in ${sanitizeReason(join(env.GIT_COMMON_DIR, 'config'))}. ` +
-        'Remove the file and turn the extension off, then retry',
+        `extensions.worktreeConfig is on in ${sanitizeReason(join(env.GIT_COMMON_DIR, 'config'))}`,
+      'Remove the file and turn the extension off, then retry',
     );
   }
   return env;
