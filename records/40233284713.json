@@ -1,0 +1,246 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-25T21:09:46.995Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40233284713",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40233284713",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3971c3d71e16035627be27a37c8388bc2f7da682",
+  "source": "pr",
+  "pr_number": 173,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "220-255",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`assertNoGitlink` checks `<common>/worktrees/<id>/index`, a file sessions can write, and codegraph only reads that same file later. Between the two, a session-side writer can add a gitlink over a `.git` the session already planted in its worktree. codegraph's git then enters the submodule and runs that repo's clean filter outside the sandbox.",
+      "body": "**The gitlink check and codegraph read the index at different times.**\n\n`assertNoGitlink` runs `ls-files --stage` against `GIT_DIR=<common>/worktrees/<id>`. `indexDirectory` then hands codegraph that same `GIT_DIR` through `indexEnv(git)`:\n\n```ts\nfunction assertNoGitlink(git: WorktreeGitEnv): void {\n  const entries = runGit(git.GIT_WORK_TREE, ['ls-files', '--stage', '-z'], { env: { ...git } });\n  const gitlink = entries.split('\\0').find((entry) => entry.startsWith('160000 '));\n  ...\n}\n...\n  assertNoGitlink(git);\n  ...\n  execFileSync(binary, initialized ? ['index', directory, '--quiet'] : ['init', directory, '--yes'], {\n    env: indexEnv(git),\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3971c3d71e16035627be27a37c8388bc2f7da682/src/core/codegraph.client.ts#L220-L255\n\nDecision 101 says a session can write files in that admin dir: the sandbox write-protects neither pointer file there, and the ceilings paragraph assumes a session that rewrites an admin dir's `index`. So the index codegraph reads may not be the one pup checked. Killing the window on a respawn does not stop a sibling session or a process that outlived the window.\n\n**What follows if a gitlink is in the index when codegraph's git reads it.** Decision 101 already describes it. A `.gitmodules` `ignore = none` outranks `diff.ignoreSubmodules=all`, and the submodule's child git clears the pins. If the session has also planted an untracked `lib/x/.git` that names a repo it built with `filter.x.clean`, that filter runs outside the sandbox with the operator's environment. Closing that path is the reason for this check.\n\nThis window is not listed under decision 101's *Ceilings*. It affects every `indexDirectory` caller whose worktree a session has already run in: the respawn, the fix round and the conductor.\n\n**Suggested fix:** check a snapshot the session cannot change, and let codegraph read the same bytes.\n1. Copy `<admin>/index` to a file pup owns (`mkdtemp`).\n2. Run a pinned `GIT_INDEX_FILE=<copy> git update-index --no-split-index`, so a split index's `link` extension does not still read `$GIT_DIR/sharedindex.*`.\n3. Run the `ls-files --stage` check against the copy.\n4. Pass `GIT_INDEX_FILE=<copy>` in `indexEnv`.\n\nIf this window is meant to stay open, list it under decision 101's ceilings instead.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "397-401",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Stale comments still say `worktree add` checks out files and runs the smudge filter (fix-round.service.ts L397-401, session-lifecycle.service.ts L195-196, git-diff.client.ts L653-654). Every add is now `--no-checkout`, so the smudge runs in `checkoutPinned`'s `read-tree -u`. Unresolved from the prior review.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "541-543",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The JSDoc of `dropUncheckedWorktree` (and of `dropUncheckedRound` in fix-round.service.ts L434-436) says it \"Returns what it undid\", but its catch branch returns a \"could not remove\" message. Say it returns the advice instead. Unresolved from the prior review.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "600-603",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Call-site `--no-checkout` comments still restate `checkoutPinned`'s JSDoc (session-lifecycle.service.ts L600-601, fix-round.service.ts L404-407), which docs/conventions/general.md §Comments treats as a duplicate. The launch copy also sits above the `rev-parse` line rather than the `worktree add` it describes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1263",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `measureBranch` comment (\"What git reads of the pinned sha is read from the main checkout's repo, never through the checkout's admin dir…\") restates the JSDoc on `CapabilityContext.measureSha` and on `nestedPackageDirs`. That is the seam-duplication case in docs/conventions/general.md §Comments; drop those two sentences.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "438-454",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When the prune keeps a locked admin dir, the fix round's advice (`rm -r .worktrees/<id>` then `git worktree prune`) cannot clear it, so the retry is refused again with the same advice. Mention `git worktree unlock` (or `git worktree remove -f -f`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "210-215",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`checkoutPinned`'s `read-tree` and `refuseEscapingLinks`' pinned `ls-tree` (merge-gate.service.ts:454) have no `timeout`. A session that swaps a fifo in for `<admin>/HEAD` right after the add hangs the gate inside the merge lock. `committedPackageDirs` already passes `GATE_COMMAND_TIMEOUT_MS`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "236-243",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new gitfile refusal says \"Run it from the main checkout\", but `repoRoot` already maps a linked worktree to the main repo. A `--separate-git-dir` clone or a submodule resolves repoPath to the git dir itself, so the operator who sees this advice is already in the main checkout and cannot act on it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "414-454",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`dropUncheckedRound` repeats `dropUncheckedWorktree`'s rmSync / prune / admin-dir lstat undo and the same catch-and-rewrap of `WorktreeRepointedError` (session-lifecycle.service.ts L545-568, L604-613). A fix to the undo now has to be made in both. At two uses this is optional; a shared `removeAddedWorktree` in git-diff.client.ts would hold the common part.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "418-421",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fix round builds its `WorktreeRepointedError` through the new `advice` parameter and then appends `NOT_STARTED` to `refusal.message`. The message is half constructed and half patched, so the class's \"kept in its parts\" design doesn't quite fit its second caller.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "295-309",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`prepareGraph(binary, repoPath, directory, pinned)` receives the work tree twice: `directory` is used only for the failure message, while indexing uses `pinned().GIT_WORK_TREE`, so callers must keep the two in sync by hand. Have `pinned` take `directory`, or note that they must agree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.test.ts",
+      "line": "586-634",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The git PATH-shim setup is pasted inline in two new launch tests, while the matching fix-round tests in this PR use a `shimGit(shimCase)` helper. A local helper would remove the copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.test.ts",
+      "line": "514-536",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same ~10-line `worktree add` commondir-rewriting PATH shim is pasted here and in merge-gate.test.ts:1962-1982, and the promisor-remote trap repo appears in both git-tree-client.test.ts:95-112 and merge-gate.test.ts:2663-2672. Shared fixtures would keep each attack recipe in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "128-133",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The conductor's refresh path (`checkout --detach refs/heads/<target>`) still trusts the session-writable admin dir's `HEAD` and `index` (and a planted sparse-checkout). A session can therefore keep files out of the conductor's checkout and blind its graph. Refreshing with `checkoutPinned` (`read-tree --reset -u`), as the first cut does, would narrow this. The same was true on main.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "441",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Unpinned `git worktree prune` (here, fix-round L378, merge-gate.service.ts:531, conductor.service.ts:139) may follow a session-planted symlink at `<common>/worktrees/x -> ~/.ssh` and recursively delete its target outside the sandbox. lstat-refusing non-directory entries under `<common>/worktrees/` before any prune would close it. This rests on git internals recalled from memory.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "621-638",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`insertSession` still runs before `launchSession`, whose `verifiedWorktreeGitEnv` can throw. Nothing undoes the row, worktree or branch on that throw; the new undo covers only a `checkoutPinned` throw. Unresolved from the prior review.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The review-validator for the codegraph.client.ts gitlink TOCTOU finding reported that a safety classifier cut off its first response partway through. Its CONFIRMED verdict rests on the code and decision-101 text it had read before the cutoff."
+    },
+    {
+      "component": "orchestrator",
+      "description": "review-context and review-spec were not spawned. No spec/protocol/infra surface was touched, and no closing issue or --spec source exists (closingIssuesReferences is empty and no closing keywords were found)."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.011033300000001,
+  "duration_ms": 585057,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 18642,
+    "cache_read": 220635,
+    "cache_creation": 61225,
+    "total": 300512
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 274,
+      "output": 159858,
+      "cache_read": 7296427,
+      "cache_creation": 571487,
+      "cost_usd": 7.698651400000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 6845,
+      "cache_read": 320009,
+      "cache_creation": 84750,
+      "cost_usd": 0.3123819
+    }
+  ],
+  "permission_denials": []
+}
