@@ -2130,6 +2130,26 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('prints every line of a regressed stage, not only the last', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const adapterYml = join(repo, '.pupitre', 'adapter.yml');
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(adapterYml, 'id: probe\nbuild: exit 0\n');
+      await buildProgram().parseAsync(['init'], { from: 'user' });
+      writeFileSync(
+        adapterYml,
+        'build: \'printf "FAIL named test\\nexpected 1\\n[1/1]\\n" >&2; exit 1\'\n',
+      );
+      logs.length = 0;
+
+      await buildProgram().parseAsync(['audit'], { from: 'user' });
+
+      expect(logs).toContain('    FAIL named test');
+      expect(logs).toContain('    expected 1');
+      expect(logs).toContain('    [1/1]');
+    });
+
     it('keeps the baseline and exits 1 when a debt metric was not measured', async () => {
       const repo = initRepo();
       useCwd(repo);
