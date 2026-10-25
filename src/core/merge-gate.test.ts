@@ -3344,6 +3344,72 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
     });
 
+    // The porcelain `git merge` reads `branch.<name>.mergeOptions` from the
+    // shared config after the `-c` pins: `-S` would run a `gpg.program` of the
+    // session's outside the sandbox, `-F` would put any file it names in the
+    // message pushed to the PR. Planted on the session's branch and on a branch
+    // the worktree was switched to, since the porcelain reads HEAD's.
+    it.each([
+      ['-S', false],
+      ['-S', true],
+      ['-F', false],
+      ['-F', true],
+    ])('reads no %s from mergeOptions (worktree switched away: %s)', async (option, switched) => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const plants = tempDir('pup-merge-options-');
+      const marker = join(plants, 'gpg-ran');
+      const secret = join(plants, 'secret');
+      writeFileSync(secret, 'TOP-SECRET-CONTENTS\n');
+      const gpg = join(plants, 'gpg');
+      writeFileSync(gpg, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 });
+      sh(repo, 'git', 'config', 'gpg.program', gpg);
+      if (switched) sh(worktree, 'git', 'checkout', '-q', '-b', 'pup/elsewhere');
+      for (const branch of [BRANCH, 'pup/elsewhere']) {
+        sh(
+          repo,
+          'git',
+          'config',
+          `branch.${branch}.mergeOptions`,
+          option === '-S' ? '-S' : `-F ${secret}`,
+        );
+      }
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      expect(existsSync(marker)).toBe(false);
+      const message = sh(bare, 'git', 'log', '-1', '--format=%B', BRANCH);
+      expect(message).not.toContain('TOP-SECRET');
+      expect(message.trim()).toBe(`Merge main into ${BRANCH}`);
+      expect(sh(bare, 'git', 'rev-list', BRANCH)).toContain(pushed);
+    });
+
+    it('brings the worktree on the branch to the merge, index and files', async () => {
+      const worktree = seedSession(db, repo);
+      await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      // A failing build keeps the worktree, so what the merge left in it can be read.
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, { ...request(), adapters: [failingBuildAdapter] }),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: 'auto-merged main',
+        }),
+      );
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(
+        sh(repo, 'git', 'rev-parse', BRANCH).trim(),
+      );
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(readFileSync(join(worktree, 'README.md'), 'utf8')).toBe('# moved on\n');
+    });
+
     it('still rebases a stale branch never pushed, opening its PR on linear history', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');

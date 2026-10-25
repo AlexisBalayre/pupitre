@@ -906,6 +906,112 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
   }
 }
 
+/**
+ * Merge `targetSha` into the branch an open PR holds, in plumbing only
+ * (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
+ * commit, and a compare-and-swap moves the branch from the tip the merge read.
+ * The porcelain `git merge` reads `branch.<name>.mergeOptions` from the shared
+ * config a session can write, after the `-c` pins and before argv, so a planted
+ * `-S` would run a `gpg.program` of the session's and `-F` would read any file
+ * into the message; nothing here reads per-branch config, as the fast-forward
+ * reads none (decision 80). The worktree's index and files follow with the
+ * pinned two-way `read-tree` the fast-forward uses, only while its HEAD is the
+ * branch: a worktree the session switched elsewhere is left as it is. Returns
+ * the failure for the worker, or undefined once the branch holds the merge.
+ */
+function mergeTargetInto(
+  repoPath: string,
+  worktree: string,
+  pinned: { env: NodeJS.ProcessEnv },
+  branch: string,
+  target: string,
+  targetSha: string,
+): string | undefined {
+  const branchRef = `refs/heads/${branch}`;
+  const shown = sanitizeReason(target);
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  const branchSha = resolveCommit(repoPath, branchRef);
+  let tree: string;
+  try {
+    tree = (
+      runGit(repoPath, ['merge-tree', '--write-tree', branchSha, targetSha], piped).split(
+        '\n',
+      )[0] as string
+    ).trim();
+  } catch (error) {
+    rethrowIfKilled(error);
+    return (
+      `Auto-merge of ${shown} hit conflicts. Run ` +
+      `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
+      `resolve the conflicts, and commit the merge.\n${commandFailureDetail(error)}`
+    );
+  }
+  const merged = runGit(
+    repoPath,
+    [
+      'commit-tree',
+      '--no-gpg-sign',
+      '-p',
+      branchSha,
+      '-p',
+      targetSha,
+      '-m',
+      `Merge ${target} into ${branch}`,
+      tree,
+    ],
+    piped,
+  ).trim();
+  try {
+    runGit(
+      repoPath,
+      [
+        'update-ref',
+        '--no-deref',
+        '-m',
+        `pup merge: merge ${target}`,
+        branchRef,
+        merged,
+        branchSha,
+      ],
+      piped,
+    );
+  } catch (error) {
+    rethrowIfKilled(error);
+    return (
+      `${branch} moved from ${branchSha} while the gate merged ${shown} into it; nothing was ` +
+      `merged.\n${commandFailureDetail(error)}`
+    );
+  }
+  const worktreeGit = (args: string[]): string => runGit(worktree, args, { ...pinned, ...piped });
+  let head: string | undefined;
+  try {
+    head = worktreeGit(['symbolic-ref', '-q', 'HEAD']).trim();
+  } catch (error) {
+    rethrowIfKilled(error);
+  }
+  if (head !== branchRef) return undefined;
+  try {
+    worktreeGit(['update-index', '-q', '--ignore-submodules', '--refresh']);
+    worktreeGit([
+      'read-tree',
+      '--no-recurse-submodules',
+      '--no-sparse-checkout',
+      '-m',
+      '-u',
+      branchSha,
+      merged,
+    ]);
+  } catch (error) {
+    rethrowIfKilled(error);
+    return (
+      `${branch} now holds the merge of ${shown} at ${merged}, but this worktree changed while ` +
+      `the gate ran and still holds ${branchSha}'s files. Set your changes aside, run ` +
+      `\`git read-tree -m -u ${branchSha} ${merged}\`, then commit.\n${commandFailureDetail(error)}`
+    );
+  }
+  return undefined;
+}
+
 async function gateAndMerge(
   db: Database,
   req: MergeRequest,
@@ -954,37 +1060,14 @@ async function gateAndMerge(
   const branchRef = `refs/heads/${session.branch}`;
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
-  const targetRef = shellWord(`refs/heads/${sanitizeReason(target)}`);
   // An open PR's commits are what its review and CI read, so its branch takes
   // the target as a merge commit and is never rewritten; a branch with no open
-  // PR is still rebased (decision 105). `--no-ff` past a `merge.ff=only` of the
-  // operator's; the pins hold hooks and signing off for both, as everywhere.
-  const update = pullRequest?.adoptedUrl
-    ? {
-        verb: 'merge',
-        args: [
-          'merge',
-          '--no-ff',
-          '--no-edit',
-          '-m',
-          `Merge ${target} into ${session.branch}`,
-          targetSha,
-        ],
-        passed: `auto-merged ${target}`,
-        conflicted: `Auto-merge of ${sanitizeReason(target)}`,
-        redo: `merge ${targetRef} into it`,
-      }
-    : {
-        verb: 'rebase',
-        args: ['rebase', targetSha],
-        passed: `auto-rebased onto ${target}`,
-        conflicted: `Auto-rebase onto ${sanitizeReason(target)}`,
-        redo: `rebase it onto ${targetRef}`,
-      };
+  // PR is still rebased (decision 105).
+  const isPrBranch = pullRequest?.adoptedUrl !== undefined;
   // What the gate last pushed, which the merge keeps and a rewrite by the
   // session would drop: refused here, with the fix in the worker's hands,
   // rather than by the push once every stage has run.
-  const pushed = pullRequest?.adoptedUrl
+  const pushed = isPrBranch
     ? resolveCommitIfPresent(req.repoPath, `refs/remotes/origin/${session.branch}`)
     : undefined;
   if (pushed && !isAncestor(req.repoPath, pushed, branchRef)) {
@@ -994,7 +1077,8 @@ async function gateAndMerge(
         status: 'fail',
         detail:
           `${session.branch} no longer contains ${pushed}, which its open PR holds. Bring those ` +
-          `commits back (merge ${targetRef} rather than rebase onto it), then commit.`,
+          `commits back (merge ${shellWord(`refs/heads/${sanitizeReason(target)}`)} rather ` +
+          'than rebase onto it), then commit.',
       }),
     );
     return failed();
@@ -1007,39 +1091,57 @@ async function gateAndMerge(
         detail: `already based on ${target}`,
       }),
     );
+  } else if (isPrBranch) {
+    const refused = mergeTargetInto(
+      req.repoPath,
+      worktree,
+      pinned,
+      session.branch,
+      target,
+      targetSha,
+    );
+    stages.push(
+      timedSince(
+        started,
+        refused
+          ? { stage: 'fresh-base', status: 'fail', detail: refused }
+          : { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` },
+      ),
+    );
+    if (refused) return failed();
   } else {
     try {
-      runGit(worktree, update.args, pinned);
+      runGit(worktree, ['rebase', targetSha], pinned);
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
           status: 'pass',
-          detail: update.passed,
+          detail: `auto-rebased onto ${target}`,
         }),
       );
     } catch (error) {
       try {
-        runGit(worktree, [update.verb, '--abort'], pinned);
+        runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
-        // nothing to abort — the rebase or merge never started
+        // nothing to abort — the rebase never started
       }
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
           status: 'fail',
           detail:
-            `${update.conflicted} hit conflicts. Run ` +
-            `\`git ${update.verb} ${targetRef}\`, ` +
-            `resolve the conflicts, and finish the ${update.verb}.\n${commandFailureDetail(error)}`,
+            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
+            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
+            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
         }),
       );
       return failed();
     }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
-  // The rebase or merge moves whatever the worktree has checked out, so a
-  // session that detached it or switched branch leaves the pinned branch behind
-  // the target: no fast-forward, and the diffs would measure against the wrong base.
+  // The rebase moves whatever the worktree has checked out, so a session that
+  // detached it or switched branch leaves the pinned branch behind the target:
+  // no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
@@ -1049,8 +1151,9 @@ async function gateAndMerge(
         status: 'fail',
         detail:
           `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
-          `after the auto-${update.verb}. Check out ${session.branch} in this worktree and ` +
-          `${update.redo}.`,
+          `after the auto-${isPrBranch ? 'merge' : 'rebase'}. Check out ${session.branch} in this ` +
+          `worktree and ${isPrBranch ? 'merge' : 'rebase it onto'} ` +
+          `refs/heads/${sanitizeReason(target)}${isPrBranch ? ' into it' : ''}.`,
       }),
     );
     return failed();
