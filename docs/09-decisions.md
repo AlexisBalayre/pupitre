@@ -5661,7 +5661,7 @@ changes back into those docs is pending.
     "idle_prompt"` with the message `Claude is waiting for your input`, so a worker whose turn had
     simply ended printed `WAITING ON INPUT (Claude is waiting for your input)` on its `pup status`
     and `pup ui` row and carried `needsHuman`. The idle prompt now classifies like a Stop: idle.
-    A `permission_request` and every other type, an untyped one included, still read as
+    A `permission_prompt` and every other type, an untyped one included, still read as
     awaiting-input. An idle prompt with no Stop before it, as after a turn interrupted with
     Escape, also ends the turn.
     The hook log can tell a turn that ended on a background shell. A Bash call's PostToolUse
@@ -5690,7 +5690,7 @@ changes back into those docs is pending.
     session showing `working on a background shell` is not idle: subscribe again and wait for its
     next notice.
     *Tests.* In `session-activity.test.ts`: an idle prompt after a Stop, and one with no Stop,
-    classify idle; a permission request, an elicitation and an untyped Notification stay
+    classify idle; a permission prompt, an elicitation and an untyped Notification stay
     awaiting-input; a turn that launched a background shell, or had one moved there on its
     timeout, reads `background`, also when interrupted; a `TaskStop` of that id clears it, one
     of another id does not; a later turn's Stop, with tools or without, clears it; a launch in a

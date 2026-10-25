@@ -19,30 +19,32 @@ import type { SessionActivity } from './types/session-activity.types.js';
  * scrubs it at the fold, where decision 29 puts that work.
  */
 export function classifySessionActivity(eventsJsonl: string): SessionActivity {
-  const events = eventsJsonl.split('\n').flatMap(parseEvent);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i] as Record<string, unknown>;
-    if (isTurnEnd(event)) {
-      return { kind: endedOnBackgroundShell(events, turnEndOf(events, i)) ? 'background' : 'idle' };
-    }
-    switch (event.hook_event_name) {
-      case 'Notification':
-        return {
-          kind: 'awaiting-input',
-          ...(typeof event.message === 'string' ? { detail: event.message } : {}),
-        };
-      case 'PostToolUse':
-        return { kind: 'working' };
-      default:
+  // Walked newest first: past the latest turn end, then through the turn it
+  // ended, back to the end of the turn before. A run of idle prompts follows
+  // one Stop, or stands in for it after a turn interrupted with Escape; a Stop
+  // right before another Stop ended a turn of its own.
+  let ended = false;
+  let inTurn = false;
+  const stopped = new Set<unknown>();
+  for (const event of eventsJsonl.split('\n').flatMap(parseEvent).reverse()) {
+    const activity = activityOf(event);
+    if (event.hook_event_name === 'Stop' || isIdlePrompt(event)) {
+      if (inTurn) return { kind: 'idle' };
+      ended = true;
+      inTurn = event.hook_event_name === 'Stop';
+    } else if (!ended) {
+      if (activity) return activity;
+    } else if (activity) {
+      inTurn = true;
+      if (launchedUnstopped(event, stopped)) return { kind: 'background' };
     }
   }
-  return { kind: 'unknown' };
+  return { kind: ended ? 'idle' : 'unknown' };
 }
 
 function parseEvent(line: string): Record<string, unknown>[] {
   try {
-    const event: unknown = JSON.parse(line);
-    return typeof event === 'object' && event !== null ? [event as Record<string, unknown>] : [];
+    return [asRecord(JSON.parse(line))];
   } catch {
     return [];
   }
@@ -52,51 +54,35 @@ function isIdlePrompt(event: Record<string, unknown>): boolean {
   return event.hook_event_name === 'Notification' && event.notification_type === 'idle_prompt';
 }
 
-function isTurnEnd(event: Record<string, unknown>): boolean {
-  return event.hook_event_name === 'Stop' || isIdlePrompt(event);
-}
-
-/**
- * The event that ended the turn an idle prompt at `at` follows: the Stop before
- * it, past any earlier prompts, or the prompt itself when no Stop fired, as on
- * a turn interrupted with Escape. A Stop right before another Stop is a turn of
- * its own, so only prompts are skipped.
- */
-function turnEndOf(events: Record<string, unknown>[], at: number): number {
-  for (let i = at; i >= 0; i--) {
-    const event = events[i] as Record<string, unknown>;
-    if (event.hook_event_name === 'Stop') return i;
-    if (!isIdlePrompt(event) && isClassified(event)) return at;
+/** What an event other than a turn end says the session is doing, if anything. */
+function activityOf(event: Record<string, unknown>): SessionActivity | undefined {
+  switch (event.hook_event_name) {
+    case 'Notification':
+      return {
+        kind: 'awaiting-input',
+        ...(typeof event.message === 'string' ? { detail: event.message } : {}),
+      };
+    case 'PostToolUse':
+      return { kind: 'working' };
+    default:
+      return undefined;
   }
-  return at;
-}
-
-function isClassified(event: Record<string, unknown>): boolean {
-  return ['Notification', 'Stop', 'PostToolUse'].includes(event.hook_event_name as string);
 }
 
 /**
- * Whether the turn that ended at `stopAt` launched a background shell it did
- * not stop before ending. A Bash call's PostToolUse carries a `backgroundTaskId`
- * when the shell went to the background, asked for or moved there on its
- * timeout, and a `TaskStop` names the id it ended. The turn runs back to the
- * previous Stop or idle prompt. Nothing in the log says when a shell exits on
- * its own: its completion re-invokes the session, whose next events start a new
- * turn, but one that exits while its own turn is still going reads `background`
+ * Whether this event of a turn that has ended launched a background shell no
+ * later event of the turn stopped; `stopped` collects, newest first, the ids
+ * the turn's `TaskStop` calls ended. A Bash call's PostToolUse carries a
+ * `backgroundTaskId` when the shell went to the background, asked for or moved
+ * there on its timeout. Nothing in the log says when a shell exits on its own:
+ * its completion re-invokes the session, whose next events start a new turn,
+ * but one that exits while its own turn is still going reads `background`
  * until the stall rule catches the quiet (decision 103).
  */
-function endedOnBackgroundShell(events: Record<string, unknown>[], stopAt: number): boolean {
-  const stopped = new Set<unknown>();
-  for (let i = stopAt - 1; i >= 0; i--) {
-    const event = events[i] as Record<string, unknown>;
-    if (event.hook_event_name === 'Stop' || isIdlePrompt(event)) return false;
-    if (event.hook_event_name !== 'PostToolUse') continue;
-    const input = asRecord(event.tool_input);
-    if (event.tool_name === 'TaskStop') stopped.add(input.task_id ?? input.shell_id);
-    const shell = asRecord(event.tool_response).backgroundTaskId;
-    if (event.tool_name === 'Bash' && typeof shell === 'string' && !stopped.has(shell)) return true;
-  }
-  return false;
+function launchedUnstopped(event: Record<string, unknown>, stopped: Set<unknown>): boolean {
+  if (event.tool_name === 'TaskStop') stopped.add(asRecord(event.tool_input).task_id);
+  const shell = asRecord(event.tool_response).backgroundTaskId;
+  return event.tool_name === 'Bash' && typeof shell === 'string' && !stopped.has(shell);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -21,7 +21,7 @@ const IDLE_NOTIFICATION = line({
 const PERMISSION_NOTIFICATION = line({
   hook_event_name: 'Notification',
   message: 'Claude needs your permission to use Bash',
-  notification_type: 'permission_request',
+  notification_type: 'permission_prompt',
 });
 
 function backgroundBash(id: string, extra: Record<string, unknown> = {}): string {
