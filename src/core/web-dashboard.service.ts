@@ -329,6 +329,7 @@ function activityText(session: DashboardSession): string {
     return `waiting on input${detail ? ` (${detail})` : ''}`;
   }
   if (session.activity?.kind === 'idle') return 'idle (turn ended, no done signal)';
+  if (session.activity?.kind === 'background') return 'working on a background shell';
   return '';
 }
 

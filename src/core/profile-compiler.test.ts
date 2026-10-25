@@ -127,6 +127,20 @@ describe('compileProfile', () => {
     );
   });
 
+  // Decision 103: a turn ended on a background pre-commit or suite read as
+  // idle, and a quarter of the conductor's idle notices were that.
+  it('orders commits, the pre-commit hook and suites in the foreground, and no turn ending on one', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+
+    expect(compiled.contextMarkdown).toContain(
+      '- Run commits, the pre-commit hook they trigger and `pup session test` in the ' +
+        'foreground, never with `run_in_background`',
+    );
+    expect(compiled.contextMarkdown).toContain(
+      'Never end a turn while a background job of your own is still running',
+    );
+  });
+
   // Decision 74: a selector or a plan approval leaves the pane without an
   // input box, so no steer reaches it. The tools are denied, and the protocol
   // names the one way to ask instead (decision 76).

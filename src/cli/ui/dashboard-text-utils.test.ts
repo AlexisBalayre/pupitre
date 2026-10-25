@@ -96,6 +96,13 @@ describe('activityLabel', () => {
     expect(label).toBe('WAITING ON INPUT ([2Jneeds permission)');
   });
 
+  // Decision 103: neither idle nor waiting on the operator.
+  it('says a session whose turn ended on its own background shell is working on it', () => {
+    expect(activityLabel(sessionFixture({ activity: { kind: 'background' } }))).toBe(
+      'working on a background shell',
+    );
+  });
+
   it('is empty for a session that has fired no hook to classify', () => {
     expect(activityLabel(sessionFixture())).toBe('');
   });
