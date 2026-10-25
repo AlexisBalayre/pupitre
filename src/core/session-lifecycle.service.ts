@@ -20,7 +20,7 @@ import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { maxSessions } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, assertNoWorktreeConfig, runGit } from './git-diff.client.js';
-import { scopeConflicts } from './overlap.service.js';
+import { filesWorthANotice, scopeConflicts } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import {
@@ -241,18 +241,23 @@ function peerOf(conflict: ScopeConflict): SessionPeer {
 }
 
 /**
- * Steer each live session sharing files with the one just launched, once,
+ * Steer each running session sharing files with the one just launched, once,
  * with the newcomer's name and what they share (decision 99). After the
  * kickoff landed, so a peer that messages straight away reaches a window
  * that has read its task. Best effort: a peer whose window refuses the paste
  * is not a reason to undo a launch that worked, and the newcomer's kickoff
- * already names it, so either side can open the conversation.
+ * already names it, so either side can open the conversation. A peer in any
+ * other state, or sharing only the append-only decisions log, is not woken
+ * for it: the gate's fresh-base stage and a fix round's own introduction
+ * reach it when it next works (decision 104).
  */
 function introduceToPeers(db: Database, newcomer: string, conflicts: ScopeConflict[]): void {
   const name = windowLabel({ sessionId: newcomer });
   for (const conflict of conflicts) {
+    const files = filesWorthANotice(conflict.files);
+    if (files.length === 0 || getSession(db, conflict.sessionId)?.state !== 'running') continue;
     try {
-      steerSession(db, conflict.sessionId, peerJoinedMessage({ name, files: conflict.files }), {
+      steerSession(db, conflict.sessionId, peerJoinedMessage({ name, files }), {
         kind: 'peer-joined',
         by: newcomer,
       });

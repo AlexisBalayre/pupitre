@@ -389,6 +389,43 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(steerEvents('s3')).toEqual([]);
     });
 
+    // Waking an idle window re-reads its whole cached context; the gate's
+    // fresh-base stage takes the target in for the rest (decision 104).
+    it('steers running sessions only, not one awaiting review, rejected or blocked', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      seedPeer('s3', 'src/feature.ts');
+      transitionSession(db, 's3', 'awaiting-review');
+      seedPeer('s4', 'src/feature.ts');
+      transitionSession(db, 's4', 'awaiting-review');
+      transitionSession(db, 's4', 'rejected');
+      seedPeer('s5', 'src/feature.ts');
+      transitionSession(db, 's5', 'blocked');
+
+      await landMerged();
+
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      for (const id of ['s3', 's4', 's5']) {
+        expect(steersTo(id)).toEqual([]);
+        expect(steerEvents(id)).toEqual([]);
+      }
+    });
+
+    it('steers no one over the append-only decisions log, and leaves it out of a notice', async () => {
+      pinned = commitIn(worktree, 'docs/09-decisions.md', '# Decisions\n');
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      seedPeer('s2', 'docs/09-decisions.md');
+      seedPeer('s3', 'docs/09-decisions.md');
+      commitIn(join(repo, '.worktrees', 's3'), 'src/feature.ts', "export const peer = 's3';\n");
+
+      await landMerged();
+
+      expect(steersTo('s2')).toEqual([]);
+      expect(steerEvents('s2')).toEqual([]);
+      const message = String(steersTo('s3')[0]?.[1]);
+      expect(message).toContain('src/feature.ts');
+      expect(message).not.toContain('09-decisions');
+    });
+
     it('tells a branch with no open PR to rebase onto main, never to force-push', async () => {
       seedPeer('s2', 'src/feature.ts');
 

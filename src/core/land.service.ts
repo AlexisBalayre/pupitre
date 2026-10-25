@@ -27,11 +27,11 @@ import {
   withMergeLock,
   withScratchGitDir,
 } from './merge-gate.service.js';
+import { filesWorthANotice } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
-import { holdingStates } from './session-state.utils.js';
 import type { LandOutcome } from './types/land.types.js';
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };
@@ -208,7 +208,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
 }
 
 /**
- * Steer each live session whose branch changed a file the landed PR changed,
+ * Steer each running session whose branch changed a file the landed PR changed,
  * once, to take the target in now (decision 99): a conflict met one land at a
  * time is one change wide, and the gate's rebase stays the final check. The
  * PR's files are its merge commit against its first parent, the target it
@@ -216,10 +216,12 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
  * the target. After the `landed` event and best effort: the land is done
  * whatever a steer does. A session whose steer fails for any reason, a refused
  * paste, a stop, tmux or the store, is skipped and the rest are still steered,
- * and so is one whose branch git cannot read yet, a queued session's. A PR whose
- * files git cannot list steers no one, rather than report a land that happened
- * as failed. Only an interrupt stops it. A skipped session is not reported yet
- * (decision 99).
+ * and so is one whose branch git cannot read. A PR whose files git cannot list
+ * steers no one, rather than report a land that happened as failed. Only an
+ * interrupt stops it. A skipped session is not reported yet (decision 99). A
+ * session in any other state is not woken for it, nor one sharing only the
+ * append-only decisions log: the gate's fresh-base stage takes the target in
+ * for it when it is next gated (decision 104).
  */
 function steerOverlappingSessions(
   db: Database,
@@ -237,13 +239,15 @@ function steerOverlappingSessions(
     return;
   }
   const name = windowLabel({ sessionId: landedId });
-  for (const peer of listSessions(db, holdingStates())) {
+  for (const peer of listSessions(db, ['running'])) {
     // Store text about to name a ref: only the branch a launch mints is read.
     if (!SESSION_ID_PATTERN.test(peer.id) || peer.branch !== `pup/${peer.id}`) continue;
     let files: string[];
     try {
-      files = gitDiffPaths(repoPath, targetSha, `refs/heads/${peer.branch}`).filter((path) =>
-        landedFiles.has(path),
+      files = filesWorthANotice(
+        gitDiffPaths(repoPath, targetSha, `refs/heads/${peer.branch}`).filter((path) =>
+          landedFiles.has(path),
+        ),
       );
     } catch (error) {
       rethrowIfKilled(error);

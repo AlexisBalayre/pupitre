@@ -12,6 +12,17 @@ import type { OverlapPair, ScopeConflict } from './types/overlap.types.js';
 export const WATCH_INTERVAL_MS = 15_000;
 export const WATCH_STALE_AFTER_MS = 3 * WATCH_INTERVAL_MS;
 
+/**
+ * Files a peer notice leaves out (decision 104): the decisions log is appended
+ * to, never edited in place, so two workers in it need no word between them.
+ */
+const APPEND_ONLY_FILES: ReadonlySet<string> = new Set(['docs/09-decisions.md']);
+
+/** The shared files worth waking a peer for; none means no notice at all. */
+export function filesWorthANotice(files: string[]): string[] {
+  return files.filter((file) => !APPEND_ONLY_FILES.has(file));
+}
+
 /** Pairwise same-file intersections, session ids in insertion order, files sorted. */
 export function intersectSessionFiles(filesBySession: Record<string, string[]>): OverlapPair[] {
   const entries = Object.entries(filesBySession).map(
