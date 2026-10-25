@@ -1,0 +1,110 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-25T21:21:58.527Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40234811018",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40234811018",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4d01211759cc51d515fbc1f1055f432444c01c74",
+  "source": "pr",
+  "pr_number": 175,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "242-256",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Dropping docs/09-decisions.md from the main-landed notice moves the conflict to the gate instead of avoiding it. Two branches that each append an entry before `## Implementation notes` always conflict on rebase. The gate's fresh-base stage rejects on that conflict through rejectOrBlock, which spends one of the session's 2 rejections. A self-rebase the steer used to prompt now costs a rejection.",
+      "body": "**The decisions-log exemption moves the conflict to the gate. It does not avoid it.**\n\nDecision 104 says two workers in `docs/09-decisions.md` \"need no word, only the next free number, which the gate's rebase settles.\" The gate does not settle it:\n\n- **The appends always conflict.** Every new entry goes in the same place, after the last numbered decision and right before `## Implementation notes` (this PR's 104 included). Two branches that each add an entry insert different lines at the same point, and a 3-way rebase always stops on that.\n- **The gate rejects on a failed rebase.** When the fresh-base auto-rebase fails, the gate runs `rebase --abort` and calls `failed()`, which is `rejectOrBlock` ([merge-gate.service.ts L919-990](https://github.com/AlexisBalayre/pupitre/blob/4d01211759cc51d515fbc1f1055f432444c01c74/src/core/merge-gate.service.ts#L919-L990)). `rejectOrBlock` calls `incrementRejectCount` first and blocks the session once the count passes `MAX_REJECTS_BEFORE_BLOCKED` (2).\n- **No merge driver can absorb it.** `assertNoArmedGitDrivers` refuses one, so a `merge=union` attribute is not an option.\n\nBefore this PR, a running peer whose only overlap with a land was the log still got `mainLandedMessage`. That message told it to rebase and resolve the conflict, at no cost. Now `filesWorthANotice` drops the file, `files.length === 0` skips the peer, and the conflict first shows up at `pup merge` as a spent rejection. The rejection then steers the gate report into the session, which is the same wake this PR is trying to avoid. Most PRs in this repo add a decision entry, so this will be the common case for parallel workers.\n\nThe launch side has the same gap. With the log exempt, `introduceToPeers` and the kickoff's `## Peers` no longer tell two concurrent decision-writers about each other.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4d01211759cc51d515fbc1f1055f432444c01c74/src/core/land.service.ts#L242-L256\nhttps://github.com/AlexisBalayre/pupitre/blob/4d01211759cc51d515fbc1f1055f432444c01c74/src/core/overlap.service.ts#L15-L24\n\nPossible fixes, depending on which you prefer:\n- Keep the log in the land notice. It already goes only to running sessions, so the cost stays bounded.\n- Have fresh-base treat a conflict confined to the decisions log as something other than a counted rejection.\n- At minimum, correct decision 104's claim that the gate's rebase settles it.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "492-497",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `recompileSessionProfile` JSDoc edit left a short orphan line, `(decision 90). The`, followed by a long one. Re-wrap the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5655",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The diff deletes the blank line between decisions 102 and 103 and adds none before 104, so 102, 103 and 104 run together. Restore the blank line before 103 and add one before 104.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "214-219",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "One launch runs `overlapsWorthANotice(db, conflicts)` twice: once for the kickoff's `## Peers` and again inside `introduceToPeers`. A peer whose state changes between the two calls can be listed in the kickoff but not introduced, or the reverse. If the re-read isn't deliberate, compute the list once and pass it in.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5490848000000002,
+  "duration_ms": 205322,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 8075,
+    "cache_read": 190501,
+    "cache_creation": 41434,
+    "total": 240020
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 62,
+      "output": 23291,
+      "cache_read": 930312,
+      "cache_creation": 119958,
+      "cost_usd": 1.3762223999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 4031,
+      "cache_read": 78404,
+      "cache_creation": 49872,
+      "cost_usd": 0.1728624
+    }
+  ],
+  "permission_denials": []
+}
