@@ -116,10 +116,16 @@ function seedSession(
 }
 
 /** One hook event on disk, with the file's mtime aged by `ageMs` (decision 35). */
-function seedEventsFile(repo: string, sessionId: string, event: object, ageMs = 0): void {
+function seedEventsFile(
+  repo: string,
+  sessionId: string,
+  events: object | object[],
+  ageMs = 0,
+): void {
   const paths = projectPaths(repo);
   mkdirSync(paths.sessionDir(sessionId), { recursive: true });
-  writeFileSync(paths.eventsFile(sessionId), `${JSON.stringify(event)}\n`);
+  const lines = (Array.isArray(events) ? events : [events]).map((event) => JSON.stringify(event));
+  writeFileSync(paths.eventsFile(sessionId), `${lines.join('\n')}\n`);
   const at = new Date(NOW - ageMs);
   utimesSync(paths.eventsFile(sessionId), at, at);
 }
@@ -294,6 +300,50 @@ describe('buildDashboardSnapshot', () => {
         detail: 'Claude needs your permission to use Bash',
       });
       expect(session?.needsHuman).toBe(true);
+    });
+
+    // Decision 103: the idle prompt after a turn asks the operator nothing.
+    it('reads the idle prompt after a turn as idle, not as needing a human', () => {
+      seedSession(db, repo, 's1');
+      transitionSession(db, 's1', 'running');
+      seedEventsFile(repo, 's1', [
+        { hook_event_name: 'Stop' },
+        {
+          hook_event_name: 'Notification',
+          message: 'Claude is waiting for your input',
+          notification_type: 'idle_prompt',
+        },
+      ]);
+
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      expect(snapshot.sessions[0]?.activity).toEqual({ kind: 'idle' });
+      expect(snapshot.sessions[0]?.needsHuman).toBe(false);
+    });
+
+    it('keeps a session whose turn ended on its own background shell out of the inbox', () => {
+      seedSession(db, repo, 's1');
+      transitionSession(db, 's1', 'running');
+      seedEventsFile(repo, 's1', [
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m wip', run_in_background: true },
+          tool_response: { stdout: '', stderr: '', backgroundTaskId: 'b2tbzdny7' },
+        },
+        { hook_event_name: 'Stop' },
+        {
+          hook_event_name: 'Notification',
+          message: 'Claude is waiting for your input',
+          notification_type: 'idle_prompt',
+        },
+      ]);
+
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      expect(snapshot.sessions[0]?.activity).toEqual({ kind: 'background' });
+      expect(snapshot.sessions[0]?.needsHuman).toBe(false);
+      expect(needsYou(snapshot)).toEqual([]);
     });
 
     it('leaves activity unread for a session that is no longer running', () => {
