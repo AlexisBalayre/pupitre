@@ -1,0 +1,160 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-25T20:31:59.454Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40230752443",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40230752443",
+  "actor": "AlexisBalayre",
+  "commit_sha": "419bf329aea243cfe4642b16e6e0f53340cab03b",
+  "source": "pr",
+  "pr_number": 174,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "29",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refactor runs `JSON.parse` on every line of `events.jsonl` before the walk starts. The old loop parsed only from the tail back to the first classifiable event. The walk almost always returns within the last turn, but it now pays to parse the whole session history on each snapshot: every running session, every 2 s, in both `pup ui` and the web dashboard.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.test.ts",
+      "line": "208",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The assertion `expect(context).not.toMatch(/finish (your|the) protocol/i)` can never fail. `git log -G \"finish (your|the) protocol\" --all` matches only this PR's first commit (520b9ef, the test itself), so no generated kickoff ever contained that text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "61-65",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`launchedUnstopped` reads as a pure predicate but also adds TaskStop ids to `stopped`, which hides its ordering coupling to the newest-first loop; record the stop in the loop or rename it (e.g. `trackBackgroundShell`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "30-43",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The merged walk keeps coupled `ended`/`inTurn` booleans (re-testing `hook_event_name === 'Stop'`) and computes `activityOf(event)` for every event, including Stop and idle-prompt ones where it is unused; moving it into the two branches that use it would read more simply.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "63-64",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new 'working on a background shell' label is hand-copied into both the CLI and web renderers (src/core/web-dashboard.service.ts ~L332), extending the existing idle-label duplication; a new activity kind now needs edits in both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "63",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment `// Decision 103: a turn that ended on its own background shell is still at work on it.` restates the label on the next line and the `background` kind; the sibling web-dashboard branch has none. Delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "76-82",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `launchedUnstopped` JSDoc says a shell that exits while its own turn is still going \"reads `background`\", but during that turn the session reads `working`; Decision 103 says it reads `background` after that turn ends. Say \"after that turn ends\" (or cut to a pointer to decision 103).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "11-15",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `classifySessionActivity` JSDoc paragraph restates Decision 103 and the `isIdlePrompt`/`launchedUnstopped`/`SessionActivity.detail` docs; a one-line pointer to decision 103 would do.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/session-activity.utils.ts",
+      "line": "82-86",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A shell the turn waited out through `TaskOutput` still classifies as `background`. The new worker rule tells sessions to do exactly that (\"wait for its result\"), and the conductor is now told not to nudge such a session, so it sits mislabelled until the 10-minute stall rule fires.",
+      "refutation": "The trace is real, but Decision 103 already accepts this exact case: \"A shell that exits while the turn that launched it is still going reads `background` after that turn ends, until the next one\", and the stall rule (decision 35) still wins over it. The function's JSDoc says the same. So this is declared scope, not an undeclared bug. The worker rule mainly orders foreground commits and tests; \"wait for its result\" only covers a background job that already exists. A worker that then runs `pup session done` stops being `running`, and only running sessions get classified."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8581521,
+  "duration_ms": 302535,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 7722,
+    "cache_read": 177696,
+    "cache_creation": 53290,
+    "total": 238718
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 31469,
+      "cache_read": 980888,
+      "cache_creation": 139740,
+      "cost_usd": 1.6843676
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 5523,
+      "cache_read": 91585,
+      "cache_creation": 43744,
+      "cost_usd": 0.1737845
+    }
+  ],
+  "permission_denials": []
+}
