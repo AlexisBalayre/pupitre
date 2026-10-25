@@ -5652,41 +5652,6 @@ changes back into those docs is pending.
     conductor prints the session in its table and not in the inbox; without one it prints the
     need. The terminal tab counts the session only with no conductor, and the web dashboard
     prints the need's command only then.
-104. **Peer-joined introductions and main-landed notices go only to running sessions, and an
-    overlap on this log alone wakes no one (2026-10-25).**
-    Amends decision 99. Both notices went to every session holding its scope, so in any
-    non-terminal state: one awaiting review, rejected or blocked, including one in a fix round
-    whose PR is already open. A steer into an idle window wakes it, and a wake re-reads or
-    re-writes the session's whole cached context. Measured from 10-13 to 10-23, 14 such notices
-    cost about $9.5, and four cold wakes up to $2 each, for a notice the session could not act
-    on until it worked again.
-    `introduceToPeers` now steers a peer only while its state is `running`, and
-    `steerOverlappingSessions` lists `running` sessions instead of `holdingStates()`. A running
-    session in a fix round still gets the main-landed notice, with the merge-commit wording its
-    open PR asks for. The rest are covered where they next work. A session sent to the gate
-    meets the target at the gate's fresh-base stage, which takes it in mechanically or rejects
-    the session with the conflict (decision 8), so a land it missed reaches it there. A session handed back by `pup fix`
-    runs `recordOverlaps` after its fix kickoff (decision 90): its kickoff names every live peer
-    and each running one is introduced to it, so a peer that joined while it waited is met then.
-    A rejected or unblocked session resumes on a steer of its own and is gated again.
-    *This log is left out of both notices.* `docs/09-decisions.md` is appended to and never
-    edited in place, so two workers in it need no word, only the next free number, which the
-    gate's rebase settles. `filesWorthANotice` in `overlap.service.ts` drops it from the shared
-    files both notices compute: a peer sharing nothing else is not steered, and one sharing more
-    is told the rest. The overlap itself is unchanged: the `scope_overlap` event and the
-    newcomer's `## Peers` section still name it, since the newcomer is starting anyway and the
-    record is what the radar and the report read.
-    *Ceilings.* The state is read when the notice is sent: a session that turns running a
-    moment later is not told, and meets the change at its gate as above. The log's path is
-    pupitre's own; a project keeping its decisions elsewhere gets no exemption for it.
-    *Tests.* In `session-lifecycle.test.ts`, a launch over a running, an awaiting-review and a
-    blocked holder with an open PR introduces itself to the running one only, while its
-    `scope_overlap` still names all three. A launch sharing only the log steers no one but still
-    records the overlap and names the peer in its kickoff, and one sharing the log and a source
-    file names only the source file in the steer. In `land.test.ts`, a land steers the running
-    peer and not the awaiting-review, rejected or blocked ones, steers no peer sharing only the
-    log, and leaves the log out of the notice to a peer sharing more.
-
 103. **The idle prompt is a turn end, a turn ended on the session's own background shell reads
     `working on a background shell`, and workers commit and test in the foreground
     (2026-10-25).**
@@ -5733,6 +5698,52 @@ changes back into those docs is pending.
     the web dashboard print `working on a background shell`. In `profile-compiler.test.ts` the
     worker context carries the foreground rule. In `conductor.test.ts` the kickoff carries no
     finish-protocol note and carries the wait-out rule.
+104. **Peer-joined introductions and main-landed notices go only to running sessions, and an
+    overlap on this log alone wakes no one (2026-10-25).**
+    Amends decision 99. Both notices went to every session holding its scope, so in any
+    non-terminal state: one awaiting review, rejected or blocked, including one in a fix round
+    whose PR is already open. A steer into an idle window wakes it, and a wake re-reads or
+    re-writes the session's whole cached context. Measured from 10-13 to 10-23, 14 such notices
+    cost about $9.5, and four cold wakes up to $2 each, for a notice the session could not act
+    on until it worked again.
+    `introduceToPeers` now steers a peer only while its state is `running`, and
+    `steerOverlappingSessions` lists `running` sessions instead of `holdingStates()`. A running
+    session in a fix round still gets the main-landed notice, with the merge-commit wording its
+    open PR asks for. The rest are covered where they next work. A session sent to the gate
+    meets the target at the gate's fresh-base stage, which takes it in mechanically or rejects
+    the session with the conflict (decision 8), so a land it missed reaches it there. A session
+    handed back by `pup fix` runs `recordOverlaps` after its fix kickoff (decision 90): its
+    kickoff names every running peer and each is introduced to it, so a peer that joined while
+    it waited is met then. A rejected or unblocked session resumes on a steer of its own and is
+    gated again.
+    *This log is left out of both notices.* `docs/09-decisions.md` is appended to and never
+    edited in place, so two workers in it need no word, only the next free number, which the
+    gate's rebase settles. `filesWorthANotice` in `overlap.service.ts` drops it from the shared
+    files both notices compute: a peer sharing nothing else is not steered, and one sharing more
+    is told the rest.
+    *The kickoff's `## Peers` follows the same rule.* Its protocol tells the worker to message
+    each peer listed there before editing a shared file, and that message wakes an idle peer as
+    surely as a steer does (decision 47). So a launch's kickoff and a fix round's list only the
+    peers `introduceToPeers` would steer, through one filter, `overlapsWorthANotice`: running,
+    with the log dropped from the files, and a peer left with no files not listed. The record
+    is unchanged: the `scope_overlap` event still names every overlap in full, log included,
+    since it is what the radar and the report read.
+    *Ceilings.* The state is read when the kickoff is compiled and again when the notice is
+    sent. A session that turns running a moment later is neither listed nor told, and meets
+    the change at its gate as above. A peer left out while it waited, then resumed by a steer
+    rather than a fix round (after a rejection or an unblock), never meets the newcomer:
+    neither side is told of the other, and their edits to a shared file meet only at the gate's
+    fresh-base stage, which takes them in or rejects with the conflict. The log's
+    path is pupitre's own; a project keeping its decisions elsewhere gets no exemption for it.
+    *Tests.* In `session-lifecycle.test.ts`, a launch over a running, an awaiting-review and a
+    blocked holder with an open PR introduces itself to the running one only, while its
+    `scope_overlap` still names all three, and its kickoff lists the running one only. A launch
+    sharing only the log steers no one and lists no peer in its kickoff, but still records the
+    overlap, and one sharing the log and a source file names only the source file in the steer
+    and the kickoff. A fix round's recompiled kickoff lists a running peer and not an
+    awaiting-review one, and returns both for `recordOverlaps`. In `land.test.ts`, a land steers
+    the running peer and not the awaiting-review, rejected or blocked ones, steers no peer
+    sharing only the log, and leaves the log out of the notice to a peer sharing more.
 
 ## Implementation notes
 

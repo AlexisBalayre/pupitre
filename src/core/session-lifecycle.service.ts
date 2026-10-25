@@ -211,7 +211,12 @@ export function launchTask(db: Database, req: LaunchTaskRequest & CapOverride): 
     req.overrideVia !== 'conductor',
   );
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
-  const sessionId = startSession(db, { ...req, task }, route, conflicts.map(peerOf));
+  const sessionId = startSession(
+    db,
+    { ...req, task },
+    route,
+    overlapsWorthANotice(db, conflicts).map(peerOf),
+  );
   recordOverlaps(db, sessionId, conflicts, req.overlapVia ?? 'operator');
   return sessionId;
 }
@@ -241,23 +246,36 @@ function peerOf(conflict: ScopeConflict): SessionPeer {
 }
 
 /**
+ * The overlaps two workers are told of, on either side: with a running peer,
+ * over files other than the append-only decisions log (decision 104). A
+ * kickoff's `## Peers` asks its worker to message each peer it lists, which
+ * wakes an idle one as surely as a steer, so the kickoff lists only these.
+ * A peer in any other state, or sharing only the log, is reached by the
+ * gate's fresh-base stage and a fix round's own introduction when it next
+ * works. The state is read at each call.
+ */
+function overlapsWorthANotice(db: Database, conflicts: ScopeConflict[]): ScopeConflict[] {
+  return conflicts.flatMap(({ sessionId, files }) => {
+    const shared = filesWorthANotice(files);
+    return shared.length > 0 && getSession(db, sessionId)?.state === 'running'
+      ? [{ sessionId, files: shared }]
+      : [];
+  });
+}
+
+/**
  * Steer each running session sharing files with the one just launched, once,
  * with the newcomer's name and what they share (decision 99). After the
  * kickoff landed, so a peer that messages straight away reaches a window
  * that has read its task. Best effort: a peer whose window refuses the paste
  * is not a reason to undo a launch that worked, and the newcomer's kickoff
- * already names it, so either side can open the conversation. A peer in any
- * other state, or sharing only the append-only decisions log, is not woken
- * for it: the gate's fresh-base stage and a fix round's own introduction
- * reach it when it next works (decision 104).
+ * already names it, so either side can open the conversation.
  */
 function introduceToPeers(db: Database, newcomer: string, conflicts: ScopeConflict[]): void {
   const name = windowLabel({ sessionId: newcomer });
-  for (const conflict of conflicts) {
-    const files = filesWorthANotice(conflict.files);
-    if (files.length === 0 || getSession(db, conflict.sessionId)?.state !== 'running') continue;
+  for (const { sessionId, files } of overlapsWorthANotice(db, conflicts)) {
     try {
-      steerSession(db, conflict.sessionId, peerJoinedMessage({ name, files }), {
+      steerSession(db, sessionId, peerJoinedMessage({ name, files }), {
         kind: 'peer-joined',
         by: newcomer,
       });
@@ -473,8 +491,9 @@ function compileSessionProfile(
 
 /**
  * A fix round's profile, compiled afresh from the task spec as a launch
- * compiles it, with the knowledge slice and the peers sharing its files as of
- * now, returned for `recordOverlaps` once the kickoff lands (decision 90). The
+ * compiles it, with the knowledge slice and the peers worth a notice as of
+ * now, and every overlap returned for `recordOverlaps` once the kickoff lands
+ * (decision 90). The
  * compiled dir under the store is one the conductor's shell can write
  * (decision 47), so a round never relaunches from what it holds. A merged
  * session is not live, so a round adds a window as a launch does, and meets the
@@ -496,7 +515,13 @@ export function recompileSessionProfile(
   );
   const conflicts = scopeConflicts(db, source.repoPath, task.scopeIn, task.scopeOut);
   return {
-    ...compileSessionProfile(source, task, session, paths, conflicts.map(peerOf)),
+    ...compileSessionProfile(
+      source,
+      task,
+      session,
+      paths,
+      overlapsWorthANotice(db, conflicts).map(peerOf),
+    ),
     conflicts,
   };
 }

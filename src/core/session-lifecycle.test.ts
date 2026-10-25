@@ -405,8 +405,9 @@ describe('launchTask scope overlap (decision 99)', () => {
     ).toEqual([{ kind: 'peer-joined', by: 't-1' }]);
   });
 
-  // Waking an idle window re-reads its whole cached context; the gate's
-  // fresh-base stage and a fix round's introduction reach the rest (decision 104).
+  // Waking an idle window re-reads its whole cached context, and a peer the
+  // kickoff lists is one its worker messages; the gate's fresh-base stage and a
+  // fix round's introduction reach the rest (decision 104).
   it('introduces the newcomer to running peers only, not to one awaiting review or with an open PR', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder('s-run', ['src/core/**'], '%3');
@@ -427,6 +428,9 @@ describe('launchTask scope overlap (decision 99)', () => {
     expect(steersTo('%3')).toHaveLength(1);
     expect(steersTo('%4')).toEqual([]);
     expect(steersTo('%5')).toEqual([]);
+    expect(kickoffText()).toContain('- `pup-s-run` shares: src/core/github.client.ts');
+    expect(kickoffText()).not.toContain('pup-s-review');
+    expect(kickoffText()).not.toContain('pup-s-open');
     const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
     expect(
       JSON.parse(overlap?.payload ?? '{}')
@@ -435,7 +439,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     ).toEqual(['s-open', 's-review', 's-run']);
   });
 
-  it('sends no introduction for an overlap on the append-only decisions log alone', () => {
+  it('sends no introduction and lists no peer for an overlap on the append-only decisions log alone', () => {
     commitIn(repo, 'docs/09-decisions.md', '# Decisions\n');
     planTask(db, { repoPath: repo, task: spec({ scopeIn: ['docs/09-decisions.md'] }) });
     seedHolder('s-docs', ['docs/**'], '%3');
@@ -444,7 +448,7 @@ describe('launchTask scope overlap (decision 99)', () => {
 
     expect(steerPane).not.toHaveBeenCalled();
     expect(listEvents(db, sessionId).some((e) => e.type === 'scope_overlap')).toBe(true);
-    expect(kickoffText()).toContain('- `pup-s-docs` shares: docs/09-decisions.md');
+    expect(kickoffText()).not.toContain('## Peers');
   });
 
   it('leaves the decisions log out of an introduction that names other files too', () => {
@@ -460,6 +464,30 @@ describe('launchTask scope overlap (decision 99)', () => {
     expect(String(steersTo('%3')[0]?.[1])).toContain(
       'on files you also hold: src/core/github.client.ts. Before',
     );
+    expect(kickoffText()).toContain('- `pup-s-both` shares: src/core/github.client.ts\n');
+  });
+
+  // A fix round's kickoff lists peers its worker messages, so they follow the
+  // introduction's rule; `recordOverlaps` still records every one (decision 104).
+  it("lists only running peers in a fix round's kickoff and returns every overlap for the record", () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    launch();
+    transitionSession(db, 't-1', 'awaiting-review');
+    transitionSession(db, 't-1', 'merged');
+    seedHolder('s-run', ['src/core/**'], '%3');
+    seedHolder('s-review', ['src/core/**'], '%4');
+    transitionSession(db, 's-review', 'awaiting-review');
+
+    const { compiled, conflicts } = recompileSessionProfile(
+      db,
+      { repoPath: repo, base: DEFAULT_BASE_PROFILE, claudeUserDir: join(repo, '.claude') },
+      getSession(db, 't-1') as SessionRow,
+      projectPaths(repo),
+    );
+
+    expect(compiled.contextMarkdown).toContain('- `pup-s-run` shares: src/core/github.client.ts');
+    expect(compiled.contextMarkdown).not.toContain('pup-s-review');
+    expect(conflicts.map((conflict) => conflict.sessionId).sort()).toEqual(['s-review', 's-run']);
   });
 
   // The newcomer's kickoff already names the peer, so either side can open the
