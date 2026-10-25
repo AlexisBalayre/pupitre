@@ -148,10 +148,11 @@ describe('startWebDashboard', () => {
   }
 
   /** One hook event on disk, the file's mtime aged by `ageMs` (decision 35). */
-  function seedHookEvent(sessionId: string, event: object, ageMs = 0): void {
+  function seedHookEvent(sessionId: string, events: object | object[], ageMs = 0): void {
     const paths = projectPaths(repo);
     mkdirSync(paths.sessionDir(sessionId), { recursive: true });
-    writeFileSync(paths.eventsFile(sessionId), `${JSON.stringify(event)}\n`);
+    const lines = (Array.isArray(events) ? events : [events]).map((event) => JSON.stringify(event));
+    writeFileSync(paths.eventsFile(sessionId), `${lines.join('\n')}\n`);
     const at = new Date(Date.now() - ageMs);
     utimesSync(paths.eventsFile(sessionId), at, at);
   }
@@ -345,11 +346,21 @@ describe('startWebDashboard', () => {
       seedHookEvent('s-idle', { hook_event_name: 'Stop' });
       seedSession('s-quiet', ['running']);
       seedHookEvent('s-quiet', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
+      seedSession('s-shell', ['running']);
+      seedHookEvent('s-shell', [
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_response: { backgroundTaskId: 'b1' },
+        },
+        { hook_event_name: 'Stop' },
+      ]);
 
       const page = (await get(dashboard.url)).body;
 
       expect(page).toContain('waiting on input (Allow Bash?)');
       expect(page).toContain('idle (turn ended, no done signal)');
+      expect(page).toContain('working on a background shell');
       expect(page).toContain('stalled — see Needs you');
     });
 
