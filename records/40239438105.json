@@ -1,0 +1,277 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-25T22:23:36.526Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40239438105",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40239438105",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cea3c97ce359fce1b63d134f1a7ffd80fa74f946",
+  "source": "pr",
+  "pr_number": 176,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "964-1011",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When `read-tree` fails, the branch already points at the merge but the index and files are still the pre-merge tree, so `git status` shows the target's changes reversed as staged. Following \"Set your changes aside … then commit\" with `git stash` puts that reversal back and commits a revert of the target onto the PR. A plain `read-tree` also refuses an ignored file at a path the target adds, which the porcelain rebase used to overwrite, so this path can fire on every run, not just in a race.",
+      "body": "**The branch moves to the merge before the worktree sync, and a failed sync leaves no rollback.**\n\n`mergeTargetInto` runs the `update-ref` compare-and-swap (L964-984) **before** the worktree `read-tree -m -u branchSha merged` (L993-1003). When the `read-tree` refuses, the catch only returns a message:\n\n```ts\n`${branch} now holds the merge of ${shown} at ${merged}, but this worktree changed while ` +\n`the gate ran and still holds ${branchSha}'s files. Set your changes aside, run ` +\n`\\`git read-tree -m -u ${branchSha} ${merged}\\`, then commit.`\n```\n\nAt this point HEAD → branch → `merged`, but the index and files still hold `branchSha`'s tree. `git status` therefore shows **the target's changes reversed, staged**, mixed in with the worker's own edits.\n\nHow a worker who follows the message ends up reverting the target:\n\n1. The obvious way to \"set your changes aside\" is `git stash`. It records `branchSha`'s tree plus the worker's edits against base `merged`, which means it records the reverse of the target's changes.\n2. The suggested `read-tree` then does nothing.\n3. `stash pop` followed by \"then commit\" (or any `commit -a` / `add -A`) commits a revert of everything the target brought in.\n4. The next gate sees `targetSha` as an ancestor (L1086) and passes fresh-base, so the revert lands silently on the PR.\n\nThe docs reviewer separately found \"then commit\" ambiguous: after the `read-tree`, only the worker's own set-aside changes remain to commit.\n\nThis path doesn't need a race to trigger. Without `--exclude-per-directory`, `read-tree -m -u` treats an ignored file at a path the target adds as untracked and refuses to overwrite it. The porcelain rebase overwrote such files. The worktree-clean stage runs `git status --porcelain` without `--ignored`, so a build artefact can trip this path deterministically. After that first failure, the gate keeps failing worktree-clean on the staged reversal.\n\n`fastForward` in the same file uses the safe order: `read-tree` first, so a failure means \"the ref was not moved\", then the compare-and-swap, with an inverse `read-tree` if that fails (L672-744).\n\n**Suggested fix:** in the `read-tree` catch, move the ref back with `update-ref --no-deref -m … branchRef branchSha merged`. The refused `read-tree` left the worktree untouched, so the state is consistent again. Then fail fresh-base with \"nothing was merged; commit or discard your changes and re-run the gate\". Alternatively, mirror `fastForward`'s ordering. Either way, drop the \"set your changes aside … then commit\" instruction.\n\n<https://github.com/AlexisBalayre/pupitre/blob/cea3c97ce359fce1b63d134f1a7ffd80fa74f946/src/core/merge-gate.service.ts#L964-L1011>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "941-948",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Every failure of `merge-tree --write-tree` is reported as \"hit conflicts\" and re-steers the worker. Git only uses exit 1 for conflicts, so an old git (<2.38, e.g. Ubuntu 22.04's 2.34) or unrelated histories fails every stale open-PR branch as a fake conflict, and each one counts toward the reject cap.",
+      "body": "**Every non-zero exit from `merge-tree` is reported as a conflict.**\n\n```ts\n} catch (error) {\n  rethrowIfKilled(error);\n  return (\n    `Auto-merge of ${shown} hit conflicts. Run ` +\n```\n\n`git merge-tree --write-tree` exits **1** for conflicts. Any other status means the merge could not complete or start.\n\nGit before 2.38 has no `--write-tree`. Its old three-argument `merge-tree` reads the flag as a tree-ish and dies with exit 128. On such a host, **every** stale open-PR branch fails fresh-base as \"hit conflicts\". The worker is re-steered with a fatal git error as the detail, and decision 105 says each such rejection counts toward the reject cap. The same mislabel applies to any other fatal error, such as a missing object or unrelated histories.\n\nThis exposure is new in this PR:\n- `merge-tree --write-tree` is used nowhere else.\n- No minimum git version is declared or checked.\n- The project already expects older gits: `gitAtLeast()` in `git-diff-client.test.ts`, and decisions reproduced on Apple Git 2.39.5.\n\nThe rebase path's catch has the same blanket shape, but `git rebase` exists on every git.\n\nThrowing on a non-1 exit is a clean outcome. Only objects were written and no ref moved. `withMergeLock`'s `finally` tears down, and the operator sees the error without a reject being counted.\n\nDecision 105's wording (\"`merge-tree` exits non-zero\") should become \"exits 1\" to match. A test for a non-1 exit would also help.\n\n<https://github.com/AlexisBalayre/pupitre/blob/cea3c97ce359fce1b63d134f1a7ffd80fa74f946/src/core/merge-gate.service.ts#L941-L948>",
+      "suggestion": "  } catch (error) {\n    rethrowIfKilled(error);\n    // 1 is a conflict; any other status is git failing to merge at all (no\n    // --write-tree before 2.38), which no worker can resolve.\n    if ((error as { status?: unknown }).status !== 1) throw error;\n    return (\n      `Auto-merge of ${shown} hit conflicts. Run ` +\n      `\\`git merge ${shellWord(`refs/heads/${shown}`)}\\`, ` +\n      `resolve the conflicts, and commit the merge.\\n${commandFailureDetail(error)}`\n    );\n  }"
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3248-3268",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "That removed test was the only one covering this path: the branch was pushed, the PR was never opened, the target moved, so the retry rebases and pushes with `--force-with-lease` (decision 27). Decision 105 still says this path keeps the lease, but nothing tests it now. The PR repurposed the test for the open-PR merge case. Nothing else in `merge-gate.test.ts` runs a second no-PR `--pr` gate after a push, and no test asserts on a lease.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1173, 1777-1782",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`commitSubjectsBetween` runs `git log targetSha..sha` without `--no-merges`. After an auto-merge, the gate's own `Merge main into pup/<id>` subject therefore shows up in the PR body's \"Commits\" block and in the decision-record draft (`decision-record.service.ts:30,66`). It sits there as if it were one of the worker's commits.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "985-1001",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`mergeTargetInto` copies the checkout sequence that `fastForward` already has. That sequence is `update-index -q --ignore-submodules --refresh`, then `read-tree --no-recurse-submodules --no-sparse-checkout -m -u <from> <to>`. With this PR the flag list appears three times: the forward read-tree, the inverse read-tree, and the new one. That meets the project's \"abstraction at third use\" rule. The flags are security pins (they guard against a planted sparse-checkout setting and against submodule recursion), so any future pin has to be added in three spots. A small helper inside the module, something like `twoWayCheckout(git, from, to)`, taking the `checkout` or `worktreeGit` runner, would keep them in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1066, 1186",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`isPrBranch` is defined at line 1066 as `pullRequest?.adoptedUrl !== undefined`. It decides between merging and rebasing, and the merge path is the one that keeps the branch's history. Yet `pushBranch` at line 1186 gets `!pullRequest.adoptedUrl`, a truthiness check, even though `isPrBranch` is in scope. The two behave the same today because `findOpenPullRequest` returns `string | undefined`. But \"we merged, so don't force-push\" is one invariant, and it is spelled two ways. Passing `!isPrBranch` would tie the push lease to the same predicate that chose the merge.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1909-1918, 1186",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pushBranch` gains a fifth positional parameter, `mayRewrite: boolean`. The one caller passes a negated expression, `!pullRequest.adoptedUrl`, so the call reads as \"push, true/false\". Answering what the flag does means reading a long JSDoc that is now split into \"With `mayRewrite`…\" and \"Without it…\". The only effect is `if (!mayRewrite) return undefined;` inside the lease block. Naming the argument at the call site, e.g. `{ mayRewrite: !isPrBranch }`, would make it self-describing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1153-1156",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The message checks `isPrBranch` three times in one string: `merge`/`rebase`, `merge`/`rebase it onto`, and `' into it'`/`''`. It does this right after an `if/else if/else` that already split on the same flag. The result is hard to read and easy to get wrong when edited: both rendered sentences can only be seen by evaluating the ternaries in your head. Two whole sentences chosen by one ternary would be clearer. So would a single `{ verb, instruction }` value set in the branch that ran.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1063-1160",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fresh-base stage inside `gateAndMerge` grows by about 50 lines, and the new mode is handled at three points that don't sit together. First, the pushed-ancestor guard at 1070-1085. Second, the `else if (isPrBranch)` arm at 1094-1111. Third, the ternaries in the post-check message at 1154-1156. Any further change to the merge-mode rules means editing all three in an already long function. Moving the whole fresh-base step (pin, guard, merge or rebase, post-check) into one `freshBase(...)` function that returns a stage result would keep the mode logic together. `mergeTargetInto` already returns `string | undefined` failures, which fits that shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3334",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`refuses a branch the session rewrote past what the PR holds` calls `vi.mocked(steerPane).mockClear()` but never checks `steerPane`, and `vi.clearAllMocks()` already runs in `beforeEach` (L247). The line is dead setup that suggests a steer assertion that isn't there. Either delete it or add the steer assertion the conflict test has (L3321-3323).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3433-3436",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The compare-and-swap test fires `beforeGit` only when the argv contains the internal reflog message `'pup merge: merge main'` (service L971). Rewording that message, which nobody sees, would make the test fail. The failure would be loud, not a silent pass. Matching on `args[0] === 'commit-tree'` (L952), which also runs just before the `update-ref`, would trigger the same race without depending on the wording.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3291-3297",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `--parents` check `toEqual([head, pushed, targetSha])` already implies both `head !== pushed` and that `pushed` is in `rev-list BRANCH`. That makes `expect(head).not.toBe(pushed)` and the `rev-list ... toContain(pushed)` check redundant, and the comment at L3293 can then describe the single assertion that remains.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5659-5711",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 105 sits between 102 and 103, and 104 does not exist anywhere in the file. At the base commit the file ends at 103, so 104 was the next free number. 105 skips it, and the entry lands out of sequence, with 103 now following it at line 5713.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1909-1915",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `pushBranch` JSDoc's \"With `mayRewrite`, a branch no open PR holds: … Without it, the branch of an open PR …\" reads as a broken fragment, split by an unrelated lease sentence; one sentence stating the flag's contract would be clearer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1076-1081",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"no longer contains <pushed>\" fresh-base detail says what to avoid (rebase) but not how to restore the dropped commits (e.g. reset to <pushed>, then merge the target), and its merge advice is irrelevant when the target is already an ancestor.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "909-921",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `mergeTargetInto` JSDoc opens by narrating the merge-tree/commit-tree/compare-and-swap mechanics the code shows, and its mergeOptions -S/-F rationale is written three times (JSDoc, decision 105, test comment); the test comment could just point at decision 105.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "5659",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 105 says \"Amends decision 8\" though the PR also annotates decision 27 as amended by 105; say \"Amends decisions 8 and 27\". Its ~15-line *Tests.* paragraph retells the test cases and will rot as they change.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "186",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "When a merged session's open PR is not based on the target, the re-gate's fresh-base refusal still says \"Rebase it onto <target>, push it to the PR, then re-gate\". That is exactly the rewrite of an open PR branch that decision 105 forbids. `mainLandedMessage` and the new gate path both say to merge instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "347-353",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The merge-driver/filter check (`assertNoArmedGitDrivers`) runs before `withMergeLock` and the `findOpenPullRequest` gh round-trip and is never repeated under the lock, so a session arming shared config in that window gets a driver run by the fresh-base rebase or merge outside the sandbox; re-checking just before fresh-base (as `fastForward` and `cutGateCheckout` do) would narrow it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1153-1156",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The \"not based on … after the auto-merge/rebase\" fresh-base detail still names `refs/heads/${sanitizeReason(target)}` unquoted, while the new suggested commands quote it with `shellWord`. Unreachable today, since `target` passes `assertTargetName`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.9311606,
+  "duration_ms": 360719,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 18629,
+    "cache_read": 349693,
+    "cache_creation": 61192,
+    "total": 429528
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 208,
+      "output": 101124,
+      "cache_read": 3153035,
+      "cache_creation": 375973,
+      "cost_usd": 4.71736
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 6513,
+      "cache_read": 142781,
+      "cache_creation": 53741,
+      "cost_usd": 0.21380059999999998
+    }
+  ],
+  "permission_denials": []
+}
