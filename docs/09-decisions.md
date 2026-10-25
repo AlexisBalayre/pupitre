@@ -5703,7 +5703,11 @@ changes back into those docs is pending.
     `-F <secret file>`, on the session's branch and on a branch the worktree was switched to,
     the gate merges with no marker written and the merge commit's message exactly `Merge main
     into <branch>`. A gate whose build fails after the merge leaves the worktree on the merge,
-    clean, with the target's files. A stale branch with no open PR is still rebased onto the target and lands on origin
+    clean, with the target's files; with the worktree's HEAD detached it moves the branch to the
+    merge and leaves the worktree on the pushed commit. A branch moved just before the
+    compare-and-swap fails fresh-base naming the tip it moved from, and an edit to a file the
+    merge brings in, made after the worktree-clean stage, fails it naming the `read-tree` to run.
+    Neither pushes. A stale branch with no open PR is still rebased onto the target and lands on origin
     with no merge commit.
 
 103. **The idle prompt is a turn end, a turn ended on the session's own background shell reads

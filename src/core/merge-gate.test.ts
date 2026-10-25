@@ -3410,6 +3410,102 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(readFileSync(join(worktree, 'README.md'), 'utf8')).toBe('# moved on\n');
     });
 
+    /** Run `act` once, right before the first git call whose argv `matches`. */
+    const beforeGit = (matches: (args: string[]) => boolean, act: () => void): void => {
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      let done = false;
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        if (!done && file === 'git' && matches(args)) {
+          done = true;
+          act();
+        }
+        return real?.(file, args, opts as never);
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+    };
+
+    it('fails fresh-base when the branch moves under the compare-and-swap, pushing nothing', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const moved = sh(repo, 'git', 'rev-parse', `${pushed}~1`).trim();
+      beforeGit(
+        (args) => args.includes('update-ref') && args.includes('pup merge: merge main'),
+        () => sh(repo, 'git', 'update-ref', `refs/heads/${BRANCH}`, moved),
+      );
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining(
+          `${BRANCH} moved from ${pushed} while the gate merged main`,
+        ),
+      });
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(moved);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    it('merges the branch of a worktree with a detached HEAD and leaves the worktree alone', async () => {
+      const worktree = seedSession(db, repo);
+      const { pushed } = await pushedOnce(worktree);
+      sh(worktree, 'git', 'checkout', '-q', '--detach');
+      commitIn(repo, 'README.md', '# moved on\n');
+      const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+      // A failing build keeps the worktree, so what the merge left in it can be read.
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, { ...request(), adapters: [failingBuildAdapter] }),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: 'auto-merged main',
+        }),
+      );
+      expect(sh(repo, 'git', 'rev-parse', `${BRANCH}^1`, `${BRANCH}^2`).trim().split('\n')).toEqual(
+        [pushed, targetSha],
+      );
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(existsSync(join(worktree, 'README.md'))).toBe(false);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+    });
+
+    it('fails fresh-base naming the read-tree to run when the worktree changed under the merge', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
+      // After the worktree-clean stage, as a live session would: the file the
+      // merge brings in has an edit of the session's.
+      beforeGit(
+        (args) => args.includes('merge-tree'),
+        () => writeFileSync(join(worktree, 'src/app.ts'), 'export const app = 3;\n'),
+      );
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      const merged = sh(repo, 'git', 'rev-parse', BRANCH).trim();
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining(`\`git read-tree -m -u ${pushed} ${merged}\``),
+      });
+      expect(readFileSync(join(worktree, 'src/app.ts'), 'utf8')).toBe('export const app = 3;\n');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
     it('still rebases a stale branch never pushed, opening its PR on linear history', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
