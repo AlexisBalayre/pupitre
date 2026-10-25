@@ -1,7 +1,7 @@
-type SessionActivityKind = 'working' | 'awaiting-input' | 'idle' | 'unknown';
+type SessionActivityKind = 'working' | 'background' | 'awaiting-input' | 'idle' | 'unknown';
 
 export interface SessionActivity {
   kind: SessionActivityKind;
-  /** The Notification message when awaiting input (permission ask, idle prompt). */
+  /** The Notification message when awaiting input (a permission ask, never the idle prompt). */
   detail?: string;
 }

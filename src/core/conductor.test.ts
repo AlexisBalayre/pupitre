@@ -199,6 +199,20 @@ describe('startConductor', () => {
     expect(error.rolledBack).toBe('Conductor launch rolled back (window killed)');
   });
 
+  // Decision 103: the worker protocol carries the foreground rule, so the
+  // conductor neither repeats it per launch nor nudges a turn that ended on one.
+  it('kicks off without the per-launch finish-protocol note, and waits out a background shell', () => {
+    start();
+
+    const context = String(vi.mocked(kickoff).mock.calls[0]?.[1]);
+    expect(context).not.toMatch(/finish (your|the) protocol/i);
+    expect(context).toContain('do not repeat that in a launch or a steer');
+    expect(context).toContain(
+      '`working on a background shell`: it is not idle, so subscribe again and wait for its ' +
+        'next notice rather than nudging it.',
+    );
+  });
+
   // Decision 96: the start stores the cap every launch is held to, and the
   // kickoff names it with the rule the conductor fills free places by.
   describe('the session cap', () => {

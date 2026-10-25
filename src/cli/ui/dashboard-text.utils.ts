@@ -60,6 +60,8 @@ export function activityLabel(session: DashboardSession): string {
     return `WAITING ON INPUT${detail ? ` (${sanitizeReason(detail)})` : ''}`;
   }
   if (session.activity.kind === 'idle') return 'idle (turn ended, no done signal)';
+  // Decision 103: a turn that ended on its own background shell is still at work on it.
+  if (session.activity.kind === 'background') return 'working on a background shell';
   return '';
 }
 
