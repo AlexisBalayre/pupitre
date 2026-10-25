@@ -1,0 +1,166 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-25T22:17:25.867Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40238816204",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40238816204",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6ccb3ccc76b66900a62460a148ddf7e6998fffaf",
+  "source": "pr",
+  "pr_number": 173,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "59-72",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The codegraph indexer's git config does not pin `core.splitIndex=false`. When the operator has `core.splitIndex=true`, codegraph's first `git status` turns the flattened snapshot back into a split index whose base sits at `<admin dir>/sharedindex.<sha>`, which the session can write. Later codegraph git runs then load gitlinks the check never saw.",
+      "body": "**Concern.** Decision 101 says the snapshot is flattened \"so neither reader takes a `sharedindex.*` from the admin dir\". That holds for pup's own flatten (`update-index --no-split-index`) and its `ls-files --stage` gitlink check. It does not hold for codegraph's git, which gets only these command-scope entries:\n\n```ts\nconst entries = [\n  ...GIT_SAFE_CONFIG.filter((arg) => arg !== '-c'),\n  'diff.ignoreSubmodules=all',\n  'status.submoduleSummary=false',\n];\n```\n\n`GIT_SAFE_CONFIG` doesn't pin `core.splitIndex` either, and `indexEnv` passes `HOME` without setting `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM`. So both the operator's global config and the shared `<repo>/.git/config` apply. The shared config is session-writable under decision 41's exposure, so a session can switch the setting on itself.\n\n**What git does** (from git's source; not reproduced under CI):\n- With `core.splitIndex=true`, every index read marks the index for re-splitting.\n- `git status` writes the index when it can. The lock lands in pup's scratch dir, but the new shared base is written to `<GIT_DIR>/sharedindex.<sha>`. That is the per-worktree admin dir, which the session can write.\n- On later reads, git loads that base by its trailing hash, which it doesn't re-verify outside fsck.\n\n**Attack path.** pup snapshots, flattens and checks the index. Then codegraph's first `status` re-splits it into the admin dir. A sibling session, or a process that outlived the killed window, swaps that base for one holding a `160000` gitlink. Decision 101 already names this attacker as the reason the snapshot exists. codegraph's next `ls-files --recurse-submodules` / `status` loads the forged base, and the submodule's child git runs a planted clean filter outside the sandbox. This is the chain the snapshot was added to close, and decision 101's ceilings don't list it.\n\n**Fix.** Pin `core.splitIndex=false` at command scope. That beats repo and global config, so git writes a flat index and never reads a `sharedindex.*` from the admin dir. The codegraph test that asserts the exact config will need the new key.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6ccb3ccc76b66900a62460a148ddf7e6998fffaf/src/core/codegraph.client.ts#L59-L72\nhttps://github.com/AlexisBalayre/pupitre/blob/6ccb3ccc76b66900a62460a148ddf7e6998fffaf/docs/09-decisions.md#L5595-L5603",
+      "suggestion": "function codegraphGitConfig(): Record<string, string> {\n  const entries = [\n    ...GIT_SAFE_CONFIG.filter((arg) => arg !== '-c'),\n    'core.splitIndex=false',\n    'diff.ignoreSubmodules=all',\n    'status.submoduleSummary=false',\n  ];\n  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(entries.length) };\n  entries.forEach((entry, index) => {\n    const equals = entry.indexOf('=');\n    env[`GIT_CONFIG_KEY_${index}`] = entry.slice(0, equals);\n    env[`GIT_CONFIG_VALUE_${index}`] = entry.slice(equals + 1);\n  });\n  return env;\n}"
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "128-147",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "If the conductor's first cut fails or is interrupted during its pinned read-tree, it now leaves a half-filled worktree behind. Every later start takes the refresh path, whose `checkout --detach` refuses the partial files as untracked, so the conductor loses its graph until someone deletes the checkout by hand.",
+      "body": "**Concern.** Before this PR the conductor's first cut was a single `git worktree add`. git cleans up a failed or interrupted add itself (`remove_junk` runs on exit and on signals), so the next start cut again from scratch. Now the add is `--no-checkout` and the files come from a separate `checkoutPinned` (`read-tree --reset -u`). The launch and the fix round wrap that call in an undo (`dropUncheckedWorktree`, `dropUncheckedRound`). The conductor's first cut does not:\n\n```ts\nconst tip = runGit(repoPath, ['rev-parse', '--verify', `refs/heads/${target}^{commit}`]).trim();\nrunGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', checkoutDir, tip]);\nreturn checkoutPinned(repoPath, checkoutDir, tip);\n```\n\n**Triggers.** Ctrl-C during the first `pup conductor start` on a large repo (the read-tree is the slow part), ENOSPC, or any read-tree error partway through. Each leaves some files written and no index committed, while `<checkout>/.git` and the admin dir exist.\n\n**Why it never heals.** Every later start takes:\n\n```ts\nif (existsSync(join(checkoutDir, '.git'))) {\n  const git = verifiedWorktreeGitEnv(repoPath, checkoutDir);\n  runGit(checkoutDir, ['checkout', '--detach', `refs/heads/${target}`], { env: { ...git } });\n```\n\nThe pointers still verify. With no index, `checkout` does an initial checkout and refuses to overwrite the partial files as untracked. `prepareGraph` catches that, so each start prints \"Could not index …\" and runs without a graph, indefinitely. Decision 101 lists the conductor among the `--no-checkout` users but records undos only for the launch and the fix round. Its ceilings mention a graph lost \"until the checkout is deleted and re-cut\" only for a misnamed admin dir, not for this case. (The git behaviour is from git's source; it wasn't reproduced under CI.)\n\n**Fix options.**\n- Have the refresh path treat a checkout with no `<admin dir>/index` as half-cut and re-run `checkoutPinned(repoPath, checkoutDir, <target tip>)`. This also covers SIGINT, which a try/catch can't.\n- At minimum, wrap the first cut's `checkoutPinned` the way the launch does: remove the dir, `worktree prune`, rethrow.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6ccb3ccc76b66900a62460a148ddf7e6998fffaf/src/core/conductor.service.ts#L128-L147",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "122-123, 251-255, 271-275",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The index flatten and gitlink listing reuse codegraph's 180 s `INDEX_TIMEOUT_MS`, so a planted fifo `sharedindex.*` still holds a respawn, fix round or `pup conductor start` for 3 minutes, while decision 101 says the fifo \"costs the graph rather than holding the caller\". Give these one-file steps a short timeout of their own, or reword the decision.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "236-243",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertNoWorktreeConfig` now also refuses a gitfile `.git`, and its messages say \"Refusing to launch a session … launches from a main checkout only\". This PR also calls it from `pup fix`'s `restoreWorktree` (fix-round.service.ts:402), where that wording is wrong and the `NOT_STARTED` suffix the other refusals there carry is missing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "430-456",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refuseEscapingLinks` takes a new `WorktreeGitEnv` param to run `ls-tree <sha>` through the gate checkout pinned, while `nestedPackageDirs` reads the same sha from the trusted repo (`committedPackageDirs(configPath, measureSha)`), which is the rule the git-tree docblock states. Running it in `repoPath` would drop the param and its coupling to `checkoutPinned`'s return.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "414-427",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`cutGateCheckout`'s JSDoc still gives the `--no-sparse-checkout` / `read-tree` rationale. `cutGateCheckout` no longer passes that flag, and `checkoutPinned`'s doc already gives the reason. Keep only the re-checked drivers and the `GIT_WORK_TREE` WHY, and point at `checkoutPinned`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "229-236",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `snapshotIndex` JSDoc and the matching test comments carry review-history tags (\"(CI review of #173)\"). The WHY is complete without them, and the provenance already lives in decision 101 and git history.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph-client.test.ts",
+      "line": "24-39",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `vi.mock('./git-diff.client.js', …)` wrapping `runGit` to shorten its timeout goes beyond docs/conventions/testing.md's mock list (tmux / `claude -p` only; prefer real git), and it sits after the unit-under-test import, against the declare-mocks-first rule.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "`git show 671afbb` failed in the sandbox (bwrap could not find `.git/config.worktree.lock`), so the conventions reviewer judged that commit only from a partial read of `gh pr diff 173`."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context: no spec, protocol or infra surface was touched. Skipped review-spec: the PR closes no issue and no --spec was given."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.226916700000002,
+  "duration_ms": 459555,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 18090,
+    "cache_read": 386460,
+    "cache_creation": 66373,
+    "total": 470937
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 258,
+      "output": 133512,
+      "cache_read": 5774743,
+      "cache_creation": 554968,
+      "cost_usd": 6.800179600000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 11080,
+      "cache_read": 482096,
+      "cache_creation": 107067,
+      "cost_usd": 0.42673710000000004
+    }
+  ],
+  "permission_denials": []
+}
