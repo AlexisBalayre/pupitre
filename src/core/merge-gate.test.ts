@@ -3245,25 +3245,122 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1').map((e) => e.accepted_by)).toEqual(['tg:alexis']);
   });
 
-  it('with openPr retries after the target moved, when the rebase rewrote the pushed branch', async () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    addOrigin();
-    const request = {
+  describe('a stale branch an open PR holds (decision 105)', () => {
+    const request = () => ({
       repoPath: repo,
       sessionId: SESSION_ID,
       adapters: [passingAdapter],
       openPr: true,
+    });
+
+    /** A gate that pushed the branch and died opening its PR: the PR stands open. */
+    const pushedOnce = async (worktree: string): Promise<{ bare: string; pushed: string }> => {
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
+      await expect(
+        withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request())),
+      ).rejects.toThrow();
+      return { bare, pushed: sh(bare, 'git', 'rev-parse', BRANCH).trim() };
     };
-    const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
-    await expect(withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).rejects.toThrow();
 
-    // main moves, so the retry's auto-rebase rewrites the already-pushed branch.
-    commitIn(repo, 'README.md', '# moved on\n');
-    const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
+    const pushCalls = (): string[][] =>
+      vi
+        .mocked(execFileSync)
+        .mock.calls.map(([, callArgs]) => (callArgs ?? []) as string[])
+        .filter((callArgs) => callArgs.includes('push'));
 
-    expect(outcome.status).toBe('merged');
-    expect(outcome.prUrl).toBe(openPrOnMain.url);
+    it('merges the target in, keeps every pushed commit, and pushes without force', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.prUrl).toBe(openPrOnMain.url);
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: 'auto-merged main',
+        }),
+      );
+      const head = sh(bare, 'git', 'rev-parse', BRANCH).trim();
+      expect(head).not.toBe(pushed);
+      // Every commit the PR held is still on it, and the target came in as a merge.
+      expect(sh(bare, 'git', 'rev-list', BRANCH)).toContain(pushed);
+      expect(sh(bare, 'git', 'rev-list', '--parents', '-n', '1', BRANCH).trim().split(' ')).toEqual(
+        [head, pushed, targetSha],
+      );
+      const pushes = pushCalls();
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0]?.join(' ')).not.toMatch(/--force|\+[0-9a-f]{40}:/);
+    });
+
+    it('re-steers the session when the merge conflicts, leaving the PR as it was', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'src/feature.ts', 'export const feature = 2;\n');
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.rejectCount).toBe(1);
+      expect(getSession(db, SESSION_ID)?.state).toBe('running');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining('Auto-merge of main hit conflicts'),
+      });
+      const steer = vi.mocked(steerPane).mock.calls[0]?.[1];
+      expect(steer).toContain("`git merge 'refs/heads/main'`");
+      expect(steer).not.toContain('rebase');
+      // Aborted: the worktree is back on the pushed commit, with no merge in progress.
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    it('refuses a branch the session rewrote past what the PR holds', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      sh(worktree, 'git', 'commit', '--amend', '-m', 'rewritten');
+      vi.mocked(steerPane).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining(`no longer contains ${pushed}`),
+      });
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+    });
+
+    it('still rebases a stale branch never pushed, opening its PR on linear history', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      commitIn(repo, 'README.md', '# moved on\n');
+      const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+      const outcome = await withFakeGh(fakeGh([]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.prWasAdopted).toBe(false);
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({ stage: 'fresh-base', detail: 'auto-rebased onto main' }),
+      );
+      expect(sh(bare, 'git', 'rev-list', '--merges', BRANCH).trim()).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', `${BRANCH}~1`).trim()).toBe(targetSha);
+    });
   });
 
   it('with openPr refuses an open PR that has auto-merge armed', async () => {

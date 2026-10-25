@@ -288,7 +288,8 @@ function formatGateReport(report: GateReport): string {
 }
 
 /**
- * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), then the
+ * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), or a
+ * merge of the target for a branch an open PR holds (decision 105), then the
  * hard stages — build, tests, lint, a touched nested package's own test and
  * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
@@ -334,8 +335,8 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
         '.pupitre/adapter.yml).',
     );
   }
-  // Before the auto-rebase, which runs a smudge filter on every file it checks
-  // out and a merge driver on every conflict, with the operator's environment
+  // Before the auto-rebase or merge, which runs a smudge filter on every file it
+  // checks out and a merge driver on every conflict, with the operator's environment
   // and ahead of the sandbox that confines the stages. Both paths, because the
   // rebase runs in the worktree and the fast-forward's checkout in the main
   // one, and a worktree-scoped config is only visible from its own worktree
@@ -945,14 +946,59 @@ async function gateAndMerge(
   stages.push(timedSince(started, { stage: 'worktree-clean', status: 'pass' }));
 
   // Both ends pinned under the lock, and every later git call names a sha
-  // (decision 80): the target here, so the rebase, the diffs and the
-  // compare-and-swap all mean one commit; the branch once the rebase settled
+  // (decision 80): the target here, so the rebase or merge, the diffs and the
+  // compare-and-swap all mean one commit; the branch once fresh-base settled
   // it, so what the diffs and the scope audit named is what lands, whatever the
   // live session commits or tags meanwhile. The stages read that sha's files
   // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
+  const targetRef = shellWord(`refs/heads/${sanitizeReason(target)}`);
+  // An open PR's commits are what its review and CI read, so its branch takes
+  // the target as a merge commit and is never rewritten; a branch with no open
+  // PR is still rebased (decision 105). `--no-ff` past a `merge.ff=only` of the
+  // operator's; the pins hold hooks and signing off for both, as everywhere.
+  const update = pullRequest?.adoptedUrl
+    ? {
+        verb: 'merge',
+        args: [
+          'merge',
+          '--no-ff',
+          '--no-edit',
+          '-m',
+          `Merge ${target} into ${session.branch}`,
+          targetSha,
+        ],
+        passed: `auto-merged ${target}`,
+        conflicted: `Auto-merge of ${sanitizeReason(target)}`,
+        redo: `merge ${targetRef} into it`,
+      }
+    : {
+        verb: 'rebase',
+        args: ['rebase', targetSha],
+        passed: `auto-rebased onto ${target}`,
+        conflicted: `Auto-rebase onto ${sanitizeReason(target)}`,
+        redo: `rebase it onto ${targetRef}`,
+      };
+  // What the gate last pushed, which the merge keeps and a rewrite by the
+  // session would drop: refused here, with the fix in the worker's hands,
+  // rather than by the push once every stage has run.
+  const pushed = pullRequest?.adoptedUrl
+    ? resolveCommitIfPresent(req.repoPath, `refs/remotes/origin/${session.branch}`)
+    : undefined;
+  if (pushed && !isAncestor(req.repoPath, pushed, branchRef)) {
+    stages.push(
+      timedSince(started, {
+        stage: 'fresh-base',
+        status: 'fail',
+        detail:
+          `${session.branch} no longer contains ${pushed}, which its open PR holds. Bring those ` +
+          `commits back (merge ${targetRef} rather than rebase onto it), then commit.`,
+      }),
+    );
+    return failed();
+  }
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
     stages.push(
       timedSince(started, {
@@ -963,37 +1009,37 @@ async function gateAndMerge(
     );
   } else {
     try {
-      runGit(worktree, ['rebase', targetSha], pinned);
+      runGit(worktree, update.args, pinned);
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
           status: 'pass',
-          detail: `auto-rebased onto ${target}`,
+          detail: update.passed,
         }),
       );
     } catch (error) {
       try {
-        runGit(worktree, ['rebase', '--abort'], pinned);
+        runGit(worktree, [update.verb, '--abort'], pinned);
       } catch {
-        // nothing to abort — the rebase never started
+        // nothing to abort — the rebase or merge never started
       }
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
           status: 'fail',
           detail:
-            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
-            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
-            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
+            `${update.conflicted} hit conflicts. Run ` +
+            `\`git ${update.verb} ${targetRef}\`, ` +
+            `resolve the conflicts, and finish the ${update.verb}.\n${commandFailureDetail(error)}`,
         }),
       );
       return failed();
     }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
-  // The rebase moves whatever the worktree has checked out, so a session that
-  // detached it or switched branch leaves the pinned branch behind the target:
-  // no fast-forward, and the diffs would measure against the wrong base.
+  // The rebase or merge moves whatever the worktree has checked out, so a
+  // session that detached it or switched branch leaves the pinned branch behind
+  // the target: no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
@@ -1003,8 +1049,8 @@ async function gateAndMerge(
         status: 'fail',
         detail:
           `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
-          `after the auto-rebase. Check out ${session.branch} in this worktree and rebase it onto ` +
-          `refs/heads/${sanitizeReason(target)}.`,
+          `after the auto-${update.verb}. Check out ${session.branch} in this worktree and ` +
+          `${update.redo}.`,
       }),
     );
     return failed();
@@ -1034,7 +1080,7 @@ async function gateAndMerge(
       ...pullRequestText(spec, session.id, report, commitSubjects, sha),
     };
     try {
-      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
+      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
       if (pullRequest.adoptedUrl) {
         rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
         prWasAdopted = true;
@@ -1737,14 +1783,17 @@ export function debtKind(description: string, sessionId: string): string | undef
 }
 
 /**
- * Push the session branch to origin's pinned URL. A retry after a failed `--pr`
- * run has usually been rebased onto a moved target, so a plain push would be
- * rejected non-fast-forward — and so would every retry after it, dead-ending
- * the branch. The branch is pup's own (`pup/<slug>`, created and deleted by
- * pup) and the gate just validated these commits, so the rewrite is intended.
- * The lease still refuses if origin moved past what pup itself last pushed, and
- * it only applies once a remote-tracking ref exists — on the first push there
- * is nothing to lease against.
+ * Push the session branch to origin's pinned URL. With `mayRewrite`, a branch
+ * no open PR holds: a retry after a failed `--pr` run has usually been rebased
+ * onto a moved target, so a plain push would be rejected non-fast-forward — and
+ * so would every retry after it, dead-ending the branch. The branch is pup's
+ * own (`pup/<slug>`, created and deleted by pup) and the gate just validated
+ * these commits, so the rewrite is intended. The lease still refuses if origin
+ * moved past what pup itself last pushed, and it only applies once a
+ * remote-tracking ref exists — on the first push there is nothing to lease
+ * against. Without it, the branch of an open PR, whose fresh-base merged the
+ * target rather than rebased (decision 105): a plain push, which git refuses
+ * unless it fast-forwards, so no commit the PR's review read is ever dropped.
  *
  * Naming the URL is not enough on its own: git rewrites a literal URL through
  * `url.<base>.insteadOf` and `pushInsteadOf` exactly as it rewrites a remote's,
@@ -1754,9 +1803,16 @@ export function debtKind(description: string, sessionId: string): string | undef
  * and system config still apply (decision 54). Pushing to a URL updates no
  * remote-tracking ref, so the lease names its value and the ref is moved here.
  */
-function pushBranch(repoPath: string, originUrl: string, branch: string, tip: string): void {
+function pushBranch(
+  repoPath: string,
+  originUrl: string,
+  branch: string,
+  tip: string,
+  mayRewrite: boolean,
+): void {
   const tracking = `refs/remotes/origin/${branch}`;
   const leased = (() => {
+    if (!mayRewrite) return undefined;
     try {
       // A missing remote-tracking ref is the expected first-push case, not an
       // error: git's stderr is captured here (not inherited) so its "fatal:

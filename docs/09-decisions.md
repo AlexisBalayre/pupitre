@@ -370,6 +370,8 @@ changes back into those docs is pending.
 8. **Fresh-base gating**: the gate refuses branches that are stale vs main. **Pupitre auto-rebases
    mechanically**; only conflicts go back to the session as a re-steer ("rebase onto main and
    resolve"). Merges are serialized under a lock.
+   *Amended by decision 105:* a branch an open PR holds takes the target as a merge commit
+   instead, and is pushed without force; the rebase stays for a branch no open PR holds.
 
 15. **Rebase-conflict re-steers count toward the reject cap.** One counter (`reject_count`)
     bounds every automatic re-steer path; after two, the third failure of any kind parks the
@@ -558,6 +560,8 @@ changes back into those docs is pending.
     usually been auto-rebased onto a moved target, and a plain push would be rejected
     non-fast-forward on that retry and every one after it. The lease still refuses if
     origin moved past what pup itself last pushed.
+    *Amended by decision 105:* the lease is kept only for a branch no open PR holds; an open
+    PR's branch is merged with the target rather than rebased, and pushed without force.
     Still accepted: a PR closed without merging leaves a `merged` session whose commits
     live only on the remote branch; the between-open-and-merge baseline gap stands until
     the post-merge `pup audit`; adoption inherits everything about the PR except title and
@@ -5652,6 +5656,37 @@ changes back into those docs is pending.
     conductor prints the session in its table and not in the inbox; without one it prints the
     need. The terminal tab counts the session only with no conductor, and the web dashboard
     prints the need's command only then.
+105. **A branch an open PR holds is never rebased: fresh-base merges the target into it, and the
+    push does not force (2026-10-25).**
+    Amends decision 8. Fresh-base rebased every stale branch onto the target, and the `--pr`
+    gate then pushed it with `--force-with-lease`. On a fix round or a retry after the target
+    moved, that replaced the commits the PR's review and CI had read (seen on #170:
+    `+ 6498ed7...1c26673 (forced update)`), and the CI review's anchors with them. Now, when the
+    `--pr` gate adopted an open PR for the branch, fresh-base runs `git merge --no-ff --no-edit`
+    of the pinned target sha in the worktree, under the same pins as the rebase (decision 101),
+    `--no-ff` so an operator's `merge.ff=only` cannot refuse it. A conflict aborts the merge and
+    fails fresh-base with `Run git merge refs/heads/<target>, resolve the conflicts, and finish
+    the merge`, which re-steers the worker and counts toward the reject cap like a rebase
+    conflict (decision 15). The push then goes without a lease, so git refuses anything but a
+    fast-forward of what the PR holds. A session that rewrote the branch itself (a rebase or an
+    amend in a fix round) is caught before the stages rather than by that push: when the
+    remote-tracking ref of the last gate's push is not an ancestor of the branch, fresh-base
+    fails and tells the worker to bring those commits back and merge rather than rebase. With no
+    tracking ref (a PR pushed from another clone) the push alone guards. A branch no open PR
+    holds is rebased as before, pushed or not: a plain `pup merge` (which asks GitHub nothing and
+    fast-forwards, decision 16), the first `--pr` gate, and a retry whose earlier push landed but
+    whose PR was never opened, which keeps the lease. The operator chose to keep that rebase
+    unchanged. Rejected: refusing every stale open-PR branch with an operator-facing message.
+    The merge is as mechanical as the rebase, and a refusal would hand the operator a step the
+    gate can take.
+    *Tests.* In `merge-gate.test.ts`, a branch whose first `--pr` gate pushed it and died opening
+    the PR, gated again with the PR open after the target moved, passes fresh-base as
+    `auto-merged main`. Its new head on origin is a merge whose parents are the pushed commit
+    and the target, and the one push carries no force. With a conflicting target the gate
+    rejects, steers `git merge 'refs/heads/main'` and no rebase, leaves the worktree clean on
+    the pushed commit and pushes nothing. An amended branch fails fresh-base naming the pushed
+    commit. A stale branch with no open PR is still rebased onto the target and lands on origin
+    with no merge commit.
 
 103. **The idle prompt is a turn end, a turn ended on the session's own background shell reads
     `working on a background shell`, and workers commit and test in the foreground
