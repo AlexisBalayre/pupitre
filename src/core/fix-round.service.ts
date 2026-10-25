@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, rmSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
@@ -14,6 +14,8 @@ import {
   checkoutPinned,
   rethrowIfKilled,
   runGit,
+  WorktreeRepointedError,
+  worktreeGitEnv,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -401,14 +403,54 @@ function restoreWorktree(repoPath: string, session: SessionRow, head: string): v
   assertNoArmedGitDrivers(repoPath);
   // `--no-checkout`: the add's own checkout would read the admin dir's
   // `commondir` before any check of it, so the files come from a pinned
-  // read-tree of the head the branch holds either way.
+  // read-tree of the head the branch holds either way, and a read-tree that
+  // throws takes the new worktree with it.
   runGit(
     repoPath,
     tip === undefined
       ? ['worktree', 'add', '--no-checkout', '-b', session.branch, session.worktree_path, head]
       : ['worktree', 'add', '--no-checkout', session.worktree_path, session.branch],
   );
-  checkoutPinned(repoPath, session.worktree_path, head);
+  try {
+    checkoutPinned(repoPath, session.worktree_path, head);
+  } catch (error) {
+    const undone = dropUncheckedRound(repoPath, session);
+    if (error instanceof WorktreeRepointedError) {
+      const refusal = new WorktreeRepointedError(error.worktreePath, error.problem, undone);
+      refusal.message += ` ${NOT_STARTED}`;
+      throw refusal;
+    }
+    if (error instanceof Error) error.message += ` ${undone}. ${NOT_STARTED}`;
+    throw error;
+  }
+}
+
+/**
+ * Undo the round's `worktree add` when its pinned checkout threw, as a launch
+ * undoes its own: left behind, the worktree would be refused by every retry
+ * as an earlier round's. No git runs in it: the directory goes first, so the
+ * prune drops its registration, which is then checked gone, since the prune
+ * keeps a locked one and says nothing. The branch stays: it holds the head,
+ * which the retry starts from either way. Returns what it undid, as the advice
+ * the refusal closes with. Swallowed: a cleanup failure must not replace the
+ * refusal.
+ */
+function dropUncheckedRound(repoPath: string, session: SessionRow): string {
+  try {
+    rmSync(session.worktree_path, { recursive: true, force: true });
+    runGit(repoPath, ['worktree', 'prune']);
+    if (
+      lstatSync(worktreeGitEnv(repoPath, session.worktree_path).GIT_DIR, { throwIfNoEntry: false })
+    ) {
+      throw new Error('the prune kept the admin dir');
+    }
+    return (
+      "The round's new worktree was removed, so nothing needs restoring: re-run `pup fix` " +
+      'once the cause is cleared'
+    );
+  } catch {
+    return `pup fix could not remove the round's new worktree: ${worktreeCleanup(session.id)}, then re-run`;
+  }
 }
 
 /**

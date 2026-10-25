@@ -615,6 +615,31 @@ describe('launchTask armed-driver guard', () => {
     expect(existsSync(join(repo, '.worktrees', 't-1', 'src/core/github.client.ts'))).toBe(true);
   });
 
+  // `worktree prune` keeps a locked registration and says nothing, so the
+  // undo checks the admin dir is gone before it claims the worktree is, and
+  // leaves the branch the registration still holds.
+  it('names both for removal when the prune keeps the new worktree registered', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    const shim = tempDir('pup-git-');
+    const once = join(shim, 'once');
+    writeFileSync(once, '');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; touch "$GIT_DIR/locked"; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+        `exec ${realGit()} "$@"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
+
+    expect(launch).toThrow(
+      /No space left on device[\s\S]* The launch could not remove its new worktree \S+\/\.worktrees\/t-1 and branch pup\/t-1: remove both, then retry the launch\.$/,
+    );
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).not.toBe('');
+  });
+
   // A refusal inside `launchTask` alone would leave the spec the operator just
   // abandoned in the backlog, unclaimed and attributed to them (decision 41).
   it('writes no task row when `pup new` is refused', () => {

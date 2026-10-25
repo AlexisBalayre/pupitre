@@ -1,3 +1,5 @@
+import type { WorktreeGitEnv } from '../../core/git-diff.client.js';
+
 export type GateStage = 'build' | 'test' | 'lint';
 
 export interface GateCommand {
@@ -67,6 +69,13 @@ export interface CapabilityContext {
   measurePath: string;
   /** Checkout to read tool declarations from. Never session-writable. */
   configPath: string;
+  /**
+   * The dirs git in `measurePath` must be pinned to, when that checkout is a
+   * linked worktree: the gate's, whose admin dir sits where a session can
+   * rewrite its `commondir` (decision 101). Absent where `measurePath` is the
+   * repo's own checkout.
+   */
+  measureGit?: WorktreeGitEnv;
   /**
    * Env names the operator allowed into capability children with `--gate-env`
    * (decision 36). Optional because absence narrows the child's environment

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -2546,8 +2546,19 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     await merge(adapter);
 
     // Split on purpose: a session that edits its own manifest must not be able
-    // to un-declare the tool that measures it (decision 29).
-    expect(seen).toEqual({ measurePath: expect.stringMatching(GATE_CHECKOUT), configPath: repo });
+    // to un-declare the tool that measures it (decision 29). Git in the
+    // checkout is pinned to its own admin dir and the main checkout's
+    // `.git` (decision 101).
+    const measurePath = seen?.measurePath ?? '';
+    expect(seen).toEqual({
+      measurePath: expect.stringMatching(GATE_CHECKOUT),
+      configPath: repo,
+      measureGit: {
+        GIT_DIR: join(repo, '.git', 'worktrees', basename(measurePath)),
+        GIT_COMMON_DIR: join(repo, '.git'),
+        GIT_WORK_TREE: measurePath,
+      },
+    });
   });
 
   // The trap this closes end to end: a compare the gate skipped must not write
@@ -2635,6 +2646,52 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(
         stageNames.slice(stageNames.indexOf('lint') + 1, stageNames.indexOf('scope-audit')),
       ).toEqual(['test (tools/review)', 'typecheck (tools/review)']);
+    });
+
+    // The checkout's admin dir sits beside the sessions' own, whose `commondir`
+    // a session can rewrite once the cut is checked. Git that followed it would
+    // read a config of the session's: a promisor remote whose `uploadpack` runs
+    // on the lazy fetch of the commit that repo lacks (decision 101).
+    it("reads the package markers through the checkout's pins once its commondir is rewritten", async () => {
+      commitNestedPackage({ test: 'true', typecheck: 'true' });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+      const fired = join(tempDir('pup-marker-'), 'fired');
+      const planted = tempDir('pup-planted-');
+      sh(planted, 'git', 'init', '-q');
+      for (const [key, value] of [
+        ['core.repositoryformatversion', '1'],
+        ['extensions.partialClone', 'evil'],
+        ['remote.evil.promisor', 'true'],
+        ['remote.evil.url', repo],
+        ['remote.evil.uploadpack', `sh -c 'echo pwned >> ${fired}; exit 1' --`],
+      ] as const) {
+        sh(planted, 'git', 'config', key, value);
+      }
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const gitDir = tempDir('pup-git-');
+      writeFileSync(
+        join(gitDir, 'git'),
+        [
+          '#!/bin/sh',
+          `${realGit} "$@" || exit $?`,
+          'case " $* " in *" read-tree "*)',
+          `  case "$GIT_DIR" in */worktrees/pup-gate-checkout-*) echo ${planted}/.git > "$GIT_DIR/commondir" ;; esac ;;`,
+          'esac',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${gitDir}:${originalPath}`;
+      onTestFinished(() => {
+        process.env.PATH = originalPath;
+      });
+
+      const outcome = await merge(nestedAdapter());
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.report.stages.map((s) => s.stage)).toContain('test (tools/review)');
+      expect(existsSync(fired)).toBe(false);
     });
 
     it('runs the script with the package as its working directory', async () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs';
+import { lstatSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
@@ -26,6 +26,7 @@ import {
   runGit,
   verifiedWorktreeGitEnv,
   WorktreeRepointedError,
+  worktreeGitEnv,
 } from './git-diff.client.js';
 import { scopeConflicts } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
@@ -534,7 +535,9 @@ export function writeSessionProfile(
  * a full disk, an interrupt. Left behind, the worktree and branch would refuse
  * the retry, which mints the same id (decision 40). No git runs in the
  * worktree: the directory goes first, so the prune drops its registration,
- * and the branch goes only while it still holds the commit the add cut it at.
+ * which is then checked gone, since the prune keeps a locked one and says
+ * nothing, and the branch goes only while it still holds the commit the add
+ * cut it at.
  * Returns what it undid, as the advice the refusal closes with: a rewritten
  * pointer's own asks for a `worktree repair`, which no longer fits once the
  * worktree is gone. Swallowed: a cleanup failure must not replace the refusal.
@@ -548,6 +551,9 @@ function dropUncheckedWorktree(
   try {
     rmSync(worktreePath, { recursive: true, force: true });
     runGit(repoPath, ['worktree', 'prune']);
+    if (lstatSync(worktreeGitEnv(repoPath, worktreePath).GIT_DIR, { throwIfNoEntry: false })) {
+      throw new Error('the prune kept the admin dir');
+    }
     runGit(repoPath, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, head]);
     return (
       `The launch's new worktree and its branch ${sanitizeReason(branch)} were removed, so ` +

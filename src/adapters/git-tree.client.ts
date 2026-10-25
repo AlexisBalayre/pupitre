@@ -1,5 +1,6 @@
-import { runGit } from '../core/git-diff.client.js';
+import { runGit, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
+import type { CapabilityContext } from './types/adapter.types.js';
 
 const MANIFEST = 'package.json';
 
@@ -12,9 +13,9 @@ const MANIFEST = 'package.json';
  * whole source as uncovered and its exports as dead (decision 58), which is the
  * same reason `.worktrees/` is skipped as another checkout.
  *
- * A directory qualifies only when every checkout given commits the marker,
- * which for a merge gate is the worktree and the trusted checkout (decision
- * 31's AND). Committed, not present on disk and not merely in the index: an
+ * A directory qualifies only when both checkouts commit the marker, which for
+ * a merge gate are the pinned checkout and the trusted one (decision 31's
+ * AND). Committed, not present on disk and not merely in the index: an
  * untracked `src/core/package.json` dropped into the main checkout from a
  * session shell is diffed and hashed by nothing, and the index of that
  * checkout is the session's to `git add` to as well, so either would buy the
@@ -22,21 +23,32 @@ const MANIFEST = 'package.json';
  * tree also settles what a marker *is*: a symlink, a directory or an empty
  * file is whatever git committed, and there is no filesystem type to check.
  * A checkout git cannot list contributes no markers, so nothing is exempt.
+ * The measured one is read with git pinned when the context carries its pins:
+ * the gate's checkout finds its repo through an admin dir a session can
+ * rewrite, and git that followed it would read a config the session chose
+ * (decision 101).
  *
  * Resolved once per capability call; callers pass the set down. A client, not a
  * util: it reads git, so it lives apart from the pure path predicates.
  */
-export function nestedPackageDirs(checkouts: string[]): Set<string> {
-  const [first = new Set<string>(), ...rest] = [...new Set(checkouts)].map(committedPackageDirs);
-  return new Set([...first].filter((dir) => rest.every((dirs) => dirs.has(dir))));
+export function nestedPackageDirs({
+  measurePath,
+  configPath,
+  measureGit,
+}: CapabilityContext): Set<string> {
+  const measured = committedPackageDirs(measurePath, measureGit);
+  if (configPath === measurePath) return measured;
+  const trusted = committedPackageDirs(configPath);
+  return new Set([...measured].filter((dir) => trusted.has(dir)));
 }
 
-function committedPackageDirs(checkout: string): Set<string> {
+function committedPackageDirs(checkout: string, git?: WorktreeGitEnv): Set<string> {
   let listing: string;
   try {
     // Timed out like every other child pup runs: git reads config a session
     // can write, and an untimed read would hang the gate inside the lock.
     listing = runGit(checkout, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'], {
+      ...(git ? { env: { ...git } } : {}),
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: GATE_COMMAND_TIMEOUT_MS,
     });

@@ -427,11 +427,12 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
  * outranking a `core.worktree` in the shared config that would aim the writes
  * elsewhere.
  */
-function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): WorktreeGitEnv {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
-  return dir;
+  const git = checkoutPinned(repoPath, dir, sha);
+  refuseEscapingLinks(dir, sha, git);
+  return git;
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -1264,20 +1265,21 @@ export async function measureBranch(
   // worktree's, which the live session can change while they run (decision 81);
   // which tools are declared is still read from the main checkout the merge
   // lock holds at the target branch, or a session silences a debt stage by
-  // editing its own manifest (decision 29).
+  // editing its own manifest (decision 29). Git in the checkout runs pinned to
+  // the dirs its cut checked, as the cut's own did (decision 101).
   const capabilityContext: CapabilityContext = {
     measurePath: checkoutDir,
     configPath: req.repoPath,
+    measureGit: cutGateCheckout(req.repoPath, checkoutDir, sha),
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
-  const checkout = cutGateCheckout(req.repoPath, checkoutDir, sha);
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
   // parent out of the checkout (decision 81).
   for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)]) {
-    linkEnvironment(req.repoPath, checkout, rel);
+    linkEnvironment(req.repoPath, checkoutDir, rel);
   }
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
@@ -1293,7 +1295,7 @@ export async function measureBranch(
 
   // Build first and alone: every stage after it reads what it produced.
   const build = commandFor('build');
-  const built = build ? await commandStage('build', build, checkout) : notMeasured('build');
+  const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
   stages.push(built);
   if (built.status === 'fail') return undefined;
 
@@ -1312,7 +1314,7 @@ export async function measureBranch(
     try {
       if (test) {
         const run = covered ? { ...test, ...covered } : test;
-        const result = await commandStage('test', run, checkout);
+        const result = await commandStage('test', run, checkoutDir);
         results.set('test', result);
         if (result.status === 'fail') return { results };
         folded = covered?.report();
@@ -1323,7 +1325,7 @@ export async function measureBranch(
     for (const pkg of nestedPackages) {
       for (const command of pkg.commands.filter((c) => c.stage === 'test')) {
         const stage = nestedStage(pkg, command.stage);
-        const result = await commandStage(stage, command, join(checkout, pkg.dir));
+        const result = await commandStage(stage, command, join(checkoutDir, pkg.dir));
         results.set(stage, result);
         if (result.status === 'fail') return { results, folded };
       }
@@ -1365,12 +1367,12 @@ export async function measureBranch(
   // Alongside the suites: every stage that only reads the checkout, each in a
   // child of its own as before (decision 95).
   const lint = commandFor('lint');
-  const linted = lint && commandStage('lint', lint, checkout);
+  const linted = lint && commandStage('lint', lint, checkoutDir);
   const typechecks = new Map<string, Promise<GateStageResult>>();
   for (const pkg of nestedPackages) {
     for (const command of pkg.commands.filter((c) => c.stage !== 'test')) {
       const stage = nestedStage(pkg, command.stage);
-      typechecks.set(stage, commandStage(stage, command, join(checkout, pkg.dir)));
+      typechecks.set(stage, commandStage(stage, command, join(checkoutDir, pkg.dir)));
     }
   }
   const staticDebt = measureStaticDebt(req.adapters, capabilityContext);

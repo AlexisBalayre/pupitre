@@ -5599,7 +5599,10 @@ changes back into those docs is pending.
     (5) The gate's checkout and the conductor's sit under `<common>/worktrees/` beside the
     sessions' admin dirs, whose `commondir` a session can rewrite. Their git after the add now
     runs pinned, after the same check: the gate's `read-tree -u` and `ls-tree`, the conductor's
-    `checkout --detach` and its index. A plain `worktree add` writes the admin dir's `commondir`,
+    `checkout --detach` and its index. That includes the nested-package listing of the gate's
+    checkout, which carries the pins on the capability context as `measureGit`. Unpinned, a
+    rewritten `commondir` there ran a planted promisor remote's `uploadpack` on the lazy fetch
+    of the commit the planted repo lacks (CI review of #173). A plain `worktree add` writes the admin dir's `commondir`,
     then checks out in a child git that reads it back before any check could run. So every add
     pup runs over the repo takes `--no-checkout`, and `checkoutPinned` fills the tree with a
     pinned `read-tree -u` once the pointers are checked: the gate's checkout, the conductor's
@@ -5612,7 +5615,10 @@ changes back into those docs is pending.
     still holds that sha, so the retry that mints the same id adds it again (decision 40). Its
     refusal then says the worktree and branch were removed: a rewritten pointer's refusal is
     raised again with that in place of its `worktree repair` advice, and any other failure
-    carries it appended. The
+    carries it appended. A fix round whose checkout throws is undone the same way, its branch
+    kept, since it holds the head the retry starts from. Both undos check that the admin dir is
+    gone after the prune, which keeps a locked registration without a word, and they claim the
+    removal only then (CI review of #173). The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
@@ -5689,8 +5695,12 @@ changes back into those docs is pending.
     A respawn refused after the kill says the old window is gone. A launch whose `read-tree`
     fails once, or whose `commondir` is rewritten right after the add, leaves no row, worktree,
     registration or branch, says they were removed, and the retry launches; the commondir
-    case's refusal names no `worktree repair`. A refusal raised with no advice of its own still
-    closes on the repair advice, word for word. A
+    case's refusal names no `worktree repair`. A fix round over the same two failures leaves no
+    worktree or registration, keeps its branch at the head, says the worktree was removed and
+    starts on the retry. A prune that keeps the registration gets the cleanup named instead, for
+    a launch and a round alike. A gate whose checkout's `commondir` is rewritten after the cut
+    still finds the nested package and runs nothing the rewrite named. A refusal raised with no
+    advice of its own still closes on the repair advice, word for word. A
     conductor whose target moves right after the add cuts a clean checkout at the old tip, and
     the next start moves it to the new one.
 102. **While the project's conductor runs, a session awaiting review is left out of the
