@@ -70,16 +70,27 @@ describe('nestedPackageDirs', () => {
     expect(nestedPackageDirs(localContext(plain))).toEqual(new Set());
   });
 
-  // The gate's checkout finds its repo through an admin dir under
-  // `<common>/worktrees/`, whose `commondir` a session can rewrite from inside
-  // the sandbox once the cut is checked. Git that followed it would read a
-  // config of the session's: a promisor remote whose `uploadpack` runs on the
-  // lazy fetch of the commit that repo lacks (decision 101).
-  it("lists a gate checkout's pinned repo, whatever its commondir names after the cut", () => {
-    const trusted = makeCheckout(['tools/review/package.json']);
+  // The gate's checkout keeps its HEAD and `commondir` in an admin dir under
+  // `<common>/worktrees/`, which a session can rewrite from inside the sandbox
+  // once the cut is checked. Read through it, a HEAD at another commit changes
+  // the measured set, one git refuses to open empties it, and a `commondir`
+  // naming a repo of the session's reads its config: a promisor remote whose
+  // `uploadpack` runs on the lazy fetch of the commit that repo lacks
+  // (decision 101).
+  it.each([
+    ['its HEAD moved to a commit without the marker', 'HEAD', (before: string) => before],
+    ['its HEAD rewritten to what git refuses to open', 'HEAD', () => 'garbage'],
+    ["its commondir naming a repo of the session's", 'commondir', () => 'PLANTED'],
+  ])('lists the sha a gate checkout was cut at, with %s', (_, pointer, content) => {
+    const trusted = makeCheckout([]);
+    const before = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    writeFiles(trusted, ['tools/review/package.json']);
+    git(trusted, 'add', '-A');
+    git(trusted, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'nested');
+    const cut = git(trusted, 'rev-parse', 'HEAD').toString().trim();
     const checkout = join(tempDir('pup-gate-'), 'checkout');
-    git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, 'HEAD');
-    const measureGit = checkoutPinned(trusted, checkout, 'HEAD');
+    git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, cut);
+    const admin = checkoutPinned(trusted, checkout, cut).GIT_DIR;
     const fired = join(tempDir('pup-marker-'), 'fired');
     const planted = tempDir('pup-planted-');
     git(planted, 'init', '-q');
@@ -92,15 +103,17 @@ describe('nestedPackageDirs', () => {
     ] as const) {
       git(planted, 'config', key, value);
     }
-    writeFileSync(join(measureGit.GIT_DIR, 'commondir'), `${join(planted, '.git')}\n`);
-    // The plant is live: unpinned, the listing follows the rewrite and runs it.
-    expect(nestedPackageDirs(localContext(checkout))).toEqual(new Set());
-    expect(existsSync(fired)).toBe(true);
-    unlinkSync(fired);
-
-    expect(nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureGit })).toEqual(
-      new Set(['tools/review']),
+    writeFileSync(
+      join(admin, pointer),
+      `${content(before).replace('PLANTED', join(planted, '.git'))}\n`,
     );
+    // The rewrite is live: read through the checkout, the marker is gone.
+    expect(nestedPackageDirs(localContext(checkout))).toEqual(new Set());
+    if (existsSync(fired)) unlinkSync(fired);
+
+    expect(
+      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: cut }),
+    ).toEqual(new Set(['tools/review']));
     expect(existsSync(fired)).toBe(false);
   });
 });

@@ -427,12 +427,10 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
  * outranking a `core.worktree` in the shared config that would aim the writes
  * elsewhere.
  */
-function cutGateCheckout(repoPath: string, dir: string, sha: string): WorktreeGitEnv {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  const git = checkoutPinned(repoPath, dir, sha);
-  refuseEscapingLinks(dir, sha, git);
-  return git;
+  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -1265,12 +1263,14 @@ export async function measureBranch(
   // worktree's, which the live session can change while they run (decision 81);
   // which tools are declared is still read from the main checkout the merge
   // lock holds at the target branch, or a session silences a debt stage by
-  // editing its own manifest (decision 29). Git in the checkout runs pinned to
-  // the dirs its cut checked, as the cut's own did (decision 101).
+  // editing its own manifest (decision 29). What git reads of the pinned sha
+  // is read from the main checkout's repo, never through the checkout's admin
+  // dir, which a session can rewrite after the cut (decision 101).
+  cutGateCheckout(req.repoPath, checkoutDir, sha);
   const capabilityContext: CapabilityContext = {
     measurePath: checkoutDir,
     configPath: req.repoPath,
-    measureGit: cutGateCheckout(req.repoPath, checkoutDir, sha),
+    measureSha: sha,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);

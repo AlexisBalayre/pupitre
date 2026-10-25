@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -2534,6 +2534,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   it('measures the gate checkout but reads tool config from the main checkout', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const head = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
     let seen: CapabilityContext | undefined;
     const adapter = debtAdapter({
@@ -2546,18 +2547,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     await merge(adapter);
 
     // Split on purpose: a session that edits its own manifest must not be able
-    // to un-declare the tool that measures it (decision 29). Git in the
-    // checkout is pinned to its own admin dir and the main checkout's
-    // `.git` (decision 101).
-    const measurePath = seen?.measurePath ?? '';
+    // to un-declare the tool that measures it (decision 29). The pinned sha
+    // rides along, for what git reads of it from the main checkout's repo
+    // (decision 101).
     expect(seen).toEqual({
       measurePath: expect.stringMatching(GATE_CHECKOUT),
       configPath: repo,
-      measureGit: {
-        GIT_DIR: join(repo, '.git', 'worktrees', basename(measurePath)),
-        GIT_COMMON_DIR: join(repo, '.git'),
-        GIT_WORK_TREE: measurePath,
-      },
+      measureSha: head,
     });
   });
 
@@ -2648,11 +2644,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ).toEqual(['test (tools/review)', 'typecheck (tools/review)']);
     });
 
-    // The checkout's admin dir sits beside the sessions' own, whose `commondir`
-    // a session can rewrite once the cut is checked. Git that followed it would
-    // read a config of the session's: a promisor remote whose `uploadpack` runs
-    // on the lazy fetch of the commit that repo lacks (decision 101).
-    it("reads the package markers through the checkout's pins once its commondir is rewritten", async () => {
+    // The checkout's admin dir sits beside the sessions' own, and a session
+    // can rewrite its HEAD or `commondir` once the cut is checked. Read through
+    // it, a HEAD at a commit without the marker leaves the package out and
+    // runs none of its stages, and a `commondir` naming a repo of the
+    // session's reads its config: a promisor remote whose `uploadpack` runs on
+    // the lazy fetch of the commit it lacks (decision 101). A HEAD git refuses
+    // to open stops the gate's own pinned listing of the links first.
+    it.each([
+      ['its HEAD moved to a commit without the marker', 'HEAD', 'BEFORE'],
+      ["its commondir naming a repo of the session's", 'commondir', 'PLANTED'],
+    ])('runs the package stages with %s after the cut', async (_, pointer, content) => {
+      const before = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
       commitNestedPackage({ test: 'true', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
@@ -2668,6 +2671,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ] as const) {
         sh(planted, 'git', 'config', key, value);
       }
+      const written = content.replace('BEFORE', before).replace('PLANTED', join(planted, '.git'));
       const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
       const gitDir = tempDir('pup-git-');
       writeFileSync(
@@ -2676,7 +2680,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           '#!/bin/sh',
           `${realGit} "$@" || exit $?`,
           'case " $* " in *" read-tree "*)',
-          `  case "$GIT_DIR" in */worktrees/pup-gate-checkout-*) echo ${planted}/.git > "$GIT_DIR/commondir" ;; esac ;;`,
+          `  case "$GIT_DIR" in */worktrees/pup-gate-checkout-*) echo ${written} > "$GIT_DIR/${pointer}" ;; esac ;;`,
           'esac',
         ].join('\n'),
         { mode: 0o755 },
@@ -2690,7 +2694,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const outcome = await merge(nestedAdapter());
 
       expect(outcome.status).toBe('merged');
-      expect(outcome.report.stages.map((s) => s.stage)).toContain('test (tools/review)');
+      const stageNames = outcome.report.stages.map((s) => s.stage);
+      expect(stageNames).toContain('test (tools/review)');
+      expect(stageNames).toContain('typecheck (tools/review)');
       expect(existsSync(fired)).toBe(false);
     });
 

@@ -5599,18 +5599,30 @@ changes back into those docs is pending.
     (5) The gate's checkout and the conductor's sit under `<common>/worktrees/` beside the
     sessions' admin dirs, whose `commondir` a session can rewrite. Their git after the add now
     runs pinned, after the same check: the gate's `read-tree -u` and `ls-tree`, the conductor's
-    `checkout --detach` and its index. That includes the nested-package listing of the gate's
-    checkout, which carries the pins on the capability context as `measureGit`. Unpinned, a
-    rewritten `commondir` there ran a planted promisor remote's `uploadpack` on the lazy fetch
-    of the commit the planted repo lacks (CI review of #173). A plain `worktree add` writes the admin dir's `commondir`,
-    then checks out in a child git that reads it back before any check could run. So every add
+    `checkout --detach` and its index. The nested-package listing of the gate's checkout goes
+    further. It lists the sha the gate checked, carried on the capability context as
+    `measureSha`, from the main checkout's repo, and never reads through the checkout's admin
+    dir, whose HEAD a session can rewrite too. Read through it, a HEAD at another commit changed
+    the measured package set, and one git refuses to open emptied it, so no nested package's own
+    stages ran. A rewritten `commondir` ran a planted promisor remote's `uploadpack` on the lazy
+    fetch of the commit the planted repo lacks (security and CI review of #173). The gate's own
+    pinned listing of the links still reads through the admin dir, so a HEAD git refuses to open
+    stops the gate there with an error, before any stage. The pins close that `commondir` route
+    only, not the lazy fetch. `runGit` sets neither `GIT_NO_LAZY_FETCH` nor
+    `protocol.<name>.allow=never`, and the pins name the main `.git`, whose config a session can
+    write (decision 41). So a promisor remote planted there still fires on any missing object:
+    that is the transport pinning decision 99 records as owed (t-mvb0lvqr). A plain `worktree
+    add` writes the admin dir's `commondir`, then checks out in a child git that reads it back
+    before any check could run. So every add
     pup runs over the repo takes `--no-checkout`, and `checkoutPinned` fills the tree with a
     pinned `read-tree -u` once the pointers are checked: the gate's checkout, the conductor's
     first cut, a launch's worktree and a fix round's (conductor review of t-mve8vgej).
-    `--no-checkout` removes the add's checkout, not every git child the add starts: one still
-    writes HEAD and reads the new `commondir`. It inherits `core.hooksPath=/dev/null`, and the
-    review found no way for it to run code. The add and its checkout each take one sha resolved
-    before both, so a target that moves between them cannot leave HEAD and the index apart. A
+    `--no-checkout` removes the add's checkout, not every git child the add starts: one, the
+    `update-ref` or `symbolic-ref` that writes HEAD, still reads the fresh `commondir` before
+    `checkoutPinned` checks it. It runs under the `-c` pins, `core.hooksPath=/dev/null` among
+    them, but without lazy fetch off, so the owed transport pinning covers it too. The add and
+    its checkout each take one sha resolved before both, so a target that moves between them
+    cannot leave HEAD and the index apart. A
     launch whose checkout throws removes the directory, prunes, and deletes the branch while it
     still holds that sha, so the retry that mints the same id adds it again (decision 40). Its
     refusal then says the worktree and branch were removed: a rewritten pointer's refusal is
@@ -5698,8 +5710,10 @@ changes back into those docs is pending.
     case's refusal names no `worktree repair`. A fix round over the same two failures leaves no
     worktree or registration, keeps its branch at the head, says the worktree was removed and
     starts on the retry. A prune that keeps the registration gets the cleanup named instead, for
-    a launch and a round alike. A gate whose checkout's `commondir` is rewritten after the cut
-    still finds the nested package and runs nothing the rewrite named. A refusal raised with no
+    a launch and a round alike. A gate whose checkout's HEAD is moved to a commit without the
+    marker after the cut, or whose `commondir` is rewritten then, still finds the nested
+    package, runs its test and typecheck, and runs nothing the rewrite named. The listing alone
+    gets the same answer over a HEAD git refuses to open. A refusal raised with no
     advice of its own still closes on the repair advice, word for word. A
     conductor whose target moves right after the add cuts a clean checkout at the old tip, and
     the next start moves it to the new one.
