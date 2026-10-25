@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
@@ -12,6 +20,23 @@ import {
   prepareGraph,
 } from './codegraph.client.js';
 import { type WorktreeGitEnv, WorktreeRepointedError } from './git-diff.client.js';
+
+// Shortened by the one test that runs pup's own git out of its timeout.
+const gitTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('./git-diff.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./git-diff.client.js')>();
+  return {
+    ...actual,
+    runGit: (...[cwd, args, opts]: Parameters<typeof actual.runGit>) =>
+      actual.runGit(
+        cwd,
+        args,
+        opts?.timeout !== undefined && gitTimeout.ms !== undefined
+          ? { ...opts, timeout: gitTimeout.ms }
+          : opts,
+      ),
+  };
+});
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -282,6 +307,26 @@ describe('indexDirectory', () => {
     indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
 
     expect(fake.calls()).toEqual(['a.ts']);
+  });
+
+  // The flatten reads the admin dir's `sharedindex.*`, which git opens
+  // itself: a fifo there would hold the respawn, the fix round or the
+  // conductor until something fed it.
+  it('gives up on a split index whose shared half is a fifo, rather than hanging', () => {
+    const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+    const repo = makeRepo();
+    sh(repo, 'git', 'update-index', '--split-index');
+    const shared = readdirSync(join(repo, '.git')).find((name) => name.startsWith('sharedindex.'));
+    rmSync(join(repo, '.git', shared ?? ''));
+    sh(repo, 'mkfifo', join(repo, '.git', shared ?? ''));
+
+    gitTimeout.ms = 2_000;
+    try {
+      expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(/ETIMEDOUT/);
+    } finally {
+      gitTimeout.ms = undefined;
+    }
+    expect(fake.calls()).toEqual([]);
   });
 
   it('refuses an index that is not a regular file, without blocking on a fifo', () => {

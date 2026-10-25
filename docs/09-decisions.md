@@ -5599,7 +5599,9 @@ changes back into those docs is pending.
     as the gate's checkout is, without following a symlink or blocking on a fifo. It flattens
     the copy with a pinned `update-index --no-split-index`, so neither reader takes a
     `sharedindex.*` from the admin dir, checks the copy, hands codegraph `GIT_INDEX_FILE=<copy>`
-    and removes it once codegraph returns. (4) `launchSession` takes the project's `repoPath` from its three callers
+    and removes it once codegraph returns. git opens that `sharedindex.*` itself, so the flatten
+    and the check run under codegraph's timeout, and a fifo there costs the graph rather than
+    holding the caller. (4) `launchSession` takes the project's `repoPath` from its three callers
     (session-lifecycle, session-handoff, fix-round), and never derives it from the row's
     `worktree_path`. A row naming `/tmp/x/.worktrees/<id>` beside a session-built `/tmp/x/.git`
     is checked against the project's admin dir, which its gitfile does not name, and is refused.
@@ -5702,7 +5704,8 @@ changes back into those docs is pending.
     over an index holding a gitlink or after a refused pin check. It is handed a copy of the
     index, gone once it returns, and its git still lists only the checked entries after the
     admin dir's index gains a gitlink, or loses the shared half of a split index. Each fails
-    with the snapshot taken out. An index swapped for a fifo is refused without blocking. The served config carries the
+    with the snapshot taken out. An index swapped for a fifo is refused without blocking, and a
+    split index whose shared half is a fifo stops at the timeout, which the test fails without. The served config carries the
     git config and no pins. A launch over a row naming another repo's valid worktree opens
     nothing, while the same worktree checks clean against its own repo. A conductor checkout
     whose `commondir` names an armed repo fires it under plain `ls-files`, and a start then

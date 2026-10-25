@@ -231,8 +231,9 @@ function assertIndexIsOwnedBy(directory: string): void {
  * file there says nothing about what codegraph's git reads a moment later (CI
  * review of #173). The copy is pup's. Flattened with `--no-split-index`, it
  * carries every entry itself, so neither reader takes a `sharedindex.*` from
- * the admin dir. Opened like a pointer, without following a symlink or
- * blocking on a fifo.
+ * the admin dir. The `index` is opened like a pointer, without following a
+ * symlink or blocking on a fifo. The `sharedindex.*` the flatten reads is
+ * git's to open, so a fifo there is cut off by the timeout instead.
  */
 function snapshotIndex(git: WorktreeGitEnv, scratch: string): IndexGitEnv {
   const source = join(git.GIT_DIR, 'index');
@@ -247,7 +248,11 @@ function snapshotIndex(git: WorktreeGitEnv, scratch: string): IndexGitEnv {
     closeSync(fd);
   }
   const pinned = { ...git, GIT_INDEX_FILE: snapshot };
-  runGit(git.GIT_WORK_TREE, ['update-index', '--no-split-index'], { env: { ...pinned } });
+  runGit(git.GIT_WORK_TREE, ['update-index', '--no-split-index'], {
+    env: { ...pinned },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: INDEX_TIMEOUT_MS,
+  });
   return pinned;
 }
 
@@ -263,7 +268,11 @@ function snapshotIndex(git: WorktreeGitEnv, scratch: string): IndexGitEnv {
  * is then handed.
  */
 function assertNoGitlink(git: IndexGitEnv): void {
-  const entries = runGit(git.GIT_WORK_TREE, ['ls-files', '--stage', '-z'], { env: { ...git } });
+  const entries = runGit(git.GIT_WORK_TREE, ['ls-files', '--stage', '-z'], {
+    env: { ...git },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: INDEX_TIMEOUT_MS,
+  });
   const gitlink = entries.split('\0').find((entry) => entry.startsWith('160000 '));
   if (gitlink !== undefined) {
     throw new Error(
@@ -284,13 +293,13 @@ function assertNoGitlink(git: IndexGitEnv): void {
  */
 export function indexDirectory(binary: string, git: WorktreeGitEnv): void {
   const directory = git.GIT_WORK_TREE;
-  // Before the existsSync below, which is the call an escaping symlink turns
-  // into someone else's `index`.
-  assertIndexIsOwnedBy(directory);
   const scratch = mkdtempSync(join(tmpdir(), 'pup-index-'));
   try {
     const snapshot = snapshotIndex(git, scratch);
     assertNoGitlink(snapshot);
+    // Right before the existsSync below, which is the call an escaping symlink
+    // turns into someone else's `index`.
+    assertIndexIsOwnedBy(directory);
     const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
     execFileSync(
       binary,
