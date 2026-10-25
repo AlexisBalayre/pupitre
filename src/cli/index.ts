@@ -24,6 +24,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
+import { waitForCiReview } from '../core/ci-wait.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import { codegraphLabel } from '../core/codegraph.client.js';
 import {
@@ -2184,6 +2185,37 @@ export function buildProgram(): Command {
         `When it is done: \`pup review ${sanitizeReason(session)}\`, then ` +
           `\`pup merge ${sanitizeReason(session)} --pr\`.`,
       );
+    });
+  program
+    .command('ci')
+    .description('The CI review of a gated PR')
+    .command('wait <target>')
+    .description(
+      "Block until the CI review of a session's PR (or the PR itself) finished on its current head, then print one digest line",
+    )
+    .option('--timeout <minutes>', 'Give up after this many minutes, exiting non-zero', '9')
+    .action(async (target: string, opts: { timeout: string }) => {
+      const { repoPath, db } = project();
+      if (callingSession(db)) {
+        return refuse(
+          '`pup ci wait` is refused to sessions; the operator or the conductor runs it.',
+        );
+      }
+      const minutes = Number(opts.timeout);
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        return refuse('--timeout takes a positive number of minutes.');
+      }
+      try {
+        const outcome = await waitForCiReview(db, {
+          repoPath,
+          target,
+          timeoutMs: minutes * 60_000,
+        });
+        console.log(outcome.line);
+        if (!outcome.finished) process.exitCode = 1;
+      } catch (error) {
+        return refuseScrubbed(error);
+      }
     });
   program
     .command('map [module]')

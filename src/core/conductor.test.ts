@@ -38,6 +38,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
+  CI_REVIEW_LOOP,
   ConductorTellRefusedError,
   conductorCheckoutDir,
   DEFAULT_MAX_SESSIONS,
@@ -134,7 +135,7 @@ describe('startConductor', () => {
       paneId: '%3',
       socket: `pup-conductor-${projectId(REPO)}`,
     });
-    expect(prompt).toBe(readFileSync(join(outDir, 'context.md'), 'utf8'));
+    expect(prompt).toBe(`${readFileSync(join(outDir, 'context.md'), 'utf8')}\n\n${CI_REVIEW_LOOP}`);
     expect(prompt).toContain('pup launch <task> --model opus');
   });
 

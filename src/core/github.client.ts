@@ -358,32 +358,7 @@ export function readPullRequestReview(
   repo: string,
   timeoutMs?: number,
 ): PullRequestReview {
-  const [host, owner, name] = repo.split('/');
-  const number = /\/pull\/(\d+)$/.exec(url)?.[1];
-  if (!host || !owner || !name || number === undefined) {
-    throw new Error(`Cannot read a review of ${url} as a pull request of ${repo}.`);
-  }
-  const parsed = ghJson(
-    repoPath,
-    [
-      'api',
-      'graphql',
-      '--hostname',
-      host,
-      '-f',
-      `query=${PULL_REQUEST_REVIEW_QUERY}`,
-      '-f',
-      `owner=${owner}`,
-      '-f',
-      `name=${name}`,
-      '-F',
-      `number=${number}`,
-    ],
-    timeoutMs,
-  );
-  const pr = objectFields(
-    objectFields(objectFields(objectFields(parsed).data).repository).pullRequest,
-  );
+  const pr = queryPullRequest(repoPath, url, repo, PULL_REQUEST_REVIEW_QUERY, timeoutMs);
   const run = newestReviewRun(pr.reviews);
   const reviewedHead = objectFields(run[0]?.commit).oid;
   const head = typeof pr.headRefOid === 'string' ? pr.headRefOid : undefined;
@@ -439,6 +414,152 @@ export function readPullRequestReview(
       ];
     }),
   };
+}
+
+/**
+ * The pull request at `url` as `query` reads it, asked with its owner, name
+ * and number and pinned to `repo`'s host. Refused when the url is not one of
+ * `repo`'s pull requests by shape.
+ */
+function queryPullRequest(
+  repoPath: string,
+  url: string,
+  repo: string,
+  query: string,
+  timeoutMs?: number,
+): Record<string, unknown> {
+  const [host, owner, name] = repo.split('/');
+  const number = /\/pull\/(\d+)$/.exec(url)?.[1];
+  if (!host || !owner || !name || number === undefined) {
+    throw new Error(`Cannot read a review of ${url} as a pull request of ${repo}.`);
+  }
+  const parsed = ghJson(repoPath, graphqlArgs(host, query, { owner, name }, { number }), timeoutMs);
+  return objectFields(objectFields(objectFields(objectFields(parsed).data).repository).pullRequest);
+}
+
+/** `gh api graphql` on `host`: `fields` go raw (`-f`), so no value is read as a file; `typed` as `-F`. */
+function graphqlArgs(
+  host: string,
+  query: string,
+  fields: Record<string, string>,
+  typed: Record<string, string> = {},
+): string[] {
+  return [
+    'api',
+    'graphql',
+    '--hostname',
+    host,
+    '-f',
+    `query=${query}`,
+    ...Object.entries(fields).flatMap(([key, value]) => ['-f', `${key}=${value}`]),
+    ...Object.entries(typed).flatMap(([key, value]) => ['-F', `${key}=${value}`]),
+  ];
+}
+
+const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: ${REVIEW_PAGE}) {
+        nodes {
+          id
+          isResolved
+          finding: comments(first: 1) { nodes { author { __typename login } } }
+          replies: comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
+        }
+      }
+      comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
+    }
+  }
+}`;
+
+/** A review thread on the PR as a fix round's answers read it. */
+export interface AnsweredThread {
+  id: string;
+  isResolved: boolean;
+  /** Its first comment, the finding, is the review bot's. */
+  isBots: boolean;
+  /** The bodies of its comments that gh's own login wrote, newest last. */
+  ownReplies: string[];
+}
+
+/**
+ * The PR's newest review threads and the comments on it that gh's login wrote
+ * (`viewerDidAuthor`), for the replies a fix round posts (decision 90): what
+ * is already answered, so a second run for the same head posts nothing again.
+ */
+export function readThreadAnswers(
+  repoPath: string,
+  url: string,
+  repo: string,
+): { threads: AnsweredThread[]; ownComments: string[] } {
+  const pr = queryPullRequest(repoPath, url, repo, FIX_ROUND_THREADS_QUERY);
+  const ownBodies = (connection: unknown): string[] =>
+    nodesOf(connection).flatMap((comment) =>
+      comment.viewerDidAuthor === true && typeof comment.body === 'string' ? [comment.body] : [],
+    );
+  return {
+    threads: nodesOf(pr.reviewThreads).flatMap((thread): AnsweredThread[] =>
+      typeof thread.id === 'string'
+        ? [
+            {
+              id: thread.id,
+              isResolved: thread.isResolved === true,
+              isBots: isReviewBot(nodesOf(thread.finding)[0]?.author),
+              ownReplies: ownBodies(thread.replies),
+            },
+          ]
+        : [],
+    ),
+    ownComments: ownBodies(pr.comments),
+  };
+}
+
+const THREAD_REPLY_MUTATION = `mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) {
+    comment { id }
+  }
+}`;
+
+const RESOLVE_THREAD_MUTATION = `mutation($thread: ID!) {
+  resolveReviewThread(input: { threadId: $thread }) { thread { isResolved } }
+}`;
+
+/** Reply `body` on review thread `threadId` of `repo` (its `host/owner/name`), as gh's login. */
+export function replyToReviewThread(
+  repoPath: string,
+  repo: string,
+  threadId: string,
+  body: string,
+): void {
+  ghJson(repoPath, graphqlArgs(hostOf(repo), THREAD_REPLY_MUTATION, { thread: threadId, body }));
+}
+
+/** Resolve review thread `threadId` of `repo`, as gh's login. */
+export function resolveReviewThread(repoPath: string, repo: string, threadId: string): void {
+  ghJson(repoPath, graphqlArgs(hostOf(repo), RESOLVE_THREAD_MUTATION, { thread: threadId }));
+}
+
+/** Comment `body` on the PR at `url`, pinned to `repo`; the body over stdin, as a PR's is. */
+export function commentOnPullRequest(
+  repoPath: string,
+  url: string,
+  repo: string,
+  body: string,
+): void {
+  execFileSync('gh', ['pr', 'comment', url, '--repo', repo, '--body-file', '-'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    input: body,
+    timeout: GH_COMMAND_TIMEOUT_MS,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: scrubbedGitEnv(),
+  });
+}
+
+function hostOf(repo: string): string {
+  const [host] = repo.split('/');
+  if (!host) throw new Error(`Cannot read a GitHub host from ${repo}.`);
+  return host;
 }
 
 /**

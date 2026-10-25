@@ -45,7 +45,7 @@ import {
 import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { ciReviewLookup, startFixRound } from './fix-round.service.js';
+import { answerFixRoundThreads, ciReviewLookup, startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -199,13 +199,21 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         '#!/bin/sh',
         `printf '%s\\n' "$*" >> ${ghDir}/calls`,
         '[ "$1" = "--version" ] && exit 0',
-        `if [ "$1" = "api" ]; then cat ${ghDir}/review.json; exit 0; fi`,
+        'if [ "$1" = "api" ]; then',
+        '  case "$*" in',
+        // One line per mutation, so a test counts the replies and resolves.
+        `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
+        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        '  esac',
+        `  cat ${ghDir}/review.json; exit 0`,
+        'fi',
         `if [ "$2" = "list" ]; then echo '${JSON.stringify([{ url: PR_URL, baseRefName: 'main', isCrossRepository: false }])}'; exit 0; fi`,
         'if [ "$2" = "view" ]; then',
         `  if [ -f ${ghDir}/view.json ]; then cat ${ghDir}/view.json; exit 0; fi`,
         `  head=$(git --git-dir=${origin} rev-parse refs/heads/${BRANCH})`,
         `  printf '{"headRefOid":"%s","state":"OPEN","baseRefName":"main"}\\n' "$head"; exit 0`,
         'fi',
+        `[ "$2" = "comment" ] && { cat >> ${ghDir}/comments; printf '\\n--\\n' >> ${ghDir}/comments; exit 0; }`,
         'cat >/dev/null',
         'echo "$@"',
       ].join('\n'),
@@ -220,6 +228,10 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     vi.unstubAllEnvs();
   });
 
+  const ghFile = (name: string): string[] =>
+    existsSync(join(ghDir, name))
+      ? readFileSync(join(ghDir, name), 'utf8').split('\n').filter(Boolean)
+      : [];
   const ghCalls = (): string[] =>
     existsSync(join(ghDir, 'calls'))
       ? readFileSync(join(ghDir, 'calls'), 'utf8').split('\n').filter(Boolean)
@@ -1194,6 +1206,188 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     expect(landed).toMatchObject({ prUrl: PR_URL, mergeCommit, fastForwarded: true });
     expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mergeCommit);
     expect(readFileSync(join(repo, 'src/fix.ts'), 'utf8')).toContain('fix');
+  });
+
+  describe("the round's answers on GitHub", () => {
+    const ROUND_THREADS: ThreadSeed[] = [
+      { id: 'PRRT_fixed', body: 'The loop never ends.' },
+      { id: 'PRRT_declined', body: 'Missing await.' },
+      { id: 'PRRT_silent', body: 'Unchecked index.' },
+      { id: 'PRRT_human', body: 'Not the bot.' },
+    ];
+
+    /**
+     * What the threads read answers: every round thread unresolved and the
+     * bot's, but `PRRT_human`, with the replies and PR comments gh's login wrote.
+     */
+    function answersOnGitHub({
+      replies = {} as Record<string, string[]>,
+      resolved = [] as string[],
+      comments = [] as string[],
+    } = {}): void {
+      const own = (bodies: string[]) => ({
+        nodes: [
+          { body: 'someone else', viewerDidAuthor: false },
+          ...bodies.map((body) => ({ body, viewerDidAuthor: true })),
+        ],
+      });
+      const answer = {
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: ROUND_THREADS.map(({ id }) => ({
+                  id,
+                  isResolved: resolved.includes(id),
+                  finding: {
+                    nodes: [
+                      { author: id === 'PRRT_human' ? { __typename: 'User', login: 'a' } : BOT },
+                    ],
+                  },
+                  replies: own(replies[id] ?? []),
+                })),
+              },
+              comments: own(comments),
+            },
+          },
+        },
+      };
+      writeFileSync(join(ghDir, 'answers.json'), JSON.stringify(answer));
+    }
+
+    const replies = () => ghFile('mutations').filter((m) => m.includes('ReviewThreadReply'));
+    const resolves = () => ghFile('mutations').filter((m) => m.includes('resolveReviewThread'));
+    const comments = () =>
+      existsSync(join(ghDir, 'comments'))
+        ? readFileSync(join(ghDir, 'comments'), 'utf8').split('\n--\n').filter(Boolean)
+        : [];
+
+    /** A round on the four threads, its worker done with `summary`, gated again. */
+    async function gateTheRound(summary: string): Promise<string> {
+      await gateWithPr();
+      reviewOnGitHub({ threads: ROUND_THREADS.filter(({ id }) => id !== 'PRRT_human') });
+      await fix();
+      // The round named `PRRT_human` too, as a store edit could have.
+      db.prepare(
+        "UPDATE events SET payload = json_set(payload, '$.threads[3]', 'PRRT_human') WHERE type = 'fix_round'",
+      ).run();
+      const fixed = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      markSessionDone(db, SESSION_ID, summary);
+      answersOnGitHub();
+      const outcome = await runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        openPr: true,
+      });
+      expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL });
+      return fixed;
+    }
+
+    const SUMMARY =
+      'PRRT_fixed fixed: bounded the loop by `n`; PRRT_declined declined: @someone the ' +
+      'call is sync';
+
+    it('replies on each thread the round named, resolving the fixed ones only', async () => {
+      const fixed = await gateTheRound(SUMMARY);
+      const marker = `<!-- pup fix-round ${fixed} -->`;
+
+      expect(replies()).toHaveLength(3);
+      const [first, second, third] = replies();
+      // The worker's words go in a code span: no markdown, no link, no mention.
+      expect(first).toContain(
+        `-f thread=PRRT_fixed -f body=Addressed in ${fixed}: \`\` bounded the loop by \`n\` \`\`  ${marker}`,
+      );
+      expect(second).toContain(
+        `-f thread=PRRT_declined -f body=Declined in the fix round gated at ${fixed}: ` +
+          `\` @someone the call is sync \`. Left open for the operator.  ${marker}`,
+      );
+      expect(third).toContain(
+        `-f thread=PRRT_silent -f body=The fix round gated at ${fixed} gave no answer for this ` +
+          'thread; left open for the operator.',
+      );
+      // A thread whose finding is not the bot's is never answered.
+      expect(ghFile('mutations').join('\n')).not.toContain('PRRT_human');
+      expect(resolves()).toHaveLength(1);
+      expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
+      // Pinned to origin's host, as every gh call is.
+      expect(replies().every((m) => m.startsWith('api graphql --hostname github.com '))).toBe(true);
+      expect(comments()).toEqual([
+        `CI fix round gated at ${fixed}: 1 thread(s) addressed and resolved, 1 declined and 1 ` +
+          `unanswered, left open for the operator.\n\n${marker}`,
+      ]);
+      expect(ghCalls()).toContain(
+        `pr comment ${PR_URL} --repo github.com/owner/repo --body-file -`,
+      );
+    });
+
+    it('posts nothing again when it runs a second time for the same head', async () => {
+      const fixed = await gateTheRound(SUMMARY);
+      const marker = `<!-- pup fix-round ${fixed} -->`;
+      // GitHub as the first run left it, but for the reply to PRRT_silent,
+      // which that run never got to.
+      answersOnGitHub({
+        replies: { PRRT_fixed: [`Addressed in ${fixed}\n\n${marker}`], PRRT_declined: [marker] },
+        resolved: ['PRRT_fixed'],
+        comments: [marker],
+      });
+
+      const answers = answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo');
+
+      expect(answers).toEqual({
+        prUrl: PR_URL,
+        sha: fixed,
+        addressed: 1,
+        declined: 1,
+        unanswered: 1,
+      });
+      expect(replies()).toHaveLength(4);
+      expect(replies()[3]).toContain('-f thread=PRRT_silent');
+      expect(resolves()).toHaveLength(1);
+      expect(comments()).toHaveLength(1);
+
+      answersOnGitHub({
+        replies: {
+          PRRT_fixed: [marker],
+          PRRT_declined: [marker],
+          PRRT_silent: [marker],
+        },
+        resolved: ['PRRT_fixed'],
+        comments: [marker],
+      });
+      answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo');
+
+      expect(replies()).toHaveLength(4);
+      expect(resolves()).toHaveLength(1);
+      expect(comments()).toHaveLength(1);
+    });
+
+    it('answers nothing for a merge that ended no round, and a failing gh costs only the replies', async () => {
+      await gateWithPr();
+      expect(answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo')).toBeUndefined();
+
+      reviewOnGitHub({ threads: ROUND_THREADS.slice(0, 1) });
+      await fix();
+      commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      markSessionDone(db, SESSION_ID, 'PRRT_fixed fixed: done');
+      writeFileSync(join(ghDir, 'answers-fail'), '');
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const outcome = await runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        openPr: true,
+      });
+
+      expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL });
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(warn.mock.calls.flat().join(' ')).toContain(
+        "Could not answer the fix round's threads on GitHub",
+      );
+      expect(ghFile('mutations')).toEqual([]);
+      warn.mockRestore();
+    });
   });
 });
 
