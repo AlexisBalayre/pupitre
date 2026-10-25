@@ -1,5 +1,19 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
 import { GIT_SAFE_CONFIG, runGit, type WorktreeGitEnv } from './git-diff.client.js';
@@ -57,16 +71,19 @@ function codegraphGitConfig(): Record<string, string> {
   return env;
 }
 
+/** The pins, with the index snapshot pup checked in place of the admin dir's own. */
+type IndexGitEnv = WorktreeGitEnv & { GIT_INDEX_FILE: string };
+
 /**
  * With `git`, the indexer's git is pinned to the admin and common dirs pup
- * trusts (decision 101). codegraph runs `ls-files` and `status` over the tree
- * outside any sandbox, and again in every nested repo it finds, with the cwd
- * set to it. Unpinned, a repointed gitfile, or an untracked `<dir>/.git` of the
- * session's naming a repo it built, has that git read the session's config and
- * run its filters. Pinned, every one of those runs reads the trusted repo,
- * whatever the cwd.
+ * trusts (decision 101), and to the index snapshot pup checked. codegraph runs
+ * `ls-files` and `status` over the tree outside any sandbox, and again in
+ * every nested repo it finds, with the cwd set to it. Unpinned, a repointed
+ * gitfile, or an untracked `<dir>/.git` of the session's naming a repo it
+ * built, has that git read the session's config and run its filters. Pinned,
+ * every one of those runs reads the trusted repo, whatever the cwd.
  */
-function indexEnv(git?: WorktreeGitEnv): NodeJS.ProcessEnv {
+function indexEnv(git?: IndexGitEnv): NodeJS.ProcessEnv {
   const allowed: NodeJS.ProcessEnv = {};
   for (const name of INDEX_ENV_ALLOWLIST) {
     if (process.env[name] !== undefined) allowed[name] = process.env[name];
@@ -208,6 +225,33 @@ function assertIndexIsOwnedBy(directory: string): void {
 }
 
 /**
+ * Copy the admin dir's `index` into `scratch` and flatten the copy, so the
+ * gitlink check and codegraph read the same bytes. The admin dir is the
+ * session's to write (its own `git add` writes that index), so a check of the
+ * file there says nothing about what codegraph's git reads a moment later (CI
+ * review of #173). The copy is pup's. Flattened with `--no-split-index`, it
+ * carries every entry itself, so neither reader takes a `sharedindex.*` from
+ * the admin dir. Opened like a pointer, without following a symlink or
+ * blocking on a fifo.
+ */
+function snapshotIndex(git: WorktreeGitEnv, scratch: string): IndexGitEnv {
+  const source = join(git.GIT_DIR, 'index');
+  const snapshot = join(scratch, 'index');
+  const fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(fd).isFile()) {
+      throw new Error(`${sanitizeReason(source)} is not a regular file: refusing to index`);
+    }
+    writeFileSync(snapshot, readFileSync(fd));
+  } finally {
+    closeSync(fd);
+  }
+  const pinned = { ...git, GIT_INDEX_FILE: snapshot };
+  runGit(git.GIT_WORK_TREE, ['update-index', '--no-split-index'], { env: { ...pinned } });
+  return pinned;
+}
+
+/**
  * Refuse to index a tree whose index holds a gitlink. Over one, `status` runs
  * a child git in the submodule's directory, which clears the pins and finds
  * whatever `.git` the session put there, and a per-submodule `ignore` in
@@ -215,9 +259,10 @@ function assertIndexIsOwnedBy(directory: string): void {
  * `diff.ignoreSubmodules` from any config. Only a command-line
  * `--ignore-submodules` beats it, and codegraph's argv is not pup's (decision
  * 101). Without a gitlink, `.gitmodules` names nothing git would enter. Read
- * with pup's own pinned git, which runs no child.
+ * with pup's own pinned git, which runs no child, from the snapshot codegraph
+ * is then handed.
  */
-function assertNoGitlink(git: WorktreeGitEnv): void {
+function assertNoGitlink(git: IndexGitEnv): void {
   const entries = runGit(git.GIT_WORK_TREE, ['ls-files', '--stage', '-z'], { env: { ...git } });
   const gitlink = entries.split('\0').find((entry) => entry.startsWith('160000 '));
   if (gitlink !== undefined) {
@@ -231,7 +276,8 @@ function assertNoGitlink(git: WorktreeGitEnv): void {
 /**
  * Build or refresh one tree's graph, and throw if it cannot be built — the
  * caller decides what a missing graph costs. The tree is `git`'s work tree, and
- * codegraph's git is pinned to `git`'s dirs. `init` creates `.codegraph/` and
+ * codegraph's git is pinned to `git`'s dirs and to a snapshot of its index,
+ * removed once codegraph returns. `init` creates `.codegraph/` and
  * indexes as it goes; `index` refuses to run before it ("CodeGraph not
  * initialized"). So a fresh worktree takes the init path, a reused one the index
  * path, and neither indexes twice.
@@ -241,18 +287,24 @@ export function indexDirectory(binary: string, git: WorktreeGitEnv): void {
   // Before the existsSync below, which is the call an escaping symlink turns
   // into someone else's `index`.
   assertIndexIsOwnedBy(directory);
-  assertNoGitlink(git);
-  const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
-  execFileSync(
-    binary,
-    initialized ? ['index', directory, '--quiet'] : ['init', directory, '--yes'],
-    {
-      encoding: 'utf8',
-      env: indexEnv(git),
-      timeout: INDEX_TIMEOUT_MS,
-      stdio: ['ignore', 'ignore', 'pipe'],
-    },
-  );
+  const scratch = mkdtempSync(join(tmpdir(), 'pup-index-'));
+  try {
+    const snapshot = snapshotIndex(git, scratch);
+    assertNoGitlink(snapshot);
+    const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
+    execFileSync(
+      binary,
+      initialized ? ['index', directory, '--quiet'] : ['init', directory, '--yes'],
+      {
+        encoding: 'utf8',
+        env: indexEnv(snapshot),
+        timeout: INDEX_TIMEOUT_MS,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      },
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**

@@ -200,12 +200,14 @@ describe('indexDirectory', () => {
   // codegraph runs `ls-files` and `status` outside any sandbox, in the tree
   // and with the cwd in every nested repo it finds. Pinned, each of those reads
   // the dirs pup trusts, whatever `.git` the cwd holds; the config disarms an
-  // fsmonitor and keeps git out of submodules (decision 101).
+  // fsmonitor and keeps git out of submodules (decision 101). Its index is a
+  // copy pup owns, gone once the binary returns.
   it("pins the binary's git to the dirs it is handed, under pup's git config", () => {
     const fake = fakeCodegraph(
       [
         '#!/bin/sh',
         'printf "%s|%s|%s\\n" "$GIT_DIR" "$GIT_COMMON_DIR" "$GIT_WORK_TREE" >> __LOG__',
+        'printf "%s\\n" "$GIT_INDEX_FILE" >> __LOG__',
         'env | grep "^GIT_CONFIG_" >> __LOG__',
         'exit 0',
       ].join('\n'),
@@ -214,8 +216,10 @@ describe('indexDirectory', () => {
 
     indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
 
-    const [pinned, ...config] = fake.calls();
+    const [pinned, index = '', ...config] = fake.calls();
     expect(pinned).toBe(`${join(repo, '.git')}|${join(repo, '.git')}|${repo}`);
+    expect(index).toMatch(/\/pup-index-[^/]+\/index$/);
+    expect(existsSync(index)).toBe(false);
     expect(
       gitConfigOf(Object.fromEntries(config.map((line) => line.split(/=(.*)/s).slice(0, 2)))),
     ).toMatchObject({
@@ -238,6 +242,56 @@ describe('indexDirectory', () => {
 
     expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(
       /lib\/sub is a gitlink in the index/,
+    );
+    expect(fake.calls()).toEqual([]);
+  });
+
+  // The admin dir's index is the session's to write, so a gitlink it adds
+  // after the check would reach codegraph's git, whose child in the submodule
+  // clears the pins. codegraph reads the snapshot pup checked instead (CI
+  // review of #173).
+  it('hands the binary the index it checked, whatever the admin dir holds by then', () => {
+    const fake = fakeCodegraph(
+      [
+        '#!/bin/sh',
+        'head=$(git rev-parse HEAD)',
+        'GIT_INDEX_FILE="$GIT_DIR/index" git update-index --add --cacheinfo "160000,$head,lib/sub"',
+        'git ls-files --stage >> __LOG__',
+        'exit 0',
+      ].join('\n'),
+    );
+    const repo = makeRepo();
+
+    indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
+
+    expect(sh(repo, 'git', 'ls-files', '--stage')).toContain('160000');
+    expect(fake.calls()).toEqual([expect.stringMatching(/^100644 \w+ 0\ta\.ts$/)]);
+  });
+
+  // A split index reads its entries from `$GIT_DIR/sharedindex.*`, which the
+  // session can write too: the snapshot carries every entry itself.
+  it('flattens a split index, so the binary reads nothing more from the admin dir', () => {
+    const fake = fakeCodegraph(
+      ['#!/bin/sh', 'rm -f "$GIT_DIR"/sharedindex.*', 'git ls-files >> __LOG__', 'exit 0'].join(
+        '\n',
+      ),
+    );
+    const repo = makeRepo();
+    sh(repo, 'git', 'update-index', '--split-index');
+
+    indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
+
+    expect(fake.calls()).toEqual(['a.ts']);
+  });
+
+  it('refuses an index that is not a regular file, without blocking on a fifo', () => {
+    const fake = fakeCodegraph(LOGGING_CODEGRAPH);
+    const repo = makeRepo();
+    rmSync(join(repo, '.git', 'index'));
+    sh(repo, 'mkfifo', join(repo, '.git', 'index'));
+
+    expect(() => indexDirectory(join(fake.dir, 'codegraph'), pins(repo))).toThrow(
+      /index is not a regular file: refusing to index/,
     );
     expect(fake.calls()).toEqual([]);
   });

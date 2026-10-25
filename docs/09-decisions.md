@@ -5592,7 +5592,14 @@ changes back into those docs is pending.
     `.gitmodules` `ignore = none` still outranks that, and a submodule's child git clears the
     pins, so a tree whose index holds a gitlink is not indexed: the launch, respawn or fix round
     opens without a graph and says so. Without a gitlink, `.gitmodules` names nothing git would
-    enter. (4) `launchSession` takes the project's `repoPath` from its three callers
+    enter. The check and codegraph read one snapshot of the index. The admin dir's `index` is the
+    session's to write (its own `git add` writes it), and checked in place, a gitlink added
+    after the check, by a sibling session or a process that outlived the window, still reached
+    codegraph's git (CI review of #173). So pup copies it into a `mkdtemp` directory of its own,
+    as the gate's checkout is, without following a symlink or blocking on a fifo. It flattens
+    the copy with a pinned `update-index --no-split-index`, so neither reader takes a
+    `sharedindex.*` from the admin dir, checks the copy, hands codegraph `GIT_INDEX_FILE=<copy>`
+    and removes it once codegraph returns. (4) `launchSession` takes the project's `repoPath` from its three callers
     (session-lifecycle, session-handoff, fix-round), and never derives it from the row's
     `worktree_path`. A row naming `/tmp/x/.worktrees/<id>` beside a session-built `/tmp/x/.git`
     is checked against the project's admin dir, which its gitfile does not name, and is refused.
@@ -5692,7 +5699,10 @@ changes back into those docs is pending.
     calls, in the tree and in the nested repo, and fires it on a plain environment. That test
     fails with the pins taken out of `indexEnv`. A respawn of a row naming an unminted worktree is
     refused before the kill. codegraph is handed the three pins and the config, and is never run
-    over an index holding a gitlink or after a refused pin check. The served config carries the
+    over an index holding a gitlink or after a refused pin check. It is handed a copy of the
+    index, gone once it returns, and its git still lists only the checked entries after the
+    admin dir's index gains a gitlink, or loses the shared half of a split index. Each fails
+    with the snapshot taken out. An index swapped for a fifo is refused without blocking. The served config carries the
     git config and no pins. A launch over a row naming another repo's valid worktree opens
     nothing, while the same worktree checks clean against its own repo. A conductor checkout
     whose `commondir` names an armed repo fires it under plain `ls-files`, and a start then
