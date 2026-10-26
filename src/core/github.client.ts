@@ -477,7 +477,7 @@ const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number:
 }`;
 
 /** A review thread on the PR as a fix round's answers read it. */
-export interface AnsweredThread {
+interface AnsweredThread {
   id: string;
   isResolved: boolean;
   /** Its first comment, the finding, is the review bot's. */

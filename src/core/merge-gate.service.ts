@@ -1073,8 +1073,6 @@ async function gateAndMerge(
       throw withLedgerKept(error, ledgerKept);
     }
   }
-  // Read before the merge event, which ends the round.
-  const isFixRound = currentFixRound(db, session.id) !== undefined;
   transitionSession(db, session.id, 'merged', { report });
   // Torn down and recorded before the ratchet and the decision draft: both can
   // throw, and the draft runs `claude -p` for up to two minutes, while the
@@ -1101,7 +1099,8 @@ async function gateAndMerge(
     // since the target already holds the pinned sha.
     recordMerge(db, req.repoPath, session, { sha, target, files: changedPaths, prUrl }, isDeleted);
   }
-  if (isFixRound && pullRequest) {
+  // A merge that ended no fix round answers nothing (decision 90).
+  if (pullRequest) {
     replyOnFixRoundThreads(db, req.repoPath, session.id, pullRequest, {
       tip: sessionTip,
       targetSha,

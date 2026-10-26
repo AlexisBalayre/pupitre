@@ -1383,6 +1383,14 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       expect(replies()).toHaveLength(4);
       expect(resolves()).toHaveLength(1);
       expect(comments()).toHaveLength(1);
+
+      // A tip that is no sha, or one git does not hold, proves no fix.
+      for (const tip of ['not a sha', 'c'.repeat(40)]) {
+        expect(
+          answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(tip)),
+        ).toMatchObject({ addressed: 0, unverified: 1 });
+      }
+      expect(resolves()).toHaveLength(1);
     });
 
     // The worker's word alone resolves nothing under the operator's login: the
@@ -1451,6 +1459,9 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       }
 
       expect(Date.now() - started).toBeLessThan(4000);
+      expect(() =>
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(fixed), 0),
+      ).toThrow("GitHub took longer than the 0 s the round's answers may hold the merge lock");
       expect((error as Error).message).toBe(
         "GitHub took longer than the 1 s the round's answers may hold the merge lock",
       );
@@ -1491,6 +1502,20 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       );
       expect(ghFile('mutations')).toEqual([]);
       warn.mockRestore();
+
+      // A merge whose pin is no sha ends no round it could answer for.
+      db.prepare(
+        "UPDATE events SET payload = json_set(payload, '$.sha', 'bad') WHERE type = 'merge'",
+      ).run();
+      expect(
+        answerFixRoundThreads(
+          db,
+          repo,
+          SESSION_ID,
+          'github.com/owner/repo',
+          onMain('a'.repeat(40)),
+        ),
+      ).toBeUndefined();
     });
   });
 });

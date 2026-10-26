@@ -50,7 +50,7 @@ const REAL_CLOCK: CiWaitClock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-export interface CiWaitRequest {
+interface CiWaitRequest {
   repoPath: string;
   /** A session id, or the url or number of the PR a session of this project opened. */
   target: string;
@@ -61,7 +61,7 @@ export interface CiWaitRequest {
   clock?: CiWaitClock;
 }
 
-export interface CiWaitOutcome {
+interface CiWaitOutcome {
   /** False when the timeout ran out before the review of the current head finished. */
   finished: boolean;
   /** The one line the caller prints: the digest, or why the wait ended without one. */

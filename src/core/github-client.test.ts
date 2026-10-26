@@ -3,7 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { isCutOffByNode, originRepoSlug, readPullRequestReview } from './github.client.js';
+import {
+  isCutOffByNode,
+  originRepoSlug,
+  readPullRequestReview,
+  replyToReviewThread,
+} from './github.client.js';
 
 describe('originRepoSlug', () => {
   it('parses scp-style ssh remotes', () => {
@@ -380,5 +385,13 @@ describe('isCutOffByNode', () => {
     expect(isCutOffByNode(interrupted)).toBe(false);
     expect(isCutOffByNode(failed)).toBe(false);
     expect(isCutOffByNode(new Error('plain'))).toBe(false);
+  });
+});
+
+describe('replyToReviewThread', () => {
+  it('refuses a repo with no host before asking gh', () => {
+    expect(() => replyToReviewThread('/nowhere', '/owner/repo', 'PRRT_1', 'body')).toThrow(
+      'Cannot read a GitHub host from /owner/repo.',
+    );
   });
 });

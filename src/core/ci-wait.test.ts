@@ -322,8 +322,69 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
   });
 
   it('refuses a session with no PR, or one that landed', async () => {
+    insertSession(db, {
+      id: 's3',
+      taskId: 'task-s1',
+      worktreePath: join(repo, '.worktrees', 's3'),
+      branch: 'pup/s3',
+      profileHash: 'hash',
+    });
+    await expect(wait('s3')).rejects.toThrow(
+      'Session s3 has no PR to wait on: run `pup merge s3 --pr` first. Nothing was waited for.',
+    );
+
     appendEvent(db, SESSION_ID, 'landed', { sha: HEAD, target: 'main', prUrl: PR_URL });
 
     await expect(wait()).rejects.toThrow(`Session ${SESSION_ID} has already landed.`);
+  });
+
+  it("finds a PR only among this project's sessions that opened one", async () => {
+    // A session here with no PR, and another project's session that opened #9.
+    insertSession(db, {
+      id: 's3',
+      taskId: 'task-s1',
+      worktreePath: join(repo, '.worktrees', 's3'),
+      branch: 'pup/s3',
+      profileHash: 'hash',
+    });
+    ensureProject(db, 'other', '/elsewhere');
+    insertTask(db, { id: 'task-other', projectId: 'other', spec: '{}' });
+    insertSession(db, {
+      id: 'o1',
+      taskId: 'task-other',
+      worktreePath: '/elsewhere/.worktrees/o1',
+      branch: 'pup/o1',
+      profileHash: 'hash',
+    });
+    appendEvent(db, 'o1', 'merge', {
+      branch: 'pup/o1',
+      sha: HEAD,
+      target: 'main',
+      files: [],
+      prUrl: 'https://github.com/owner/repo/pull/9',
+    });
+
+    await expect(wait('9')).rejects.toThrow('No session 9, and no session of this project');
+    await expect(wait('nope')).rejects.toThrow('No session nope, and no session of this project');
+  });
+
+  it('reads a closed PR as moot, with nothing next', async () => {
+    githubAnswers({ state: 'CLOSED' });
+
+    expect((await wait()).line).toBe(
+      `${PR_URL} at ${HEAD}: review moot, the PR is CLOSED; 0 open thread(s), 0 important → none`,
+    );
+  });
+
+  it('waits on the real clock when none is given', async () => {
+    githubAnswers({ reviewedOn: OLDER, status: { state: 'PENDING', description: 'reviewing' } });
+
+    const outcome = await waitForCiReview(db, {
+      repoPath: repo,
+      target: SESSION_ID,
+      timeoutMs: 50,
+    });
+
+    expect(outcome.finished).toBe(false);
   });
 });

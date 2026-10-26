@@ -4831,9 +4831,9 @@ changes back into those docs is pending.
     on the review, and the conductor owns both. Measured from 10-13 to 10-23, the operator's
     console ran 38 CI wait loops of its own at about 411k context, roughly $31, and #169's review
     sat unnoticed for 3.5 h, so waiting on CI moves out of the console.
-    Replies. Once `gateAndMerge` has recorded a merge with `--pr`, and only when the session was
-    in a round before the gate moved it (`currentFixRound`, read before the transition),
-    `answerFixRoundThreads` in `fix-round.service.ts` answers the round the newest merge ended:
+    Replies. Once `gateAndMerge` has recorded a merge with `--pr`, `answerFixRoundThreads` in
+    `fix-round.service.ts` answers the round the newest merge ended, and nothing for a merge that
+    ended none:
     the `fix_round` event just before that merge. A round `pup kill` undid is back in `merged`,
     which a re-gate takes, so it never reaches the answers. Every event is read through
     `decodeEvent`, never `JSON.parse`. The answers are read from the newest `session_done` between

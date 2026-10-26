@@ -5921,6 +5921,16 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    it('refuses with the scrubbed reason when the wait cannot start', async () => {
+      useCwd(initRepo());
+      vi.mocked(waitForCiReview).mockRejectedValue(new Error('No session s9.\u001b[2J'));
+
+      await buildProgram().parseAsync(['ci', 'wait', 's9'], { from: 'user' });
+
+      expect(errors).toEqual(['No session s9. [2J']);
+      expect(logs).toEqual([]);
+    });
+
     it('exits non-zero when the wait timed out', async () => {
       useCwd(initRepo());
       vi.mocked(waitForCiReview).mockResolvedValue({

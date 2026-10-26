@@ -35,6 +35,7 @@ import {
   withMergeLock,
 } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
+import { asStringArray } from './report-data.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
@@ -64,7 +65,7 @@ import {
   writeSessionProfile,
 } from './session-lifecycle.service.js';
 import { FIX_ROUND_EDGE } from './session-state.utils.js';
-import type { EventPayloads } from './types/session-event.types.js';
+import type { EventPayloads, SessionEvent } from './types/session-event.types.js';
 import type { RouteOverride } from './types/session-lifecycle.types.js';
 
 const FIX_USE: OriginUse = { command: '`pup fix`', untouched: 'No fix round was started.' };
@@ -83,6 +84,7 @@ const THREAD_BODY_MAX_CHARS = 4_000;
 const CI_REVIEW_LOOKUP_TIMEOUT_MS = 10_000;
 /** A GraphQL node id, as GitHub mints a review thread's; anything else in the store is skipped. */
 const THREAD_ID = /^[A-Za-z0-9_=-]{1,100}$/;
+type SessionDone = Extract<SessionEvent, { type: 'session_done' }>;
 /** Every gh call answering a round's threads, together: the gate holds the merge lock meanwhile. */
 const ANSWER_BUDGET_MS = 60_000;
 
@@ -103,7 +105,7 @@ export interface FixRoundOutcome {
 }
 
 /** How the replies a gated fix round posted left its threads (decision 90). */
-export interface ThreadAnswers {
+interface ThreadAnswers {
   prUrl: string;
   sha: string;
   /** Replied `Addressed in <sha>` and resolved. */
@@ -115,6 +117,20 @@ export interface ThreadAnswers {
   /** Named in the round but answered nowhere in the worker's summary: left open. */
   unanswered: number;
 }
+
+type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
+
+/** The reply each verdict posts on its thread, before the marker; `reason` and `path` are code spans. */
+const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string) => string> = {
+  addressed: (sha, reason) => `Addressed in ${sha}: ${reason}`,
+  unverified: (sha, reason, path) =>
+    `Answered fixed in the round gated at ${sha}, but its commits leave ${path} unchanged: ` +
+    `${reason}. Left open for the operator.`,
+  declined: (sha, reason) =>
+    `Declined in the fix round gated at ${sha}: ${reason}. Left open for the operator.`,
+  unanswered: (sha) =>
+    `The fix round gated at ${sha} gave no answer for this thread; left open for the operator.`,
+};
 
 /**
  * What the gate read of the branch a fix round is gated on: its tip before
@@ -237,8 +253,9 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * worker's one-line answer from its `pup session done` summary. A thread is
  * resolved, under the operator's gh login, only when the worker answered it
  * fixed and the round's own commits change the file it is on: the worker's
- * word alone resolves nothing, and neither does a file the target changed. Every other thread keeps its reply and stays open
- * for the operator. Then one summary comment on the PR for the round. Every
+ * word alone resolves nothing, and neither does a file the target changed.
+ * Every other thread keeps its reply and stays open for the operator. Then
+ * one summary comment on the PR for the round. Every
  * post carries a marker naming the sha, read back first, so a second run for
  * the same head posts nothing again, and a run cut short finishes what the
  * first left. Only a thread GitHub still lists on this PR with the bot's
@@ -247,8 +264,7 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * GitHub renders no markdown and notifies no mention. The gate runs this under
  * the merge lock, so every gh and git call shares one `budgetMs`, and a call
  * node cut off, past the budget or its buffer, is a plain error, never read
- * as an interrupt. Undefined when the newest merge
- * ended no fix round.
+ * as an interrupt. Undefined when the newest merge ended no fix round.
  */
 export function answerFixRoundThreads(
   db: Database,
@@ -297,27 +313,13 @@ export function answerFixRoundThreads(
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
     const answer = threadAnswer(summary, id);
-    const isChanged = thread.path !== undefined && changed.has(thread.path);
-    const verdict =
-      answer === undefined
-        ? 'unanswered'
-        : answer.verdict === 'declined'
-          ? 'declined'
-          : isChanged
-            ? 'addressed'
-            : 'unverified';
+    const verdict = threadVerdict(answer?.verdict, thread.path, changed);
     if (!thread.ownReplies.some((body) => body.includes(marker))) {
-      const said =
-        answer === undefined
-          ? `The fix round gated at ${sha} gave no answer for this thread; left open for the operator.`
-          : verdict === 'addressed'
-            ? `Addressed in ${sha}: ${codeSpan(answer.reason)}`
-            : verdict === 'unverified'
-              ? `Answered fixed in the round gated at ${sha}, but its commits leave ` +
-                `${codeSpan(thread.path ?? 'no file')} unchanged: ${codeSpan(answer.reason)}. ` +
-                'Left open for the operator.'
-              : `Declined in the fix round gated at ${sha}: ${codeSpan(answer.reason)}. Left open ` +
-                'for the operator.';
+      const said = REPLIES[verdict](
+        sha,
+        codeSpan(answer?.reason ?? ''),
+        codeSpan(thread.path ?? 'no file'),
+      );
       withinBudget((timeoutMs) =>
         replyToReviewThread(repoPath, repo, id, `${said}\n\n${marker}`, timeoutMs),
       );
@@ -341,6 +343,19 @@ export function answerFixRoundThreads(
 }
 
 /**
+ * What the worker's answer comes to on GitHub: a fix is `addressed` only when
+ * the round's own commits changed the thread's file, else `unverified`.
+ */
+function threadVerdict(
+  answered: 'fixed' | 'declined' | undefined,
+  path: string | undefined,
+  changed: Set<string>,
+): ThreadVerdict {
+  if (answered !== 'fixed') return answered ?? 'unanswered';
+  return path !== undefined && changed.has(path) ? 'addressed' : 'unverified';
+}
+
+/**
  * The fix round the newest merge ended: the `fix_round` event just before it
  * among the merge, round and landing events, with the merge's url and pin, the
  * head the round started from, and the summary of the newest
@@ -351,7 +366,9 @@ export function answerFixRoundThreads(
 function roundTheNewestMergeEnded(
   db: Database,
   sessionId: string,
-): { prUrl: string; sha: string; head?: string; threadIds: string[]; summary: string } | undefined {
+):
+  | { prUrl: string; sha: string; head: string | undefined; threadIds: string[]; summary: string }
+  | undefined {
   const events = listEvents(db, sessionId).reverse();
   const [merge, before] = events.filter((row) =>
     ['fix_round', 'merge', 'landed'].includes(row.type),
@@ -366,15 +383,13 @@ function roundTheNewestMergeEnded(
   const done = events
     .filter((row) => row.id > before.id && row.id < merge.id)
     .map(decodeEvent)
-    .find((event) => event.type === 'session_done');
+    .find((event): event is SessionDone => event.type === 'session_done');
   return {
     prUrl,
     sha,
-    ...(typeof head === 'string' && COMMIT_SHA.test(head) ? { head } : {}),
-    threadIds: Array.isArray(threads)
-      ? threads.filter((id): id is string => typeof id === 'string')
-      : [],
-    summary: done?.type === 'session_done' ? (done.summary ?? '') : '',
+    head: typeof head === 'string' ? head : undefined,
+    threadIds: asStringArray(threads),
+    summary: done?.summary ?? '',
   };
 }
 
@@ -393,9 +408,8 @@ function filesTheRoundChanged(
   timeoutMs: number,
 ): Set<string> {
   const { tip, targetSha } = branch;
-  if (head === undefined || !COMMIT_SHA.test(tip) || !COMMIT_SHA.test(targetSha)) {
-    return new Set();
-  }
+  // Store and gate text, handed to git as revisions: each must be a sha.
+  if (![head, tip, targetSha].every((rev) => COMMIT_SHA.test(rev ?? ''))) return new Set();
   try {
     return new Set(
       runGit(
