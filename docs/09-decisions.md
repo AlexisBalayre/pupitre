@@ -4663,8 +4663,10 @@ changes back into those docs is pending.
       a Ctrl-C ends it before any lock is taken.
     - The gate plans again under the lock (`planMerge`, every refusal `runMergeGate` makes before
       the lock) whenever its take waited, or the session's state, reject count or newest event
-      changed since the first plan: a holder released during that plan's gh calls, or a dead one
-      reclaimed, may have changed it without any wait. The run that held the lock may have
+      changed since the first plan began: a holder released during that plan's gh calls, or a
+      dead one reclaimed, may have changed it without any wait, so the mark is taken before the
+      plan reads anything. Taken last, it held the change and the stale plan went on to the
+      fast-forward or push. The run that held the lock may have
       rejected and re-steered the session, merged it, re-gated it or opened its fix round, or a
       driver may have been armed during the wait. Gated on the stale plan, a second `pup merge`
       would fast-forward main for a session already rejected and then fail its `merged`
@@ -4672,9 +4674,12 @@ changes back into those docs is pending.
     - `pup land` writes its `landed` event as the last step under the lock, and refuses under the
       lock a session that has one. Before, the event came after the release and the audit, so a
       second land waiting on the first's lock found the session still merged and landed it
-      again: a second audit, a second event, and every overlapping session steered twice. An
-      audit that fails after the event is `pup audit`'s to re-run, and `pup land` refuses the
-      landed session.
+      again: a second audit, a second event, and every overlapping session steered twice. The
+      overlapping sessions are steered right after the release, before the audit: once the event
+      is written a re-run refuses and nothing else steers them (decision 99), so an audit that
+      threw first, on an interrupt, a missing adapter or a sandbox refusal, would leave them
+      unsteered for good. An audit that fails after both is `pup audit`'s to re-run, and
+      `pup land` refuses the landed session.
     - A gate asked to wait (`waitForLoad`) waits, before it takes its test slot and before the
       stages that run alongside its suites, until the 1-minute load average is under the
       machine's available parallelism, so the load it reads is not its own lint, typecheck and
