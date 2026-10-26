@@ -6182,6 +6182,21 @@ changes back into those docs is pending.
     characters planted in a goal, a brief, a ledger description, reason, accepter and file path
     reach neither sheet unescaped; and the Debt sheet's stream sends its own board, then a new
     entry within one poll. The repositories' new queries have their own tests.
+    *Hardening.* A sheet is re-rendered on every poll, synchronously, so what it reads must stay
+    cheap and bounded. The brief's heading match is linear: the title runs from its first
+    non-blank character, and the closing run and trailing blanks are cut with string operations,
+    since the one-regex form backtracked cubically on a line of blanks ending in U+2028 (minutes
+    at the brief's cap, the whole server frozen). `readBrief` reads only a regular file of at most
+    four bytes per allowed character, so a FIFO at the path is refused, not blocked on. A figure
+    stored as a non-finite number (`1e999` parses to Infinity) is unmeasured in `debtFigures`, and
+    the charts draw a non-finite value as no mark and halve the span so two finite extremes
+    cannot overflow it. The ledger fields and the Destination also go through `displayText`, so
+    a U+202E cannot make a path read as another. Each poll reads the newest eight captures
+    (`listRecentBaselineHistory`) and the sessions' first merges in the window in one grouped
+    query. Tests: the planted heading line renders within a second, a FIFO brief shows the
+    refusal, a U+202E reaches neither sheet, a baseline of `1e999` shows as unmeasured with no
+    NaN, every chart draws no NaN for infinite values or ±1e308, and the bounded history lists
+    the newest captures oldest first.
 
 ## Implementation notes
 
