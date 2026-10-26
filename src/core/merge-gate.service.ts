@@ -34,6 +34,7 @@ import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
+  ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
   currentBranch,
@@ -44,6 +45,7 @@ import {
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
+  type WorktreeGitEnv,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -288,7 +290,8 @@ function formatGateReport(report: GateReport): string {
 }
 
 /**
- * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), then the
+ * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), or a
+ * merge of the target for a branch an open PR holds (decision 105), then the
  * hard stages — build, tests, lint, a touched nested package's own test and
  * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
@@ -334,15 +337,16 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
         '.pupitre/adapter.yml).',
     );
   }
-  // Before the auto-rebase, which runs a smudge filter on every file it checks
-  // out and a merge driver on every conflict, with the operator's environment
+  // Before the auto-rebase or merge, which runs a smudge filter on every file it
+  // checks out and a merge driver on every conflict, with the operator's environment
   // and ahead of the sandbox that confines the stages. Both paths, because the
   // rebase runs in the worktree and the fast-forward's checkout in the main
   // one, and a worktree-scoped config is only visible from its own worktree
   // (decision 50). The main checkout is asked again under the lock, since the
-  // stages run while the session is alive (decision 80). A re-gate rebases
-  // nothing and its worktree is gone with the first merge. The worktree is read
-  // pinned to the dirs pup trusts, as the rebase will run (decision 101).
+  // stages run while the session is alive (decision 80), and both are asked
+  // again right before an open PR's merge runs git (decision 105). A re-gate
+  // rebases nothing and its worktree is gone with the first merge. The worktree
+  // is read pinned to the dirs pup trusts, as the rebase will run (decision 101).
   assertNoArmedGitDrivers(req.repoPath);
   if (!merged) {
     assertNoArmedGitDrivers(
@@ -905,6 +909,139 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
   }
 }
 
+/**
+ * Merge `targetSha` into the branch an open PR holds, in plumbing only
+ * (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
+ * commit, and a compare-and-swap moves the branch from the tip the merge read.
+ * The porcelain `git merge` reads `branch.<name>.mergeOptions` from the shared
+ * config a session can write, after the `-c` pins and before argv, so a planted
+ * `-S` would run a `gpg.program` of the session's and `-F` would read any file
+ * into the message; nothing here reads per-branch config, as the fast-forward
+ * reads none (decision 80). The worktree's index and files follow with the
+ * pinned two-way `read-tree` the fast-forward uses, only while its HEAD is the
+ * branch: a worktree the session switched elsewhere is left as it is, and one
+ * where the `read-tree` fails has the branch put back. The drivers are checked
+ * again right before `merge-tree`, which runs a merge driver on a conflicted
+ * file, and before the `read-tree`, which runs a smudge filter on every file it
+ * writes, as they are before the fast-forward: the last check ran before the gh
+ * calls and the lock (decision 50). Returns the failure for the worker, or
+ * undefined once the branch holds the merge.
+ */
+function mergeTargetInto(
+  repoPath: string,
+  worktree: string,
+  worktreeEnv: WorktreeGitEnv,
+  branch: string,
+  target: string,
+  targetSha: string,
+): string | undefined {
+  const branchRef = `refs/heads/${branch}`;
+  const shown = sanitizeReason(target);
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  const branchSha = resolveCommit(repoPath, branchRef);
+  assertNoArmedGitDrivers(repoPath);
+  let tree: string;
+  try {
+    tree = (
+      runGit(repoPath, ['merge-tree', '--write-tree', branchSha, targetSha], piped).split(
+        '\n',
+      )[0] as string
+    ).trim();
+  } catch (error) {
+    // 1 is a conflict. Any other status (a signal, no `--write-tree` before git
+    // 2.38, a missing object) is git failing to merge at all, which no worker
+    // can resolve: thrown to the operator, with only objects written.
+    if ((error as { status?: unknown }).status !== 1) throw error;
+    return (
+      `Auto-merge of ${shown} hit conflicts. Run ` +
+      `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
+      `resolve the conflicts, and commit the merge.\n${commandFailureDetail(error)}`
+    );
+  }
+  const merged = runGit(
+    repoPath,
+    [
+      'commit-tree',
+      '--no-gpg-sign',
+      '-p',
+      branchSha,
+      '-p',
+      targetSha,
+      '-m',
+      `Merge ${target} into ${branch}`,
+      tree,
+    ],
+    piped,
+  ).trim();
+  const worktreeGit = (args: string[]): string =>
+    runGit(worktree, args, { env: { ...worktreeEnv }, ...piped });
+  // A compare-and-swap: git refuses unless the branch is still at `from`.
+  const swapBranch = (message: string, to: string, from: string): void => {
+    runGit(repoPath, ['update-ref', '--no-deref', '-m', message, branchRef, to, from], piped);
+  };
+  // Read before the branch moves, so an interrupt here leaves nothing to put
+  // back: only the read-tree step below runs while the branch holds the merge.
+  let head: string | undefined;
+  try {
+    head = worktreeGit(['symbolic-ref', '-q', 'HEAD']).trim();
+  } catch (error) {
+    rethrowIfKilled(error);
+  }
+  try {
+    swapBranch(`pup merge: merge ${target}`, merged, branchSha);
+  } catch (error) {
+    rethrowIfKilled(error);
+    return (
+      `${branch} moved from ${branchSha} while the gate merged ${shown} into it; nothing was ` +
+      `merged.\n${commandFailureDetail(error)}`
+    );
+  }
+  if (head !== branchRef) return undefined;
+  try {
+    // Before the refresh too, which runs a clean filter on every file whose
+    // stat changed.
+    assertNoArmedGitDrivers(worktree, worktreeEnv);
+    worktreeGit(['update-index', '-q', '--ignore-submodules', '--refresh']);
+    worktreeGit([
+      'read-tree',
+      '--no-recurse-submodules',
+      '--no-sparse-checkout',
+      '-m',
+      '-u',
+      branchSha,
+      merged,
+    ]);
+  } catch (error) {
+    // The branch goes back to the tip whose index the worktree still holds,
+    // before anything else, an interrupt or an armed driver included. Left on
+    // the merge, HEAD would sit over those files and status would show the
+    // target's changes reversed, staged for the next commit to take.
+    try {
+      swapBranch(`pup merge: undo merge of ${target}`, branchSha, merged);
+    } catch (undo) {
+      // The operator's, as the fast-forward's failed restore is: what the
+      // branch holds now is not something the gate can name.
+      throw new Error(
+        `The merge of ${shown} failed in ${worktree}, and putting ${branch} back from the ` +
+          `merge ${merged} on ${branchSha} failed too:\n${commandFailureDetail(undo)}\n` +
+          `While ${branch} holds the merge, a commit over this worktree's files undoes ` +
+          `${shown}'s changes. The merge failed with:\n${commandFailureDetail(error)}`,
+      );
+    }
+    if (error instanceof ArmedGitDriverError) throw error;
+    rethrowIfKilled(error);
+    // A refusal over a local change writes nothing, but a read-tree that
+    // failed partway (a full disk, a permission) may have written files.
+    return (
+      `The merge of ${shown} failed in this worktree, and ${branch} is back on ${branchSha} ` +
+      'without it. Any file git wrote before it stopped shows as a change in `git status`: ' +
+      `discard those, commit or discard your own, and the next gate merges ${shown} again.\n` +
+      commandFailureDetail(error)
+    );
+  }
+  return undefined;
+}
+
 async function gateAndMerge(
   db: Database,
   req: MergeRequest,
@@ -925,7 +1062,8 @@ async function gateAndMerge(
   // (decision 101). `--ignore-submodules=all`, because a gitlink in the index
   // over a `.git` of the session's makes status run a child git in it that
   // drops the pins.
-  const pinned = { env: { ...verifiedWorktreeGitEnv(req.repoPath, worktree) } };
+  const worktreeEnv = verifiedWorktreeGitEnv(req.repoPath, worktree);
+  const pinned = { env: { ...worktreeEnv } };
   let started = Date.now();
   const dirty = runGit(
     worktree,
@@ -945,14 +1083,37 @@ async function gateAndMerge(
   stages.push(timedSince(started, { stage: 'worktree-clean', status: 'pass' }));
 
   // Both ends pinned under the lock, and every later git call names a sha
-  // (decision 80): the target here, so the rebase, the diffs and the
-  // compare-and-swap all mean one commit; the branch once the rebase settled
+  // (decision 80): the target here, so the rebase or merge, the diffs and the
+  // compare-and-swap all mean one commit; the branch once fresh-base settled
   // it, so what the diffs and the scope audit named is what lands, whatever the
   // live session commits or tags meanwhile. The stages read that sha's files
   // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
+  // An open PR's commits are what its review and CI read, so its branch takes
+  // the target as a merge commit and is never rewritten; a branch with no open
+  // PR is still rebased (decision 105).
+  const isPrBranch = pullRequest?.adoptedUrl !== undefined;
+  // What the gate last pushed, which the merge keeps and a rewrite by the
+  // session would drop: refused here, with the fix in the worker's hands,
+  // rather than by the push once every stage has run.
+  const pushed = isPrBranch
+    ? resolveCommitIfPresent(req.repoPath, `refs/remotes/origin/${session.branch}`)
+    : undefined;
+  if (pushed && !isAncestor(req.repoPath, pushed, branchRef)) {
+    stages.push(
+      timedSince(started, {
+        stage: 'fresh-base',
+        status: 'fail',
+        detail:
+          `${session.branch} no longer contains ${pushed}, which its open PR holds. Bring those ` +
+          `commits back (merge ${shellWord(`refs/heads/${sanitizeReason(target)}`)} rather ` +
+          'than rebase onto it), then commit.',
+      }),
+    );
+    return failed();
+  }
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
     stages.push(
       timedSince(started, {
@@ -960,6 +1121,22 @@ async function gateAndMerge(
         status: 'pass',
         detail: `already based on ${target}`,
       }),
+    );
+  } else if (isPrBranch) {
+    const refused = mergeTargetInto(
+      req.repoPath,
+      worktree,
+      worktreeEnv,
+      session.branch,
+      target,
+      targetSha,
+    );
+    if (refused) {
+      stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
+      return failed();
+    }
+    stages.push(
+      timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
     );
   } else {
     try {
@@ -995,6 +1172,10 @@ async function gateAndMerge(
   // detached it or switched branch leaves the pinned branch behind the target:
   // no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
+    const onto = `refs/heads/${sanitizeReason(target)}`;
+    const [step, fix] = isPrBranch
+      ? ['merge', `merge ${onto} into it`]
+      : ['rebase', `rebase it onto ${onto}`];
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
     stages.push(
@@ -1003,8 +1184,7 @@ async function gateAndMerge(
         status: 'fail',
         detail:
           `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
-          `after the auto-rebase. Check out ${session.branch} in this worktree and rebase it onto ` +
-          `refs/heads/${sanitizeReason(target)}.`,
+          `after the auto-${step}. Check out ${session.branch} in this worktree and ${fix}.`,
       }),
     );
     return failed();
@@ -1034,7 +1214,7 @@ async function gateAndMerge(
       ...pullRequestText(spec, session.id, report, commitSubjects, sha),
     };
     try {
-      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha);
+      pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
       if (pullRequest.adoptedUrl) {
         rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
         prWasAdopted = true;
@@ -1737,14 +1917,17 @@ export function debtKind(description: string, sessionId: string): string | undef
 }
 
 /**
- * Push the session branch to origin's pinned URL. A retry after a failed `--pr`
- * run has usually been rebased onto a moved target, so a plain push would be
- * rejected non-fast-forward — and so would every retry after it, dead-ending
- * the branch. The branch is pup's own (`pup/<slug>`, created and deleted by
- * pup) and the gate just validated these commits, so the rewrite is intended.
- * The lease still refuses if origin moved past what pup itself last pushed, and
- * it only applies once a remote-tracking ref exists — on the first push there
- * is nothing to lease against.
+ * Push the session branch to origin's pinned URL. With `mayRewrite`, a branch
+ * no open PR holds: a retry after a failed `--pr` run has usually been rebased
+ * onto a moved target, so a plain push would be rejected non-fast-forward — and
+ * so would every retry after it, dead-ending the branch. The branch is pup's
+ * own (`pup/<slug>`, created and deleted by pup) and the gate just validated
+ * these commits, so the rewrite is intended. The lease still refuses if origin
+ * moved past what pup itself last pushed, and it only applies once a
+ * remote-tracking ref exists — on the first push there is nothing to lease
+ * against. Without it, the branch of an open PR, whose fresh-base merged the
+ * target rather than rebased (decision 105): a plain push, which git refuses
+ * unless it fast-forwards, so no commit the PR's review read is ever dropped.
  *
  * Naming the URL is not enough on its own: git rewrites a literal URL through
  * `url.<base>.insteadOf` and `pushInsteadOf` exactly as it rewrites a remote's,
@@ -1754,9 +1937,16 @@ export function debtKind(description: string, sessionId: string): string | undef
  * and system config still apply (decision 54). Pushing to a URL updates no
  * remote-tracking ref, so the lease names its value and the ref is moved here.
  */
-function pushBranch(repoPath: string, originUrl: string, branch: string, tip: string): void {
+function pushBranch(
+  repoPath: string,
+  originUrl: string,
+  branch: string,
+  tip: string,
+  mayRewrite: boolean,
+): void {
   const tracking = `refs/remotes/origin/${branch}`;
   const leased = (() => {
+    if (!mayRewrite) return undefined;
     try {
       // A missing remote-tracking ref is the expected first-push case, not an
       // error: git's stderr is captured here (not inherited) so its "fatal:

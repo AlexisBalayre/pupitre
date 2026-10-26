@@ -3245,25 +3245,488 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(listLedgerEntries(db, 'proj-1').map((e) => e.accepted_by)).toEqual(['tg:alexis']);
   });
 
-  it('with openPr retries after the target moved, when the rebase rewrote the pushed branch', async () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    addOrigin();
-    const request = {
+  describe('a stale branch an open PR holds (decision 105)', () => {
+    const request = () => ({
       repoPath: repo,
       sessionId: SESSION_ID,
       adapters: [passingAdapter],
       openPr: true,
+    });
+
+    /** A gate that pushed the branch and died opening its PR: the PR stands open. */
+    const pushedOnce = async (worktree: string): Promise<{ bare: string; pushed: string }> => {
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
+      await expect(
+        withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request())),
+      ).rejects.toThrow();
+      return { bare, pushed: sh(bare, 'git', 'rev-parse', BRANCH).trim() };
     };
-    const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
-    await expect(withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).rejects.toThrow();
 
-    // main moves, so the retry's auto-rebase rewrites the already-pushed branch.
-    commitIn(repo, 'README.md', '# moved on\n');
-    const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
+    const pushCalls = (): string[][] =>
+      vi
+        .mocked(execFileSync)
+        .mock.calls.map(([, callArgs]) => (callArgs ?? []) as string[])
+        .filter((callArgs) => callArgs.includes('push'));
 
-    expect(outcome.status).toBe('merged');
-    expect(outcome.prUrl).toBe(openPrOnMain.url);
+    it('merges the target in, keeps every pushed commit, and pushes without force', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.prUrl).toBe(openPrOnMain.url);
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: 'auto-merged main',
+        }),
+      );
+      const head = sh(bare, 'git', 'rev-parse', BRANCH).trim();
+      expect(head).not.toBe(pushed);
+      // Every commit the PR held is still on it, and the target came in as a merge.
+      expect(sh(bare, 'git', 'rev-list', BRANCH)).toContain(pushed);
+      expect(sh(bare, 'git', 'rev-list', '--parents', '-n', '1', BRANCH).trim().split(' ')).toEqual(
+        [head, pushed, targetSha],
+      );
+      const pushes = pushCalls();
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0]?.join(' ')).not.toMatch(/--force|\+[0-9a-f]{40}:/);
+    });
+
+    it('re-steers the session when the merge conflicts, leaving the PR as it was', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'src/feature.ts', 'export const feature = 2;\n');
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.rejectCount).toBe(1);
+      expect(getSession(db, SESSION_ID)?.state).toBe('running');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining('Auto-merge of main hit conflicts'),
+      });
+      const steer = vi.mocked(steerPane).mock.calls[0]?.[1];
+      expect(steer).toContain("`git merge 'refs/heads/main'`");
+      expect(steer).not.toContain('rebase');
+      // Aborted: the worktree is back on the pushed commit, with no merge in progress.
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    it('refuses a branch the session rewrote past what the PR holds', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      sh(worktree, 'git', 'commit', '--amend', '-m', 'rewritten');
+      vi.mocked(steerPane).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining(`no longer contains ${pushed}`),
+      });
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+    });
+
+    // The porcelain `git merge` reads `branch.<name>.mergeOptions` from the
+    // shared config after the `-c` pins: `-S` would run a `gpg.program` of the
+    // session's outside the sandbox, `-F` would put any file it names in the
+    // message pushed to the PR. Planted on the session's branch and on a branch
+    // the worktree was switched to, since the porcelain reads HEAD's.
+    it.each([
+      ['-S', false],
+      ['-S', true],
+      ['-F', false],
+      ['-F', true],
+    ])('reads no %s from mergeOptions (worktree switched away: %s)', async (option, switched) => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const plants = tempDir('pup-merge-options-');
+      const marker = join(plants, 'gpg-ran');
+      const secret = join(plants, 'secret');
+      writeFileSync(secret, 'TOP-SECRET-CONTENTS\n');
+      const gpg = join(plants, 'gpg');
+      writeFileSync(gpg, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 });
+      sh(repo, 'git', 'config', 'gpg.program', gpg);
+      if (switched) sh(worktree, 'git', 'checkout', '-q', '-b', 'pup/elsewhere');
+      for (const branch of [BRANCH, 'pup/elsewhere']) {
+        sh(
+          repo,
+          'git',
+          'config',
+          `branch.${branch}.mergeOptions`,
+          option === '-S' ? '-S' : `-F ${secret}`,
+        );
+      }
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      expect(existsSync(marker)).toBe(false);
+      const message = sh(bare, 'git', 'log', '-1', '--format=%B', BRANCH);
+      expect(message).not.toContain('TOP-SECRET');
+      expect(message.trim()).toBe(`Merge main into ${BRANCH}`);
+      expect(sh(bare, 'git', 'rev-list', BRANCH)).toContain(pushed);
+    });
+
+    it('brings the worktree on the branch to the merge, index and files', async () => {
+      const worktree = seedSession(db, repo);
+      await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      // A failing build keeps the worktree, so what the merge left in it can be read.
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, { ...request(), adapters: [failingBuildAdapter] }),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: 'auto-merged main',
+        }),
+      );
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(
+        sh(repo, 'git', 'rev-parse', BRANCH).trim(),
+      );
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(readFileSync(join(worktree, 'README.md'), 'utf8')).toBe('# moved on\n');
+    });
+
+    /** Run `act` once, right before the first git call whose argv `matches`. */
+    const beforeGit = (matches: (args: string[]) => boolean, act: () => void): void => {
+      const real = vi.mocked(execFileSync).getMockImplementation();
+      let done = false;
+      vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+        if (!done && file === 'git' && matches(args)) {
+          done = true;
+          act();
+        }
+        return real?.(file, args, opts as never);
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(execFileSync).mockImplementation(real as never);
+      });
+    };
+
+    it('fails fresh-base when the branch moves under the compare-and-swap, pushing nothing', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const moved = sh(repo, 'git', 'rev-parse', `${pushed}~1`).trim();
+      beforeGit(
+        (args) => args.includes('update-ref') && args.includes('pup merge: merge main'),
+        () => sh(repo, 'git', 'update-ref', `refs/heads/${BRANCH}`, moved),
+      );
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        status: 'fail',
+        detail: expect.stringContaining(
+          `${BRANCH} moved from ${pushed} while the gate merged main`,
+        ),
+      });
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(moved);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    it('merges the branch of a worktree with a detached HEAD and leaves the worktree alone', async () => {
+      const worktree = seedSession(db, repo);
+      const { pushed } = await pushedOnce(worktree);
+      sh(worktree, 'git', 'checkout', '-q', '--detach');
+      commitIn(repo, 'README.md', '# moved on\n');
+      const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+      // A failing build keeps the worktree, so what the merge left in it can be read.
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, { ...request(), adapters: [failingBuildAdapter] }),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: 'auto-merged main',
+        }),
+      );
+      expect(sh(repo, 'git', 'rev-parse', `${BRANCH}^1`, `${BRANCH}^2`).trim().split('\n')).toEqual(
+        [pushed, targetSha],
+      );
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(existsSync(join(worktree, 'README.md'))).toBe(false);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+    });
+
+    /** A file of the session's, written after the worktree-clean stage, at a path main adds. */
+    const untrackedInTheWay = (worktree: string): void =>
+      beforeGit(
+        (args) => args.includes('merge-tree'),
+        () => {
+          mkdirSync(join(worktree, 'dist'));
+          writeFileSync(join(worktree, 'dist', 'app.js'), 'stale\n');
+        },
+      );
+
+    // Left on the merge, the worktree's HEAD would sit over the pushed commit's
+    // files and status would stage main's changes reversed for the next commit.
+    it.each([
+      [
+        'an edit made after the worktree-clean stage',
+        (worktree: string) =>
+          beforeGit(
+            (args) => args.includes('merge-tree'),
+            () => writeFileSync(join(worktree, 'src/app.ts'), 'export const app = 3;\n'),
+          ),
+        'src/app.ts',
+        ' M src/app.ts\n',
+      ],
+      ['a new file at a path main adds', untrackedInTheWay, 'dist/app.js', '?? dist/\n'],
+    ])(
+      'puts the branch back when %s refuses the merge, pushing nothing',
+      async (_, block, path, status) => {
+        const worktree = seedSession(db, repo);
+        const { bare, pushed } = await pushedOnce(worktree);
+        commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
+        commitIn(repo, 'dist/app.js', 'built\n');
+        block(worktree);
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)).toMatchObject({
+          stage: 'fresh-base',
+          status: 'fail',
+          detail: expect.stringContaining(
+            `The merge of main failed in this worktree, and ${BRANCH} is back on ${pushed} ` +
+              'without it.',
+          ),
+        });
+        expect(outcome.report.stages.at(-1)?.detail).toContain(path);
+        expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+        expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe(status);
+        expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+        expect(pushCalls()).toEqual([]);
+      },
+    );
+
+    it("throws the undo's own failure when the branch cannot be put back", async () => {
+      const worktree = seedSession(db, repo);
+      const { pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'dist/app.js', 'built\n');
+      untrackedInTheWay(worktree);
+      const moved = sh(repo, 'git', 'rev-parse', `${pushed}~1`).trim();
+      let merged = '';
+      beforeGit(
+        (args) => args.includes('pup merge: undo merge of main'),
+        () => {
+          merged = sh(repo, 'git', 'rev-parse', BRANCH).trim();
+          sh(repo, 'git', 'update-ref', `refs/heads/${BRANCH}`, moved);
+        },
+      );
+      vi.mocked(steerPane).mockClear();
+
+      const failure = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, request()),
+      ).then(
+        () => '',
+        (error: unknown) => (error as Error).message,
+      );
+
+      expect(failure).toContain(`putting ${BRANCH} back from the merge ${merged} on ${pushed}`);
+      expect(failure).toContain(`but expected ${merged}`);
+      expect(failure).toContain('dist/app.js');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(moved);
+    });
+
+    // A Ctrl-C reaches the read-tree as well as node, and the interrupt unwinds
+    // the gate only once the branch is back.
+    it('puts the branch back before rethrowing a read-tree an interrupt killed', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      beforeGit(
+        (args) => args.includes('read-tree') && args.includes('-m'),
+        () => {
+          throw Object.assign(new Error('Command failed: git read-tree'), {
+            signal: 'SIGINT',
+            status: null,
+          });
+        },
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow('Command failed: git read-tree');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    // A session can hang only the pinned worktree git (an `includeIf` path at a
+    // FIFO), so the operator's Ctrl-C lands on the HEAD read: it must come
+    // before the branch moves.
+    it('leaves the branch where it was when an interrupt kills the worktree HEAD read', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      beforeGit(
+        (args) => args.includes('symbolic-ref') && args.includes(worktree),
+        () => {
+          throw Object.assign(new Error('Command failed: git symbolic-ref'), {
+            signal: 'SIGINT',
+            status: null,
+          });
+        },
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow('Command failed: git symbolic-ref');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    /** A driver of the session's, armed in the shared config right before the git call `at` matches. */
+    const armBefore = (at: (args: string[]) => boolean, key: string, attribute: string): string => {
+      const marker = join(tempDir('pup-armed-'), 'ran');
+      beforeGit(at, () => {
+        sh(repo, 'git', 'config', key, `touch '${marker}'; cat`);
+        mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+        writeFileSync(join(repo, '.git', 'info', 'attributes'), `* ${attribute}\n`);
+      });
+      return marker;
+    };
+
+    const ran = (command: string): boolean =>
+      vi
+        .mocked(execFileSync)
+        .mock.calls.some(([, callArgs]) => ((callArgs ?? []) as string[]).includes(command));
+
+    // The check before the lock is minutes old by then: a live session can arm
+    // a driver while the gh calls and the lock wait run.
+    it('refuses a merge driver armed after the first check, before merge-tree can run it', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      // Both sides changed the file, which merge-tree would hand the driver.
+      commitIn(repo, 'src/feature.ts', 'export const feature = 2;\n');
+      // The worktree-clean stage's status, the gate's first git under the lock.
+      const marker = armBefore((args) => args.includes('status'), 'merge.pwn.driver', 'merge=pwn');
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow(ArmedGitDriverError);
+      expect(ran('status')).toBe(true);
+      expect(ran('merge-tree')).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+    });
+
+    it('refuses a smudge filter armed after merge-tree, putting the branch back', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const marker = armBefore(
+        (args) => args.includes('commit-tree'),
+        'filter.pwn.smudge',
+        'filter=pwn',
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow(ArmedGitDriverError);
+      expect(ran('commit-tree')).toBe(true);
+      expect(ran('read-tree')).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+    });
+
+    // Only exit 1 is a conflict: git with no `--write-tree` (before 2.38) dies
+    // with 128 on every merge, which no re-steer can fix.
+    it('throws to the operator when merge-tree fails other than on a conflict', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      beforeGit(
+        (args) => args.includes('merge-tree'),
+        () => {
+          throw Object.assign(new Error('fatal: Not a valid object name --write-tree'), {
+            status: 128,
+          });
+        },
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow('Not a valid object name --write-tree');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    it('still rebases a stale branch never pushed, opening its PR on linear history', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      commitIn(repo, 'README.md', '# moved on\n');
+      const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+      const outcome = await withFakeGh(fakeGh([]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      expect(outcome.prWasAdopted).toBe(false);
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({ stage: 'fresh-base', detail: 'auto-rebased onto main' }),
+      );
+      expect(sh(bare, 'git', 'rev-list', '--merges', BRANCH).trim()).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', `${BRANCH}~1`).trim()).toBe(targetSha);
+    });
   });
 
   it('with openPr refuses an open PR that has auto-merge armed', async () => {
