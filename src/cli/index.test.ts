@@ -66,6 +66,9 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // hashes from them, are the contract (decision 106).
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
+  RelativeConfigDirError: (
+    await importOriginal<typeof import('../claude/session-runtime.service.js')>()
+  ).RelativeConfigDirError,
   sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .sessionEnvAllowed,
   readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
@@ -169,6 +172,7 @@ import {
   readSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  saveSessionEnv,
 } from '../claude/session-runtime.service.js';
 import {
   ConductorTellRefusedError,
@@ -4068,6 +4072,33 @@ describe('CLI commands', () => {
       expect(() =>
         buildProgram().parse(['new', 'goal', '--scope', 'src/**'], { from: 'user' }),
       ).toThrow();
+    });
+  });
+
+  // A config dir `--session-env` passes is the launching shell's, and a quoted
+  // `~` reaches pup unexpanded: every command that opens a window refuses it in
+  // one scrubbed line, before anything is planned or launched (decision 106).
+  describe('a relative CLAUDE_CONFIG_DIR', () => {
+    it.each([
+      { command: 'new', args: ['new', 'do the thing', '--scope', 'src/**'], opens: createSession },
+      { command: 'launch', args: ['launch', 't-abc'], opens: launchTask },
+      { command: 'conductor start', args: ['conductor', 'start'], opens: startConductor },
+      { command: 'fix', args: ['fix', 's1'], opens: startFixRound },
+    ])('refuses `pup $command`, opening nothing', async ({ args, opens }) => {
+      const repo = initRepo();
+      useCwd(repo);
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', '~/w4b\u009b');
+
+      await buildProgram().parseAsync(args, { from: 'user' });
+
+      expect(errors).toEqual([
+        'CLAUDE_CONFIG_DIR is "~/w4b ", which --session-env passes to every window: ' +
+          'it must be an absolute path.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+      expect(opens).not.toHaveBeenCalled();
     });
   });
 

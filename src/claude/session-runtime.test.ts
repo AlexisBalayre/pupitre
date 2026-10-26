@@ -77,6 +77,7 @@ import {
   launchWatcher,
   pasteIntoPane,
   preseedTrust,
+  RelativeConfigDirError,
   readInputBox,
   readSessionEnv,
   refusedSessionEnv,
@@ -435,6 +436,7 @@ describe('claudeUserDir', () => {
     saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
     vi.stubEnv('CLAUDE_CONFIG_DIR', value);
 
+    expect(() => claudeUserDir('/tmp/repo')).toThrow(RelativeConfigDirError);
     expect(() => claudeUserDir('/tmp/repo')).toThrow('it must be an absolute path');
   });
 });

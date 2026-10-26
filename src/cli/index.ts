@@ -19,6 +19,7 @@ import {
   hasSessionWindow,
   killWatcher,
   launchWatcher,
+  RelativeConfigDirError,
   refusedSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -652,6 +653,22 @@ function launchOrRefuse(
 }
 
 /**
+ * The config dir a launch hashes and runs its window on, or a refusal printed
+ * before anything is planned or opened: a relative `CLAUDE_CONFIG_DIR` that
+ * `--session-env` passes is the operator's to fix, not a crash (decision 106).
+ * Scrubbed, since the message quotes the launching shell's value.
+ */
+function configDirOrRefuse(repoPath: string): string | undefined {
+  try {
+    return claudeUserDir(repoPath);
+  } catch (error) {
+    if (!(error instanceof RelativeConfigDirError)) throw error;
+    refuseScrubbed(error);
+    return undefined;
+  }
+}
+
+/**
  * Plan and launch a task this command just minted — `pup new` and `pup audit
  * --sweep`. The task is new, so nothing can claim it first; what is left for
  * the operator to answer is the compile, which validates the spec AND reads
@@ -666,12 +683,14 @@ function createOrRefuse(
     overCap?: boolean;
   },
 ): string | undefined {
+  const userDir = configDirOrRefuse(repoPath);
+  if (userDir === undefined) return undefined;
   return launchOrRefuse(task.id, [InvalidProfileError, ...NO_ROOM_ERRORS], () =>
     createSession(db, {
       repoPath,
       base: DEFAULT_BASE_PROFILE,
       task,
-      claudeUserDir: claudeUserDir(repoPath),
+      claudeUserDir: userDir,
       ...fields,
     }),
   );
@@ -1077,6 +1096,8 @@ export function buildProgram(): Command {
           return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
         }
         if (refusedOverCap(opts.overCap, 'launch')) return;
+        const userDir = configDirOrRefuse(repoPath);
+        if (userDir === undefined) return;
         noteAllowOverlap(opts.allowOverlap);
         const planned = getTask(db, taskId);
         if (planned) {
@@ -1098,7 +1119,7 @@ export function buildProgram(): Command {
               repoPath,
               base: DEFAULT_BASE_PROFILE,
               taskId,
-              claudeUserDir: claudeUserDir(repoPath),
+              claudeUserDir: userDir,
               model: opts.model,
               effort: opts.effort,
               overlapVia: conductorAttribution().overlapVia,
@@ -1153,13 +1174,15 @@ export function buildProgram(): Command {
       if (!Number.isInteger(maxSessions) || maxSessions < 1) {
         return refuse('--max-sessions takes a whole number of at least 1.');
       }
+      const userDir = configDirOrRefuse(repoPath);
+      if (userDir === undefined) return;
       let handle: ConductorHandle;
       try {
         handle = startConductor({
           db,
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: claudeUserDir(repoPath),
+          claudeUserDir: userDir,
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,

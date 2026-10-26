@@ -317,6 +317,21 @@ function sessionEnv(repoPath: string): Record<string, string> {
 }
 
 /**
+ * The launching shell's `CLAUDE_CONFIG_DIR` is not absolute: the operator's to
+ * fix, so a launch refuses on it rather than crashing. The message quotes the
+ * shell's value.
+ */
+export class RelativeConfigDirError extends Error {
+  constructor(value: string) {
+    super(
+      `CLAUDE_CONFIG_DIR is ${JSON.stringify(value)}, which --session-env passes to every ` +
+        'window: it must be an absolute path.',
+    );
+    this.name = 'RelativeConfigDirError';
+  }
+}
+
+/**
  * The Claude Code config dir a window of this project runs on: the launching
  * shell's `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude`
  * otherwise. What the launch hashes for decision 9's drift check, and where
@@ -327,12 +342,7 @@ function sessionEnv(repoPath: string): Record<string, string> {
 export function claudeUserDir(repoPath: string): string {
   const named = sessionEnv(repoPath).CLAUDE_CONFIG_DIR;
   if (named === undefined) return join(homedir(), '.claude');
-  if (!isAbsolute(named)) {
-    throw new Error(
-      `CLAUDE_CONFIG_DIR is ${JSON.stringify(named)}, which --session-env passes to every ` +
-        'window: it must be an absolute path.',
-    );
-  }
+  if (!isAbsolute(named)) throw new RelativeConfigDirError(named);
   return named;
 }
 
