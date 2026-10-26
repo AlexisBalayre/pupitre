@@ -59,11 +59,6 @@ const SKIPPED_DIRS = new Set([
   '.claude',
 ]);
 
-/** Nested packages both checkouts commit, resolved once per capability call (decision 58). */
-function nestedPackages({ measurePath, configPath }: CapabilityContext): Set<string> {
-  return nestedPackageDirs([measurePath, configPath]);
-}
-
 function walkSourceFiles(
   repoPath: string,
   nested: Set<string>,
@@ -90,7 +85,7 @@ function walkSourceFiles(
 /** Repo-relative `/`-separated path -> content, sorted for deterministic metrics. */
 function readSources(ctx: CapabilityContext): Record<string, string> {
   const sources: Record<string, string> = {};
-  for (const file of walkSourceFiles(ctx.measurePath, nestedPackages(ctx)).sort()) {
+  for (const file of walkSourceFiles(ctx.measurePath, nestedPackageDirs(ctx)).sort()) {
     sources[file.split(sep).join('/')] = readFileSync(join(ctx.measurePath, file), 'utf8');
   }
   return sources;
@@ -158,7 +153,7 @@ export function rootCoverageReport(
   raw: IstanbulCoverageMap,
   ctx: CapabilityContext,
 ): CoverageReport {
-  const nested = nestedPackages(ctx);
+  const nested = nestedPackageDirs(ctx);
   return withoutFiles(istanbulToCoverageReport(raw, ctx.measurePath), (file) =>
     isInNestedPackage(file, nested),
   );
@@ -280,7 +275,9 @@ export const typescriptAdapter: Adapter = {
    */
   depGraph(ctx: CapabilityContext): DepGraph {
     const repoPath = ctx.measurePath;
-    const files = walkSourceFiles(repoPath, nestedPackages(ctx)).map((f) => f.split(sep).join('/'));
+    const files = walkSourceFiles(repoPath, nestedPackageDirs(ctx)).map((f) =>
+      f.split(sep).join('/'),
+    );
     const fileSet = new Set(files);
     const modules: Record<string, string[]> = {};
     const edgeSet = new Set<string>();
@@ -331,7 +328,7 @@ export const typescriptAdapter: Adapter = {
   },
 
   coverableFiles(ctx: CapabilityContext, files: string[]): string[] {
-    const nested = nestedPackages(ctx);
+    const nested = nestedPackageDirs(ctx);
     return files.filter(
       (file) =>
         isSourceFile(file) &&
@@ -342,7 +339,7 @@ export const typescriptAdapter: Adapter = {
   },
 
   touchedNestedPackages(ctx: CapabilityContext, files: string[]): NestedPackage[] {
-    const nested = nestedPackages(ctx);
+    const nested = nestedPackageDirs(ctx);
     const touched = new Map<string, string[]>();
     for (const file of files) {
       // The innermost package owns the file: its runner is the one that tests it.

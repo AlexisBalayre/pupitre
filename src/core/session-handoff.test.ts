@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
+import { WorktreeRepointedError } from './git-diff.client.js';
 import { projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -43,6 +44,41 @@ import {
 } from './session-handoff.service.js';
 import { TopRungReachedError } from './session-lifecycle.errors.js';
 
+// Without the GIT_* strip, git run inside the suite's own pre-commit hook acts
+// on the pupitre repo rather than the fixture's.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: GIT_ENV,
+  });
+}
+
+/**
+ * A repo of the session's making, armed with an fsmonitor and a clean filter
+ * that each write to `marker`, with an index for the fsmonitor to run on: what
+ * a session points a gitfile at (decision 101). Answers its git dir.
+ */
+function armedRepo(marker: string): string {
+  const repo = tempDir('pup-armed-');
+  git(repo, 'init', '-q');
+  writeFileSync(join(repo, 'f.ts'), 'export const f = 1;\n');
+  git(repo, 'add', 'f.ts');
+  git(repo, 'commit', '-qm', 'armed');
+  const fsmonitor = join(repo, 'fsmonitor.sh');
+  writeFileSync(fsmonitor, `#!/bin/sh\necho fsmonitor >> ${marker}\n`, { mode: 0o755 });
+  git(repo, 'config', 'core.fsmonitor', fsmonitor);
+  git(repo, 'config', 'filter.pwn.clean', `sh -c 'echo clean >> ${marker}; cat'`);
+  writeFileSync(join(repo, '.git', 'info', 'attributes'), '* filter=pwn\n');
+  return join(repo, '.git');
+}
+
 describe('session handoff', () => {
   let db: Database;
   let repoPath: string;
@@ -53,6 +89,13 @@ describe('session handoff', () => {
     db = openStore(':memory:');
     repoPath = tempDir('pup-handoff-repo-');
     stateBase = tempDir('pup-handoff-state-');
+    // A real worktree on the session's branch: a respawn checks its pointers
+    // against the repo before it indexes or opens anything (decision 101).
+    git(repoPath, 'init', '-q', '-b', 'main');
+    writeFileSync(join(repoPath, 'a.ts'), 'export const a = 1;\n');
+    git(repoPath, 'add', 'a.ts');
+    git(repoPath, 'commit', '-qm', 'init');
+    git(repoPath, 'worktree', 'add', '-q', '-b', 'pup/s1', join(repoPath, '.worktrees', 's1'));
     ensureProject(db, 'proj-1', repoPath);
     insertTask(db, { id: 'task-s1', projectId: 'proj-1', spec: '{}' });
     insertSession(db, {
@@ -264,6 +307,22 @@ describe('session handoff', () => {
     );
   });
 
+  // The row is store text a session can write, and a respawn indexes and opens
+  // a window over the worktree it names (decision 101).
+  it('refuses a row naming a worktree its launch never minted, before the kill', () => {
+    writeCompiled();
+    const elsewhere = tempDir('pup-handoff-elsewhere-');
+    db.prepare("UPDATE sessions SET worktree_path = ? WHERE id = 's1'").run(
+      join(elsewhere, '.worktrees', 's1'),
+    );
+
+    expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
+      /names a worktree or branch that is not its own; inspect the store\. Nothing was respawned\./,
+    );
+    expect(killSession).not.toHaveBeenCalled();
+    expect(launchSession).not.toHaveBeenCalled();
+  });
+
   /**
    * The gap decision 51's addendum named: `relaunchWindow` respawned with the
    * compiled context — which carries the `## Code graph` section whenever the
@@ -272,23 +331,7 @@ describe('session handoff', () => {
    */
   describe('code graph', () => {
     let cgLog: string;
-
-    // Without the GIT_* strip this `init` runs against the pupitre repo when the
-    // suite runs inside its own pre-commit hook, and the exclude line below
-    // then cannot find the fixture's git dir at all.
-    function gitInit(): void {
-      execFileSync('git', ['init', '-b', 'main'], {
-        cwd: repoPath,
-        encoding: 'utf8',
-        env: {
-          ...Object.fromEntries(
-            Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
-          ),
-          GIT_CONFIG_GLOBAL: '/dev/null',
-          GIT_CONFIG_SYSTEM: '/dev/null',
-        },
-      });
-    }
+    const worktree = () => join(repoPath, '.worktrees', 's1');
 
     /** The launch's compiled config: this is read, never recompiled. */
     function writeCompiledMcp(): string {
@@ -297,15 +340,33 @@ describe('session handoff', () => {
       return path;
     }
 
-    function fakeCodegraph(): void {
+    /**
+     * Logs its argv, then runs the git codegraph 1.6.0 runs over the tree, in
+     * it and with the cwd in each nested repo it finds (`lib/x` here), on the
+     * environment pup hands it.
+     */
+    function fakeCodegraph(): string {
       const dir = tempDir('pup-cg-bin-');
       cgLog = join(dir, 'calls.log');
+      const binary = join(dir, 'codegraph');
       writeFileSync(
-        join(dir, 'codegraph'),
-        ['#!/bin/sh', `printf '%s\\n' "$*" >> ${cgLog}`, 'exit 0'].join('\n'),
+        binary,
+        [
+          '#!/bin/sh',
+          `printf '%s\\n' "$*" >> ${cgLog}`,
+          'for d in "$2" "$2/lib/x"; do',
+          '  [ -d "$d" ] || continue',
+          '  cd "$d" || exit 1',
+          '  git ls-files -z -s --recurse-submodules > /dev/null 2>&1',
+          '  git ls-files -z -o --exclude-standard > /dev/null 2>&1',
+          '  git status --porcelain --no-renames -uall > /dev/null 2>&1',
+          'done',
+          'exit 0',
+        ].join('\n'),
         { mode: 0o755 },
       );
       vi.stubEnv('PATH', `${dir}:/usr/bin:/bin`);
+      return binary;
     }
 
     const cgCalls = (): string[] =>
@@ -317,11 +378,6 @@ describe('session handoff', () => {
       cgLog = '';
       vi.spyOn(console, 'error').mockImplementation(() => {});
       writeCompiled();
-      gitInit();
-      // A respawn always has a real worktree to re-index; without one the
-      // client refuses before it reaches the binary, which is the right answer
-      // to a path that is not there and the wrong fixture for this test.
-      mkdirSync(join(repoPath, '.worktrees', 's1'), { recursive: true });
     });
 
     afterEach(() => {
@@ -338,8 +394,61 @@ describe('session handoff', () => {
 
       hardRespawnSession(db, repoPath, 's1', stateBase);
 
-      expect(cgCalls()).toEqual([`init ${join(repoPath, '.worktrees', 's1')} --yes`]);
+      expect(cgCalls()).toEqual([`init ${worktree()} --yes`]);
       expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
+    });
+
+    // The index runs outside any sandbox, after the window it replaces could
+    // rewrite the worktree's gitfile at a repo of its own (decision 101). The
+    // check comes first, so codegraph never runs over it and nothing opens.
+    it('refuses a respawn over a repointed gitfile before anything is indexed', () => {
+      writeCompiledMcp();
+      fakeCodegraph();
+      const marker = join(tempDir('pup-marker-'), 'fired');
+      writeFileSync(join(worktree(), '.git'), `gitdir: ${armedRepo(marker)}\n`);
+      // The plant is live: plain git in the worktree runs it.
+      execFileSync('git', ['status', '--porcelain'], { cwd: worktree(), env: GIT_ENV });
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+
+      let refusal: unknown;
+      try {
+        hardRespawnSession(db, repoPath, 's1', stateBase);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(WorktreeRepointedError);
+      // Refused after the kill: the operator must not look for the old window.
+      expect((refusal as Error).message).toMatch(
+        /Its old window is already gone, and no new one was opened\.$/,
+      );
+      expect(cgCalls()).toEqual([]);
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    // codegraph re-runs its git with the cwd in each untracked nested repo it
+    // finds, and there git follows the nested `.git`: a gitfile naming a repo
+    // the session built ran that repo's fsmonitor. Pinned, every one of those
+    // runs reads the trusted repo instead.
+    it('indexes over an untracked nested repo without running what it arms', () => {
+      const mcpConfigPath = writeCompiledMcp();
+      const binary = fakeCodegraph();
+      const marker = join(tempDir('pup-marker-'), 'fired');
+      const nested = join(worktree(), 'lib', 'x');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, '.git'), `gitdir: ${armedRepo(marker)}\n`);
+      // The plant is live: the same binary on a plain environment runs it.
+      execFileSync(binary, ['index', worktree()], { env: GIT_ENV });
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+      writeFileSync(cgLog, '');
+
+      hardRespawnSession(db, repoPath, 's1', stateBase);
+
+      expect(cgCalls()).toEqual([`init ${worktree()} --yes`]);
+      expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
+      expect(existsSync(marker)).toBe(false);
     });
 
     // Withheld rather than passed at a binary that is gone: the config names an
@@ -347,7 +456,8 @@ describe('session handoff', () => {
     // same wasted tool call in a different place.
     it("withholds the config when the operator's codegraph has gone since the launch", () => {
       writeCompiledMcp();
-      vi.stubEnv('PATH', tempDir('pup-cg-empty-'));
+      // git stays: the pointer check runs it.
+      vi.stubEnv('PATH', `${tempDir('pup-cg-empty-')}:/usr/bin:/bin`);
 
       hardRespawnSession(db, repoPath, 's1', stateBase);
 

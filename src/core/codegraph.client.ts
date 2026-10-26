@@ -1,8 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
-import { runGit } from './git-diff.client.js';
+import { GIT_SAFE_CONFIG, runGit, type WorktreeGitEnv } from './git-diff.client.js';
 
 /**
  * CodeGraph (github.com/colbymchenry/codegraph) as a session capability: a local
@@ -33,12 +47,57 @@ import { runGit } from './git-diff.client.js';
  */
 const INDEX_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'USER'] as const;
 
-function indexEnv(): NodeJS.ProcessEnv {
+/**
+ * The config codegraph's git takes from its environment, as command-scope
+ * config, since its argv is codegraph's own: `GIT_SAFE_CONFIG`, which every
+ * git pup runs takes, and the submodule pair a session window gets (decision
+ * 101). Like a `-c`, it outranks whatever config the repo git reads, so a
+ * `core.fsmonitor` armed there never runs. A `filter.<x>.clean` has no
+ * disarm, its name being the writer's choice, which is why the indexer's git
+ * is also pinned to the trusted dirs (`indexEnv`). `core.splitIndex=false`
+ * keeps that git's `status` from re-splitting the snapshot pup checked into a
+ * `sharedindex.*` in the admin dir, which every later read would load.
+ */
+function codegraphGitConfig(): Record<string, string> {
+  const entries = [
+    ...GIT_SAFE_CONFIG.filter((arg) => arg !== '-c'),
+    'core.splitIndex=false',
+    'diff.ignoreSubmodules=all',
+    'status.submoduleSummary=false',
+  ];
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(entries.length) };
+  entries.forEach((entry, index) => {
+    const equals = entry.indexOf('=');
+    env[`GIT_CONFIG_KEY_${index}`] = entry.slice(0, equals);
+    env[`GIT_CONFIG_VALUE_${index}`] = entry.slice(equals + 1);
+  });
+  return env;
+}
+
+/** The pins, with the index snapshot pup checked in place of the admin dir's own. */
+type IndexGitEnv = WorktreeGitEnv & { GIT_INDEX_FILE: string };
+
+/**
+ * With `git`, the indexer's git is pinned to the admin and common dirs pup
+ * trusts (decision 101), and to the index snapshot pup checked. codegraph runs
+ * `ls-files` and `status` over the tree outside any sandbox, and again in
+ * every nested repo it finds, with the cwd set to it. Unpinned, a repointed
+ * gitfile, or an untracked `<dir>/.git` of the session's naming a repo it
+ * built, has that git read the session's config and run its filters. Pinned,
+ * every one of those runs reads the trusted repo, whatever the cwd.
+ */
+function indexEnv(git?: IndexGitEnv): NodeJS.ProcessEnv {
   const allowed: NodeJS.ProcessEnv = {};
   for (const name of INDEX_ENV_ALLOWLIST) {
     if (process.env[name] !== undefined) allowed[name] = process.env[name];
   }
-  return { ...allowed, CODEGRAPH_TELEMETRY: '0', CODEGRAPH_NO_DOWNLOAD: '1' };
+  return {
+    ...allowed,
+    ...codegraphGitConfig(),
+    ...git,
+    CODEGRAPH_TELEMETRY: '0',
+    CODEGRAPH_NO_DOWNLOAD: '1',
+  };
 }
 
 /**
@@ -47,17 +106,21 @@ function indexEnv(): NodeJS.ProcessEnv {
  * `CLAUDE_CODE_MESSAGING_TOKEN` — the peer credentials that address other
  * sessions and the conductor, which decision 47 keeps off the tmux server for
  * exactly this reason. An `env` block overrides what is inherited, so they are
- * blanked here: a code indexer has no business holding them.
+ * blanked here: a code indexer has no business holding them. Its `git status`
+ * runs outside the sandbox for the whole session, so it gets the indexer's git
+ * config; not its pins, which this declaration has no repo path to build
+ * (decision 101).
  *
  * Kept separate from `indexEnv` on purpose. That one is pup's own child and pup
  * chooses all of it; this one is a declaration handed to Claude Code, which
  * supplies the rest of the environment itself.
  */
-const SERVED_ENV = {
+const SERVED_ENV: Record<string, string> = {
+  ...codegraphGitConfig(),
   CODEGRAPH_TELEMETRY: '0',
   CLAUDE_CODE_MESSAGING_SOCKET: '',
   CLAUDE_CODE_MESSAGING_TOKEN: '',
-} as const;
+};
 
 /** Indexing this repo takes ~2.4s; a ceiling for a cold, large checkout. */
 const INDEX_TIMEOUT_MS = 180_000;
@@ -165,27 +228,95 @@ function assertIndexIsOwnedBy(directory: string): void {
 }
 
 /**
- * Build or refresh one directory's graph, and throw if it cannot be built — the
- * caller decides what a missing graph costs. `init` creates `.codegraph/` and
+ * Copy the admin dir's `index` into `scratch` and flatten the copy, so the
+ * gitlink check and codegraph read the same bytes. The admin dir is the
+ * session's to write (its own `git add` writes that index), so a check of the
+ * file there says nothing about what codegraph's git reads a moment later (CI
+ * review of #173). The copy is pup's. Flattened with `--no-split-index`, it
+ * carries every entry itself, so neither reader takes a `sharedindex.*` from
+ * the admin dir. The `index` is opened like a pointer, without following a
+ * symlink or blocking on a fifo. The `sharedindex.*` the flatten reads is
+ * git's to open, so a fifo there is cut off by the timeout instead.
+ */
+function snapshotIndex(git: WorktreeGitEnv, scratch: string): IndexGitEnv {
+  const source = join(git.GIT_DIR, 'index');
+  const snapshot = join(scratch, 'index');
+  const fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(fd).isFile()) {
+      throw new Error(`${sanitizeReason(source)} is not a regular file: refusing to index`);
+    }
+    writeFileSync(snapshot, readFileSync(fd));
+  } finally {
+    closeSync(fd);
+  }
+  const pinned = { ...git, GIT_INDEX_FILE: snapshot };
+  runGit(git.GIT_WORK_TREE, ['update-index', '--no-split-index'], {
+    env: { ...pinned },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: INDEX_TIMEOUT_MS,
+  });
+  return pinned;
+}
+
+/**
+ * Refuse to index a tree whose index holds a gitlink. Over one, `status` runs
+ * a child git in the submodule's directory, which clears the pins and finds
+ * whatever `.git` the session put there, and a per-submodule `ignore` in
+ * `.gitmodules`, in the worktree or only in the index, outranks
+ * `diff.ignoreSubmodules` from any config. Only a command-line
+ * `--ignore-submodules` beats it, and codegraph's argv is not pup's (decision
+ * 101). Without a gitlink, `.gitmodules` names nothing git would enter. Read
+ * with pup's own pinned git, which runs no child, from the snapshot codegraph
+ * is then handed.
+ */
+function assertNoGitlink(git: IndexGitEnv): void {
+  const entries = runGit(git.GIT_WORK_TREE, ['ls-files', '--stage', '-z'], {
+    env: { ...git },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: INDEX_TIMEOUT_MS,
+  });
+  const gitlink = entries.split('\0').find((entry) => entry.startsWith('160000 '));
+  if (gitlink !== undefined) {
+    throw new Error(
+      `${sanitizeReason(gitlink.slice(gitlink.indexOf('\t') + 1))} is a gitlink in the index, ` +
+        "and codegraph's git would enter the submodule: refusing to index",
+    );
+  }
+}
+
+/**
+ * Build or refresh one tree's graph, and throw if it cannot be built — the
+ * caller decides what a missing graph costs. The tree is `git`'s work tree, and
+ * codegraph's git is pinned to `git`'s dirs and to a snapshot of its index,
+ * removed once codegraph returns. `init` creates `.codegraph/` and
  * indexes as it goes; `index` refuses to run before it ("CodeGraph not
  * initialized"). So a fresh worktree takes the init path, a reused one the index
  * path, and neither indexes twice.
  */
-export function indexDirectory(binary: string, directory: string): void {
-  // Before the existsSync below, which is the call an escaping symlink turns
-  // into someone else's `index`.
-  assertIndexIsOwnedBy(directory);
-  const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
-  execFileSync(
-    binary,
-    initialized ? ['index', directory, '--quiet'] : ['init', directory, '--yes'],
-    {
-      encoding: 'utf8',
-      env: indexEnv(),
-      timeout: INDEX_TIMEOUT_MS,
-      stdio: ['ignore', 'ignore', 'pipe'],
-    },
-  );
+export function indexDirectory(binary: string, git: WorktreeGitEnv): void {
+  const directory = git.GIT_WORK_TREE;
+  const scratch = mkdtempSync(join(tmpdir(), 'pup-index-'));
+  try {
+    const snapshot = snapshotIndex(git, scratch);
+    assertNoGitlink(snapshot);
+    // Right before the existsSync below, which is the call an escaping symlink
+    // turns into someone else's `index`.
+    assertIndexIsOwnedBy(directory);
+    const initialized = existsSync(join(directory, '.codegraph', 'codegraph.db'));
+    execFileSync(
+      binary,
+      initialized ? ['index', directory, '--quiet'] : ['init', directory, '--yes'],
+      {
+        encoding: 'utf8',
+        env: indexEnv(snapshot),
+        timeout: INDEX_TIMEOUT_MS,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      },
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -211,6 +342,9 @@ export function codegraphMcpConfig(binary: string, worktreePath: string): string
  * Index `directory` for a launch, or say in one line why the caller gets no
  * graph. True means `directory` now has an index of its own and the compiled
  * `mcp.json` can be handed to `claude`; false means launch without it.
+ * `pinned` answers the dirs the indexer's git is pinned to, `directory` being
+ * their work tree. It runs inside the failure envelope, once a binary is
+ * found, so a pointer check or a checkout that fails costs the graph too.
  *
  * Best-effort in one direction only: a failed index costs a code graph, never a
  * launch, and it withholds the config rather than launching with one codegraph
@@ -226,6 +360,7 @@ export function prepareGraph(
   binary: string | undefined,
   repoPath: string,
   directory: string,
+  pinned: () => WorktreeGitEnv,
 ): boolean {
   if (!binary) {
     console.error('No `codegraph` outside the repo on PATH: launching without a code graph.');
@@ -235,7 +370,7 @@ export function prepareGraph(
     // Before the index, which is what creates the untracked `.codegraph/` that
     // would otherwise show up in every `git status`, including the gate's.
     ensureCodegraphExcluded(repoPath);
-    indexDirectory(binary, directory);
+    indexDirectory(binary, pinned());
     return true;
   } catch (error) {
     // Through `failureSummary` like every other shell-out (decision 29): this is

@@ -328,7 +328,9 @@ describe('stopConductor and isConductorRunning', () => {
  * faked per docs/conventions/testing.md: what is under test is what pup asks
  * codegraph to index and what it then hands `claude`.
  */
-describe('startConductor code graph', () => {
+// Real git repos and checkouts per test, several conductor starts in some: a
+// generous timeout so machine load can't flake it, as `runMergeGate` has.
+describe('startConductor code graph', { timeout: 20_000 }, () => {
   let home: string;
   let repo: string;
   let cgLog: string;
@@ -407,6 +409,40 @@ describe('startConductor code graph', () => {
     expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
   });
 
+  // The add and the checkout of the first cut are two git runs: a target that
+  // moved between them would leave HEAD at the old tip and the index at the
+  // new one, and every later start's `checkout --detach` would refuse.
+  it('cuts its first checkout at one sha when the target moves after the add', () => {
+    fakeCodegraph(INDEXES);
+    const tip = gitIn(repo, 'rev-parse', 'main');
+    writeFileSync(join(repo, 'later.ts'), 'export const later = 1;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'later');
+    const later = gitIn(repo, 'rev-parse', 'main');
+    gitIn(repo, 'reset', '-q', '--hard', tip);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `${realGit} "$@" || exit $?`,
+        `case " $* " in *" worktree add "*) ${realGit} -C ${repo} update-ref refs/heads/main ${later} ;; esac`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
+
+    start();
+
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(tip);
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    fakeCodegraph(INDEXES);
+    start();
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(later);
+  });
+
   // The finding, in one test: a session's Bash is only guarded against
   // `.claude/`, so it can write into the repo root from its own worktree. An
   // untracked source file is returned VERBATIM into the context of the agent
@@ -453,6 +489,162 @@ describe('startConductor code graph', () => {
 
     expect(existsSync(join(checkout(), 'second.ts'))).toBe(true);
     expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
+  });
+
+  // The checkout's admin dir sits under `<common>/worktrees/` beside the
+  // sessions' own, where a session can rewrite its `commondir` from inside the
+  // sandbox. The refresh's git runs pinned after a check, so the rewrite costs
+  // the graph and runs nothing (decision 101).
+  it('refuses a checkout whose commondir names another repo, running nothing it arms', () => {
+    fakeCodegraph(INDEXES);
+    start();
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    const armed = tempDir('pup-armed-');
+    gitIn(armed, 'init', '-q');
+    const fsmonitor = join(armed, 'fsmonitor.sh');
+    writeFileSync(fsmonitor, `#!/bin/sh\necho fired >> ${marker}\n`, { mode: 0o755 });
+    gitIn(armed, 'config', 'core.fsmonitor', fsmonitor);
+    writeFileSync(join(repo, '.git', 'worktrees', 'checkout', 'commondir'), `${armed}/.git\n`);
+    // The plant is live: plain git reading the checkout's index runs it.
+    gitIn(checkout(), 'ls-files');
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    writeFileSync(cgLog, '');
+
+    start();
+
+    expect(existsSync(marker)).toBe(false);
+    expect(cgCalls()).toEqual([]);
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(
+      /Could not index .*: launching without a code graph\. Refusing to run git in /,
+    );
+  });
+
+  // A session can write under `<common>/worktrees/`, so the checkout's first cut
+  // must leave nothing for git to do before the pointers are checked: a plain
+  // add's own checkout reads the admin dir's `commondir` back (decision 101).
+  it('refuses a first cut whose commondir is rewritten right after the add', () => {
+    fakeCodegraph(INDEXES);
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    const armed = tempDir('pup-armed-');
+    gitIn(armed, 'init', '-q');
+    const fsmonitor = join(armed, 'fsmonitor.sh');
+    writeFileSync(fsmonitor, `#!/bin/sh\necho fired >> ${marker}\n`, { mode: 0o755 });
+    gitIn(armed, 'config', 'core.fsmonitor', fsmonitor);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    const listing = join(shim, 'listing');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `${realGit} "$@" || exit $?`,
+        'prev=; add=; dir=',
+        'for a in "$@"; do',
+        '  if [ -n "$add" ] && [ -z "$dir" ]; then case "$a" in -*) ;; *) dir=$a ;; esac; fi',
+        '  [ "$prev $a" = "worktree add" ] && add=1',
+        '  prev=$a',
+        'done',
+        '[ -n "$dir" ] || exit 0',
+        `ls -A "$dir" > ${listing}`,
+        `echo ${armed}/.git > "${join(repo, '.git', 'worktrees')}/$(basename "$dir")/commondir"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
+
+    start();
+
+    // The add checked nothing out, so no git read the rewritten pointer.
+    expect(readFileSync(listing, 'utf8')).toBe('.git\n');
+    expect(existsSync(marker)).toBe(false);
+    expect(cgCalls()).toEqual([]);
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toMatch(
+      /Could not index .*: launching without a code graph\. Refusing to run git in /,
+    );
+    // The plant is live: plain git reading the checkout's index runs it.
+    gitIn(checkout(), 'ls-files');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  // The first cut is an add, then a pinned `read-tree -u`. An interrupt or a
+  // full disk partway through the read-tree leaves files and no index, which
+  // git's own cleanup of a failed add never sees. A `checkout` from there
+  // refuses those files as untracked on every later start. A read-tree over
+  // them kept HEAD at that cut and the files the target had dropped since, so
+  // the next start's `checkout` aborted once the target moved again: either
+  // way the conductor went without a graph for good (conductor review).
+  it('re-cuts a first cut whose read-tree never finished, at the tip it moved to', () => {
+    fakeCodegraph(INDEXES);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `case " $* " in *" read-tree "*) printf 'export const tr' > "$GIT_WORK_TREE/tracked.ts"; exit 130 ;; esac`,
+        `exec ${realGit} "$@"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
+    start();
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    fakeCodegraph(INDEXES);
+    gitIn(repo, 'rm', '-q', 'tracked.ts');
+    writeFileSync(join(repo, 'second.ts'), 'export const second = 2;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'second');
+
+    start();
+
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(false);
+    expect(existsSync(join(checkout(), 'second.ts'))).toBe(true);
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
+    writeFileSync(join(repo, 'tracked.ts'), 'export const tracked = 3;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'third');
+
+    start();
+
+    expect(readFileSync(join(checkout(), 'tracked.ts'), 'utf8')).toBe(
+      'export const tracked = 3;\n',
+    );
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
+  });
+
+  // A `worktree add` killed before it finished leaves its own `locked` file in
+  // the admin dir, and the prune keeps a locked registration without a word.
+  // The re-cut would then fail on every start with git's own message, so it
+  // refuses before the add and says how to clear it (conductor review).
+  it('refuses to re-cut while a lock keeps the registration, and says how to clear it', () => {
+    fakeCodegraph(INDEXES);
+    start();
+    const admin = join(repo, '.git', 'worktrees', 'checkout');
+    rmSync(join(admin, 'index'));
+    writeFileSync(join(admin, 'locked'), 'initializing\n');
+
+    start();
+
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    const printed = vi.mocked(console.error).mock.calls.flat().join(' ');
+    expect(printed).toContain(`Could not index ${checkout()}: `);
+    expect(printed).toContain(
+      'run `git worktree unlock` on it from the main checkout and restart the conductor.',
+    );
+    gitIn(repo, 'worktree', 'unlock', checkout());
+
+    start();
+
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(true);
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
   });
 
   // Clearing `~/.pupitre` leaves the worktree registration behind, and

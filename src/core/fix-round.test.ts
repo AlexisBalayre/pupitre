@@ -46,6 +46,7 @@ import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from './fix-round.service.js';
+import { WorktreeRepointedError } from './git-diff.client.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -751,6 +752,112 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     reviewOnGitHub({ threads: OPEN_THREAD });
 
     await expectRefusedUnwritten(SURVIVOR_REFUSAL);
+  });
+
+  // The window's own check would refuse per-worktree config only once the
+  // worktree and the round exist, and blame a worker that never ran, so the
+  // round asks before its `worktree add`, as a launch does (decision 101).
+  it('refuses a repo with extensions.worktreeConfig on before any worktree add', async () => {
+    seedPrMerge();
+    sh(
+      dirname(repo),
+      'git',
+      'config',
+      '--file',
+      join(repo, '.git', 'config'),
+      'extensions.worktreeConfig',
+      'true',
+    );
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await expectRefusedUnwritten(/extensions\.worktreeConfig is on/);
+    expect(existsSync(worktree)).toBe(false);
+    expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(worktree);
+  });
+
+  /** A git on PATH that runs `shimCase` (given its one-shot flag file) before the real one. */
+  function shimGit(shimCase: (once: string) => string): void {
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-git-')));
+    const once = join(shim, 'once');
+    writeFileSync(once, '');
+    writeFileSync(
+      join(shim, 'git'),
+      ['#!/bin/sh', shimCase(once).replaceAll('REAL_GIT', realGit), `exec ${realGit} "$@"`].join(
+        '\n',
+      ),
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${shim}:${process.env.PATH}`;
+  }
+
+  // The add comes before the pinned checkout (decision 101), so a checkout that
+  // throws must take the new worktree with it, or every retry refuses it as an
+  // earlier round's, and the refusal must say so rather than ask for a repair
+  // of what is gone. The branch the add cut stays, at the head the retry
+  // starts from.
+  it.each([
+    [
+      'a read-tree that fails',
+      (once: string) =>
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+      /No space left on device/,
+    ],
+    [
+      'a commondir rewritten right after the add',
+      (once: string) =>
+        `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; REAL_GIT "$@" || exit $?; echo /nonexistent/planted > ${join(repo, '.git', 'worktrees', SESSION_ID, 'commondir')}; exit 0; fi ;; esac`,
+      WorktreeRepointedError,
+    ],
+  ])(
+    'undoes the add on %s, says so, and the retry runs the round',
+    async (_, shimCase, refusal) => {
+      seedPrMerge();
+      // As the gate's teardown leaves it, so the add cuts the branch with `-b`.
+      sh(repo, 'git', 'branch', '-D', BRANCH);
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      shimGit(shimCase);
+      const events = listEvents(db, SESSION_ID).length;
+
+      const error = await fix().catch((caught: unknown) => caught);
+
+      expect(() => {
+        throw error;
+      }).toThrow(refusal);
+      expect((error as Error).message).toMatch(
+        /The round's new worktree was removed, so nothing needs restoring: re-run `pup fix` once the cause is cleared[.,] .*No fix round was started\.$/,
+      );
+      // In place of the refusal's own advice, never beside it.
+      expect((error as Error).message).not.toMatch(/worktree repair/);
+      expect(listEvents(db, SESSION_ID)).toHaveLength(events);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(existsSync(worktree)).toBe(false);
+      expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(worktree);
+      expect(sh(repo, 'git', 'rev-parse', BRANCH)).toBe(pinned);
+
+      await fix();
+
+      expect(getSession(db, SESSION_ID)?.state).toBe('running');
+      expect(readFileSync(join(worktree, 'src/feature.ts'), 'utf8')).toBe(
+        'export const feature = 1;\n',
+      );
+    },
+  );
+
+  // `worktree prune` keeps a locked registration and says nothing, so the
+  // undo checks the admin dir is gone before it claims the worktree is.
+  it('names the cleanup when the prune keeps the new worktree registered', async () => {
+    seedPrMerge();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+    shimGit(
+      (once) =>
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; touch "$GIT_DIR/locked"; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+    );
+
+    await expectRefusedUnwritten(
+      /No space left on device[\s\S]* pup fix could not remove the round's new worktree: remove it with `rm -r \.worktrees\/s1` then `git worktree prune` from the main checkout \(do not run git inside it\), then re-run\. No fix round was started\.$/,
+    );
   });
 
   it('refuses on the top rung unless the operator names a route', async () => {

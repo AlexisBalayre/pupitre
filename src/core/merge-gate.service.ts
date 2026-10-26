@@ -10,7 +10,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
@@ -37,6 +37,7 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -385,7 +386,10 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     // resolved, because the sandbox matches resolved paths.
     const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
     try {
-      const checkoutDir = join(checkoutRoot, 'checkout');
+      // Named after its root, so the admin dir `worktree add` names after it is
+      // this gate's alone: as `checkout` it took `checkout1` whenever the
+      // conductor's checkout held `checkout`, a name the pins cannot predict.
+      const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
       return await (regate
         ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
         : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
@@ -413,27 +417,23 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
  * dropped before it is released, since it must hold the one sha this gate lands.
  *
  * `--no-checkout` then a `read-tree` of our own, for the reasons `fastForward`
- * gives: `--work-tree`, because `core.worktree` in the shared config would aim
- * the writes elsewhere, and `--no-sparse-checkout`, because a planted
- * `core.sparseCheckout` would leave out committed files no stage would then
- * see. The checkout runs a smudge filter on every file it writes, so the drivers
- * are checked again right before it, as they are before the fast-forward.
+ * gives: `--no-sparse-checkout`, because a planted `core.sparseCheckout` would
+ * leave out committed files no stage would then see. The checkout runs a
+ * smudge filter on every file it writes, so the drivers are checked again
+ * right before it, as they are before the fast-forward.
+ *
+ * Its git after the add runs pinned to the dirs pup trusts, checked first
+ * (decision 101): the admin dir sits under `<common>/worktrees/` beside the
+ * sessions' own, and a session can rewrite its `commondir` from inside the
+ * sandbox in the moment between the add and the read, or plant
+ * `config.worktree` there. `GIT_WORK_TREE` also does what `--work-tree` did,
+ * outranking a `core.worktree` in the shared config that would aim the writes
+ * elsewhere.
  */
-function cutGateCheckout(repoPath: string, dir: string, sha: string): string {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  runGit(dir, [
-    '--work-tree',
-    dir,
-    'read-tree',
-    '--no-recurse-submodules',
-    '--no-sparse-checkout',
-    '--reset',
-    '-u',
-    sha,
-  ]);
-  refuseEscapingLinks(dir, sha);
-  return dir;
+  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -452,9 +452,11 @@ function escapesCheckout(inside: string, path: string): boolean {
  * .env.local`, a build output) adds no reach and is kept; one pointing out is
  * refused like a resolving one (decision 81).
  */
-function refuseEscapingLinks(checkout: string, sha: string): void {
+function refuseEscapingLinks(checkout: string, sha: string, git: WorktreeGitEnv): void {
   const inside = realpathSync(checkout);
-  const entries = runGit(checkout, ['ls-tree', '-r', '-z', sha]).split('\0').filter(Boolean);
+  const entries = runGit(checkout, ['ls-tree', '-r', '-z', sha], { env: { ...git } })
+    .split('\0')
+    .filter(Boolean);
   for (const entry of entries) {
     // The path is everything after the first tab: mode, type and oid never hold
     // one, a path can.
@@ -1440,20 +1442,23 @@ export async function measureBranch(
   // worktree's, which the live session can change while they run (decision 81);
   // which tools are declared is still read from the main checkout the merge
   // lock holds at the target branch, or a session silences a debt stage by
-  // editing its own manifest (decision 29).
+  // editing its own manifest (decision 29). What git reads of the pinned sha
+  // is read from the main checkout's repo, never through the checkout's admin
+  // dir, which a session can rewrite after the cut (decision 101).
+  cutGateCheckout(req.repoPath, checkoutDir, sha);
   const capabilityContext: CapabilityContext = {
     measurePath: checkoutDir,
     configPath: req.repoPath,
+    measureSha: sha,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
-  const checkout = cutGateCheckout(req.repoPath, checkoutDir, sha);
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
   // parent out of the checkout (decision 81).
   for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)]) {
-    linkEnvironment(req.repoPath, checkout, rel);
+    linkEnvironment(req.repoPath, checkoutDir, rel);
   }
   // Resolved from the trusted main checkout, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
@@ -1469,7 +1474,7 @@ export async function measureBranch(
 
   // Build first and alone: every stage after it reads what it produced.
   const build = commandFor('build');
-  const built = build ? await commandStage('build', build, checkout) : notMeasured('build');
+  const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
   stages.push(built);
   if (built.status === 'fail') return undefined;
 
@@ -1488,7 +1493,7 @@ export async function measureBranch(
     try {
       if (test) {
         const run = covered ? { ...test, ...covered } : test;
-        const result = await commandStage('test', run, checkout);
+        const result = await commandStage('test', run, checkoutDir);
         results.set('test', result);
         if (result.status === 'fail') return { results };
         folded = covered?.report();
@@ -1499,7 +1504,7 @@ export async function measureBranch(
     for (const pkg of nestedPackages) {
       for (const command of pkg.commands.filter((c) => c.stage === 'test')) {
         const stage = nestedStage(pkg, command.stage);
-        const result = await commandStage(stage, command, join(checkout, pkg.dir));
+        const result = await commandStage(stage, command, join(checkoutDir, pkg.dir));
         results.set(stage, result);
         if (result.status === 'fail') return { results, folded };
       }
@@ -1541,12 +1546,12 @@ export async function measureBranch(
   // Alongside the suites: every stage that only reads the checkout, each in a
   // child of its own as before (decision 95).
   const lint = commandFor('lint');
-  const linted = lint && commandStage('lint', lint, checkout);
+  const linted = lint && commandStage('lint', lint, checkoutDir);
   const typechecks = new Map<string, Promise<GateStageResult>>();
   for (const pkg of nestedPackages) {
     for (const command of pkg.commands.filter((c) => c.stage !== 'test')) {
       const stage = nestedStage(pkg, command.stage);
-      typechecks.set(stage, commandStage(stage, command, join(checkout, pkg.dir)));
+      typechecks.set(stage, commandStage(stage, command, join(checkoutDir, pkg.dir)));
     }
   }
   const staticDebt = measureStaticDebt(req.adapters, capabilityContext);

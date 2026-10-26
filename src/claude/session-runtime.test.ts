@@ -191,6 +191,7 @@ describe('preseedTrust', () => {
 
 const OPTS = {
   sessionId: 's-1',
+  repoPath: '/tmp/repo',
   worktreePath: '/tmp/repo/.worktrees/s-1',
   settingsPath: '/tmp/compiled/settings.json',
   route: LADDERS.standard[0] as ModelRoute,
@@ -308,7 +309,7 @@ describe('launchSession', () => {
   beforeEach(() => {
     const made = initRepoWithWorktree();
     repo = made.repo;
-    opts = { ...OPTS, worktreePath: made.worktree };
+    opts = { ...OPTS, repoPath: repo, worktreePath: made.worktree };
   });
 
   afterEach(() => {
@@ -382,6 +383,22 @@ describe('launchSession', () => {
     expect(() => launchSession(opts)).toThrow(WorktreeRepointedError);
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
     expect(tmuxCalls).toEqual([]);
+  });
+
+  // The worktree path is the store row's, which a session can write; the repo
+  // is the project's own. A row naming a worktree of a repo the session built
+  // passes every check made against that repo, so the launch checks it against
+  // the project's, whose admin dir its gitfile does not name (decision 101).
+  it('opens no window over a row naming a worktree of another repo', () => {
+    const foreign = initRepoWithWorktree();
+
+    expect(() => launchSession({ ...opts, worktreePath: foreign.worktree })).toThrow(
+      WorktreeRepointedError,
+    );
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls).toEqual([]);
+    // The control: against its own repo, the foreign worktree checks out clean.
+    expect(() => verifiedWorktreeGitEnv(foreign.repo, foreign.worktree)).not.toThrow();
   });
 
   // Claude Code's startup git and the code graph's run on the window's
