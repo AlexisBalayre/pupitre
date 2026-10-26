@@ -20,7 +20,7 @@ import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { maxSessions } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import { assertNoArmedGitDrivers, assertNoWorktreeConfig, runGit } from './git-diff.client.js';
-import { scopeConflicts } from './overlap.service.js';
+import { filesWorthANotice, scopeConflicts } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import {
@@ -211,7 +211,12 @@ export function launchTask(db: Database, req: LaunchTaskRequest & CapOverride): 
     req.overrideVia !== 'conductor',
   );
   task.knowledgeSlice = knowledgeSliceFor(db, req.repoPath, pid, task.scopeIn);
-  const sessionId = startSession(db, { ...req, task }, route, conflicts.map(peerOf));
+  const sessionId = startSession(
+    db,
+    { ...req, task },
+    route,
+    overlapsWorthANotice(db, conflicts).map(peerOf),
+  );
   recordOverlaps(db, sessionId, conflicts, req.overlapVia ?? 'operator');
   return sessionId;
 }
@@ -241,7 +246,27 @@ function peerOf(conflict: ScopeConflict): SessionPeer {
 }
 
 /**
- * Steer each live session sharing files with the one just launched, once,
+ * The overlaps two workers are told of, on either side: with a running peer,
+ * over files other than the append-only decisions log (decision 104). A
+ * kickoff's `## Peers` asks its worker to message each peer it lists, which
+ * wakes an idle one as surely as a steer, so the kickoff lists only these.
+ * A peer in any other state is reached by the gate's fresh-base stage and a
+ * fix round's own introduction when it next works. Two appends to the log
+ * conflict whatever their workers agree: the first to land sends the other
+ * the main-landed notice, log included, while it runs, and the gate's
+ * fresh-base stage meets it otherwise. The state is read at each call.
+ */
+function overlapsWorthANotice(db: Database, conflicts: ScopeConflict[]): ScopeConflict[] {
+  return conflicts.flatMap(({ sessionId, files }) => {
+    const shared = filesWorthANotice(files);
+    return shared.length > 0 && getSession(db, sessionId)?.state === 'running'
+      ? [{ sessionId, files: shared }]
+      : [];
+  });
+}
+
+/**
+ * Steer each running session sharing files with the one just launched, once,
  * with the newcomer's name and what they share (decision 99). After the
  * kickoff landed, so a peer that messages straight away reaches a window
  * that has read its task. Best effort: a peer whose window refuses the paste
@@ -250,9 +275,9 @@ function peerOf(conflict: ScopeConflict): SessionPeer {
  */
 function introduceToPeers(db: Database, newcomer: string, conflicts: ScopeConflict[]): void {
   const name = windowLabel({ sessionId: newcomer });
-  for (const conflict of conflicts) {
+  for (const { sessionId, files } of overlapsWorthANotice(db, conflicts)) {
     try {
-      steerSession(db, conflict.sessionId, peerJoinedMessage({ name, files: conflict.files }), {
+      steerSession(db, sessionId, peerJoinedMessage({ name, files }), {
         kind: 'peer-joined',
         by: newcomer,
       });
@@ -468,8 +493,9 @@ function compileSessionProfile(
 
 /**
  * A fix round's profile, compiled afresh from the task spec as a launch
- * compiles it, with the knowledge slice and the peers sharing its files as of
- * now, returned for `recordOverlaps` once the kickoff lands (decision 90). The
+ * compiles it, with the knowledge slice and the peers worth a notice as of
+ * now, and every overlap returned for `recordOverlaps` once the kickoff lands
+ * (decision 90). The
  * compiled dir under the store is one the conductor's shell can write
  * (decision 47), so a round never relaunches from what it holds. A merged
  * session is not live, so a round adds a window as a launch does, and meets the
@@ -491,7 +517,13 @@ export function recompileSessionProfile(
   );
   const conflicts = scopeConflicts(db, source.repoPath, task.scopeIn, task.scopeOut);
   return {
-    ...compileSessionProfile(source, task, session, paths, conflicts.map(peerOf)),
+    ...compileSessionProfile(
+      source,
+      task,
+      session,
+      paths,
+      overlapsWorthANotice(db, conflicts).map(peerOf),
+    ),
     conflicts,
   };
 }
