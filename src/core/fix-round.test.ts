@@ -1379,21 +1379,28 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         ? readFileSync(join(ghDir, 'comments'), 'utf8').split('\n--\n').filter(Boolean)
         : [];
 
-    /** The branch as a direct call names it: `tip` on main, which has not moved. */
-    const onMain = (tip: string) => ({ tip, targetSha: sh(repo, 'git', 'rev-parse', 'main') });
+    /** The target as a direct call names it: main, which has not moved. */
+    const mainSha = () => sh(repo, 'git', 'rev-parse', 'main');
 
     /**
      * A round on the four threads, its worker done with `summary`, gated
      * again; `meanwhile` runs while the worker works. Each of `rejected` is a
-     * summary the worker gave first, on a run the round's checks rejected.
+     * summary the worker gave first, on a run the round's checks rejected,
+     * after which `afterRejected` runs.
      */
     async function gateTheRound(
       summary: string,
       {
         meanwhile,
         rejected = [],
+        afterRejected,
         paths,
-      }: { meanwhile?: () => void; rejected?: string[]; paths?: Record<string, string> } = {},
+      }: {
+        meanwhile?: () => void;
+        rejected?: string[];
+        afterRejected?: () => void;
+        paths?: Record<string, string>;
+      } = {},
     ): Promise<string> {
       await gateWithPr();
       reviewOnGitHub({ threads: ROUND_THREADS.filter(({ id }) => id !== 'PRRT_human') });
@@ -1415,6 +1422,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       for (const said of rejected) {
         markSessionDone(db, SESSION_ID, said);
         expect(await gate(failingAdapter)).toMatchObject({ status: 'rejected' });
+        afterRejected?.();
       }
       markSessionDone(db, SESSION_ID, summary);
       expect(await gate(passingAdapter)).toMatchObject({ status: 'merged', prUrl: PR_URL });
@@ -1475,7 +1483,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         repo,
         SESSION_ID,
         'github.com/owner/repo',
-        onMain(fixed),
+        mainSha(),
       );
 
       expect(answers).toEqual({
@@ -1500,16 +1508,16 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         resolved: ['PRRT_fixed'],
         comments: [marker],
       });
-      answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(fixed));
+      answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', mainSha());
 
       expect(replies()).toHaveLength(4);
       expect(resolves()).toHaveLength(1);
       expect(comments()).toHaveLength(1);
 
-      // A tip that is no sha, or one git does not hold, proves no fix.
-      for (const tip of ['not a sha', 'c'.repeat(40)]) {
+      // A target that is no sha, or one git does not hold, proves no fix.
+      for (const target of ['not a sha', 'c'.repeat(40)]) {
         expect(
-          answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(tip)),
+          answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', target),
         ).toMatchObject({ addressed: 0, unverified: 1 });
       }
       expect(resolves()).toHaveLength(1);
@@ -1535,8 +1543,9 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     });
 
     // The gate's fresh-base takes main in before the pin, so a diff from the
-    // round's start to the pin would count main's files as the round's.
-    it('leaves open a thread on a file only the target changed while the round ran', async () => {
+    // round's start to the pin would count main's files as the round's, and
+    // the round's commits would count main's change the worker cherry-picked.
+    it('leaves open a thread on a file only the target changed, though the worker took the change in', async () => {
       const fixed = await gateTheRound(`${SUMMARY}; PRRT_silent fixed: checked the bound`, {
         meanwhile: () => {
           mkdirSync(join(repo, 'src'), { recursive: true });
@@ -1554,6 +1563,16 @@ describe('startFixRound', { timeout: 30_000 }, () => {
             '-m',
             'main moves',
           );
+          sh(
+            worktree,
+            'git',
+            '-c',
+            'user.email=f@test',
+            '-c',
+            'user.name=fix',
+            'cherry-pick',
+            'main',
+          );
         },
       });
       const pinned = sh(origin, 'git', 'rev-parse', BRANCH);
@@ -1570,14 +1589,13 @@ describe('startFixRound', { timeout: 30_000 }, () => {
 
     // A rebase or an amend carries the PR's commits from before the round under
     // new shas, in neither the round's start nor main: their files are no
-    // proof of a fix, so a tip the start is no ancestor of counts none.
-    it('resolves nothing on a branch rewritten since the round started', async () => {
+    // proof of a fix, while the round's own change still is.
+    it('counts only what the round changed on a branch rewritten since it started', async () => {
       // On the file of the PR's commit from before the round.
       const paths = { ...PATHS, PRRT_silent: 'src/feature.ts' };
       const fixed = await gateTheRound(`${SUMMARY}; PRRT_silent fixed: checked the bound`, {
         paths,
       });
-      expect(resolves()).toEqual([expect.stringMatching(/-f thread=PRRT_fixed\s*$/)]);
       const commitTree = (tree: string, parent: string, message: string) =>
         sh(
           repo,
@@ -1595,25 +1613,75 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         );
       const amended = commitTree(`${pinned}^{tree}`, 'main', 'feature, amended');
       const rewritten = commitTree(`${fixed}^{tree}`, amended, 'src/fix.ts');
+      db.prepare(
+        "UPDATE events SET payload = json_set(payload, '$.sha', ?) WHERE id = (SELECT max(id) FROM events WHERE type = 'merge')",
+      ).run(rewritten);
       answersOnGitHub({ paths });
+      const resolved = resolves().length;
 
       const answers = answerFixRoundThreads(
         db,
         repo,
         SESSION_ID,
         'github.com/owner/repo',
-        onMain(rewritten),
+        mainSha(),
       );
 
-      expect(answers).toMatchObject({ addressed: 0, unverified: 2, declined: 1, unanswered: 0 });
-      expect(resolves()).toHaveLength(1);
+      expect(answers).toMatchObject({ addressed: 1, unverified: 1, declined: 1, unanswered: 0 });
+      expect(resolves().slice(resolved)).toEqual([
+        expect.stringMatching(/-f thread=PRRT_fixed\s*$/),
+      ]);
       expect(
         replies()
           .filter((m) => m.includes('-f thread=PRRT_silent'))
           .at(-1),
       ).toContain(
-        `Answered fixed in the round gated at ${fixed}, but pup cannot show the round's own ` +
+        `Answered fixed in the round gated at ${rewritten}, but pup cannot show the round's own ` +
           'commits change ` src/feature.ts `',
+      );
+    });
+
+    // The summary after a rejected run need not name a thread again, so an
+    // earlier `fixed` stands: only what the round changed in the end, not a
+    // commit in its history, makes it a fix.
+    it('leaves open a thread whose fix a later run of the round reverted', async () => {
+      await gateTheRound('fixed the failing check by dropping the bound', {
+        rejected: [SUMMARY],
+        afterRejected: () =>
+          sh(
+            worktree,
+            'git',
+            '-c',
+            'user.email=f@test',
+            '-c',
+            'user.name=fix',
+            'revert',
+            '--no-edit',
+            'HEAD',
+          ),
+      });
+      const pinned = sh(origin, 'git', 'rev-parse', BRANCH);
+
+      expect(resolves()).toEqual([]);
+      expect(replies().find((m) => m.includes('-f thread=PRRT_fixed'))).toContain(
+        `Answered fixed in the round gated at ${pinned}, but pup cannot show the round's own ` +
+          'commits change ` src/fix.ts `',
+      );
+    });
+
+    // Each summary is read on its own, and an answer within one never runs
+    // across a line: an id at the end of one line is not the verdict below it.
+    it('reads no answer across a line break, within a summary or between two', async () => {
+      await gateTheRound(
+        'touched PRRT_fixed\nfixed: bounded the loop; PRRT_declined declined: the call is ' +
+          'sync; left PRRT_silent',
+        { rejected: ['fixed: the check waits for its child'] },
+      );
+
+      expect(resolves()).toEqual([]);
+      expect(comments()[0]).toContain(
+        '0 thread(s) addressed and resolved, 0 answered fixed that pup could not verify, ' +
+          '1 declined and 2 unanswered',
       );
     });
 
@@ -1642,21 +1710,21 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     // The gate answers under the merge lock: a GitHub that hangs costs the
     // answers' budget, and its timeout is no interrupt to rethrow.
     it('gives up within its time budget on a GitHub that does not answer', async () => {
-      const fixed = await gateTheRound(SUMMARY);
+      await gateTheRound(SUMMARY);
       const posted = ghFile('mutations').length;
       writeFileSync(join(ghDir, 'answers-slow'), '');
 
       const started = Date.now();
       let error: unknown;
       try {
-        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(fixed), 1000);
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', mainSha(), 1000);
       } catch (thrown) {
         error = thrown;
       }
 
       expect(Date.now() - started).toBeLessThan(4000);
       expect(() =>
-        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(fixed), 0),
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', mainSha(), 0),
       ).toThrow("GitHub took longer than the 0 s the round's answers may hold the merge lock");
       expect((error as Error).message).toBe(
         "GitHub took longer than the 1 s the round's answers may hold the merge lock",
@@ -1668,13 +1736,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     it('answers nothing for a merge that ended no round, and a failing gh costs only the replies', async () => {
       await gateWithPr();
       expect(
-        answerFixRoundThreads(
-          db,
-          repo,
-          SESSION_ID,
-          'github.com/owner/repo',
-          onMain('a'.repeat(40)),
-        ),
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', 'a'.repeat(40)),
       ).toBeUndefined();
 
       reviewOnGitHub({ threads: ROUND_THREADS.slice(0, 1) });
@@ -1704,13 +1766,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         "UPDATE events SET payload = json_set(payload, '$.sha', 'bad') WHERE type = 'merge'",
       ).run();
       expect(
-        answerFixRoundThreads(
-          db,
-          repo,
-          SESSION_ID,
-          'github.com/owner/repo',
-          onMain('a'.repeat(40)),
-        ),
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', 'a'.repeat(40)),
       ).toBeUndefined();
     });
   });

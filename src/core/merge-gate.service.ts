@@ -33,7 +33,7 @@ import {
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
-import { answerFixRoundThreads, type RoundBranch } from './fix-round.service.js';
+import { answerFixRoundThreads } from './fix-round.service.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -1092,9 +1092,6 @@ async function gateAndMerge(
   // live session commits or tags meanwhile. The stages read that sha's files
   // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
-  // The branch as the session left it, before the rebase takes the target in:
-  // a fix round's own commits are read from here (decision 90).
-  const sessionTip = resolveCommit(req.repoPath, branchRef);
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // An open PR's commits are what its review and CI read, so its branch takes
@@ -1283,10 +1280,7 @@ async function gateAndMerge(
   }
   // A merge that ended no fix round answers nothing (decision 90).
   if (pullRequest) {
-    replyOnFixRoundThreads(db, req.repoPath, session.id, pullRequest, {
-      tip: sessionTip,
-      targetSha,
-    });
+    replyOnFixRoundThreads(db, req.repoPath, session.id, pullRequest, targetSha);
   }
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
@@ -1334,10 +1328,10 @@ function replyOnFixRoundThreads(
   repoPath: string,
   sessionId: string,
   pullRequest: PullRequestPlan,
-  branch: RoundBranch,
+  targetSha: string,
 ): void {
   try {
-    const answers = answerFixRoundThreads(db, repoPath, sessionId, pullRequest.repo, branch);
+    const answers = answerFixRoundThreads(db, repoPath, sessionId, pullRequest.repo, targetSha);
     if (answers === undefined) return;
     console.error(
       `Answered the fix round's threads on ${answers.prUrl}: ${answers.addressed} addressed and ` +

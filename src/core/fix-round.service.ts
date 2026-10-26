@@ -140,16 +140,6 @@ const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string)
     `The fix round gated at ${sha} gave no answer for this thread; left open for the operator.`,
 };
 
-/**
- * What the gate read of the branch a fix round is gated on: its tip before
- * fresh-base took the target in, and the target it based on. The round's own
- * commits are between the two, the target's are not.
- */
-export interface RoundBranch {
-  tip: string;
-  targetSha: string;
-}
-
 /** The PR a merged session's newest merge opened, as the store and origin vouch for it. */
 interface StoredPullRequest {
   prUrl: string;
@@ -260,8 +250,9 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * the `fix_round` event named gets one reply naming the merge's sha with the
  * worker's newest one-line answer from its `pup session done` summaries. A thread is
  * resolved, under the operator's gh login, only when the worker answered it
- * fixed and the round's own commits change the file it is on: the worker's
- * word alone resolves nothing, and neither does a file the target changed.
+ * fixed and the round changed the file it is on, by content against
+ * `targetSha` merged into the round's start: the worker's word alone resolves
+ * nothing, and neither does a file the target changed.
  * Every other thread keeps its reply and stays open for the operator. Then
  * one summary comment on the PR for the round. Every
  * post carries a marker naming the sha, read back first, so a second run for
@@ -279,12 +270,12 @@ export function answerFixRoundThreads(
   repoPath: string,
   sessionId: string,
   repo: string,
-  branch: RoundBranch,
+  targetSha: string,
   budgetMs = ANSWER_BUDGET_MS,
 ): ThreadAnswers | undefined {
   const round = roundTheNewestMergeEnded(db, sessionId);
   if (round === undefined) return undefined;
-  const { prUrl, sha, head, threadIds, summary } = round;
+  const { prUrl, sha, head, threadIds, summaries } = round;
   assertPullRequestOf(prUrl, repo, 'No thread was answered.');
   const deadline = Date.now() + budgetMs;
   const withinBudget = <TResult>(call: (timeoutMs: number) => TResult): TResult => {
@@ -306,7 +297,7 @@ export function answerFixRoundThreads(
   };
   const onGitHub = withinBudget((timeoutMs) => readThreadAnswers(repoPath, prUrl, repo, timeoutMs));
   const changed = withinBudget((timeoutMs) =>
-    filesTheRoundChanged(repoPath, head, branch, timeoutMs),
+    filesTheRoundChanged(repoPath, head, sha, targetSha, timeoutMs),
   );
   const marker = `<!-- pup fix-round ${sha} -->`;
   const answers: ThreadAnswers = {
@@ -320,7 +311,11 @@ export function answerFixRoundThreads(
   for (const id of threadIds) {
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
-    const answer = threadAnswer(summary, id);
+    // Each summary on its own, newest first: an answer never runs from one
+    // summary into the next.
+    const answer = summaries
+      .map((summary) => threadAnswer(summary, id))
+      .find((found) => found !== undefined);
     const verdict = threadVerdict(answer?.verdict, thread.path, changed);
     if (!thread.ownReplies.some((body) => body.includes(marker))) {
       const said = REPLIES[verdict](
@@ -367,10 +362,9 @@ function threadVerdict(
  * The fix round the newest merge ended: the `fix_round` event just before it
  * among the merge, round and landing events, with the merge's url and pin, the
  * head the round started from, and the summaries of every `pup session done`
- * between the two, newest first, one per line: a gate run the round's checks
- * rejected asks only for the failures fixed, so a later summary may answer no
- * thread, and a thread's newest answer is the one `threadAnswer` reads. None
- * when the merge followed no round.
+ * between the two, newest first: a gate run the round's checks rejected asks
+ * only for the failures fixed, so a later summary may answer no thread, and a
+ * thread keeps its newest answer. None when the merge followed no round.
  * Only the gate of a session in its round reaches here: a round `pup kill`
  * undid is back in `merged`, which a re-gate takes and never answers.
  */
@@ -378,7 +372,13 @@ function roundTheNewestMergeEnded(
   db: Database,
   sessionId: string,
 ):
-  | { prUrl: string; sha: string; head: string | undefined; threadIds: string[]; summary: string }
+  | {
+      prUrl: string;
+      sha: string;
+      head: string | undefined;
+      threadIds: string[];
+      summaries: string[];
+    }
   | undefined {
   const events = listEvents(db, sessionId).reverse();
   const [merge, before] = events.filter((row) =>
@@ -395,58 +395,59 @@ function roundTheNewestMergeEnded(
     .filter((row) => row.id > before.id && row.id < merge.id)
     .map(decodeEvent)
     .filter((event): event is SessionDone => event.type === 'session_done')
-    .map((done) => done.summary);
+    .map((done) => done.summary ?? '');
   return {
     prUrl,
     sha,
     head: typeof head === 'string' ? head : undefined,
     threadIds: asStringArray(threads),
-    summary: summaries.join('\n'),
+    summaries,
   };
 }
 
 /**
- * The files the round's own commits changed: every non-merge commit on the
- * branch tip the gate read before fresh-base that is neither in the head the
- * round started at nor in the target, both renamed sides kept. A file the
- * target changed, through the gate's rebase or a merge of the worker's, never
- * counts. None when the start is unknown, is no longer an ancestor of the tip,
- * or git cannot answer: nothing is then resolved. A branch rewritten since the
- * round started, by an earlier run's rebase or the worker's rebase or amend,
- * carries every PR commit under a new sha, none of them told from the round's.
+ * The files the round changed, by content: those that differ between the pin
+ * and `targetSha` merged into the head the round started at, as fresh-base
+ * merges it. A file only the target changed, a change of the target's the
+ * worker took in by hand, a change the round made and then reverted, and a PR
+ * commit a rebase or an amend gave a new sha all read the same on both sides.
+ * None when the start is unknown, that merge conflicts or git cannot answer:
+ * nothing is then resolved.
  */
 function filesTheRoundChanged(
   repoPath: string,
   head: string | undefined,
-  branch: RoundBranch,
+  pin: string,
+  targetSha: string,
   timeoutMs: number,
 ): Set<string> {
-  const { tip, targetSha } = branch;
   // Store and gate text, handed to git as revisions: each must be a sha.
-  if (head === undefined || ![head, tip, targetSha].every((rev) => COMMIT_SHA.test(rev))) {
+  if (head === undefined || ![head, pin, targetSha].every((rev) => COMMIT_SHA.test(rev))) {
     return new Set();
   }
   const deadline = Date.now() + timeoutMs;
+  const git = (args: string[]): string =>
+    runGit(repoPath, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Node reads a timeout of 0 as none.
+      timeout: Math.max(1, deadline - Date.now()),
+    });
   try {
-    runGit(repoPath, ['merge-base', '--is-ancestor', head, tip], { timeout: timeoutMs });
+    // merge-tree runs a merge driver on a conflicted file, as the gate's does.
+    assertNoArmedGitDrivers(repoPath);
+    const [start = ''] = git(['merge-tree', '--write-tree', head, targetSha]).split('\n');
     return new Set(
-      runGit(
-        repoPath,
-        [
-          'log',
-          '--no-merges',
-          '--no-renames',
-          '--format=',
-          '--name-only',
-          '-z',
-          tip,
-          `^${head}`,
-          `^${targetSha}`,
-          '--',
-        ],
-        // Node reads a timeout of 0 as none.
-        { timeout: Math.max(1, deadline - Date.now()) },
-      )
+      git([
+        'diff',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-renames',
+        '--name-only',
+        '-z',
+        start,
+        pin,
+        '--',
+      ])
         .split('\0')
         .filter(Boolean),
     );
@@ -460,14 +461,15 @@ function filesTheRoundChanged(
 /**
  * The worker's answer for thread `id` in its summary, as the round's kickoff
  * asks for it: `<id> fixed: <reason>` or `<id> declined: <reason>`, answers
- * apart by `;` or a line break. `addressed` reads as `fixed`.
+ * apart by `;` or a line break, so none runs across one. `addressed` reads as
+ * `fixed`.
  */
 function threadAnswer(
   summary: string,
   id: string,
 ): { verdict: 'fixed' | 'declined'; reason: string } | undefined {
   const match = new RegExp(
-    `(?:^|[\\s;,(])${id}\\s+(fixed|addressed|declined)\\b\\s*[:—–-]?\\s*([^;\\n]*)`,
+    `(?:^|[\\s;,(])${id}[^\\S\\n]+(fixed|addressed|declined)\\b[^\\S\\n]*[:—–-]?[^\\S\\n]*([^;\\n]*)`,
     'i',
   ).exec(summary);
   if (!match) return undefined;
