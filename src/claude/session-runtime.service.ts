@@ -1,10 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
+import { projectPaths } from '../core/paths.utils.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
@@ -177,7 +178,10 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
  * - `NODE_OPTIONS` is code execution: `--require` in a server's environment runs
  *   in every node process a window later starts.
  *
- * What a window is, its own `-e` says. Everything else the caller has — `PATH`,
+ * What a window is, its own `-e` says, and so does a variable the operator
+ * named with `pup init --session-env` (decision 106): stripped here like any
+ * other, it reaches the window it was named for and no server's global
+ * environment. Everything else the caller has — `PATH`,
  * `HOME`, `TERM`, `SHELL`, `LANG`, `TMUX_TMPDIR` — is passed through untouched
  * (decision 47).
  */
@@ -195,6 +199,83 @@ function tmuxEnv(): NodeJS.ProcessEnv {
     Object.entries(process.env).filter(
       ([key]) => !NOT_INHERITED.some((pattern) => pattern.test(key)),
     ),
+  );
+}
+
+/**
+ * What `pup init --session-env` refuses to name (decision 106): the peer
+ * channel, whose socket and token in the conductor's Bash would let a session
+ * it launches speak as the conductor; the API credentials; `PUP_*`, which says
+ * what a window is; `TMUX`, which picks the server; and `NODE_OPTIONS`, which
+ * is code execution. Everything else `NOT_INHERITED` strips may be named.
+ */
+const NEVER_SESSION_ENV = [
+  /^CLAUDE_CODE_MESSAGING_/,
+  /^ANTHROPIC_API_KEY$/,
+  /^ANTHROPIC_AUTH_TOKEN$/,
+  /^PUP_/,
+  /^TMUX$/,
+  /^NODE_OPTIONS$/,
+];
+
+/** A name tmux's `-e NAME=value` reads back as that name, split at its first '='. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** The first of `names` `--session-env` refuses, or undefined when it takes them all. */
+export function refusedSessionEnv(names: string[]): string | undefined {
+  return names.find(
+    (name) => !ENV_NAME.test(name) || NEVER_SESSION_ENV.some((pattern) => pattern.test(name)),
+  );
+}
+
+/** Where `pup init --session-env` keeps the names, beside the project's store. */
+function sessionEnvFile(repoPath: string): string {
+  return join(projectPaths(repoPath).root, 'session-env.json');
+}
+
+/**
+ * Record the names every session and conductor window is handed from the
+ * launching shell (decision 106). Refused names throw: the CLI checks them
+ * first, and a caller that did not has a bug to surface, not a list to trim.
+ */
+export function saveSessionEnv(repoPath: string, names: string[]): void {
+  const refused = refusedSessionEnv(names);
+  if (refused !== undefined) throw new Error(`${refused} cannot be passed to session windows.`);
+  const file = sessionEnvFile(repoPath);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(names)}\n`);
+}
+
+/**
+ * The names `pup init --session-env` recorded, none when it never ran. The file
+ * sits where any process of the operator's user can write it, so it is checked
+ * again on the way out: a name written there by hand is dropped, as
+ * `--gate-env` drops the loader names (decision 36), never handed to a window.
+ */
+export function readSessionEnv(repoPath: string): string[] {
+  const file = sessionEnvFile(repoPath);
+  if (!existsSync(file)) return [];
+  const stored: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  return Array.isArray(stored)
+    ? stored.filter(
+        (name): name is string =>
+          typeof name === 'string' && refusedSessionEnv([name]) === undefined,
+      )
+    : [];
+}
+
+/**
+ * The recorded names the launching shell has a value for, as the window's own
+ * `-e`. Never the client's environment, which `tmuxEnv` keeps stripping them
+ * from: a client that starts the server makes its environment the server's
+ * global one, readable by every window with `show-environment -g`.
+ */
+function sessionEnv(repoPath: string): Record<string, string> {
+  return Object.fromEntries(
+    readSessionEnv(repoPath).flatMap((name) => {
+      const value = process.env[name];
+      return value === undefined ? [] : [[name, value]];
+    }),
   );
 }
 
@@ -451,6 +532,8 @@ interface ClaudeWindowOptions {
   sessionId: string;
   /** Where the window opens: a session's worktree, the conductor's main checkout. */
   cwd: string;
+  /** The project's main checkout, whose recorded `--session-env` names the window gets. */
+  repoPath: string;
   settingsPath: string;
   route: ModelRoute;
   mcpConfigPath?: string;
@@ -517,6 +600,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
+      ...sessionEnv(opts.repoPath),
       ...opts.caller,
       ...(opts.git ? WINDOW_GIT_CONFIG : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
@@ -542,6 +626,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
   return spawnClaudeWindow({
     sessionId: opts.sessionId,
     cwd: opts.worktreePath,
+    repoPath: opts.repoPath,
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
@@ -672,6 +757,7 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
   return spawnClaudeWindow({
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
+    repoPath: opts.repoPath,
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,

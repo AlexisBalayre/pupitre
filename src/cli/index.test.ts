@@ -61,6 +61,14 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // it (decision 67), so a fake rule here would only agree with itself.
   transcriptDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .transcriptDir,
+  // The real rule and the real file, under the throwaway HOME: which names
+  // `pup init --session-env` refuses and keeps is the contract (decision 106).
+  readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .readSessionEnv,
+  refusedSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .refusedSessionEnv,
+  saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .saveSessionEnv,
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -153,6 +161,7 @@ import {
   deadTurnError,
   hasSessionWindow,
   launchWatcher,
+  readSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
@@ -1943,6 +1952,53 @@ describe('CLI commands', () => {
 
     // The conductor is the operator's delegate for setup, as it is for the
     // audit (decision 48): the guard asks for a session and nothing else.
+    // What a window may be handed is the operator's to widen, and never with
+    // the peer channel, the credentials or what says what a window is: refused
+    // whole, naming the variable, before anything measures (decision 106).
+    it.each([
+      'CLAUDE_CODE_MESSAGING_TOKEN',
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
+      'PUP_SESSION_ID',
+      'TMUX',
+      'NODE_OPTIONS',
+    ])('refuses `init --session-env` naming %s, and stores nothing', async (name) => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+
+      await buildProgram().parseAsync(['init', '--session-env', `CLAUDE_CONFIG_DIR,${name}`], {
+        from: 'user',
+      });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining(`--session-env cannot pass ${name}:`)]);
+      expect(logs).toEqual([]);
+      expect(readSessionEnv(repo)).toEqual([]);
+      expect(recordedOrigin(repo)).toBeNull();
+    });
+
+    it('records the --session-env names, keeps them over a plain `init`, and clears them on ""', async () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+
+      await buildProgram().parseAsync(
+        ['init', '--session-env', 'CLAUDE_CONFIG_DIR, CLAUDE_CODE_ENABLE_TELEMETRY'],
+        { from: 'user' },
+      );
+      expect(errors).toEqual([]);
+      expect(readSessionEnv(repo)).toEqual(['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY']);
+      expect(logs).toContain(
+        'Session windows get CLAUDE_CONFIG_DIR, CLAUDE_CODE_ENABLE_TELEMETRY from the launching shell.',
+      );
+
+      await buildProgram().parseAsync(['init'], { from: 'user' });
+      expect(readSessionEnv(repo)).toEqual(['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY']);
+
+      await buildProgram().parseAsync(['init', '--session-env', ''], { from: 'user' });
+      expect(readSessionEnv(repo)).toEqual([]);
+      expect(logs).toContain('Session windows get no extra variables.');
+    });
+
     it('lets the conductor run `init`', async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);

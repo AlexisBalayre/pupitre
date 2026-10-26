@@ -18,8 +18,10 @@ import {
   hasSessionWindow,
   killWatcher,
   launchWatcher,
+  refusedSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  saveSessionEnv,
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
@@ -459,6 +461,11 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
+// Decision 106.
+const SESSION_ENV_DESCRIPTION =
+  'env var names every session and conductor window gets from the launching shell, ' +
+  'comma-separated; kept until the next --session-env, "" clears them';
+
 // Decision 99.
 const ALLOW_OVERLAP_DESCRIPTION = 'no effect: overlap is always allowed (removed next release)';
 
@@ -851,8 +858,9 @@ export function buildProgram(): Command {
     .command('init')
     .description('Onboard a repo: detect stack, baseline, conventions')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
+    .option('--session-env <names>', SESSION_ENV_DESCRIPTION)
     .option('--origin-moved', ORIGIN_MOVED_DESCRIPTION)
-    .action(async (opts: { gateEnv?: string; originMoved?: boolean }) => {
+    .action(async (opts: { gateEnv?: string; sessionEnv?: string; originMoved?: boolean }) => {
       const { repoPath, db } = project();
       // `pup init` stamps the debt baseline through the same `initProject` the
       // audit does, and records the push target the gate holds a session's
@@ -862,6 +870,16 @@ export function buildProgram(): Command {
       // its own.
       if (callingSession(db)) {
         return refuse('`pup init` is operator-only; sessions cannot move the baseline.');
+      }
+      // The same list as `--gate-env`, refused whole before anything measures.
+      const sessionEnv = opts.sessionEnv === undefined ? undefined : parseGateEnv(opts.sessionEnv);
+      const refusedName = sessionEnv && refusedSessionEnv(sessionEnv);
+      if (refusedName !== undefined) {
+        return refuse(
+          `--session-env cannot pass ${sanitizeReason(refusedName)}: the peer channel, API ` +
+            'credentials, PUP_*, TMUX and NODE_OPTIONS never reach a session window, and a name ' +
+            'is letters, digits and underscores.',
+        );
       }
       if (refusedUnsandboxed()) return;
       const recording = opts.originMoved ? 're-record' : 'record';
@@ -878,6 +896,14 @@ export function buildProgram(): Command {
       );
       if (!report) return;
       printInitReport(db, report, repoPath);
+      if (sessionEnv) {
+        saveSessionEnv(repoPath, sessionEnv);
+        console.log(
+          sessionEnv.length
+            ? `Session windows get ${sessionEnv.join(', ')} from the launching shell.`
+            : 'Session windows get no extra variables.',
+        );
+      }
       console.log(
         'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
       );

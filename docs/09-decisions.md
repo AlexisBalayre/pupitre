@@ -5973,6 +5973,52 @@ changes back into those docs is pending.
     the running peer and not the awaiting-review, rejected or blocked ones, and steers a running
     peer sharing only the log with a notice that names it.
 
+106. **`pup init --session-env A,B` names the variables every session and conductor window gets
+    from the launching shell, through the window's own `-e` (2026-10-26).**
+    Amends decision 47. `tmuxEnv` strips every `CLAUDE*` and `ANTHROPIC_*` variable from the
+    environment it hands tmux, so a run could not pin `CLAUDE_CONFIG_DIR`,
+    `CLAUDE_CODE_EFFORT_LEVEL`, `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)` or
+    `CLAUDE_CODE_ENABLE_TELEMETRY` for its workers, which the six-ways experiment's W4b needs.
+    `pup init --session-env` takes a comma-separated list, parsed like `--gate-env`, and records
+    it in `session-env.json` beside the project's store (`~/.pupitre/<id>/`). Every window pup
+    opens, whether a launch, a respawn, a fix round or the conductor, reads the list and adds
+    each name the launching shell has a value for to the window's own `tmux -e`, with that
+    value, read at launch. A name with no value is not set empty. The strip list is unchanged:
+    the named variables are still kept out of the tmux client's environment, so a client that
+    starts a server never makes them its global environment, readable with
+    `show-environment -g`. The conductor gets them too, so the sessions it launches from its
+    Bash are handed the same values.
+    *Refused names.* `CLAUDE_CODE_MESSAGING_*` is the peer channel: from the conductor's Bash,
+    its socket and token would let a session speak as the conductor. `ANTHROPIC_API_KEY` and
+    `ANTHROPIC_AUTH_TOKEN` are credentials, and sessions use the operator's `~/.claude` login
+    (decision 9). `PUP_*` says what a window is. `TMUX` picks the server. `NODE_OPTIONS` is code
+    execution. A name must also be letters, digits and underscores, since tmux splits
+    `-e NAME=value` at the first `=`. `pup init` refuses the whole list before anything measures,
+    naming the first refused variable, and stores nothing. Everything else `NOT_INHERITED`
+    strips may be named.
+    *Kept until replaced.* A plain `pup init` keeps the recorded list, and `--session-env ""`
+    clears it. The list is written after the baseline is stored, so a run refused for an
+    unsandboxed platform, a missing adapter or a broken toolchain records none of it.
+    *Ceilings.* The file sits where any process of the operator's user can write it, as the
+    store does. So the read checks every name again and drops a refused one, as `--gate-env`
+    drops the loader names (decision 36). A name the patterns allow, such as
+    `CLAUDE_CODE_OAUTH_TOKEN`, can still be written in by hand. It would reach the window, never
+    the server's environment. The values travel in tmux's argv, as every `-e` does, and are
+    visible to the operator's own user in `ps`. The conductor may run `pup init` (decision 48),
+    so it can widen the list, though never with a refused name. What Claude Code makes of a named
+    `CLAUDE_CODE_EFFORT_LEVEL` beside the `--effort` decision 92 passes is the operator's call,
+    and pup does not check it.
+    *Tests.* In `session-runtime.test.ts`: the refused names, and a name with `=` in it, are
+    refused and named, and the experiment's names are taken. A saved list reads back, and a
+    refused name written into the file by hand is dropped. A launch hands the window each named
+    variable with the shell's value, sets none for an unset name, and gives tmux's client
+    environment none of them. An unnamed `CLAUDE*` variable stays stripped from both. The
+    launch's own argv and client environment, run against the installed tmux, set the
+    variable on the window and leave it out of `show-environment -g`. The conductor's window is
+    handed the variable too. In `index.test.ts`, `init --session-env` refuses each family,
+    naming it, and stores neither the list nor the origin. It records a list, keeps it over a
+    plain `init`, and clears it on `""`.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

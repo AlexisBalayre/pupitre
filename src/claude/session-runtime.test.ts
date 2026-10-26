@@ -53,6 +53,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
+import { projectId } from '../core/paths.utils.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
@@ -75,9 +76,12 @@ import {
   pasteIntoPane,
   preseedTrust,
   readInputBox,
+  readSessionEnv,
+  refusedSessionEnv,
   type SessionPane,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  saveSessionEnv,
   steerPane,
   submitPane,
   transcriptDir,
@@ -299,6 +303,58 @@ const WINDOW_GIT_CONFIG_ARGS = [
 function spawnPrefix(name: string): string[] {
   return ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name];
 }
+
+describe('refusedSessionEnv, saveSessionEnv and readSessionEnv', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_MESSAGING_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'PUP_SESSION_ID',
+    'PUP_CONDUCTOR',
+    'TMUX',
+    'NODE_OPTIONS',
+    'A=B',
+    '',
+  ])('refuses %j, and names it', (name) => {
+    expect(refusedSessionEnv(['CLAUDE_CONFIG_DIR', name])).toBe(name);
+    expect(() => saveSessionEnv('/tmp/repo', [name])).toThrow(
+      `${name} cannot be passed to session windows.`,
+    );
+  });
+
+  it.each([
+    'CLAUDE_CONFIG_DIR',
+    'CLAUDE_CODE_EFFORT_LEVEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+    'CLAUDE_CODE_ENABLE_TELEMETRY',
+    'ANTHROPIC_MODEL',
+    'TMUX_TMPDIR',
+  ])('takes %s', (name) => {
+    expect(refusedSessionEnv([name])).toBeUndefined();
+  });
+
+  it('reads back what was saved, none before, and drops a refused name written by hand', () => {
+    const home = tempDir('pup-session-env-home-');
+    vi.stubEnv('HOME', home);
+    expect(readSessionEnv('/tmp/repo')).toEqual([]);
+
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY']);
+    expect(readSessionEnv('/tmp/repo')).toEqual([
+      'CLAUDE_CONFIG_DIR',
+      'CLAUDE_CODE_ENABLE_TELEMETRY',
+    ]);
+
+    const file = join(home, '.pupitre', projectId('/tmp/repo'), 'session-env.json');
+    writeFileSync(file, JSON.stringify(['CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CONFIG_DIR', 7]));
+    expect(readSessionEnv('/tmp/repo')).toEqual(['CLAUDE_CONFIG_DIR']);
+  });
+});
 
 describe('launchSession', () => {
   // A real linked worktree: the launch checks its git pointers before the
@@ -542,6 +598,94 @@ describe('launchSession', () => {
       // scrub is about the caller's identity, not its shell.
       expect(env.TMUX_TMPDIR).toBe('/private/tmp');
       expect(env.HOME).toBe(process.env.HOME);
+    }
+  });
+
+  // The six-ways experiment pins a worker's config dir and telemetry: what the
+  // operator named with `pup init --session-env` reaches the window through
+  // its own `-e`, with the launching shell's value (decision 106).
+  it('hands the window each named variable from the launching shell, and tmux none of them', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY', 'UNSET_HERE']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    vi.stubEnv('CLAUDE_CODE_ENABLE_TELEMETRY', '1');
+    vi.stubEnv('UNSET_HERE', undefined);
+
+    launchSession(opts);
+
+    expect(launchedWindowEnv()).toMatchObject({
+      CLAUDE_CONFIG_DIR: '/tmp/w4b-config',
+      CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+      PUP_SESSION_ID: 's-1',
+    });
+    // A name the shell has no value for is not set empty: the window keeps
+    // whatever default Claude Code has for it.
+    expect(Object.keys(launchedWindowEnv())).not.toContain('UNSET_HERE');
+    for (const [, , options] of vi
+      .mocked(execFileSync)
+      .mock.calls.filter(([file]) => file === 'tmux')) {
+      const env = (options as { env?: NodeJS.ProcessEnv }).env ?? {};
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBeUndefined();
+    }
+  });
+
+  it('keeps stripping a variable the operator did not name', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', 'max');
+    vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'peer-token');
+
+    launchSession(opts);
+
+    expect(Object.keys(launchedWindowEnv()).filter((key) => /^CLAUDE/.test(key))).toEqual([
+      'CLAUDE_CONFIG_DIR',
+    ]);
+    for (const [, , options] of vi
+      .mocked(execFileSync)
+      .mock.calls.filter(([file]) => file === 'tmux')) {
+      const env = (options as { env?: NodeJS.ProcessEnv }).env ?? {};
+      expect(Object.keys(env).filter((key) => /^CLAUDE|^ANTHROPIC_/.test(key))).toEqual([]);
+    }
+  });
+
+  // What the fake cannot show: that the `-e` lands on the window and stays off
+  // the server a client starts. The launch's own argv and client environment,
+  // run against the installed tmux, on a socket of this test's own.
+  it('sets a named variable on the window and leaves it out of show-environment -g', async (ctx) => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    vi.stubEnv('TMUX', undefined);
+    launchSession(opts);
+    const [, spawn = [], options] =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session')) ?? [];
+    const env = (options as { env: NodeJS.ProcessEnv }).env;
+    const { spawnSync: realSpawnSync } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    // Short, like the attach test's: a unix socket path is capped at 104 bytes.
+    const socket = join(tempDir('x'), 's');
+    const tmuxHere = (args: readonly string[]) =>
+      realSpawnSync('tmux', ['-S', socket, ...args], { encoding: 'utf8', env });
+
+    try {
+      const started = tmuxHere([...spawn.slice(0, spawn.indexOf(FAKE_NICE_BIN)), 'sleep', '30']);
+      if (/not permitted|permission denied/i.test(started.stderr ?? '')) {
+        ctx.skip(`no tmux socket here: ${started.stderr.trim()}`);
+      }
+      expect(started.status).toBe(0);
+
+      expect(tmuxHere(['show-environment', '-t', '=pup-s-1', 'CLAUDE_CONFIG_DIR']).stdout).toBe(
+        'CLAUDE_CONFIG_DIR=/tmp/w4b-config\n',
+      );
+      const global = tmuxHere(['show-environment', '-g']).stdout;
+      expect(global).toContain('PATH=');
+      expect(global).not.toContain('CLAUDE_CONFIG_DIR');
+    } finally {
+      tmuxHere(['kill-server']);
     }
   });
 
@@ -1625,6 +1769,25 @@ describe('launchConductor', () => {
     ]);
     expect(spawn).toContain('--dangerously-skip-permissions');
     expect(spawn).toContain(CONDUCTOR.settingsPath);
+  });
+
+  it('hands the conductor the named variables too, so the sessions it launches get them', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    saveSessionEnv(CONDUCTOR.repoPath, ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+
+    try {
+      launchConductor(CONDUCTOR);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const spawn =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
+      [];
+    expect(spawn).toContain('CLAUDE_CONFIG_DIR=/tmp/w4b-config');
   });
 
   it('passes the conductor its own model and effort', () => {
