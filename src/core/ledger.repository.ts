@@ -88,3 +88,17 @@ export function listOverdueLedgerEntries(
     return !Number.isNaN(reviewBy) && reviewBy < now.getTime();
   });
 }
+
+/**
+ * Entries filed since `since`, open or closed since (decision 98). The ledger
+ * records no closing time, so this is the one movement over a window it can
+ * state. `created_at` is SQLite's own `datetime('now')`, compared as such.
+ */
+export function countLedgerEntriesSince(db: Database, projectId: string, since: Date): number {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM ledger_entries WHERE project_id = ? AND created_at >= datetime(?)',
+    )
+    .get(projectId, since.toISOString()) as { n: number };
+  return row.n;
+}

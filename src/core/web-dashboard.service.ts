@@ -3,23 +3,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import type { Database } from 'better-sqlite3';
 
-import { sanitizeReason } from '../adapters/capability.utils.js';
-import {
-  buildDashboardSnapshot,
-  needsYou,
-  PR_URL,
-  prFixRounds,
-  routeLabel,
-} from './dashboard.service.js';
-import { listLedgerEntries } from './ledger.repository.js';
+import { CHART_CSS } from './chart.utils.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
-import { projectId } from './paths.utils.js';
-import type {
-  DashboardNeed,
-  DashboardSession,
-  DashboardSnapshot,
-} from './types/dashboard.types.js';
+import { readDebtSheet, renderDebtSheet } from './web-dashboard-debt.service.js';
+import { readOverview, renderOverview } from './web-dashboard-overview.service.js';
+import { escapeHtml, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
 
 /** How often the server re-reads the store for the open streams (decision 91). */
 const DASHBOARD_POLL_MS = 2_000;
@@ -42,9 +31,11 @@ export interface WebDashboard {
  * admits only its own nonce'd script and style and its own event stream, and
  * every store-read string on it is escaped.
  *
- * While a stream is open the store is re-read every `pollMs`, and a board that
- * rendered differently from the last one goes to every stream whole; the
- * browser never polls.
+ * The page is one of the sheets (decision 98), named by `?sheet=`, Overview
+ * when it names none; each has its own stream. While a stream is open the
+ * store is re-read every `pollMs` for the sheets streams are open on, and a
+ * board that rendered differently from that sheet's last one goes to every
+ * stream on the sheet whole; the browser never polls.
  */
 export async function startWebDashboard(
   db: Database,
@@ -52,21 +43,31 @@ export async function startWebDashboard(
   { pollMs = DASHBOARD_POLL_MS }: { pollMs?: number } = {},
 ): Promise<WebDashboard> {
   const token = Buffer.from(randomBytes(32).toString('base64url'));
-  const streams = new Set<ServerResponse>();
-  let lastBody: string | undefined;
+  const streams = new Map<ServerResponse, SheetName>();
+  const lastBody = new Map<SheetName, string>();
+  // Relative, so it resolves against the page; the token rides along because
+  // every request must carry it.
+  const hrefOf = (sheet: SheetName): string => `?token=${token.toString()}&sheet=${sheet}`;
 
-  const render = (): string => renderDashboardBody(readView(db, repoPath));
+  const render = (sheet: SheetName): string => {
+    const now = Date.now();
+    return sheet === 'debt'
+      ? renderDebtSheet(readDebtSheet(db, repoPath, now))
+      : renderOverview(readOverview(db, repoPath, now), hrefOf('debt'));
+  };
   const send = (stream: ServerResponse, body: string): void => {
     stream.write(`data: ${JSON.stringify(body)}\n\n`);
   };
   // A stream that just opened is sent the board even when nothing changed,
-  // and when something did every stream gets it, or the older ones would
-  // wait for a change past the one the new stream already took.
-  const publish = (opened?: ServerResponse): void => {
-    const body = render();
-    if (body !== lastBody) {
-      lastBody = body;
-      for (const stream of streams) send(stream, body);
+  // and when something did every stream on the sheet gets it, or the older
+  // ones would wait for a change past the one the new stream already took.
+  // One sheet at a time: a stream opening renders only its own sheet, so a
+  // sheet the store cannot render right now never ends a stream on another.
+  const publish = (sheet: SheetName, opened?: ServerResponse): void => {
+    const body = render(sheet);
+    if (body !== lastBody.get(sheet)) {
+      lastBody.set(sheet, body);
+      for (const [stream, on] of streams) if (on === sheet) send(stream, body);
     } else if (opened) {
       send(opened, body);
     }
@@ -79,10 +80,12 @@ export async function startWebDashboard(
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}:${port}`);
     if (!hasToken(url.searchParams.get('token'), token)) return refuse(res, 403, 'Forbidden.');
     if (req.method !== 'GET') return refuse(res, 405, 'Read-only.');
+    const sheet = sheetOf(url);
+    if (sheet === undefined) return refuse(res, 404, 'Not found.');
     if (url.pathname === '/') {
       // Rendered before the head goes out, so a store that cannot be read is
       // still answered with a 500 rather than an empty 200.
-      const body = render();
+      const body = render(sheet);
       const nonce = randomBytes(16).toString('base64');
       res.writeHead(200, {
         ...hardening(
@@ -91,7 +94,7 @@ export async function startWebDashboard(
         ),
         'Content-Type': 'text/html; charset=utf-8',
       });
-      res.end(renderDashboardPage(repoPath, body, nonce));
+      res.end(renderDashboardPage(repoPath, sheet, body, nonce, hrefOf));
       return;
     }
     if (url.pathname === '/events') {
@@ -100,9 +103,9 @@ export async function startWebDashboard(
         'Content-Type': 'text/event-stream; charset=utf-8',
         Connection: 'keep-alive',
       });
-      streams.add(res);
+      streams.set(res, sheet);
       req.on('close', () => streams.delete(res));
-      publish(res);
+      publish(sheet, res);
       return;
     }
     refuse(res, 404, 'Not found.');
@@ -124,11 +127,13 @@ export async function startWebDashboard(
   });
 
   const poll = setInterval(() => {
-    if (streams.size === 0) return;
-    try {
-      publish();
-    } catch {
-      // Unreadable for one poll; the next one reads again.
+    for (const sheet of new Set(streams.values())) {
+      try {
+        publish(sheet);
+      } catch {
+        // This sheet is unreadable for one poll; the others still go out,
+        // and the next poll reads it again.
+      }
     }
   }, pollMs);
 
@@ -137,34 +142,20 @@ export async function startWebDashboard(
     close: () =>
       new Promise<void>((resolve) => {
         clearInterval(poll);
-        for (const stream of streams) stream.end();
+        for (const stream of streams.keys()) stream.end();
         server.closeAllConnections();
         server.close(() => resolve());
       }),
   };
 }
 
-/** The store's reading for one render: the snapshot, the inbox off it, and the ledger. */
-function readView(db: Database, repoPath: string): WebDashboardView {
-  const snapshot = buildDashboardSnapshot(db, repoPath, Date.now());
-  const fixRounds = new Map(
-    snapshot.sessions
-      .filter((session) => session.openPr !== undefined && session.isMintedId)
-      .map((session) => [session.id, prFixRounds(db, session.id)]),
-  );
-  return {
-    snapshot,
-    needs: needsYou(snapshot),
-    // Read off the store like the snapshot's overdue entries, and scrubbed the
-    // same way, so an id here matches the one the snapshot marks overdue.
-    openDebt: listLedgerEntries(db, projectId(repoPath)).map((entry) => ({
-      id: sanitizeReason(String(entry.id)),
-      description: sanitizeReason(entry.description),
-      acceptedBy: sanitizeReason(entry.accepted_by),
-      reviewBy: sanitizeReason(entry.review_by),
-    })),
-    fixRounds,
-  };
+const SHEET_TITLES: Record<SheetName, string> = { overview: 'Overview', debt: 'Debt' };
+
+/** The sheet a request names, Overview when it names none, undefined for a name no sheet has. */
+function sheetOf(url: URL): SheetName | undefined {
+  const named = url.searchParams.get('sheet');
+  if (named === null) return 'overview';
+  return SHEETS.find((sheet) => sheet === named);
 }
 
 /** Compared in constant time, so a wrong guess learns nothing from how long it took. */
@@ -197,252 +188,53 @@ function refuse(res: ServerResponse, status: number, message: string): void {
   res.end(message);
 }
 
-/** One open ledger entry as the page lists it, every field already through `sanitizeReason`. */
-interface WebDebtEntry {
-  id: string;
-  description: string;
-  acceptedBy: string;
-  reviewBy: string;
-}
-
-/** What one render of the board reads: the snapshot `pup status` prints, and what it leaves to `pup debt`. */
-interface WebDashboardView {
-  snapshot: DashboardSnapshot;
-  needs: DashboardNeed[];
-  openDebt: WebDebtEntry[];
-  /** Fix rounds re-gated per session with an open PR, keyed by session id (decision 86). */
-  fixRounds: Map<string, number>;
-}
-
-/**
- * Every store-read string reaches the page through this (decision 91): the
- * snapshot already scrubbed what a terminal obeys (decision 29), and markup is
- * the browser's equivalent. Quotes too, since the PR url lands in an attribute.
- */
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-/** Escaped text, or a link when it is a pull request's url and nothing else (decisions 83, 91). */
-function textOrPrLink(text: string): string {
-  if (!PR_URL.test(text)) return `<code>${escapeHtml(text)}</code>`;
-  // `noreferrer`: the page's own url carries the run token.
-  return `<a href="${escapeHtml(text)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
-}
-
-/** The order the sessions' states are listed in: what has stopped first, finished work last. */
-const STATE_ORDER = ['blocked', 'running', 'awaiting-review', 'queued', 'rejected'];
-const UNMINTED_LABEL = '(unminted session id)';
-
-/**
- * The board — everything inside `<main>` — as one string. The page carries it
- * first, and the event stream carries every later one whole, so the two are a
- * single render and a reader never sees a page the stream would draw otherwise.
- * Nothing in it is time-relative beyond what the snapshot holds, so an unchanged
- * store renders the same string and the stream stays quiet.
- */
-function renderDashboardBody(view: WebDashboardView): string {
-  return [
-    needsSection(view.needs),
-    conductorSection(view.snapshot),
-    sessionsSection(view),
-    pullRequestsSection(view),
-    plannedSection(view.snapshot),
-    debtSection(view),
-  ].join('\n');
-}
-
-function section(title: string, body: string): string {
-  return `<section><h2>${escapeHtml(title)}</h2>${body}</section>`;
-}
-
-function hint(text: string): string {
-  return `<p class="hint">${escapeHtml(text)}</p>`;
-}
-
-function needsSection(needs: DashboardNeed[]): string {
-  if (needs.length === 0) return section('Needs you', hint('Nothing waits on you.'));
-  const items = needs.map(
-    (need) =>
-      `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span> ` +
-      `<span class="reason">${escapeHtml(need.reason)}</span>` +
-      `<div class="answer">${textOrPrLink(need.answer)}</div></li>`,
-  );
-  return section('Needs you', `<ul class="rows">${items.join('')}</ul>`);
-}
-
-function conductorSection(snapshot: DashboardSnapshot): string {
-  const { conductor } = snapshot;
-  const body = conductor.running
-    ? `<p>running <span class="hint">attach:</span> <code>${escapeHtml(conductor.attachCommand)}</code></p>`
-    : hint('not running — `pup conductor start` starts it');
-  return section('Conductor', body);
-}
-
-function sessionsSection(view: WebDashboardView): string {
-  const live = view.snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');
-  if (live.length === 0) return section('Sessions', hint('Nothing running.'));
-  const states = [
-    ...STATE_ORDER.filter((state) => live.some((s) => s.state === state)),
-    ...new Set(live.map((s) => s.state).filter((state) => !STATE_ORDER.includes(state))),
-  ];
-  const groups = states.map((state) => {
-    const rows = live.filter((s) => s.state === state).map((s) => sessionRow(s, view.openDebt));
-    return `<h3 class="state-group">${escapeHtml(state)} <span class="hint">${rows.length}</span></h3><ul class="rows">${rows.join('')}</ul>`;
-  });
-  return section('Sessions', groups.join(''));
-}
-
-function sessionRow(session: DashboardSession, openDebt: WebDebtEntry[]): string {
-  const facts = [
-    session.question === undefined ? '' : `question: ${session.question}`,
-    activityText(session),
-    routeLabel(session),
-    session.rejectCount > 0 ? `${session.rejectCount} rejections` : '',
-    session.contextTokens === undefined ? '' : `ctx ~${Math.round(session.contextTokens / 1000)}k`,
-    steerText(session),
-    gateText(session),
-  ].filter(Boolean);
-  return (
-    `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>` +
-    `<span class="branch">${escapeHtml(session.branch)}</span></div>` +
-    `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
-    facts.map((fact) => `<div class="fact">${escapeHtml(fact)}</div>`).join('') +
-    debtOf(session, openDebt) +
-    '</li>'
-  );
-}
-
-function labelOf(session: DashboardSession): string {
-  return session.isMintedId ? session.id : UNMINTED_LABEL;
-}
-
-function activityText(session: DashboardSession): string {
-  if (session.stalledAgeMs !== undefined) return 'stalled — see Needs you';
-  if (session.activity?.kind === 'awaiting-input') {
-    const detail = sanitizeReason(session.activity.detail ?? '');
-    return `waiting on input${detail ? ` (${detail})` : ''}`;
-  }
-  if (session.activity?.kind === 'idle') return 'idle (turn ended, no done signal)';
-  if (session.activity?.kind === 'background') return 'working on a background shell';
-  return '';
-}
-
-function steerText(session: DashboardSession): string {
-  const steer = session.lastSteer;
-  if (!steer) return '';
-  return `last steer: ${steer.kind ?? 'sent'}${steer.by ? ` by ${steer.by}` : ''} at ${steer.at}`;
-}
-
-function gateText(session: DashboardSession): string {
-  const gate = session.lastGate;
-  if (!gate) return '';
-  const verdict = gate.passed
-    ? 'passed'
-    : `failed${gate.failedStage ? ` at ${gate.failedStage}` : ''}`;
-  return `last gate: ${verdict} at ${gate.at}`;
-}
-
-/**
- * The open entries this session filed: every flag description the gate files
- * ends with ` session <id>` (decision 86). An id outside the minted shape is
- * matched against nothing, like the commands it gets none of.
- */
-function debtOf(session: DashboardSession, openDebt: WebDebtEntry[]): string {
-  if (!session.isMintedId) return '';
-  const own = openDebt.filter((entry) => entry.description.endsWith(` session ${session.id}`));
-  return own
-    .map(
-      (entry) =>
-        `<div class="fact debt">debt #${escapeHtml(entry.id)}: ${escapeHtml(entry.description)}</div>`,
-    )
-    .join('');
-}
-
-function pullRequestsSection(view: WebDashboardView): string {
-  const open = view.snapshot.sessions.filter((s) => s.openPr !== undefined);
-  if (open.length === 0) return section('Open pull requests', hint('No PR waits to land.'));
-  const rows = open.map((session) => {
-    const url = session.openPr?.url;
-    const link =
-      url === undefined
-        ? `<code>${escapeHtml('(PR url outside the pull-request shape; inspect the store)')}</code>`
-        : textOrPrLink(url);
-    return (
-      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>${link}</div>` +
-      `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
-      `<div class="fact">${escapeHtml(reviewState(session, view.fixRounds.get(session.id)))}</div>` +
-      debtOf(session, view.openDebt) +
-      '</li>'
-    );
-  });
-  return section('Open pull requests', `<ul class="rows">${rows.join('')}</ul>`);
-}
-
-/**
- * The PR's CI review state as the store knows it: how many fix rounds were
- * re-gated, and the newest gate's verdict, which on a refused re-gate is what
- * says the PR still vouches for the earlier pin (decision 86). What CI itself
- * said is on the PR until `pup fix` reads the bot's threads (decision 90).
- */
-function reviewState(session: DashboardSession, rounds: number | undefined): string {
-  const regated =
-    rounds === undefined
-      ? 'fix rounds unknown'
-      : rounds === 0
-        ? 'gated once, no fix round re-gated yet'
-        : `re-gated after ${rounds} fix ${rounds === 1 ? 'round' : 'rounds'}`;
-  const gate = gateText(session);
-  return `CI review: ${regated}${gate ? `; ${gate}` : ''}`;
-}
-
-function plannedSection(snapshot: DashboardSnapshot): string {
-  if (snapshot.backlog.length === 0) return section('Planned', hint('Nothing planned.'));
-  const rows = snapshot.backlog.map(
-    (task) =>
-      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span>` +
-      `${task.origin === 'human' ? '' : `<span class="branch">from ${escapeHtml(task.origin)}</span>`}</div>` +
-      `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div></li>`,
-  );
-  return section('Planned', `<ul class="rows">${rows.join('')}</ul>`);
-}
-
-function debtSection(view: WebDashboardView): string {
-  if (view.openDebt.length === 0) return section('Open debt', hint('No open debt.'));
-  const overdue = new Set(view.snapshot.overdueDebt.map((entry) => entry.id));
-  const rows = view.openDebt.map(
-    (entry) =>
-      `<li class="entry${overdue.has(entry.id) ? ' overdue' : ''}"><div class="meta"><span class="sid">#${escapeHtml(entry.id)}</span>` +
-      `${overdue.has(entry.id) ? '<span class="state state-blocked">overdue</span>' : ''}</div>` +
-      `<div class="desc">${escapeHtml(entry.description)}</div>` +
-      `<div class="fact">accepted by ${escapeHtml(entry.acceptedBy)}, review by ${escapeHtml(entry.reviewBy)}</div></li>`,
-  );
-  return section('Open debt', `<ul class="rows">${rows.join('')}</ul>`);
-}
-
 /**
  * The page around a board. The script and the style carry the response's
  * nonce, the only source the CSP admits for either (decision 91); the script
  * only swaps in the board the stream sends, which the server rendered and
- * escaped, and reports whether the stream is up.
+ * escaped, and reports whether the stream is up. The sheet bar is plain links,
+ * so a sheet opens as its own page with its own stream (decision 98).
  */
-function renderDashboardPage(repoPath: string, body: string, nonce: string): string {
+function renderDashboardPage(
+  repoPath: string,
+  sheet: SheetName,
+  body: string,
+  nonce: string,
+  hrefOf: (sheet: SheetName) => string,
+): string {
+  const bar = SHEETS.map(
+    (name) =>
+      `<a href="${escapeHtml(hrefOf(name))}"${name === sheet ? ' aria-current="page"' : ''}>${SHEET_TITLES[name]}</a>`,
+  ).join('');
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>pup dashboard</title>
+<title>pup dashboard — ${SHEET_TITLES[sheet]}</title>
 <style nonce="${nonce}">
 ${PAGE_THEME_CSS}
 ${PAGE_SHELL_CSS}
+${CHART_CSS}
   body { overflow-wrap: anywhere; }
+  nav.sheets { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 20px 0; border-bottom: 1px solid var(--grid); }
+  nav.sheets a {
+    padding: 6px 10px; color: var(--ink-2); text-decoration: none; font-size: 12px;
+    border-bottom: 2px solid transparent;
+  }
+  nav.sheets a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--debt-1); font-weight: 600; }
+  .brief { white-space: pre-wrap; max-width: 65ch; }
+  .lead { margin-bottom: 8px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .tile .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .d { color: var(--ink-2); font-size: 12px; }
+  .tile figcaption { font-size: 11px; color: var(--muted); }
+  .more { margin-top: 8px; font-size: 12px; }
+  ol.paydown { padding-left: 20px; }
+  details summary { cursor: pointer; color: var(--ink-2); }
   header .live { margin-left: auto; color: var(--muted); font-size: 12px; }
   ul.rows { list-style: none; padding: 0; }
   ul.rows > li {
@@ -461,11 +253,12 @@ ${PAGE_SHELL_CSS}
     background: var(--page); border: 1px solid var(--grid); border-radius: 4px; padding: 0 4px;
   }
   a { color: var(--debt-2); }
-  @media (max-width: 480px) { header, main { padding-left: 12px; padding-right: 12px; } }
+  @media (max-width: 480px) { header, main, nav.sheets { padding-left: 12px; padding-right: 12px; } }
 </style>
 </head>
 <body>
 <header><h1>pup dashboard</h1><span class="repo">${escapeHtml(repoPath)}</span><span class="live" id="live">connecting…</span></header>
+<nav class="sheets">${bar}</nav>
 <main id="board">
 ${body}
 </main>
