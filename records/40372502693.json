@@ -1,0 +1,222 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T17:57:30.013Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40372502693",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40372502693",
+  "actor": "AlexisBalayre",
+  "commit_sha": "90255361d5d17af439c86b3c9f7009e347a7e9af",
+  "source": "pr",
+  "pr_number": 181,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "343-351",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Still present at head: `dropMergeLock` renames whatever sits at the lock path aside and only then checks dev/inode. If the held lock was removed and another run took it, this release moves that live lock aside, and a third run can then take the lock while the second still holds it. The second run's own release then throws ENOENT. Decision 88 records the rename-then-check order, but not this hazard. Checking `directoryIdentity(lockPath)` before the `renameSync` shrinks the window to two syscalls.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1902-1916",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Still present at head: `waitForLoad` runs straight after the gate's own build stage. The 1-minute load average it reads still counts that build, so on a busy machine the gate can wait on its own load while holding the merge lock. `hasSuite` is known before the build, so the wait can move above it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "213-226",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`landed` is now written under the lock, before the audit. If the audit then throws (Ctrl-C, `BrokenToolchainError`, `NoAdapterError`), the CLI prints only the audit's error, so the operator is never told the land went through. A re-run says only `Session <id> has already landed.`, with no hint that `pup audit` is owed. Decision 88 accepts the order, so only the hint is missing: name `pup audit` in the landed refusal or in the audit failure.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "450-458",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`heldBy` builds a `MergeLockHeldError` and then overwrites its `message`, so that error's wording lives both in merge-gate.errors.ts and here. It also re-runs `isLiveProcess`, which `tryMergeLock` already ran. Let the error class take the holder and its state.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "286-287, 386-387",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`mergeLockHolder` repeats `directoryIdentity`'s real-directory `lstatSync` check instead of calling it. `reclaimMergeLock` then calls both back to back, so the same path is lstat'd twice through two copies of one predicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "211-283",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Five new wait tests (land.test.ts L226 and L261, merge-gate.test.ts L2451 and the two `mergeAfter` tests) use real timers. They release the lock at 200 ms but the poll runs at 1000 ms, so each idles about 1 s. 'refuses a second land that waited on the first' also relies on two equal timers firing in call order. Use fake timers, as the 'waiting for a live holder' describe already does, or assert that exactly one of the two lands succeeded.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "17-21",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "New `vi.mock('./audit.service.js', ...)` wraps `auditProject`. testing.md §When `vi.mock` is right reserves module mocks for tmux and `claude -p`, and audit.service is neither.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4652-4654",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 88 says a lock with no readable pid is looked at again every 100 ms for a second before refusing. The code (merge-gate.service.ts L502, `if (left <= 0 || ...)`) refuses at once when `maxWaitMs` is 0, so `pup fix` and every other non-waiting caller get no grace. Either apply the grace whatever `maxWaitMs` is, or limit the decision's wording to waiting callers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "391-394",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`removeLockDir`'s failure message says \"No run reads it\". That is false when it undoes a failed pid write on the live lock path (L484), where the leftover lock blocks every later run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "429",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "One line of `reclaimMergeLock`'s JSDoc (\"killed mid-reclaim or planted, and is replaced. Answers false when another run is reclaiming, and the caller\") runs far past the wrap width of the lines around it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "541-542",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`withMergeLock`'s JSDoc \"one line when the wait starts, and by default not at all\" reads as if the printing is what is off by default. The doc also never mentions the pid-less grace poll.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "486-491",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Waited for with node's default disposition... the listeners go on in the same tick as the take\" sits above `let identity` but describes the wait loop and the listener registration. Its first half repeats the JSDoc. Keep only the same-tick point, next to `process.on`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4683",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 88 writes \"A gate asked to wait (`waitForLoad`)\", but `waitForLoad` is the function. The option is `MergeRequest.wait`, so name that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "524-532",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "If `.git/pup-merge.lock` is gone when the locked section ends, the release's `renameSync` throws ENOENT out of the `finally` and replaces `fn`'s result. A merge that already fast-forwarded then reports a crash. The old `rmdirSync` threw the same way.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "docs",
+      "description": "The docs reviewer reported decision 88's pid-less bullet as fixed at head. The conventions reviewer and the orchestrator confirmed against merge-gate.service.ts L502 that the mismatch is still there, so the finding was kept under conventions."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.435534099999999,
+  "duration_ms": 308759,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 14757,
+    "cache_read": 287999,
+    "cache_creation": 60019,
+    "total": 362787
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 208,
+      "output": 102728,
+      "cache_read": 4499944,
+      "cache_creation": 396765,
+      "cost_usd": 5.1192628000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 7814,
+      "cache_read": 307393,
+      "cache_creation": 82936,
+      "cost_usd": 0.31627130000000003
+    }
+  ],
+  "permission_denials": []
+}
