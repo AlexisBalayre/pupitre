@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { FORMAT_CHARS } from './fix-round.service.js';
 import { rethrowIfKilled } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -8,6 +9,7 @@ import {
   type PullRequestReview,
   readPullRequestReview,
 } from './github.client.js';
+import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
@@ -34,9 +36,13 @@ const COMMENT_ONLY_STATUS = 'Not reviewed: only comments and prose changed';
  */
 const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 
-/** A string GitHub or gh returned, as the line prints it: one scrubbed line, no symbols. */
+/**
+ * A string GitHub or gh returned, as the line prints it: one scrubbed line, no
+ * symbols, and none of the format characters `sanitizeReason` keeps, which
+ * the operator's screen hides and the conductor still reads.
+ */
 function shown(text: string): string {
-  return sanitizeReason(text).replace(SYMBOLS, '-');
+  return sanitizeReason(text.replace(FORMAT_CHARS, '')).replace(SYMBOLS, '-');
 }
 
 /** The wait's sense of time, which a test replaces. */
@@ -76,12 +82,13 @@ interface CiWaitOutcome {
  * review of an older head, or a status on one, is never the answer for a head
  * pushed since. Finished means the bot's newest review is on the head under
  * its final `SUCCESS` status, its `FAILURE` on the head, the preflight's
- * comment-only skip on it, or a PR no longer open. Nothing prints while it
- * waits; a gh read that fails is one more wait, and the timeout's line names
- * the last thing seen.
+ * comment-only skip on it, a head no longer the gate's pin, or a PR no longer
+ * open. A status the owner asked `@claude review` past is the run's before,
+ * so it finishes nothing. Nothing prints while it waits; a gh read that fails
+ * is one more wait, and the timeout's line names the last thing seen.
  */
 export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise<CiWaitOutcome> {
-  const { session, prUrl, repo } = pullRequestToWaitOn(db, req.repoPath, req.target);
+  const { session, prUrl, pinned, repo } = pullRequestToWaitOn(db, req.repoPath, req.target);
   assertGhAvailable(CI_WAIT_USE.command);
   const clock = req.clock ?? REAL_CLOCK;
   // Minted, so the commands the line names are built around an id the store
@@ -97,7 +104,7 @@ export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise
         repo,
         req.readTimeoutMs ?? READ_TIMEOUT_MS,
       );
-      const digest = reviewDigest(id, prUrl, review);
+      const digest = reviewDigest(id, prUrl, pinned, review);
       if ('line' in digest) return { finished: true, line: digest.line };
       lastSeen = digest.waiting;
     } catch (error) {
@@ -120,16 +127,17 @@ export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise
 }
 
 /**
- * The session and PR to wait on. A session must have a newest merge with a PR
- * and no landing after it; a PR is the one a session of this project's newest
- * merge opened, so the digest can name the session's next command. The url is
- * store text, held to origin's recorded repo as `pup fix` holds it.
+ * The session and PR to wait on, with the sha the gate pinned. A session must
+ * have a newest merge with a PR and no landing after it; a PR is the one a
+ * session of this project's newest merge opened, so the digest can name the
+ * session's next command. The url is store text, held to origin's recorded
+ * repo as `pup fix` holds it.
  */
 function pullRequestToWaitOn(
   db: Database,
   repoPath: string,
   target: string,
-): { session: SessionRow; prUrl: string; repo: string } {
+): { session: SessionRow; prUrl: string; pinned: string; repo: string } {
   const session = getSession(db, target) ?? sessionThatOpened(db, repoPath, target);
   const named = shown(target);
   if (session === undefined) {
@@ -150,9 +158,15 @@ function pullRequestToWaitOn(
         CI_WAIT_USE.untouched,
     );
   }
+  if (merge.sha === undefined || !COMMIT_SHA.test(merge.sha)) {
+    throw new Error(
+      `Session ${id}'s merge event names no pinned sha to hold the PR's head to. ` +
+        CI_WAIT_USE.untouched,
+    );
+  }
   const repo = originRepoSlug(pushTarget(db, session, repoPath, CI_WAIT_USE));
   assertPullRequestOf(merge.prUrl, repo, CI_WAIT_USE.untouched);
-  return { session, prUrl: merge.prUrl, repo };
+  return { session, prUrl: merge.prUrl, pinned: merge.sha, repo };
 }
 
 /** The session of this project whose newest merge opened the PR `pr` names, by url or number. */
@@ -172,11 +186,15 @@ function sessionThatOpened(db: Database, repoPath: string, pr: string): SessionR
  * The digest line once the review of the PR's current head has finished, or
  * what the wait is on until then. Every string GitHub returned is scrubbed
  * where it prints. Each thread the poster anchors is an important finding;
- * minors stay in the review body, and never ask for a round.
+ * minors stay in the review body, and never ask for a round. A head that is
+ * not `pinned`, the sha the gate measured and the PR vouches for, ends the
+ * wait whatever its review says: `pup fix` and `pup land` refuse it, so the
+ * next step is the re-gate (decision 86), or nothing once it merged.
  */
 function reviewDigest(
   id: string,
   prUrl: string,
+  pinned: string,
   review: PullRequestReview,
 ): { line: string } | { waiting: string } {
   const head = shown(review.head ?? 'an unreadable head');
@@ -185,14 +203,35 @@ function reviewDigest(
       `${prUrl} at ${head}: review ${outcome}; ${threads} open thread(s), ${important} ` +
       `important → ${next}`,
   });
-  if (review.state === 'MERGED') return line('moot, the PR merged', 0, 0, `pup land ${id}`);
+  const isPinned = review.head === pinned;
+  if (review.state === 'MERGED') {
+    return isPinned
+      ? line('moot, the PR merged', 0, 0, `pup land ${id}`)
+      : line(
+          `moot, the PR merged on a head that is not ${pinned}, the commit the gate pinned`,
+          0,
+          0,
+          "none: `pup land` refuses it (the operator's call)",
+        );
+  }
   if (review.state !== 'OPEN') {
     return line(`moot, the PR is ${shown(review.state ?? 'unreadable')}`, 0, 0, 'none');
   }
+  const threads = review.openThreads.length;
+  if (!isPinned) {
+    return line(
+      `moot, the head moved off ${pinned}, the commit the gate pinned`,
+      threads,
+      0,
+      `pup merge ${id} --pr`,
+    );
+  }
   const status = review.headStatus;
   const said = status === undefined ? 'no status' : shown(status.description);
-  const threads = review.openThreads.length;
-  const isOnHead = review.head !== undefined && review.reviewedHead === review.head;
+  if (review.isRereviewAsked) {
+    return { waiting: `a review of ${head} asked by comment after its status, ${said}` };
+  }
+  const isOnHead = review.reviewedHead === review.head;
   if (status?.state === 'PENDING' && status.description.startsWith(COMMENT_ONLY_STATUS)) {
     // The newest review is on an earlier head, the code this push left as it
     // was. Its verdict is on that head's status, which is not read here, and

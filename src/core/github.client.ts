@@ -271,6 +271,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
               context(name: "${REVIEW_STATUS_CONTEXT}") {
                 state
                 description
+                createdAt
                 creator { __typename login }
               }
             }
@@ -300,6 +301,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
           }
         }
       }
+      comments(last: ${REVIEW_PAGE}) { nodes { body createdAt authorAssociation } }
     }
   }
 }`;
@@ -331,6 +333,12 @@ export interface PullRequestReview {
   reviewedHead: string | undefined;
   /** The bot's `claude-review` status on the head: its verdict, or why it reached none. */
   headStatus: { state: string; description: string } | undefined;
+  /**
+   * The repo's owner commented `@claude review` on the PR after the bot set
+   * `headStatus`: the workflow reviews the head again on that comment, and
+   * nothing marks the head while it runs, so `headStatus` is the run's before.
+   */
+  isRereviewAsked: boolean;
   /** The unresolved threads the bot's newest review run opened, in GitHub's order. */
   openThreads: ReviewThread[];
 }
@@ -348,7 +356,8 @@ function nodesOf(connection: unknown): Record<string, unknown>[] {
 /**
  * What the CI review said on the PR at `url` (decision 90): its state and
  * head, the commit the review bot last reviewed, the status it pinned to the
- * head, and the threads that newest review run opened that nobody resolved. One
+ * head, whether the owner asked for a review since that status, and the
+ * threads that newest review run opened that nobody resolved. One
  * GraphQL read, so all of it describes the same moment, pinned to `repo`'s
  * host and name like every other call here. Every string in it is GitHub's
  * copy of text a session's code shaped — a path, a finding quoting that code —
@@ -391,11 +400,13 @@ export function readPullRequestReview(
         'hand.',
     );
   }
+  const status = reviewStatusOn(pr.commits, head);
   return {
     state: typeof pr.state === 'string' ? pr.state : undefined,
     head,
     reviewedHead: typeof reviewedHead === 'string' ? reviewedHead : undefined,
-    headStatus: reviewStatusOn(pr.commits, head),
+    headStatus: status && { state: status.state, description: status.description },
+    isRereviewAsked: status !== undefined && isReviewAskedSince(pr.comments, status.setAt),
     openThreads: newest.flatMap((thread): ReviewThread[] => {
       const [finding] = nodesOf(thread.comments);
       if (thread.isResolved !== false || typeof thread.id !== 'string') return [];
@@ -621,21 +632,42 @@ function newestReviewRun(reviews: unknown): Record<string, unknown>[] {
 }
 
 /**
- * The review bot's `claude-review` status on the PR's last commit, read only
- * when that commit is the head the PR reports: anyone who can push may set a
- * status, so another creator's reads as none. A clean one is still no proof
- * (decision 90).
+ * The review bot's `claude-review` status on the PR's last commit, and when
+ * it was set (NaN when unreadable), read only when that commit is the head the
+ * PR reports: anyone who can push may set a status, so another creator's
+ * reads as none. A clean one is still no proof (decision 90).
  */
 function reviewStatusOn(
   commits: unknown,
   head: string | undefined,
-): PullRequestReview['headStatus'] {
+): { state: string; description: string; setAt: number } | undefined {
   const commit = objectFields(nodesOf(commits).at(-1)?.commit);
   if (head === undefined || commit.oid !== head) return undefined;
   const status = objectFields(objectFields(commit.status).context);
   if (!isReviewBot(status.creator)) return undefined;
-  const { state, description } = status;
+  const { state, description, createdAt } = status;
   return typeof state === 'string'
-    ? { state, description: typeof description === 'string' ? description : '' }
+    ? {
+        state,
+        description: typeof description === 'string' ? description : '',
+        setAt: typeof createdAt === 'string' ? Date.parse(createdAt) : Number.NaN,
+      }
     : undefined;
+}
+
+/**
+ * Whether a PR comment the workflow runs a review on came after `since`: the
+ * repo owner's (its `if` takes `github.repository_owner`'s comments only),
+ * carrying `@claude review` in any case, as its `contains` reads it
+ * (`.github/workflows/claude-code-review.yml`). A time outside its shape, on
+ * either side, reads as after, so a wait goes on rather than taking the
+ * status before for the run's.
+ */
+function isReviewAskedSince(comments: unknown, since: number): boolean {
+  return nodesOf(comments).some((comment) => {
+    if (comment.authorAssociation !== 'OWNER' || typeof comment.body !== 'string') return false;
+    if (!/@claude review/i.test(comment.body)) return false;
+    const at = typeof comment.createdAt === 'string' ? Date.parse(comment.createdAt) : Number.NaN;
+    return !(at <= since);
+  });
 }

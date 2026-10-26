@@ -161,6 +161,7 @@ describe('readPullRequestReview', () => {
       head: HEAD,
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
+      isRereviewAsked: false,
       openThreads: [
         {
           id: 'PRRT_open',
@@ -255,8 +256,46 @@ describe('readPullRequestReview', () => {
       head: HEAD,
       reviewedHead: undefined,
       headStatus: undefined,
+      isRereviewAsked: false,
       openThreads: [],
     });
+  });
+
+  // The workflow reviews the head again on its owner's `@claude review`, and
+  // nothing marks the head meanwhile (decision 90).
+  it("tells an `@claude review` the owner asked after the bot's status on the head", () => {
+    const asked = (createdAt: unknown, statusAt: unknown = '2026-10-26T10:00:00Z') => ({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      commits: {
+        nodes: [
+          {
+            commit: {
+              oid: HEAD,
+              status: {
+                context: { state: 'FAILURE', description: 'x', createdAt: statusAt, creator: BOT },
+              },
+            },
+          },
+        ],
+      },
+      comments: {
+        nodes: [{ body: 'now @CLAUDE REVIEW', createdAt, authorAssociation: 'OWNER' }],
+      },
+    });
+
+    ghAnswers(asked('2026-10-26T10:05:00Z'));
+    expect(read().isRereviewAsked).toBe(true);
+    ghAnswers(asked('2026-10-26T09:55:00Z'));
+    expect(read().isRereviewAsked).toBe(false);
+    // A time outside its shape, on either side, reads as asked: the wait goes on.
+    ghAnswers(asked(null));
+    expect(read().isRereviewAsked).toBe(true);
+    ghAnswers(asked('2026-10-26T09:55:00Z', 'yesterday'));
+    expect(read().isRereviewAsked).toBe(true);
+    // With no status of the bot's on the head, there is nothing stale to wait past.
+    ghAnswers({ ...asked('2026-10-26T10:05:00Z'), commits: { nodes: [] } });
+    expect(read().isRereviewAsked).toBe(false);
   });
 
   // Two runs on one head: the newest run's verdict is the review's (decision 90).

@@ -1729,6 +1729,36 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       );
     });
 
+    // A reviewer flags one cause in several places, so a reason cites other
+    // threads, or its own: an id inside a reason is in no answer's place, so
+    // it neither answers that thread nor cancels its answer, in its summary or
+    // an older one. An answer after prose still reads.
+    it('reads an id cited inside a reason as no answer, and as no cancel', async () => {
+      const fixed = await gateTheRound(
+        'fixed the failing check PRRT_fixed hid; PRRT_declined declined: the call is sync, as ' +
+          'PRRT_fixed assumed',
+        {
+          rejected: [
+            'Answered all three. PRRT_fixed fixed: bounded the loop, the bound PRRT_fixed asked ' +
+              'for; PRRT_silent fixed: same bound as PRRT_fixed',
+          ],
+        },
+      );
+
+      expect(resolves()).toHaveLength(1);
+      expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
+      expect(replies().find((m) => m.includes('-f thread=PRRT_fixed'))).toContain(
+        `Addressed in ${fixed}: \` bounded the loop, the bound PRRT_fixed asked for \``,
+      );
+      expect(replies().find((m) => m.includes('-f thread=PRRT_declined'))).toContain(
+        '` the call is sync, as PRRT_fixed assumed `',
+      );
+      expect(comments()[0]).toContain(
+        '1 thread(s) addressed and resolved, 1 answered fixed that pup could not verify, ' +
+          '1 declined and 0 unanswered',
+      );
+    });
+
     // An armed driver is the operator's alarm (decision 50), never read as no
     // change: one armed while the stages ran stops the answers before any
     // post, and the gate's warning carries the alarm whole, past the cap.

@@ -4845,8 +4845,13 @@ changes back into those docs is pending.
     round's checks rejected steers the worker to fix only the failures, so the summary after it
     may answer no thread, and each thread keeps its newest answer. Each summary is read on its
     own, newest first, and no answer runs across a line break, so an id ending one summary or line
-    never takes the verdict that starts the next. The newest summary that names a thread at all
-    answers for it, by the last place it names it there: a mention in any other form (`` `<id>`
+    never takes the verdict that starts the next. A summary names a thread only where an answer
+    could stand: its id followed by a verdict, or opening a clause (the summary's start, or after
+    `;` or a line break) past nothing but a bullet, emphasis or a backtick. An id cited inside a
+    reason (`PRRT_b fixed: same as PRRT_a`, or a reason naming its own thread) stands in no such
+    place, so it neither answers nor cancels: counting every mention cancelled the cited thread's
+    answer, as review bots flag one cause in several places. The newest summary that names a
+    thread so answers for it, by the last such place there: one in any other form (`` `<id>`
     declined ``, `<id>: declined`, `**<id>** declined`) is no answer, so an older `fixed` never
     outlives it. One GraphQL read (`readThreadAnswers`, pinned
     like every gh call) lists the PR's threads with `isResolved`, their `path`, whether the bot
@@ -4904,8 +4909,20 @@ changes back into those docs is pending.
     - the preflight's `PENDING` `Not reviewed: only comments and prose changed`, the comment-only
       skip;
     - or the PR is no longer open (`MERGED` names `pup land`).
+    The head is held to the merge's pin first: one that moved off it, by a push by hand or GitHub's
+    "Update branch", ends the wait at once with `pup merge <id> --pr` next, whatever its review
+    says, since the PR vouches for the pin alone and `pup fix` and `pup land` refuse any other head;
+    a PR merged on another head names nothing next, as `pup land` refuses it for good. Nothing
+    marks the head while an `@claude review` comment re-runs the review on it (the preflight sets a
+    status only on a skip, the poster only once it posted), so the head's status reads as the run
+    before while the repo owner commented `@claude review` after it: the read takes the status's
+    `createdAt` and the PR's newest 100 comments, and an owner's comment carrying the words in any
+    case, as the workflow's `if` and `contains` take it, keeps the wait going when it is newer or
+    either time is unreadable. Another account's comment starts no run, so it holds nothing.
     The digest reads `<url> at <head>: review <outcome>; N open thread(s), M important → <next>`.
-    Every string GitHub or gh returned is scrubbed, then stripped of non-ASCII math and other
+    Every string GitHub or gh returned is stripped of format characters first (tag characters,
+    bidi controls, zero-widths: `sanitizeReason` keeps them, a terminal hides them, and the
+    conductor still reads them as text), scrubbed, then stripped of non-ASCII math and other
     symbols (the needs-you inbox's class), so a forged status cannot print an arrow and a next step
     of its own, such as a `pup merge … --accept-debt`, for the conductor to act on. The important
     count is the status's `N important finding(s)`. Next is `pup fix <id>` when
@@ -4942,11 +4959,14 @@ changes back into those docs is pending.
     worker cherry-picked that change, that only a PR commit rewritten since the round started
     changed, or whose fix a later run of the round reverted, takes each thread's newest answer
     across the round's summaries, by its last mention in the newest summary naming it, and none
-    across a line break, posts nothing again on a second run, gives up within its budget on a gh
+    across a line break, reads an id cited inside a reason as neither an answer nor a cancel, posts nothing again on a second run, gives up within its budget on a gh
     that hangs, and answers nothing with no round, a failing gh, or a driver armed while the gate
     ran. `ci-wait.test.ts` runs a sequenced fake gh
     on a fake clock: a review on an older head is waited past, a timeout exits unfinished, a read
-    that timed out is one more wait, a forged arrow is scrubbed, an unminted row is refused, and
+    that timed out is one more wait, a forged arrow and hidden format characters are scrubbed, an
+    unminted row and a merge with no pin are refused, a head moved off the pin names the re-gate,
+    a status the owner's `@claude review` came after is waited past while another account's or an
+    older ask holds nothing, and
     the comment-only, `FAILURE`, `MERGED`, partial and PR-number cases each end in their digest.
     `github-client.test.ts` reads real children past their buffer and timeout as cut off, and an
     interrupt or a failing exit as not. `conductor.test.ts` checks the

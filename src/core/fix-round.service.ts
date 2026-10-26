@@ -85,13 +85,15 @@ const CLEAN_REVIEW_STATUS = 'no blocking issues';
  * override among them, and the other default-ignorable code points (variation
  * selectors, U+034F, the Hangul fillers), which can carry invisible text.
  */
-const FORMAT_CHARS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+export const FORMAT_CHARS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 /** Where one finding is cut, so a long one cannot crowd the others out of the kickoff. */
 const THREAD_BODY_MAX_CHARS = 4_000;
 /** `pup status` asks GitHub once per open PR each time it prints: a slow answer reads as none. */
 const CI_REVIEW_LOOKUP_TIMEOUT_MS = 10_000;
 /** A GraphQL node id, as GitHub mints a review thread's; anything else in the store is skipped. */
 const THREAD_ID = /^[A-Za-z0-9_=-]{1,100}$/;
+/** A summary up to an id that opens a clause: only a bullet, emphasis or a backtick since its start. */
+const OPENS_A_CLAUSE = /(?:^|[;\n])[^\w;\n]*$/;
 type SessionDone = Extract<SessionEvent, { type: 'session_done' }>;
 /** Every gh call answering a round's threads, together: the gate holds the merge lock meanwhile. */
 const ANSWER_BUDGET_MS = 60_000;
@@ -460,30 +462,45 @@ function filesTheRoundChanged(
  * The worker's answer for thread `id` in the round's summaries, newest first,
  * as the round's kickoff asks for it: `<id> fixed: <reason>` or `<id>
  * declined: <reason>`, answers apart by `;` or a line break, so none runs
- * across one. `addressed` reads as `fixed`. The newest summary that names the
- * thread at all answers for it, by the last place it names it there: a
- * mention in any other form (`` `<id>` declined ``, `<id>: declined`) is no
- * answer, so an older `fixed` never outlives it. `id` is a minted thread id.
+ * across one. `addressed` reads as `fixed`. A summary answers for the thread
+ * where it names it in an answer's place: followed by a verdict, or opening a
+ * clause past nothing but punctuation. The newest summary that does answers
+ * for it, by the last such place there: one in any other form (`` `<id>`
+ * declined ``, `<id>: declined`) is no answer, so an older `fixed` never
+ * outlives it. An id cited inside a reason (`PRRT_b fixed: same as PRRT_a`)
+ * is in no answer's place, so it neither answers nor cancels. `id` is a
+ * minted thread id.
  */
 function threadAnswer(
   summaries: string[],
   id: string,
 ): { verdict: 'fixed' | 'declined'; reason: string } | undefined {
-  const mention = `(?<![\\w=-])${id}(?![\\w=-])`;
-  const summary = summaries.find((said) => new RegExp(mention).test(said));
-  if (summary === undefined) return undefined;
-  const last = [...summary.matchAll(new RegExp(mention, 'g'))].at(-1)?.index ?? 0;
+  const mention = new RegExp(`(?<![\\w=-])${id}(?![\\w=-])`, 'g');
   const answer = new RegExp(
     `${id}[^\\S\\n]+(fixed|addressed|declined)\\b[^\\S\\n]*[:—–-]?[^\\S\\n]*([^;\\n]*)`,
     'iy',
   );
-  answer.lastIndex = last;
-  const match = answer.exec(summary);
-  if (!match) return undefined;
-  return {
-    verdict: match[1]?.toLowerCase() === 'declined' ? 'declined' : 'fixed',
-    reason: match[2] ?? '',
+  const answerAt = (summary: string, index: number) => {
+    answer.lastIndex = index;
+    return answer.exec(summary);
   };
+  for (const summary of summaries) {
+    const last = [...summary.matchAll(mention)]
+      .map((found) => found.index)
+      .filter(
+        (index) =>
+          answerAt(summary, index) !== null || OPENS_A_CLAUSE.test(summary.slice(0, index)),
+      )
+      .at(-1);
+    if (last === undefined) continue;
+    const match = answerAt(summary, last);
+    if (!match) return undefined;
+    return {
+      verdict: match[1]?.toLowerCase() === 'declined' ? 'declined' : 'fixed',
+      reason: match[2] ?? '',
+    };
+  }
+  return undefined;
 }
 
 /**
