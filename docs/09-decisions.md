@@ -6186,15 +6186,24 @@ changes back into those docs is pending.
     cheap and bounded. The brief's heading match is linear: the title runs from its first
     non-blank character, and the closing run and trailing blanks are cut with string operations,
     since the one-regex form backtracked cubically on a line of blanks ending in U+2028 (minutes
-    at the brief's cap, the whole server frozen). `readBrief` reads only a regular file of at most
-    four bytes per allowed character, so a FIFO at the path is refused, not blocked on. A figure
+    at the brief's cap, the whole server frozen). `readBrief` reads through `readPlainFile`, which
+    opens without blocking and checks the descriptor it reads, so a FIFO, a device or a huge file
+    swapped in at the path is refused, not blocked on or read to the end, by the dashboard, a
+    launch and a conductor start alike. Its cap is the 1 MiB every plain file shares, and the
+    8,000 characters a brief may carry still refuse a longer one. A figure
     stored as a non-finite number (`1e999` parses to Infinity) is unmeasured in `debtFigures`, and
     the charts draw a non-finite value as no mark and halve the span so two finite extremes
-    cannot overflow it. The ledger fields and the Destination also go through `displayText`, so
-    a U+202E cannot make a path read as another. Each poll reads the newest eight captures
+    cannot overflow it, and an empty series draws an empty frame. Every ledger field on both
+    sheets, the Overview's session and PR rows included, and the Destination also go through
+    `displayText`, so a U+202E cannot make a path read as another. A sheet is published on its
+    own: a stream that opens renders only its sheet, and the poll catches a sheet that cannot be
+    rendered without skipping the others, so a ledger row the Debt sheet cannot read never ends
+    or starves an Overview stream. Each poll reads the newest eight captures
     (`listRecentBaselineHistory`) and the sessions' first merges in the window in one grouped
-    query. Tests: the planted heading line renders within a second, a FIFO brief shows the
-    refusal, a U+202E reaches neither sheet, a baseline of `1e999` shows as unmeasured with no
+    query. Tests: the planted heading line renders within a second, a FIFO brief and one linked
+    to `/dev/zero` show the refusal, a U+202E in a description filed against a live session and
+    in every other field reaches neither sheet, an Overview stream opens and updates while the
+    Debt sheet cannot render, a baseline of `1e999` shows as unmeasured with no
     NaN, every chart draws no NaN for infinite values or ±1e308, and the bounded history lists
     the newest captures oldest first.
 

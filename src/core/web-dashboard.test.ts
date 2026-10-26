@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -603,23 +603,40 @@ describe('startWebDashboard', () => {
       expect(page).toContain('<p class="brief">Ship it.');
     });
 
-    it('refuses a brief that is not a regular file instead of blocking on it', async () => {
-      mkdirSync(dirname(briefPath(repo)), { recursive: true });
-      execFileSync('mkfifo', [briefPath(repo)]);
+    it.each([
+      ['a FIFO', (path: string) => execFileSync('mkfifo', [path])],
+      ['a link to an endless device', (path: string) => symlinkSync('/dev/zero', path)],
+    ])(
+      'refuses a brief that is %s instead of blocking on it or reading it to the end',
+      async (_case, plant) => {
+        mkdirSync(dirname(briefPath(repo)), { recursive: true });
+        plant(briefPath(repo));
 
-      const page = (await get(dashboard.url)).body;
+        const page = (await get(dashboard.url)).body;
 
-      expect(page).toContain('is not a regular file of at most 32000 bytes');
-    });
+        expect(page).toContain('is not a plain file pup can read');
+      },
+    );
 
     it('replaces direction marks in the Destination and every ledger field', async () => {
       const spoof = 'src/evil\u202egnp.ts';
       writeBrief(`## Destination\nreach ${spoof}\n`);
-      fileDebt(`Oversize diff ${spoof}`, [spoof], { reason: spoof, acceptedBy: spoof });
+      // Filed against a live session, so its row on the Overview shows the entry too.
+      seedSession('s-live', ['running']);
+      fileDebt(
+        `Nested package ${spoof} changed with no build script, merged from session s-live`,
+        [spoof],
+        {
+          reason: spoof,
+          acceptedBy: spoof,
+        },
+      );
 
-      for (const page of [(await get(dashboard.url)).body, (await get(sheetUrl('debt'))).body]) {
+      const overview = (await get(dashboard.url)).body;
+      for (const page of [overview, (await get(sheetUrl('debt'))).body]) {
         expect(page).not.toContain('\u202e');
       }
+      expect(overview).toContain('debt #1: Nested package src/evil\ufffdgnp.ts changed');
       expect((await get(sheetUrl('debt'))).body).toContain('<code>src/evil\ufffdgnp.ts</code>');
     });
 
@@ -639,6 +656,32 @@ describe('startWebDashboard', () => {
 
       expect(page).not.toMatch(/NaN|Infinity/);
       expect(page).toContain('<div class="k">duplicated lines</div><div class="v">—</div>');
+    });
+
+    it('keeps streaming every sheet while another sheet cannot be rendered', async () => {
+      const debt = await openStream(`${origin()}/events${address().search}&sheet=debt`);
+      try {
+        if (debt.frames.length === 0) await debt.next();
+        // A reason stored as a BLOB, which the Debt sheet cannot read as text.
+        const id = fileDebt('planted', []);
+        db.prepare('UPDATE ledger_entries SET reason = ? WHERE id = ?').run(Buffer.from('x'), id);
+
+        const overview = await openStream(eventsUrl());
+        try {
+          const first = overview.frames[0] ?? (await overview.next());
+          expect(first).toContain('Nothing waits on you.');
+
+          const arriving = overview.next();
+          seedSession('s-new', ['running']);
+          appendEvent(db, 's-new', 'question', { text: 'still live?' });
+
+          expect(await arriving).toContain('question: still live?');
+        } finally {
+          overview.close();
+        }
+      } finally {
+        debt.close();
+      }
     });
 
     it("streams a sheet's own board, and a change to it within one poll", async () => {

@@ -61,15 +61,15 @@ export async function startWebDashboard(
   // A stream that just opened is sent the board even when nothing changed,
   // and when something did every stream on the sheet gets it, or the older
   // ones would wait for a change past the one the new stream already took.
-  const publish = (opened?: ServerResponse): void => {
-    for (const sheet of new Set(streams.values())) {
-      const body = render(sheet);
-      if (body !== lastBody.get(sheet)) {
-        lastBody.set(sheet, body);
-        for (const [stream, on] of streams) if (on === sheet) send(stream, body);
-      } else if (opened && streams.get(opened) === sheet) {
-        send(opened, body);
-      }
+  // One sheet at a time: a stream opening renders only its own sheet, so a
+  // sheet the store cannot render right now never ends a stream on another.
+  const publish = (sheet: SheetName, opened?: ServerResponse): void => {
+    const body = render(sheet);
+    if (body !== lastBody.get(sheet)) {
+      lastBody.set(sheet, body);
+      for (const [stream, on] of streams) if (on === sheet) send(stream, body);
+    } else if (opened) {
+      send(opened, body);
     }
   };
 
@@ -105,7 +105,7 @@ export async function startWebDashboard(
       });
       streams.set(res, sheet);
       req.on('close', () => streams.delete(res));
-      publish(res);
+      publish(sheet, res);
       return;
     }
     refuse(res, 404, 'Not found.');
@@ -127,11 +127,13 @@ export async function startWebDashboard(
   });
 
   const poll = setInterval(() => {
-    if (streams.size === 0) return;
-    try {
-      publish();
-    } catch {
-      // Unreadable for one poll; the next one reads again.
+    for (const sheet of new Set(streams.values())) {
+      try {
+        publish(sheet);
+      } catch {
+        // This sheet is unreadable for one poll; the others still go out,
+        // and the next poll reads it again.
+      }
     }
   }, pollMs);
 

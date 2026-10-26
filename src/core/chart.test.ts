@@ -78,6 +78,11 @@ describe('chart.utils', () => {
     expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
   });
 
+  it('draws an empty series as an empty frame, not a throw', () => {
+    expect(lineChart([], { title: 'None' })).toContain('<figcaption>None: </figcaption>');
+    expect(sparkline([], { title: 'None' })).not.toContain('<circle');
+  });
+
   it('draws a single-point line without dividing by zero', () => {
     const svg = lineChart([{ label: 'only', value: 3 }], { title: 'One' });
 

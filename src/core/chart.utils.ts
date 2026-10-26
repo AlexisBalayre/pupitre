@@ -167,7 +167,8 @@ export function lineChart(data: ChartDatum[], options: ChartOptions): string {
     data.map((d) => d.value),
     { left: 8, top: 16, width: WIDTH - 16, height: PLOT_HEIGHT - 44 },
   );
-  const ends = [0, data.length - 1].filter((i, n, all) => all.indexOf(i) === n);
+  // Both ends, once each; none for an empty series.
+  const ends = data.length === 0 ? [] : [...new Set([0, data.length - 1])];
   const marks = ends.map((i) => {
     const [x, y] = coords[i] as [number, number];
     const d = data[i] as ChartDatum;
@@ -189,13 +190,7 @@ export function sparkline(data: ChartDatum[], options: ChartOptions): string {
     data.map((d) => d.value),
     { left: 4, top: 4, width: width - 8, height: height - 8 },
   );
-  const [x, y] = coords.at(-1) as [number, number];
-  return figure(
-    'chart spark',
-    options,
-    data,
-    height,
-    width,
-    `${polyline(coords)}<circle class="dot" cx="${at(x)}" cy="${at(y)}" r="3"/>`,
-  );
+  const last = coords.at(-1);
+  const dot = last ? `<circle class="dot" cx="${at(last[0])}" cy="${at(last[1])}" r="3"/>` : '';
+  return figure('chart spark', options, data, height, width, `${polyline(coords)}${dot}`);
 }

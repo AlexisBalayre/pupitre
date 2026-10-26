@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { readPlainFile } from '../adapters/capability.utils.js';
 import { projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 
@@ -75,9 +76,6 @@ const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
  */
 const SECTION_HEADING = /^ {0,3}##(?:[ \t]+([^ \t\n\r\u2028\u2029].*)?)?$/;
 
-/** A file larger than this cannot strip down to `BRIEF_MAX_CHARS`, which UTF-8 holds in 4 bytes each. */
-const BRIEF_MAX_BYTES = BRIEF_MAX_CHARS * 4;
-
 /** Absolute path of the project's brief, whether or not it exists yet. */
 export function briefPath(repoPath: string): string {
   return projectPaths(repoPath).briefFile;
@@ -97,18 +95,22 @@ export function briefPath(repoPath: string): string {
  */
 export function readBrief(repoPath: string): string | undefined {
   const path = briefPath(repoPath);
-  // Only a regular file of bounded size is read: a FIFO planted at the path
-  // would block the reader, the dashboard's whole server with it, and a device
-  // or a huge file would be read to the end before the cap could refuse it.
-  const stat = statSync(path, { throwIfNoEntry: false });
-  if (stat === undefined) return undefined;
-  if (!stat.isFile() || stat.size > BRIEF_MAX_BYTES) {
+  // Only a regular file of bounded size is read, checked on the descriptor
+  // opened without blocking, so nothing can be swapped in between the check
+  // and the read: a FIFO would block the reader, the dashboard's whole server
+  // and every launch with it, and a device or a huge file would be read to the
+  // end before the cap below could refuse it.
+  let raw: string;
+  try {
+    raw = readPlainFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw new InvalidProfileError(
-      `The project brief at ${path} is not a regular file of at most ${BRIEF_MAX_BYTES} bytes. ` +
+      `The project brief at ${path} is not a plain file pup can read. ` +
         'Replace it with `pup brief edit`.',
     );
   }
-  const text = readFileSync(path, 'utf8').replace(CONTROL_CHARS, '');
+  const text = raw.replace(CONTROL_CHARS, '');
   if (text.length > BRIEF_MAX_CHARS) {
     // Measured after stripping, which is the text every reader would get.
     throw new InvalidProfileError(

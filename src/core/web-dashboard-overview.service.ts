@@ -76,10 +76,12 @@ export function readOverview(db: Database, repoPath: string, now: number): Overv
     snapshot,
     needs: needsYou(snapshot),
     // Read off the store like the snapshot's overdue entries, and scrubbed the
-    // same way, so an id here matches the one the snapshot marks overdue.
+    // same way, so an id here matches the one the snapshot marks overdue. The
+    // description also loses its direction marks, as on the Debt sheet: a flag
+    // can quote a path the session chose (decision 98).
     openDebt: listLedgerEntries(db, pid).map((entry) => ({
       id: sanitizeReason(String(entry.id)),
-      description: sanitizeReason(entry.description),
+      description: displayText(sanitizeReason(entry.description)),
     })),
     fixRounds,
     goal: readGoal(repoPath),
