@@ -6126,7 +6126,10 @@ changes back into those docs is pending.
     it in `session-env.json` beside the project's store (`~/.pupitre/<id>/`). Every window pup
     opens, whether a launch, a respawn, a fix round or the conductor, reads the list and adds
     each name the launching shell has a value for to the window's own `tmux -e`, with that
-    value, read at launch. A name with no value is not set empty. The strip list is unchanged:
+    value, read at launch. A name with no value is not set at all, empty included, so the
+    window inherits what its server's global environment holds for it. On the default server,
+    where every session's window is, any session can set that with `tmux set-environment -g`,
+    as it could already for every variable a window is not handed. The strip list is unchanged:
     the named variables are still kept out of the tmux client's environment, so a client that
     starts a server never makes them its global environment, readable with
     `show-environment -g`. The conductor gets them too, so the sessions it launches from its
@@ -6160,17 +6163,33 @@ changes back into those docs is pending.
     rather than in `~/.claude`. So `claudeUserDir(repoPath)` answers which dir a window of the
     project runs on: the shell's `CLAUDE_CONFIG_DIR` when the list names it, `~/.claude`
     otherwise. It must be absolute, since tmux expands no `~` and a relative one would resolve
-    against each window's own cwd. A launch refuses otherwise. Trust is seeded in that dir's
-    `.claude.json`, made first if the dir is new. `pup new`, `pup launch`, `pup conductor
-    start` and `pup fix` hash that dir for the drift check instead of `~/.claude`.
-    `transcriptDir` takes the dir.
+    against each window's own cwd. It must also be a directory the operator owns, through any
+    link, that neither its group nor others can write. Every window, the conductor's included,
+    loads the hooks a `settings.json` there names, so a dir another local user made first,
+    under `/tmp` say, would run that user's commands in each. A missing dir is made, `0700`
+    whatever the umask, so the one pup makes passes the same check. A dir that fails either
+    check throws `ConfigDirRefusedError`. `pup new`, `pup audit --sweep`, `pup launch`,
+    `pup conductor start`, `pup respawn` and `pup kill --respawn` resolve the dir before
+    anything is planned, steered, killed or opened, and refuse in one scrubbed line. `pup fix`
+    refuses through its own scrubbed catch, before its round starts. A window reads the list
+    once, so its `-e` and the `.claude.json` its trust is seeded in agree on the dir. Those
+    commands hash that dir for the drift check instead of `~/.claude`. `transcriptDir` takes
+    the dir.
     *Owed, outside this change's scope.* `session-lifecycle.service.ts` stamps a session's
     `transcript_path` as `transcriptDir(worktree)` and `dashboard.service.ts` checks the
     stored column against the same call, both on `~/.claude`. A session on a named config dir
     writes its transcript where neither looks, so the dashboard shows none for it until both
-    pass `claudeUserDir(repoPath)`. The `claude -p` utilities (`utility.service.ts`) that the
-    conductor's `pup merge --pr` starts inherit the conductor's environment, named variables
-    included. A named `CLAUDE_CONFIG_DIR` puts them on that dir's settings and login too.
+    pass `claudeUserDir(repoPath)`. `pup ui` (`actions.service.ts`) launches, starts the
+    conductor and respawns on `~/.claude`. A UI launch on a named dir records the hash of
+    `~/.claude`. A refused dir throws from inside `launchSession`, after the worktree is cut
+    and the row inserted, and a UI respawn throws after the kill. The hash and the window
+    still read the list separately, the launching command once and the window once, so a
+    session that rewrites the file between the two can split them across dirs. Closing that
+    means resolving the list once where the command starts and passing it down through
+    `session-lifecycle`, `session-handoff`, `fix-round` and `conductor` to the window. The
+    `claude -p` utilities (`utility.service.ts`) that the conductor's `pup merge --pr` starts
+    inherit the conductor's environment, named variables included. A named
+    `CLAUDE_CONFIG_DIR` puts them on that dir's settings and login too.
     *Ceilings.* The values travel in tmux's argv, as every `-e` does, and `ps` shows them to
     the operator's own user. They are also readable per session by any other client of the
     same server, with `tmux show-environment -t =<session>` (verified on tmux 3.7b). Every
@@ -6188,16 +6207,20 @@ changes back into those docs is pending.
     is dropped. A file that does not parse, is no list, is past the cap, is a symlink, a fifo
     or a directory reads as no names, without blocking. `claudeUserDir` is `~/.claude` until
     the list names `CLAUDE_CONFIG_DIR` and the shell has it, and refuses a `~`, a relative
-    or an empty value. A launch hands the window each named variable with the shell's value,
-    sets none for an unset name, gives tmux's client environment none of them, and seeds
-    trust in the named dir's `.claude.json`, making the dir. An unnamed `CLAUDE*` variable
-    stays stripped from both. The launch's own argv and client environment, run against the
-    installed tmux, set the variables on the window, values ending in `;` and `\;` included,
-    and leave every `CLAUDE*` name out of `show-environment -g`. The conductor's window is
+    or an empty value. It refuses a dir root owns, a link to one, a group- or others-writable
+    dir and a file, and makes a missing one, and its parents, `0700`. A launch hands the
+    window each named variable with the shell's value, sets none for an unset name, gives
+    tmux's client environment none of them, and seeds trust in the named dir's `.claude.json`.
+    An unnamed `CLAUDE*` variable stays stripped from both. The launch's own argv and client
+    environment, run against the installed tmux, set the variables on the window, values
+    ending in `;` and `\;` included, and leave every `CLAUDE*` name out of
+    `show-environment -g`. The conductor's window is
     handed the variable and seeded in the same dir. `transcriptDir` derives its segment under
     a named dir. In `index.test.ts`, `init --session-env` refuses each family, naming it and
     the five, and stores neither the list nor the origin. It records a list, keeps it over a
-    plain `init`, and clears it on `""`.
+    plain `init`, and clears it on `""`. `pup new`, `pup launch`, `pup conductor start`,
+    `pup fix`, `pup respawn` and `pup kill --respawn` refuse a relative value in one scrubbed
+    line. None of them plans, steers, kills or opens anything.
 
 ## Implementation notes
 

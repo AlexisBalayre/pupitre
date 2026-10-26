@@ -66,9 +66,9 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // hashes from them, are the contract (decision 106).
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
-  RelativeConfigDirError: (
+  ConfigDirRefusedError: (
     await importOriginal<typeof import('../claude/session-runtime.service.js')>()
-  ).RelativeConfigDirError,
+  ).ConfigDirRefusedError,
   sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .sessionEnvAllowed,
   readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
@@ -4080,13 +4080,20 @@ describe('CLI commands', () => {
 
   // A config dir `--session-env` passes is the launching shell's, and a quoted
   // `~` reaches pup unexpanded: every command that opens a window refuses it in
-  // one scrubbed line, before anything is planned or launched (decision 106).
+  // one scrubbed line, before anything is planned, killed or launched — a
+  // respawn before its handoff steer and its kill (decision 106).
   describe('a relative CLAUDE_CONFIG_DIR', () => {
     it.each([
-      { command: 'new', args: ['new', 'do the thing', '--scope', 'src/**'], opens: createSession },
-      { command: 'launch', args: ['launch', 't-abc'], opens: launchTask },
-      { command: 'conductor start', args: ['conductor', 'start'], opens: startConductor },
-      { command: 'fix', args: ['fix', 's1'], opens: startFixRound },
+      {
+        command: 'new',
+        args: ['new', 'do the thing', '--scope', 'src/**'],
+        opens: [createSession],
+      },
+      { command: 'launch', args: ['launch', 't-abc'], opens: [launchTask] },
+      { command: 'conductor start', args: ['conductor', 'start'], opens: [startConductor] },
+      { command: 'fix', args: ['fix', 's1'], opens: [startFixRound] },
+      { command: 'respawn', args: ['respawn', 's1'], opens: [requestHandoff, respawnSession] },
+      { command: 'kill --respawn', args: ['kill', 's1', '--respawn'], opens: [hardRespawnSession] },
     ])('refuses `pup $command`, opening nothing', async ({ args, opens }) => {
       const repo = initRepo();
       useCwd(repo);
@@ -4101,7 +4108,7 @@ describe('CLI commands', () => {
       ]);
       expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
-      expect(opens).not.toHaveBeenCalled();
+      for (const open of opens) expect(open).not.toHaveBeenCalled();
     });
   });
 

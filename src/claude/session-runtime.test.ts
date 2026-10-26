@@ -1,10 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -61,6 +63,7 @@ import {
   attachArgs,
   attachCommand,
   attachWindow,
+  ConfigDirRefusedError,
   claudeUserDir,
   conductorName,
   conductorPane,
@@ -77,7 +80,6 @@ import {
   launchWatcher,
   pasteIntoPane,
   preseedTrust,
-  RelativeConfigDirError,
   readInputBox,
   readSessionEnv,
   refusedSessionEnv,
@@ -421,11 +423,12 @@ describe('claudeUserDir', () => {
 
   it("is ~/.claude unless --session-env names CLAUDE_CONFIG_DIR, then the shell's value", () => {
     vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
-    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    const configDir = tempDir('pup-w4b-config-');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
     expect(claudeUserDir('/tmp/repo')).toBe(join(homedir(), '.claude'));
 
     saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
-    expect(claudeUserDir('/tmp/repo')).toBe('/tmp/w4b-config');
+    expect(claudeUserDir('/tmp/repo')).toBe(configDir);
     vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
     expect(claudeUserDir('/tmp/repo')).toBe(join(homedir(), '.claude'));
   });
@@ -436,9 +439,54 @@ describe('claudeUserDir', () => {
     saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
     vi.stubEnv('CLAUDE_CONFIG_DIR', value);
 
-    expect(() => claudeUserDir('/tmp/repo')).toThrow(RelativeConfigDirError);
+    expect(() => claudeUserDir('/tmp/repo')).toThrow(ConfigDirRefusedError);
     expect(() => claudeUserDir('/tmp/repo')).toThrow('it must be an absolute path');
   });
+
+  // Every window loads the hooks a settings.json there names, so a dir
+  // another local user made first, or can write, would run their commands.
+  it.each([
+    ['one root owns', () => '/'],
+    ['a group-writable one', () => chmodded(tempDir('pup-w4b-config-'), 0o770)],
+    ['an others-writable one', () => chmodded(tempDir('pup-w4b-config-'), 0o707)],
+    ['a link to one root owns', () => linkTo('/')],
+    [
+      'a file',
+      () => {
+        const file = join(tempDir('pup-w4b-config-'), 'config');
+        writeFileSync(file, '');
+        return file;
+      },
+    ],
+  ])('refuses a CLAUDE_CONFIG_DIR that is %s', (_, configDir) => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir());
+
+    expect(() => claudeUserDir('/tmp/repo')).toThrow(ConfigDirRefusedError);
+  });
+
+  it('makes a missing CLAUDE_CONFIG_DIR, private to the operator', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const configDir = join(tempDir('pup-w4b-config-'), 'fresh', 'nested');
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+
+    expect(claudeUserDir('/tmp/repo')).toBe(configDir);
+    expect(statSync(configDir).mode & 0o777).toBe(0o700);
+    expect(statSync(dirname(configDir)).mode & 0o777).toBe(0o700);
+  });
+
+  function chmodded(dir: string, mode: number): string {
+    chmodSync(dir, mode);
+    return dir;
+  }
+
+  function linkTo(target: string): string {
+    const link = join(tempDir('pup-w4b-config-'), 'link');
+    symlinkSync(target, link);
+    return link;
+  }
 });
 
 describe('launchSession', () => {
@@ -708,8 +756,8 @@ describe('launchSession', () => {
       CLAUDE_CODE_ENABLE_TELEMETRY: '1',
       PUP_SESSION_ID: 's-1',
     });
-    // A name the shell has no value for is not set empty: the window keeps
-    // whatever default Claude Code has for it.
+    // A name the shell has no value for is not set at all, empty included:
+    // the window inherits what the server's global environment holds for it.
     expect(Object.keys(launchedWindowEnv())).not.toContain('CLAUDE_CODE_SUBAGENT_MODEL');
     for (const [, , options] of vi
       .mocked(execFileSync)
@@ -767,10 +815,12 @@ describe('launchSession', () => {
       'CLAUDE_CONFIG_DIR',
       'CLAUDE_CODE_SUBAGENT_MODEL',
       'CLAUDE_CODE_EFFORT_LEVEL',
+      'CLAUDE_CODE_ENABLE_TELEMETRY',
     ]);
     vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
     vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'opus;');
     vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', 'high;');
+    vi.stubEnv('CLAUDE_CODE_ENABLE_TELEMETRY', '1\\;');
     vi.stubEnv('TMUX', undefined);
     launchSession(opts);
     const [, spawn = [], options] =
@@ -799,6 +849,7 @@ describe('launchSession', () => {
           `CLAUDE_CONFIG_DIR=${configDir}`,
           'CLAUDE_CODE_SUBAGENT_MODEL=opus;',
           'CLAUDE_CODE_EFFORT_LEVEL=high;',
+          'CLAUDE_CODE_ENABLE_TELEMETRY=1\\;',
         ]),
       );
       const global = tmuxHere(['show-environment', '-g']).stdout;

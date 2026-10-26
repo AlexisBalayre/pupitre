@@ -14,12 +14,12 @@ import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capa
 import {
   attachCommand,
   attachWindow,
+  ConfigDirRefusedError,
   claudeUserDir,
   conductorName,
   hasSessionWindow,
   killWatcher,
   launchWatcher,
-  RelativeConfigDirError,
   refusedSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -655,15 +655,16 @@ function launchOrRefuse(
 
 /**
  * The config dir a launch hashes and runs its window on, or a refusal printed
- * before anything is planned or opened: a relative `CLAUDE_CONFIG_DIR` that
- * `--session-env` passes is the operator's to fix, not a crash (decision 106).
- * Scrubbed, since the message quotes the launching shell's value.
+ * before anything is planned, killed or opened: a `CLAUDE_CONFIG_DIR` that
+ * `--session-env` passes and a window may not run on — relative, or one others
+ * can write — is the operator's to fix, not a crash (decision 106). Scrubbed,
+ * since the message quotes the launching shell's value.
  */
 function configDirOrRefuse(repoPath: string): string | undefined {
   try {
     return claudeUserDir(repoPath);
   } catch (error) {
-    if (!(error instanceof RelativeConfigDirError)) throw error;
+    if (!(error instanceof ConfigDirRefusedError)) throw error;
     refuseScrubbed(error);
     return undefined;
   }
@@ -1790,13 +1791,15 @@ export function buildProgram(): Command {
         );
       }
       if (opts.respawn) {
+        // Before the kill: a refused config dir would leave the session no window.
+        if (configDirOrRefuse(repoPath) === undefined) return;
         try {
           hardRespawnSession(db, repoPath, session, undefined, {
             model: opts.model,
             effort: opts.effort,
           });
         } catch (error) {
-          return refuse((error as Error).message);
+          return refuseScrubbed(error);
         }
         console.log(
           `Hard-respawned session ${session} (tmux: ${sanitizeReason(windowLabel({ sessionId: session }))}).`,
@@ -1886,6 +1889,9 @@ export function buildProgram(): Command {
           '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
         );
       }
+      // Before the handoff is asked for and the window killed: a refused config
+      // dir would leave the session no window.
+      if (configDirOrRefuse(repoPath) === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
       try {

@@ -5,11 +5,13 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -317,40 +319,62 @@ function sessionEnv(repoPath: string): Record<string, string> {
 }
 
 /**
- * The launching shell's `CLAUDE_CONFIG_DIR` is not absolute: the operator's to
- * fix, so a launch refuses on it rather than crashing. The message quotes the
- * shell's value.
+ * The launching shell's `CLAUDE_CONFIG_DIR` is not a dir a window may run on:
+ * the operator's to fix, so a launch refuses on it rather than crashing. The
+ * message quotes the shell's value.
  */
-export class RelativeConfigDirError extends Error {
-  constructor(value: string) {
+export class ConfigDirRefusedError extends Error {
+  constructor(value: string, reason: string) {
     super(
       `CLAUDE_CONFIG_DIR is ${JSON.stringify(value)}, which --session-env passes to every ` +
-        'window: it must be an absolute path.',
+        `window: ${reason}.`,
     );
-    this.name = 'RelativeConfigDirError';
+    this.name = 'ConfigDirRefusedError';
   }
+}
+
+/**
+ * The config dir the variables a window is handed put it on, or undefined for
+ * Claude Code's own. Refused unless absolute: tmux expands no `~`, and a
+ * relative one would resolve against each window's own cwd. Refused too unless
+ * it is a dir the operator owns that no one else can write, since every window
+ * loads the hooks a `settings.json` there names: one another local user made
+ * first, under `/tmp` say, would run that user's commands in each. Made
+ * private when missing, so the trust seeded in it skips the dialog.
+ */
+function namedConfigDir(vars: Record<string, string>): string | undefined {
+  const named = vars.CLAUDE_CONFIG_DIR;
+  if (named === undefined) return undefined;
+  if (!isAbsolute(named)) throw new ConfigDirRefusedError(named, 'it must be an absolute path');
+  try {
+    mkdirSync(named, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new ConfigDirRefusedError(
+      named,
+      `pup could not make it a directory (${(error as NodeJS.ErrnoException).code})`,
+    );
+  }
+  // The link's owner too: one another user owns can be repointed after this check.
+  const link = lstatSync(named, { throwIfNoEntry: false });
+  const dir = statSync(named, { throwIfNoEntry: false });
+  const uid = process.getuid?.();
+  if (!dir?.isDirectory() || link?.uid !== uid || dir.uid !== uid || (dir.mode & 0o022) !== 0) {
+    throw new ConfigDirRefusedError(
+      named,
+      'it must be a directory you own that neither its group nor others can write',
+    );
+  }
+  return named;
 }
 
 /**
  * The Claude Code config dir a window of this project runs on: the launching
  * shell's `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude`
  * otherwise. What the launch hashes for decision 9's drift check, and where
- * the window's `.claude.json` and transcripts live. Refused unless absolute:
- * tmux expands no `~`, and a relative one would resolve against each window's
- * own cwd, a different dir for every session.
+ * the window's `.claude.json` and transcripts live.
  */
 export function claudeUserDir(repoPath: string): string {
-  const named = sessionEnv(repoPath).CLAUDE_CONFIG_DIR;
-  if (named === undefined) return join(homedir(), '.claude');
-  if (!isAbsolute(named)) throw new RelativeConfigDirError(named);
-  return named;
-}
-
-/** The `.claude.json` a window's trust is read from: in its config dir when one is named. */
-function claudeJsonFor(repoPath: string): string {
-  return sessionEnv(repoPath).CLAUDE_CONFIG_DIR === undefined
-    ? CLAUDE_JSON
-    : join(claudeUserDir(repoPath), '.claude.json');
+  return namedConfigDir(sessionEnv(repoPath)) ?? join(homedir(), '.claude');
 }
 
 function tmux(socket: string | undefined, args: string[]): string {
@@ -558,9 +582,6 @@ export function preseedTrust(
     projects[path] = { ...projects[path], hasTrustDialogAccepted: true };
   }
   config.projects = projects;
-  // A config dir `--session-env` names may not exist yet; Claude Code would
-  // make it on start, after the dialog this is here to skip (decision 106).
-  mkdirSync(dirname(claudeJsonPath), { recursive: true });
   writeFileSync(claudeJsonPath, JSON.stringify(config, null, 2));
 }
 
@@ -684,13 +705,20 @@ const SESSION_NICENESS = '10';
  * and hand the process the same bypass-permissions, user-setting-sources argv.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
-  preseedTrust(opts.cwd, claudeJsonFor(opts.repoPath), opts.git);
+  // One read of the list, so the trust and the window agree on the config dir.
+  const handed = sessionEnv(opts.repoPath);
+  const configDir = namedConfigDir(handed);
+  preseedTrust(
+    opts.cwd,
+    configDir === undefined ? CLAUDE_JSON : join(configDir, '.claude.json'),
+    opts.git,
+  );
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
-      ...sessionEnv(opts.repoPath),
+      ...handed,
       ...opts.caller,
       ...(opts.git ? WINDOW_GIT_CONFIG : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
