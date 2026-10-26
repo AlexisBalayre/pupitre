@@ -54,8 +54,9 @@ interface LandRequest {
  * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
  * failure under the lock is safe: each step skips what is already done. The
  * event is the lock's last write, so a second land that waited on the first
- * refuses under the lock (decision 88); an audit that fails after it is
- * `pup audit`'s to re-run.
+ * refuses under the lock (decision 88). The steer of overlapping sessions runs
+ * before the audit, and an audit that fails after both is `pup audit`'s to
+ * re-run.
  */
 export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
   const session = getSession(db, req.sessionId);
@@ -216,11 +217,13 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );
 
+  // Before the audit, which can throw: once the event is written a re-run
+  // refuses, and nothing else steers (decision 88).
+  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
   // The conductor may run this, so no human stands between an observed
   // regression and the bar: a regressed measurement is reported and left for
   // `pup audit`, which the operator runs (decision 84).
   const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
   return { prUrl, mergeCommit, target, ...landed, audit };
 }
 

@@ -620,7 +620,7 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
 /** What `planMerge` settled before the lock, for the run under it. */
 interface MergePlan {
   session: SessionRow;
-  /** `sessionMark` when the plan read the session. */
+  /** `sessionMark` before the plan read anything. */
   mark: string;
   sandbox: string;
   target: string;
@@ -634,6 +634,9 @@ interface MergePlan {
  * `--pr` everything GitHub can refuse.
  */
 function planMerge(db: Database, req: MergeRequest): MergePlan {
+  // First, so a change another run makes while the plan reads git and GitHub
+  // differs from it under the lock.
+  const mark = sessionMark(db, req.sessionId);
   const session = getSession(db, req.sessionId);
   if (!session) throw new Error(`No session ${req.sessionId}.`);
   const merged =
@@ -706,7 +709,7 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
     else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return { session, mark: sessionMark(db, session.id), sandbox, target, pullRequest, regate };
+  return { session, mark, sandbox, target, pullRequest, regate };
 }
 
 /**

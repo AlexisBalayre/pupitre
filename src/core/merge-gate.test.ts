@@ -2532,6 +2532,47 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         expect(listEvents(db, SESSION_ID).filter((event) => event.type === 'merge')).toEqual([]);
       });
 
+      // The plan's own gh calls, before it has settled anything: the mark
+      // must predate them, or the change is in the plan's mark too.
+      it('plans again when the session changed while the plan read GitHub', async () => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        seedDebtBaseline({});
+        addOrigin();
+        const real = vi.mocked(execFileSync).getMockImplementation();
+        let rejected = false;
+        vi.mocked(execFileSync).mockImplementation(((
+          file: string,
+          args: string[],
+          opts: object,
+        ) => {
+          const output = real?.(file, args, opts as never);
+          if (!rejected && file === 'gh' && args[1] === 'list') {
+            rejected = true;
+            transitionSession(db, SESSION_ID, 'rejected');
+            transitionSession(db, SESSION_ID, 'running');
+          }
+          return output;
+        }) as never);
+        onTestFinished(() => {
+          vi.mocked(execFileSync).mockImplementation(real as never);
+        });
+
+        await expect(
+          withFakeGh(fakeGh([]), () =>
+            runMergeGate(db, {
+              repoPath: repo,
+              sessionId: SESSION_ID,
+              adapters: [passingAdapter],
+              openPr: true,
+            }),
+          ),
+        ).rejects.toThrow(SessionNotReviewableError);
+        expect(rejected).toBe(true);
+        expect(ghCalls().some((call) => call.includes('pr create'))).toBe(false);
+        expect(listEvents(db, SESSION_ID).filter((event) => event.type === 'merge')).toEqual([]);
+      });
+
       it('refuses a session the holder merged, recording no second merge', async () => {
         const worktree = seedSession(db, repo);
         commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');

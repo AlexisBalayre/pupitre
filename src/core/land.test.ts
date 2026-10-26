@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { endSandboxRun } from './sandbox.utils.js';
+import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -14,10 +14,16 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
   return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
 });
+// The real audit, so a test can make the one after a land throw.
+vi.mock('./audit.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./audit.service.js')>();
+  return { ...actual, auditProject: vi.fn(actual.auditProject) };
+});
 
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
+import { auditProject } from './audit.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
@@ -451,6 +457,19 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(landedEvents()).toHaveLength(1);
     });
 
+    // Once the event is written a re-run refuses, so a steer left for after a
+    // failed audit would never be sent (decision 88).
+    it('steers before an audit that throws, which a re-run then refuses', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(auditProject).mockRejectedValueOnce(new GateInterruptedError('SIGINT'));
+
+      await expect(landMerged()).rejects.toThrow(GateInterruptedError);
+
+      expect(landedEvents()).toHaveLength(1);
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      await expect(land()).rejects.toThrow('has already landed');
+    });
+
     it('steers a live session sharing a landed file once, and one sharing none not at all', async () => {
       seedPeer('s2', 'src/feature.ts');
       seedPeer('s3', 'src/other.ts');
@@ -629,7 +648,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(existsSync(ghLog)).toBe(false);
   });
 
-  // The audit is the land's last step; with nothing to measure it must not start.
+  // The audit runs after the land; with nothing to measure the land must not start.
   it('refuses with no adapter, changing nothing', async () => {
     seedPrMerge();
     mergeOnGitHub();
