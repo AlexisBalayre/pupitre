@@ -296,12 +296,34 @@ function mergeLockHolder(lockPath: string): number | undefined {
   return Number.isSafeInteger(pid) ? pid : undefined;
 }
 
+/** Which directory a lock is, so a later step can tell it from one swapped in for it. */
+interface LockIdentity {
+  dev: number;
+  ino: number;
+}
+
+/** `path`'s identity when it is a real directory, never a link to one; undefined otherwise. */
+function directoryIdentity(path: string): LockIdentity | undefined {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  return stat?.isDirectory() ? { dev: stat.dev, ino: stat.ino } : undefined;
+}
+
 /**
  * Remove a lock directory and the pid in it, and nothing else: it sits in the
  * `.git` a session can write, so anything else found there is left and named
- * rather than removed with it.
+ * rather than removed with it, and so is a directory that is no longer
+ * `identity`, a link or another directory a session swapped in, whose pid
+ * could be another lock's (decision 88).
  */
-function removeLockDir(dir: string): void {
+function removeLockDir(dir: string, identity: LockIdentity): void {
+  const now = directoryIdentity(dir);
+  if (now?.dev !== identity.dev || now.ino !== identity.ino) {
+    console.error(
+      `${dir} is no longer the lock directory pup made, so it was left as it is. Treat a ` +
+        'session that replaced it as compromised.',
+    );
+    return;
+  }
   try {
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
     rmdirSync(dir);
@@ -318,10 +340,14 @@ function removeLockDir(dir: string): void {
  * no reader ever finds the lock without its pid. A removal that fails leaves
  * only the aside directory, which no reader looks at.
  */
-function dropMergeLock(lockPath: string, why: 'released' | 'reclaimed'): void {
+function dropMergeLock(
+  lockPath: string,
+  why: 'released' | 'reclaimed',
+  identity: LockIdentity,
+): void {
   const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
   renameSync(lockPath, aside);
-  removeLockDir(aside);
+  removeLockDir(aside, identity);
 }
 
 /** Make `dir`; false when it already exists or cannot be made. */
@@ -339,15 +365,16 @@ function makeDir(dir: string): boolean {
  * crash, a power cut. Under a second lock of its own, so two runs that both
  * read the dead pid cannot both reclaim, the second removing the lock the
  * first took in between; under it the pid is read again. A reclaim lock older
- * than `RECLAIM_STALE_MS` was stranded by a run killed mid-reclaim and is
- * replaced. Answers false when another run is reclaiming, and the caller
+ * than `RECLAIM_STALE_MS`, or dated in the future, was stranded by a run
+ * killed mid-reclaim or planted, and is replaced. Answers false when another run is reclaiming, and the caller
  * treats the lock as held; a lock that cannot be moved aside throws.
  */
 function reclaimMergeLock(lockPath: string, dead: number): boolean {
   const reclaiming = `${lockPath}.reclaim`;
   if (!makeDir(reclaiming)) {
     const stat = lstatSync(reclaiming, { throwIfNoEntry: false });
-    if (!stat?.isDirectory() || Date.now() - stat.mtimeMs < RECLAIM_STALE_MS) return false;
+    const age = stat ? Date.now() - stat.mtimeMs : 0;
+    if (!stat?.isDirectory() || (age >= 0 && age < RECLAIM_STALE_MS)) return false;
     try {
       rmdirSync(reclaiming);
     } catch {
@@ -356,7 +383,10 @@ function reclaimMergeLock(lockPath: string, dead: number): boolean {
     if (!makeDir(reclaiming)) return false;
   }
   try {
-    if (mergeLockHolder(lockPath) === dead) dropMergeLock(lockPath, 'reclaimed');
+    const identity = directoryIdentity(lockPath);
+    if (identity && mergeLockHolder(lockPath) === dead) {
+      dropMergeLock(lockPath, 'reclaimed', identity);
+    }
     return true;
   } finally {
     try {
@@ -369,11 +399,12 @@ function reclaimMergeLock(lockPath: string, dead: number): boolean {
 
 /**
  * Try the merge lock once: a directory, which only one `mkdir` can make,
- * holding the taker's pid. Answers undefined once it is taken, the live pid
- * holding it, or null for a lock with no pid to read; a lock whose pid is dead
- * is reclaimed and tried again (decision 88).
+ * holding the taker's pid. Answers the directory's identity once it is taken,
+ * the pid holding it, or null for a lock with no pid to read; a lock whose pid
+ * is dead is reclaimed and tried again, and a dead pid is answered only while
+ * another run is reclaiming it (decision 88).
  */
-function tryMergeLock(lockPath: string): number | null | undefined {
+function tryMergeLock(lockPath: string): LockIdentity | number | null {
   for (;;) {
     let failed: string | undefined;
     try {
@@ -382,16 +413,24 @@ function tryMergeLock(lockPath: string): number | null | undefined {
       failed = (error as NodeJS.ErrnoException).code ?? 'unknown';
     }
     if (failed === undefined) {
-      // Made by this `mkdir`, but the path is in a `.git` a session can write.
-      if (!lstatSync(lockPath, { throwIfNoEntry: false })?.isDirectory()) return null;
+      // Made by this `mkdir`, but the path is in a `.git` a session can write:
+      // every later step checks it is still this directory.
+      const identity = directoryIdentity(lockPath);
+      if (!identity) return null;
       try {
         writeFileSync(join(lockPath, MERGE_LOCK_PID_FILE), `${process.pid}\n`, { flag: 'wx' });
-        return undefined;
       } catch (error) {
         // Taken but not recorded: undone, since a lock with no pid refuses every later run.
-        removeLockDir(lockPath);
+        removeLockDir(lockPath, identity);
         throw error;
       }
+      const now = directoryIdentity(lockPath);
+      if (now?.dev === identity.dev && now.ino === identity.ino) return identity;
+      console.error(
+        `${lockPath} was replaced while pup took it, so its pid may have been written through ` +
+          'what replaced it; nothing was taken. Treat a session that replaced it as compromised.',
+      );
+      return null;
     }
     if (failed !== 'EEXIST') throw new MergeLockHeldError(lockPath);
     const holder = mergeLockHolder(lockPath);
@@ -404,12 +443,17 @@ function tryMergeLock(lockPath: string): number | null | undefined {
   }
 }
 
-/** The refusal for a live holder, which must not tell the operator to remove its lock. */
-function heldByLiveRun(lockPath: string, holder: number): MergeLockHeldError {
+/**
+ * The refusal for a lock with a pid, which must not tell the operator to
+ * remove it: held by a live run, or by a dead one another run is reclaiming.
+ */
+function heldBy(lockPath: string, holder: number): MergeLockHeldError {
   const error = new MergeLockHeldError(lockPath);
-  error.message =
-    `Another merge is in progress: pid ${holder} holds the lock at ${lockPath}. Do not ` +
-    'remove it; retry once that run ends.';
+  error.message = isLiveProcess(holder)
+    ? `Another merge is in progress: pid ${holder} holds the lock at ${lockPath}. Do not ` +
+      'remove it; retry once that run ends.'
+    : `pid ${holder}, which held the lock at ${lockPath}, is gone, and another run is ` +
+      `reclaiming it (${lockPath}.reclaim). Do not remove either; retry in a moment.`;
   return error;
 }
 
@@ -444,7 +488,13 @@ export async function withMergeLock<TResult>(
   // Waited for with node's default disposition, so a Ctrl-C ends the wait;
   // the listeners go on in the same tick as the take, leaving no turn of the
   // event loop between them.
-  for (let holder = tryMergeLock(lockPath); holder !== undefined; holder = tryMergeLock(lockPath)) {
+  let identity: LockIdentity | undefined;
+  for (;;) {
+    const holder = tryMergeLock(lockPath);
+    if (holder !== null && typeof holder === 'object') {
+      identity = holder;
+      break;
+    }
     const now = Date.now();
     const left = deadline - now;
     if (holder === null) {
@@ -457,7 +507,7 @@ export async function withMergeLock<TResult>(
       continue;
     }
     pidless = undefined;
-    if (left <= 0) throw heldByLiveRun(lockPath, holder);
+    if (left <= 0) throw heldBy(lockPath, holder);
     if (!announced) {
       announced = true;
       console.error(
@@ -475,7 +525,7 @@ export async function withMergeLock<TResult>(
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
-      dropMergeLock(lockPath, 'released');
+      dropMergeLock(lockPath, 'released', identity);
     } finally {
       for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }
@@ -529,13 +579,13 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
   return withMergeLock(
     req.repoPath,
     async (waited) => {
-      // The run that held the lock meanwhile may have merged, rejected or
-      // re-gated this session, or opened its fix round, and a driver may have
-      // been armed since: planned again under the lock, as a run started now
-      // would be (decision 88).
-      const { session, sandbox, target, pullRequest, regate } = waited
-        ? planMerge(db, req)
-        : planned;
+      // A run that held the lock before this one, a live one waited for or a
+      // dead one reclaimed or one released during the gh calls, may have
+      // merged, rejected or re-gated this session, or opened its fix round, and
+      // a driver may have been armed during a wait: planned again under the
+      // lock, as a run started now would be (decision 88).
+      const { session, sandbox, target, pullRequest, regate } =
+        waited || sessionMark(db, req.sessionId) !== planned.mark ? planMerge(db, req) : planned;
       // Not under the project's state dir beside the conductor's checkout: the
       // sandbox denies every gate child reads and writes under `~/.pupitre`,
       // which holds the store (decision 36). `mkdtemp` is private and unguessable;
@@ -570,6 +620,8 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
 /** What `planMerge` settled before the lock, for the run under it. */
 interface MergePlan {
   session: SessionRow;
+  /** `sessionMark` when the plan read the session. */
+  mark: string;
   sandbox: string;
   target: string;
   pullRequest?: PullRequestPlan;
@@ -654,7 +706,20 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
     else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return { session, sandbox, target, pullRequest, regate };
+  return { session, mark: sessionMark(db, session.id), sandbox, target, pullRequest, regate };
+}
+
+/**
+ * What another run's gate, fix round or land changes about a session: its
+ * state, its rejections and its newest event (decision 88).
+ */
+function sessionMark(db: Database, sessionId: string): string {
+  const session = getSession(db, sessionId);
+  return JSON.stringify([
+    session?.state,
+    session?.reject_count,
+    listEvents(db, sessionId).at(-1)?.id,
+  ]);
 }
 
 /**
@@ -1840,6 +1905,12 @@ export async function measureBranch(
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
   const test = commandFor('test');
+  const hasSuite =
+    test !== undefined ||
+    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
+  // Before the slot and before the stages that run alongside the suites, so
+  // the load measured is the machine's and not this gate's own children.
+  if (hasSuite && req.wait) await waitForLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;
@@ -1873,34 +1944,23 @@ export async function measureBranch(
   // All of them in one of the machine's test slots, which the gate is served
   // before any worker (decision 96); the wait is not the stage's time. No
   // suite to run takes no slot.
-  const hasSuite =
-    test !== undefined ||
-    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
   const suites = hasSuite
-    ? withTestSlot(
-        { kind: 'gate', label: session.id },
-        async () => {
-          // Inside the slot, so no worker's run starts while the load falls.
-          if (req.wait) await waitForLoad();
-          return runSuites();
-        },
-        {
-          onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
-          // Bounded, as the wait holds the merge lock (decision 96).
-          maxWaitMs: GATE_SLOT_WAIT_MS,
-          onWaitExpired: () =>
-            console.error(
-              `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
-                'tests without one.',
-            ),
-          // A slots path a session broke must not fail every gate on the machine.
-          onSlotsUnusable: (error) =>
-            console.error(
-              `The test slots could not be used (${failureSummary(error)}); the ` +
-                'gate runs its tests without one.',
-            ),
-        },
-      ).catch((error: unknown) => {
+    ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
+        onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
+        // Bounded, as the wait holds the merge lock (decision 96).
+        maxWaitMs: GATE_SLOT_WAIT_MS,
+        onWaitExpired: () =>
+          console.error(
+            `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
+              'tests without one.',
+          ),
+        // A slots path a session broke must not fail every gate on the machine.
+        onSlotsUnusable: (error) =>
+          console.error(
+            `The test slots could not be used (${failureSummary(error)}); the ` +
+              'gate runs its tests without one.',
+          ),
+      }).catch((error: unknown) => {
         // A wait that ended before the suites ran leaves the coverage run's
         // directory to this; a second dispose after theirs removes nothing.
         covered?.dispose();

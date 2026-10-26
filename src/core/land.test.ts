@@ -237,6 +237,45 @@ describe('landSession', { timeout: 20_000 }, () => {
     }
   });
 
+  // The first's `landed` event is written under the lock the second then
+  // takes: the second must not land, audit and steer again (decision 88).
+  it('refuses a second land that waited on the first, under the lock', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    // Both wait on a third run's lock, so both pass the checks before it.
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+    setTimeout(() => rmSync(lock, { recursive: true }), 200);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const landWaiting = () =>
+      landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        wait: true,
+      });
+
+    try {
+      const [first, second] = await Promise.allSettled([landWaiting(), landWaiting()]);
+
+      expect(first.status).toBe('fulfilled');
+      expect(second).toMatchObject({
+        status: 'rejected',
+        reason: expect.objectContaining({ message: `Session ${SESSION_ID} has already landed.` }),
+      });
+      expect(landedEvents()).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it('fast-forwards main, removes the worktree and branch, audits and records the land', async () => {
     seedPrMerge();
     const merge = mergeOnGitHub();

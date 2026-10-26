@@ -50,9 +50,12 @@ interface LandRequest {
  * that GitHub says is MERGED, and the target fetched from the recorded origin
  * must hold the sha the gate pinned. Then, under the merge lock, the local
  * target is fast-forwarded with the gate's plumbing, the session's worktree
- * and branch go, the audit re-stamps the baseline the PR mode left alone
- * (decision 26), and a `landed` event drops the PR from the inbox. A re-run
- * after a failure part-way is safe: each step skips what is already done.
+ * and branch go, a `landed` event drops the PR from the inbox, and the audit
+ * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
+ * failure under the lock is safe: each step skips what is already done. The
+ * event is the lock's last write, so a second land that waited on the first
+ * refuses under the lock (decision 88); an audit that fails after it is
+ * `pup audit`'s to re-run.
  */
 export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
   const session = getSession(db, req.sessionId);
@@ -146,6 +149,9 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
             ' while `pup land` waited for the merge lock. Nothing was landed.',
         );
       }
+      if (newestMerge(db, session.id) === 'landed') {
+        throw new Error(`Session ${id} has already landed.`);
+      }
       const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
       const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
       // A squash or rebase merge lands other commits than the ones the gate
@@ -203,7 +209,9 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         originTip,
       ]);
       const targetSha = fastForwarded ? originTip : localSha;
-      return { targetSha, fastForwarded, ...tearDown(req.repoPath, session, targetSha) };
+      const tornDown = tearDown(req.repoPath, session, targetSha);
+      appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
+      return { targetSha, fastForwarded, ...tornDown };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );
@@ -212,7 +220,6 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   // regression and the bar: a regressed measurement is reported and left for
   // `pup audit`, which the operator runs (decision 84).
   const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-  appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
   steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
   return { prUrl, mergeCommit, target, ...landed, audit };
 }
