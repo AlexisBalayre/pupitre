@@ -338,7 +338,8 @@ function tryMergeLock(lockPath: string): number | undefined {
         rmSync(lockPath, { recursive: true, force: true });
         throw error;
       }
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new MergeLockHeldError(lockPath);
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST')
+        throw new MergeLockHeldError(lockPath);
     }
     const holder = mergeLockHolder(lockPath);
     if (holder === undefined) {
@@ -517,34 +518,38 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
   // The operator's and the conductor's runs wait for a live holder (decision 88).
-  return withMergeLock(req.repoPath, async () => {
-    // Not under the project's state dir beside the conductor's checkout: the
-    // sandbox denies every gate child reads and writes under `~/.pupitre`,
-    // which holds the store (decision 36). `mkdtemp` is private and unguessable;
-    // resolved, because the sandbox matches resolved paths.
-    const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
-    try {
-      // Named after its root, so the admin dir `worktree add` names after it is
-      // this gate's alone: as `checkout` it took `checkout1` whenever the
-      // conductor's checkout held `checkout`, a name the pins cannot predict.
-      const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
-      return await (regate
-        ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
-        : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
-    } finally {
-      // Still under the lock, on a pass, a failed stage and a throw alike, and
-      // before this process goes on to anything else (decision 100).
-      endSandboxRun();
-      // Swallowed: a cleanup failure must not replace the gate's outcome or
-      // its error, and the registration goes with the next gate's prune once
-      // the directory is gone.
+  return withMergeLock(
+    req.repoPath,
+    async () => {
+      // Not under the project's state dir beside the conductor's checkout: the
+      // sandbox denies every gate child reads and writes under `~/.pupitre`,
+      // which holds the store (decision 36). `mkdtemp` is private and unguessable;
+      // resolved, because the sandbox matches resolved paths.
+      const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
       try {
-        dropGateCheckout(req.repoPath, checkoutRoot);
-      } catch {
-        // see above
+        // Named after its root, so the admin dir `worktree add` names after it is
+        // this gate's alone: as `checkout` it took `checkout1` whenever the
+        // conductor's checkout held `checkout`, a name the pins cannot predict.
+        const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
+        return await (regate
+          ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
+          : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
+      } finally {
+        // Still under the lock, on a pass, a failed stage and a throw alike, and
+        // before this process goes on to anything else (decision 100).
+        endSandboxRun();
+        // Swallowed: a cleanup failure must not replace the gate's outcome or
+        // its error, and the registration goes with the next gate's prune once
+        // the directory is gone.
+        try {
+          dropGateCheckout(req.repoPath, checkoutRoot);
+        } catch {
+          // see above
+        }
       }
-    }
-  }, req.wait ? MERGE_LOCK_WAIT_MS : 0);
+    },
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
+  );
 }
 
 /**
@@ -1401,12 +1406,17 @@ async function gateAndMerge(
     killTmux(session.id, session.tmux_target);
     try {
       runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
-    } catch {
-      // A worktree the session locked, which one `--force` refuses, or an
-      // interrupt after the merge landed: kept and named in the outcome
-      // rather than skip the ratchet and the draft (decision 88). Its branch
-      // stays with it, since `update-ref -d` would pull the checkout away.
+    } catch (error) {
+      // A worktree the session locked, which one `--force` refuses, a gitfile
+      // it rewrote, or an interrupt after the merge landed: kept and named in
+      // the outcome rather than skip the ratchet and the draft (decision 88),
+      // with git's own words, since only they tell a lock from a tampered
+      // pointer. Its branch stays with it, since `update-ref -d` would pull the
+      // checkout away.
       keptWorktree = worktree;
+      console.error(
+        `git worktree remove refused ${sanitizeReason(worktree)}: ${failureSummary(error)}`,
+      );
     }
     // Deleted only while it still names the gated commit, in both modes: a
     // commit the session added after the pin was never measured, so it is left
@@ -1549,14 +1559,16 @@ function isRerunnable(error: unknown): boolean {
  * says the wait started and one that it ran out. An interrupt ends it as a
  * stage child's would: no child runs to forward one to, and the lock keeps
  * node alive through it. A platform with no load average reads zeros and never
- * waits.
+ * waits. `readLoad` and `ceiling` are the machine's unless a test passes its own.
  */
-async function waitForLoad(): Promise<void> {
-  const ceiling = availableParallelism();
-  let load = loadavg()[0] ?? 0;
+export async function waitForLoad(
+  readLoad: () => number = () => loadavg()[0] ?? 0,
+  ceiling = availableParallelism(),
+): Promise<void> {
+  let load = readLoad();
   if (load < ceiling) return;
   console.error(
-    `The 1-minute load average is ${load.toFixed(1)}, over ${ceiling}; the gate waits up to ` +
+    `The 1-minute load average is ${load.toFixed(1)}, not under ${ceiling}; the gate waits up to ` +
       `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
   );
   const deadline = Date.now() + GATE_SLOT_WAIT_MS;
@@ -1585,7 +1597,7 @@ async function waitForLoad(): Promise<void> {
         };
       });
       if (interrupted) throw new GateInterruptedError(interrupted);
-      load = loadavg()[0] ?? 0;
+      load = readLoad();
       if (load < ceiling) return;
     }
   } finally {
@@ -1768,21 +1780,22 @@ export async function measureBranch(
           return runSuites();
         },
         {
-        onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
-        // Bounded, as the wait holds the merge lock (decision 96).
-        maxWaitMs: GATE_SLOT_WAIT_MS,
-        onWaitExpired: () =>
-          console.error(
-            `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
-              'tests without one.',
-          ),
-        // A slots path a session broke must not fail every gate on the machine.
-        onSlotsUnusable: (error) =>
-          console.error(
-            `The test slots could not be used (${failureSummary(error)}); the ` +
-              'gate runs its tests without one.',
-          ),
-      }).catch((error: unknown) => {
+          onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
+          // Bounded, as the wait holds the merge lock (decision 96).
+          maxWaitMs: GATE_SLOT_WAIT_MS,
+          onWaitExpired: () =>
+            console.error(
+              `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
+                'tests without one.',
+            ),
+          // A slots path a session broke must not fail every gate on the machine.
+          onSlotsUnusable: (error) =>
+            console.error(
+              `The test slots could not be used (${failureSummary(error)}); the ` +
+                'gate runs its tests without one.',
+            ),
+        },
+      ).catch((error: unknown) => {
         // A wait that ended before the suites ran leaves the coverage run's
         // directory to this; a second dispose after theirs removes nothing.
         covered?.dispose();

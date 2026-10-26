@@ -4614,6 +4614,64 @@ changes back into those docs is pending.
     attaches; refuses a session with no live window, an unknown one before asking tmux, and a
     session and the conductor; and carries tmux's failing status.
 
+88. **The merge lock records its holder, survives every exit pup can catch, is reclaimed from a
+    dead holder, and `pup merge` and `pup land` wait for a live one; the gate waits for the
+    machine's load before its tests (2026-10-26, amends 8, 84, 95 and 96).**
+    Four ways the lock in `.git/pup-merge.lock` stopped work it should not have. `withMergeLock`
+    listened for SIGINT and SIGTERM only, so closing the terminal (a SIGHUP) killed node in the
+    middle of the locked section and left the lock behind. A SIGKILL or a crash left one too, and
+    every later merge and land refused until the operator removed it by hand. The post-merge
+    `git worktree remove --force` could throw past the baseline ratchet, which then never ran
+    although the target held the sha. And a held lock or a loaded machine was the conductor's to
+    wait out: from 10-13 to 10-23 it ran 22 load-average wait loops of its own and the console
+    sent 14 lock hand-offs to the operator, about $23.
+    The rules:
+    - The listener covers SIGHUP as well as SIGINT and SIGTERM, for as long as the lock is held,
+      and only then.
+    - Taking the lock writes the holder's pid into it (`pid`, a regular file, created exclusively
+      after the `mkdir`). If that write fails, the directory is removed again, since a lock with
+      no pid would refuse every later run. The lock is released by renaming it aside and removing
+      it there, so no reader ever finds the lock without its pid.
+    - A run that finds the lock reads the pid without following a link or opening a fifo. A pid
+      that is no longer alive (`kill(pid, 0)` fails with anything but EPERM) is reclaimed under a
+      second lock, `pup-merge.lock.reclaim`, and the pid is read again under it, so two runs that
+      both read the dead pid cannot both reclaim. A live pid, or EPERM (another user's process),
+      is held. A lock with no pid file, or one that does not hold a positive whole number, refuses
+      as before: an earlier pup or a hand-made lock is not guessed at.
+    - `pup merge` and `pup land` wait for a live holder, polling once a second, for up to
+      `MERGE_LOCK_WAIT_MS` (three stage timeouts: a gate's slot wait, load wait and test stage end
+      to end). They print one line when the wait starts, naming the pid, and refuse with
+      `MergeLockHeldError` only once it runs out. Only the CLI opts in (`MergeRequest.wait`,
+      `wait` on `pup land`'s request). `pup fix` and every other caller still refuse at once. The
+      wait runs with node's default disposition, so a Ctrl-C ends it before any lock is taken.
+    - Before its tests, inside its test slot so no worker's run starts while the load falls, a
+      gate asked to wait (`waitForLoad`) waits until the 1-minute load average is under the
+      machine's available parallelism, polling every 5 s for up to `GATE_SLOT_WAIT_MS`. It prints
+      one line when the wait starts and one when it runs out, and then runs the tests anyway. An
+      interrupt during the wait unwinds as a stage child's would (`GateInterruptedError`). A
+      platform with no load average reads zeros and never waits.
+    - The gate's post-merge worktree remove is swallowed, as the branch delete after it already
+      was. The worktree is kept with its branch, git's refusal is printed, the outcome names it
+      (`MergeOutcome.keptWorktree`, which `pup merge` prints as `pup land` prints its own), and
+      the ratchet and the decision draft run. A gitfile the session swapped, which the remove
+      refuses, now reads as a merge with a kept worktree and git's words, no longer a throw.
+    - The conductor's standing orders say that `pup merge` and `pup land` wait for the lock and
+      the load themselves, and forbid it to loop on the load average or to ask the operator to
+      release the lock.
+    Also from the decision 86 review (PR #150): `land.service.ts` imports `COMMIT_SHA` from
+    `merge-gate.constants.ts`, and `merge-gate.service.ts` drops the re-export it kept for it
+    (docs/conventions/general.md: no compatibility re-exports).
+    Tests: a SIGHUP listener is held with the other two and gone after; the lock holds the taker's
+    pid; a lock whose pid is dead is reclaimed and the merge lands with nothing left in `.git`; a
+    lock held by a live pid, by a file that is not a pid, or by an empty file refuses and is left
+    as it was; a merge and a land asked to wait take a live holder's lock once it is released,
+    printing one line; under a fake clock the wait takes the lock once it is released and refuses
+    at the timeout, leaving the holder its lock; under a fake load source the load wait returns at
+    once under the ceiling, waits for the load to fall with one line, and runs the tests after its
+    timeout with a one-line note; a failing post-merge worktree remove (a fake git) still ratchets
+    the baseline, keeps the worktree and its branch, and names it in the outcome; the conductor
+    context forbids the load loops and the lock hand-offs.
+
 90. **`pup fix <session>` hands the CI review's open threads on a merged session's PR back to
     its worker, through the one edge out of `merged` (2026-10-18, part 1 of the conductor/CI
     review loop; part 2 closed the loop 2026-10-26; amends 7, 40, 83, 84, 86 and 92).**

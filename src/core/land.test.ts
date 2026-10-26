@@ -202,6 +202,41 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(getProject(db, pid)?.baseline).toBeNull();
   }
 
+  // Decision 88: `pup land` waits for a merge lock a live run holds rather
+  // than hand the retry to the operator.
+  it('waits, when asked, for a merge lock a live run holds, then lands', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setTimeout(() => rmSync(lock, { recursive: true }), 200);
+
+    try {
+      const outcome = await landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        wait: true,
+      });
+
+      expect(outcome).toMatchObject({ targetSha: merge, fastForwarded: true });
+      expect(errors.mock.calls.flat()).toContainEqual(
+        expect.stringMatching(/^Waiting for the merge lock, held by pid \d+, for up to /),
+      );
+      expect(existsSync(lock)).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it('fast-forwards main, removes the worktree and branch, audits and records the land', async () => {
     seedPrMerge();
     const merge = mergeOnGitHub();

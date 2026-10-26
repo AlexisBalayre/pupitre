@@ -2028,6 +2028,7 @@ export function buildProgram(): Command {
                 : undefined,
             openPr: opts.pr,
             gateEnv: parseGateEnv(opts.gateEnv),
+            wait: true,
           });
         } catch (error) {
           if (error instanceof GateInterruptedError) throw error;
@@ -2048,8 +2049,16 @@ export function buildProgram(): Command {
                   ? `Gate passed; reused the open PR ${outcome.prUrl} and rewrote its description with this gate report — check it, merge it there, then run \`pup land ${session}\`.`
                   : `Gate passed; opened ${outcome.prUrl} — merge it there, then run \`pup land ${session}\`.`,
               );
-            } else {
+            } else if (outcome.keptWorktree === undefined) {
               console.log(`Merged ${session}; worktree and branch cleaned up.`);
+            } else {
+              console.log(`Merged ${session}.`);
+            }
+            if (outcome.keptWorktree !== undefined) {
+              console.log(
+                `Kept the worktree at ${sanitizeReason(outcome.keptWorktree)} and its branch: git ` +
+                  'could not remove it (a lock, most likely); remove it from the trusted checkout.',
+              );
             }
             for (const c of outcome.debtCandidates ?? []) {
               console.log(
@@ -2122,6 +2131,7 @@ export function buildProgram(): Command {
           sessionId: session,
           adapters: detectAdapters(repoPath),
           gateEnv: parseGateEnv(opts.gateEnv),
+          wait: true,
         });
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;

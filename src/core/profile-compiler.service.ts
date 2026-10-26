@@ -981,6 +981,10 @@ function buildConductorContext(
       '- Never pass `--accept-debt` without `--approved-by <who>`, naming who approved it. ' +
       'You relay an approval, you never give one: `--approved-by` never names you.\n' +
       "- Never pass `--approved-by human`: that is the operator's own entry.\n" +
+      '- `pup merge` and `pup land` wait for a merge lock another run holds, and the gate for ' +
+      "the machine's load before its tests, each bounded and each saying so in one line. " +
+      'Never loop on the load average before running them, and never ask the operator to ' +
+      'release the merge lock: run the command and read what it prints.\n' +
       'If `pup` is not on PATH, run `node "$PUP_BIN" <command>` instead.',
     '## Protocol\n' +
       `1. \`pup status\`, then \`pup plan\`. Keep ${cap} sessions live: whenever fewer are, ` +
