@@ -250,9 +250,11 @@ function peerOf(conflict: ScopeConflict): SessionPeer {
  * over files other than the append-only decisions log (decision 104). A
  * kickoff's `## Peers` asks its worker to message each peer it lists, which
  * wakes an idle one as surely as a steer, so the kickoff lists only these.
- * A peer in any other state, or sharing only the log, is reached by the
- * gate's fresh-base stage and a fix round's own introduction when it next
- * works. The state is read at each call.
+ * A peer in any other state is reached by the gate's fresh-base stage and a
+ * fix round's own introduction when it next works. Two appends to the log
+ * conflict whatever their workers agree: the first to land sends the other
+ * the main-landed notice, log included, while it runs, and the gate's
+ * fresh-base stage meets it otherwise. The state is read at each call.
  */
 function overlapsWorthANotice(db: Database, conflicts: ScopeConflict[]): ScopeConflict[] {
   return conflicts.flatMap(({ sessionId, files }) => {

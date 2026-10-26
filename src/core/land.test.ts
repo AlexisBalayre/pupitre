@@ -410,20 +410,17 @@ describe('landSession', { timeout: 20_000 }, () => {
       }
     });
 
-    it('steers no one over the append-only decisions log, and leaves it out of a notice', async () => {
+    // Two entries appended at the log's end always conflict, and the gate
+    // counts a failed rebase as a rejection (decision 104).
+    it('steers a running peer sharing only the decisions log, naming it', async () => {
       pinned = commitIn(worktree, 'docs/09-decisions.md', '# Decisions\n');
       sh(repo, 'git', 'push', '-q', origin, BRANCH);
       seedPeer('s2', 'docs/09-decisions.md');
-      seedPeer('s3', 'docs/09-decisions.md');
-      commitIn(join(repo, '.worktrees', 's3'), 'src/feature.ts', "export const peer = 's3';\n");
 
       await landMerged();
 
-      expect(steersTo('s2')).toEqual([]);
-      expect(steerEvents('s2')).toEqual([]);
-      const message = String(steersTo('s3')[0]?.[1]);
-      expect(message).toContain('src/feature.ts');
-      expect(message).not.toContain('09-decisions');
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      expect(String(steersTo('s2')[0]?.[1])).toContain('docs/09-decisions.md');
     });
 
     it('tells a branch with no open PR to rebase onto main, never to force-push', async () => {

@@ -27,7 +27,6 @@ import {
   withMergeLock,
   withScratchGitDir,
 } from './merge-gate.service.js';
-import { filesWorthANotice } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
@@ -219,9 +218,11 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
  * and so is one whose branch git cannot read. A PR whose files git cannot list
  * steers no one, rather than report a land that happened as failed. Only an
  * interrupt stops it. A skipped session is not reported yet (decision 99). A
- * session in any other state is not woken for it, nor one sharing only the
- * append-only decisions log: the gate's fresh-base stage takes the target in
- * for it when it is next gated (decision 104).
+ * session in any other state is not woken for it: the gate's fresh-base stage
+ * takes the target in for it when it is next gated (decision 104). The
+ * decisions log counts here as any file: two entries appended at its end
+ * always conflict, and one this notice resolves now costs the gate no
+ * rejection.
  */
 function steerOverlappingSessions(
   db: Database,
@@ -244,10 +245,8 @@ function steerOverlappingSessions(
     if (!SESSION_ID_PATTERN.test(peer.id) || peer.branch !== `pup/${peer.id}`) continue;
     let files: string[];
     try {
-      files = filesWorthANotice(
-        gitDiffPaths(repoPath, targetSha, `refs/heads/${peer.branch}`).filter((path) =>
-          landedFiles.has(path),
-        ),
+      files = gitDiffPaths(repoPath, targetSha, `refs/heads/${peer.branch}`).filter((path) =>
+        landedFiles.has(path),
       );
     } catch (error) {
       rethrowIfKilled(error);
