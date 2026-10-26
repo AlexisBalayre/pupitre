@@ -1,0 +1,198 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T17:38:42.956Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40369446665",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40369446665",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3f55c00a0e7829e544a410fae2256e548afa6c24",
+  "source": "pr",
+  "pr_number": 179,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "345-368",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The check looks only at the last path component, never its parents. A dir under a parent another local user controls passes, and that user can swap it after the check, so the window loads their `settings.json` hooks.",
+      "body": "**`namedConfigDir` checks only the last path component, so the attacker decision 106 names can still get past it.**\n\nDecision 106 says the ownership check exists because \"a dir another local user made first, under `/tmp` say, would run that user's commands in each.\" The check only `lstat`s and `stat`s `named` itself:\n\n```ts\nmkdirSync(named, { recursive: true, mode: 0o700 });\n...\nconst link = lstatSync(named, { throwIfNoEntry: false });\nconst dir = statSync(named, { throwIfNoEntry: false });\nconst uid = process.getuid?.();\nif (!dir?.isDirectory() || link?.uid !== uid || dir.uid !== uid || (dir.mode & 0o022) !== 0) {\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3f55c00a0e7829e544a410fae2256e548afa6c24/src/claude/session-runtime.service.ts#L345-L368\n\nThere is no `realpath`, no check on any parent, and no path normalization. Three inputs get through:\n\n- **A parent another user owns.** Take `CLAUDE_CONFIG_DIR=/tmp/w4b/claude`, where another user created `/tmp/w4b` first. pup creates `claude` inside it, mode 0700 and owned by the operator, so the check passes. Because that user owns the parent, they can rename `claude` away and put their own dir with a `settings.json` that names hooks in its place. They have time to do it while `preseedTrust`, `which`, the tmux spawn and Claude Code's startup run. The next launch refuses the swapped dir, but the window that already started keeps its hooks.\n- **A link in the middle of the path.** With `/tmp/link -> /home/op/cfg` and `named=/tmp/link/claude`, `lstat` follows the middle link and sees the operator-owned target. The link's owner can repoint it later.\n- **A trailing slash.** Tab completion gives `CLAUDE_CONFIG_DIR=/tmp/w4b/`. With a trailing `/`, `lstat` follows a final symlink, so `link.uid` is the target's owner and not the link's. That defeats the line-357 guard (\"one another user owns can be repointed after this check\").\n\nWindows run with bypass-permissions, so the planted hooks run as the operator. Decision 106's tests cover only a root-owned dir, a link to one, a writable dir and a file.\n\n**Fix:**\n\n1. Strip trailing slashes before the `lstat`.\n2. Walk every component of the literal path and every parent of `realpathSync(named)`.\n3. Require each one to be owned by the operator or root, and either not group- or other-writable or sticky (sticky `/tmp`, `/` and `/home` still pass).",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "278-304",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Duplicated Code. `readSessionEnv` hand-rolls the guarded read (`openSync(... O_RDONLY | O_NOFOLLOW | O_NONBLOCK)`, `fstatSync`, `isFile()`, size cap, `closeSync` in `finally`) that `readPlainFile(path, { followLinks: false })` in `src/adapters/capability.utils.ts:21` already provides. The copy also loses the helper's capped read loop: `readFileSync(fd)` reads to EOF, so a session appending between the `fstat` and the read gets past the 4 KiB cap.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1265-1268",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`transcriptDir`'s new `claudeDir` parameter has no production caller passing it (general.md §Altitude). `session-lifecycle.service.ts:659` and `dashboard.service.ts:199` still use the `~/.claude` default, so its JSDoc's \"`claudeDir` is the window's (`claudeUserDir`)\" holds for no real call. Thread the dir in or drop the param.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "245-248",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`sessionEnvAllowed()` is a one-caller wrapper that only formats the private list for the refusal at `src/cli/index.ts:904` (general.md §Altitude). Export `SESSION_ENV_ALLOWED`, or have `refusedSessionEnv` return the whole refusal text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2453-2466",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup audit --sweep` checks the config dir only inside `createOrRefuse`, after `auditProject` has run the full measurement. A relative or refused `CLAUDE_CONFIG_DIR` therefore wastes a whole audit before the one-line refusal. Call `configDirOrRefuse(repoPath)` right after `refusedUnsandboxed()` when `opts.sweep` is set. This is also the only launch path the relative-dir test table doesn't cover.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "898-899",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--session-env` is parsed with `parseGateEnv`, a gate-env-named helper, so a gate-specific change to it would silently change `--session-env` too. Rename it to something neutral such as `parseEnvNames`, which also removes the comment explaining the reuse.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1965-1969",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `--session-env` tests sit between the decision-48 comment and the `lets the conductor run init` test it explains, so that comment now reads as describing the refusal tests. Move the new block above the comment or below that test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "64-79",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `vi.mock('../claude/session-runtime.service.js')` factory now repeats `await importOriginal<typeof import(...)>()` nine times, six of them new. Bind `const actual = await importOriginal<...>()` once and read each real export from it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1970-1997",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The CLI refusal test repeats 10 names that `session-runtime.test.ts` already covers over 32. It also hard-codes the full allowed-list sentence, so adding an allowed name means editing production code and both test files. One or two cases matched on the refusal prefix would test the wiring.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6294-6315",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 106's ~20-line *Tests.* paragraph restates test names and cases the test files already carry, and it will rot as cases change. Cut it to the non-obvious facts: the real-tmux run covers `;` and `\\;` values, and `show-environment -g` stays free of `CLAUDE*`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "225-244",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The closed-list-vs-denylist rationale is written out both in decision 106 and in the `SESSION_ENV_ALLOWED` JSDoc: the same namespaces, peer channel, credentials, loaders and `SETTABLE_VARS`. Cut the JSDoc to \"closed list; see decision 106\" plus the one-line WHY that a session can write the file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "340-344",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`namedConfigDir`'s JSDoc says the dir is \"made private when missing, so the trust seeded in it skips the dialog\". Decision 106 gives the real reason: the 0700 mode lets the dir pup makes pass the same ownership and writability check. Reword the JSDoc to match.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.5442059,
+  "duration_ms": 360443,
+  "num_turns": 16,
+  "tokens": {
+    "input": 10,
+    "output": 17256,
+    "cache_read": 215856,
+    "cache_creation": 61257,
+    "total": 294379
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 170,
+      "output": 92899,
+      "cache_read": 2579028,
+      "cache_creation": 339015,
+      "cost_usd": 4.253311599999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 7694,
+      "cache_read": 223468,
+      "cache_creation": 76619,
+      "cost_usd": 0.29089430000000005
+    }
+  ],
+  "permission_denials": []
+}
