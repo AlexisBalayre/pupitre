@@ -617,6 +617,32 @@ describe('startConductor code graph', () => {
     expect(launchedWith()?.mcpConfigPath).toBeDefined();
   });
 
+  // A `worktree add` killed before it finished leaves its own `locked` file in
+  // the admin dir, and the prune keeps a locked registration without a word.
+  // The re-cut would then fail on every start with git's own message, so it
+  // refuses before the add and says how to clear it (conductor review).
+  it('refuses to re-cut while a lock keeps the registration, and says how to clear it', () => {
+    fakeCodegraph(INDEXES);
+    start();
+    const admin = join(repo, '.git', 'worktrees', 'checkout');
+    rmSync(join(admin, 'index'));
+    writeFileSync(join(admin, 'locked'), 'initializing\n');
+
+    start();
+
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain(
+      `run \`git worktree unlock ${checkout()}\` in the main checkout and restart the conductor.`,
+    );
+    gitIn(repo, 'worktree', 'unlock', checkout());
+
+    start();
+
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(true);
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
+  });
+
   // Clearing `~/.pupitre` leaves the worktree registration behind, and
   // `worktree add` refuses the path forever once it does. Without the prune the
   // conductor silently never gets a graph again.

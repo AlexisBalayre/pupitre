@@ -5649,7 +5649,10 @@ changes back into those docs is pending.
     would, and no catch sees an interrupt (CI review of #173). Not in place: a `checkout` refuses
     the files already written as untracked, and a `read-tree` over them left HEAD at the old cut
     and kept the files the tip had dropped since, so the next start's `checkout` aborted once the
-    target moved (conductor review of the round). The
+    target moved (conductor review of the round). Its admin dir is checked gone after the prune, as
+    the undos check theirs: a `locked` file, which a `worktree add` killed before it finished
+    leaves, kept the registration, and the add then failed on every start. The start now refuses
+    before the add and names `git worktree unlock <checkout>` as the way out. The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
@@ -5657,7 +5660,8 @@ changes back into those docs is pending.
     *Ceilings.* The admin dir is taken to be the worktree's basename. A launch where git had to
     pick another name, because a stale admin dir held it, is refused at launch, never followed;
     a conductor checkout whose admin dir is not `checkout` costs the conductor its graph until
-    the checkout is deleted and re-cut. The served code graph server gets the git config but not
+    the checkout is deleted and re-cut, and a re-cut while `checkout` is still registered after
+    the prune is refused before the add. The served code graph server gets the git config but not
     the pins: `codegraphMcpConfig` is handed no repo path, and the profile compiler, which has
     one, is the follow-up. Its `git status` runs outside the sandbox for the whole session, so a
     gitfile rewritten after the launch, or a gitlink planted with a `.gitmodules` override, still

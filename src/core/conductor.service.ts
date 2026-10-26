@@ -23,6 +23,7 @@ import {
   runGit,
   verifiedWorktreeGitEnv,
   type WorktreeGitEnv,
+  worktreeGitEnv,
 } from './git-diff.client.js';
 import { getWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
@@ -149,6 +150,19 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   // cut's just removed among them, so it heals both and touches nothing that
   // still exists.
   runGit(repoPath, ['worktree', 'prune']);
+  // Checked gone, as a launch's undo checks it: the prune keeps a locked
+  // registration without a word, and a `worktree add` killed before it
+  // finished leaves its own lock. Kept, the add refuses the path on every
+  // start, or takes another admin dir, which the pins refuse.
+  if (lstatSync(worktreeGitEnv(repoPath, checkoutDir).GIT_DIR, { throwIfNoEntry: false })) {
+    // Short: the operator reads it through `failureSummary`, which cuts at 300
+    // characters, and the path is most of it.
+    throw new Error(
+      "Refusing to cut the conductor's checkout: it is still registered after a prune. If " +
+        `locked, run \`git worktree unlock ${checkoutDir}\` in the main checkout and restart ` +
+        'the conductor.',
+    );
+  }
   mkdirSync(dirname(checkoutDir), { recursive: true });
   // `--no-checkout`: the add's own checkout would read the admin dir's
   // `commondir` before any check of it (decision 101).
