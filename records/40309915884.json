@@ -1,0 +1,242 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T10:52:24.959Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40309915884",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40309915884",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5ab0f5d51aef22d46345851b1557a3da44f32a76",
+  "source": "pr",
+  "pr_number": 176,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1097-1116",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Two parts of pup disagree on whether a branch has an open PR. The gate asks GitHub (`adoptedUrl`), but land.service.ts's main-landed steer (L257-261) reads the session's stored `merge` event (`merge.prUrl`). Suppose a first `--pr` gate pushed and opened the PR, then threw before `recordMerge`. The steer then tells the worker to `git rebase`, and the new pushed-ancestor guard rejects that rebase on the next gate. That counts toward the reject cap even though the worker did what pup told it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1110-1112",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pushed-ancestor guard's only concrete command is `merge refs/heads/<target>`, and that does not bring back the dropped pushed commit. A worker that amended or squashed and then follows it fails the same guard on the next gate. Name the actual recovery instead, e.g. merge `<pushed>` back in, or reset onto it and re-apply.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3248-3730",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "No test shows the open-PR plain push being refused as non-fast-forward (it is now the only guard when origin moved or no tracking ref exists). None covers an open-PR branch already based on the target, or the guard being skipped when there is no `refs/remotes/origin/<branch>`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "957, 1111, 1175",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The paste-ready target ref `shellWord(`refs/heads/${sanitizeReason(target)}`)` is now built inline in three places: the rebase conflict at L1163, the merge conflict at L957 and the guard at L1111. The post-check's `onto` (L1175) leaves it unquoted. Compute it once and reuse it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3568-3622",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The two interrupt tests ('puts the branch back before rethrowing a read-tree an interrupt killed' and 'leaves the branch where it was when an interrupt kills the worktree HEAD read') are the same apart from the matcher and the error text. Fold them into an `it.each`, as the block already does for 'puts the branch back when %s refuses the merge'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3324-3710",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "About seven new refusal and interrupt tests repeat the same \"PR untouched\" assertions: branch still at `pushed`, clean status, no push calls, no steer. A local `expectPrUntouched(...)` helper next to `pushCalls` would keep that invariant in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "3267-3271, 3635-3638",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pushCalls` and `ran` each cast and scan `vi.mocked(execFileSync).mock.calls` for a git subcommand. One `gitCalls(cmd)` helper would serve both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1940-1946",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new boolean parameter `mayRewrite` breaks general.md's rule that \"Boolean names start with `is` / `has` / `should` / `can`\". `canRewrite` would fit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1010-1013",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The read-tree catch comment restates mergeTargetInto's own JSDoc and decision 105 (branch put back, status would show the target's changes reversed). general.md says the WHY lives at the seam, so keep only the ordering clause (\"before anything else, an interrupt or an armed driver included\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "decision 105",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 105 says a branch moved under the compare-and-swap 'fails fresh-base the same way'. Placed after the sentence about throwing to the operator, that reads as a throw. The code actually returns a worker-facing fresh-base failure, which counts toward the reject cap.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "conflict test",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conflict test's comment \"Aborted: the worktree is back on the pushed commit\" describes the porcelain flow this PR removed. The plumbing merge never touches the worktree on a conflict, so \"Untouched\" is accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "984-985",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"only the read-tree step below runs while the branch holds the merge\" leaves out the driver re-check and the `update-index --refresh`, which run in the same try while the branch holds the merge.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1025-1030",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The operator error for a failed undo explains the hazard but gives no next step, even though it names both shas. It could add the `git update-ref refs/heads/<branch> <branchSha> <merged>` that puts the branch back.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "decision 105",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Several decision 105 lines run well past the doc's ~100-column wrap after the in-place amendments, for example the \"(found on the conductor's second security review)\" line. This makes later diffs of the paragraph noisy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "979-981, 991, 1021",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Unsandboxed `update-ref` appends a reflog line under the common dir, which the session can write. The line includes `user.name` from the shared local config. If git follows a planted symlink at `logs/refs/heads/<branch>`, a session could append shell text to an operator file. The rebase and fastForward have the same exposure, and no decision covers reflogs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "946, 961",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`merge-tree` reads blobs in repoPath with no lazy-fetch or transport pins. A planted promisor remote plus a tree with missing blobs could make pup start a fetch. This matches the rebase and diffs, and decision 101 already lists the transport pins as owed.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "One reviewer's `git diff` call failed because the bwrap sandbox could not bind .git/config.worktree.lock. The reviewer fell back to `gh pr diff 176` and Read, so coverage was not lost."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.892027200000001,
+  "duration_ms": 353502,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 17152,
+    "cache_read": 290744,
+    "cache_creation": 81271,
+    "total": 389179
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 144,
+      "output": 98458,
+      "cache_read": 2687691,
+      "cache_creation": 377510,
+      "cost_usd": 4.638637200000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 6981,
+      "cache_read": 143490,
+      "cache_creation": 67678,
+      "cost_usd": 0.25339
+    }
+  ],
+  "permission_denials": []
+}
