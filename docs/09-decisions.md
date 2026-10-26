@@ -4845,7 +4845,10 @@ changes back into those docs is pending.
     round's checks rejected steers the worker to fix only the failures, so the summary after it
     may answer no thread, and each thread keeps its newest answer. Each summary is read on its
     own, newest first, and no answer runs across a line break, so an id ending one summary or line
-    never takes the verdict that starts the next. One GraphQL read (`readThreadAnswers`, pinned
+    never takes the verdict that starts the next. The newest summary that names a thread at all
+    answers for it, by the last place it names it there: a mention in any other form (`` `<id>`
+    declined ``, `<id>: declined`, `**<id>** declined`) is no answer, so an older `fixed` never
+    outlives it. One GraphQL read (`readThreadAnswers`, pinned
     like every gh call) lists the PR's threads with `isResolved`, their `path`, whether the bot
     wrote the first comment, and the replies and PR comments the viewer wrote
     (`viewerDidAuthor`). A thread is answered only when its id has
@@ -4861,7 +4864,12 @@ changes back into those docs is pending.
       worker took in by hand, a change the round made then reverted after a rejected run, and a
       PR commit a rebase or an amend gave a new sha all read the same on both sides. Counting the
       round's commits (`git log <tip> ^<head> ^<target>`) counted every one of them, and read a
-      branch tip apart from the pin. A conflict there, or any git failure, counts no file;
+      branch tip apart from the pin. A conflict there, or any git failure, counts no file. An
+      armed driver is refused before any of it, never read as no change: it is the operator's
+      alarm (decision 50), and in PR mode on a branch already based on the target, fresh-base
+      ran no merge-tree, so this may be the first git to meet a driver armed while the stages
+      ran. No thread is answered then, and the gate's warning carries the refusal whole, past
+      the reason cap that would cut its call to treat the session as compromised;
     - fixed by the worker's word, with no change to that file (or no round head to compare): the
       reason and the file, and the thread stays open;
     - declined: the reason, and the thread stays open for the operator;
@@ -4933,9 +4941,10 @@ changes back into those docs is pending.
     changed, that only main changed while the round ran (the gate merges it in) even once the
     worker cherry-picked that change, that only a PR commit rewritten since the round started
     changed, or whose fix a later run of the round reverted, takes each thread's newest answer
-    across the round's summaries and none across a line break, posts nothing again on a second
-    run, gives up within its budget on a gh that hangs,
-    and answers nothing with no round or a failing gh. `ci-wait.test.ts` runs a sequenced fake gh
+    across the round's summaries, by its last mention in the newest summary naming it, and none
+    across a line break, posts nothing again on a second run, gives up within its budget on a gh
+    that hangs, and answers nothing with no round, a failing gh, or a driver armed while the gate
+    ran. `ci-wait.test.ts` runs a sequenced fake gh
     on a fake clock: a review on an older head is waited past, a timeout exits unfinished, a read
     that timed out is one more wait, a forged arrow is scrubbed, an unminted row is refused, and
     the comment-only, `FAILURE`, `MERGED`, partial and PR-number cases each end in their digest.

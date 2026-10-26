@@ -1386,7 +1386,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
      * A round on the four threads, its worker done with `summary`, gated
      * again; `meanwhile` runs while the worker works. Each of `rejected` is a
      * summary the worker gave first, on a run the round's checks rejected,
-     * after which `afterRejected` runs.
+     * after which `afterRejected` runs. `adapter` runs the passing gate's checks.
      */
     async function gateTheRound(
       summary: string,
@@ -1395,11 +1395,13 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         rejected = [],
         afterRejected,
         paths,
+        adapter = passingAdapter,
       }: {
         meanwhile?: () => void;
         rejected?: string[];
         afterRejected?: () => void;
         paths?: Record<string, string>;
+        adapter?: Adapter;
       } = {},
     ): Promise<string> {
       await gateWithPr();
@@ -1425,7 +1427,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         afterRejected?.();
       }
       markSessionDone(db, SESSION_ID, summary);
-      expect(await gate(passingAdapter)).toMatchObject({ status: 'merged', prUrl: PR_URL });
+      expect(await gate(adapter)).toMatchObject({ status: 'merged', prUrl: PR_URL });
       return fixed;
     }
 
@@ -1531,8 +1533,8 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       const silent = replies().find((m) => m.includes('-f thread=PRRT_silent'));
       expect(silent).toContain(
         `-f body=Answered fixed in the round gated at ${fixed}, but pup cannot show the ` +
-          "round's own commits change ` src/index.ts `: ` checked the bound `. Left open for " +
-          'the operator.',
+          'round changed the content of ` src/index.ts `: ` checked the bound `. Left open ' +
+          'for the operator.',
       );
       expect(resolves()).toHaveLength(1);
       expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
@@ -1580,8 +1582,8 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       // The gate merged the moved main into the round's branch.
       expect(pinned).not.toBe(fixed);
       expect(replies().find((m) => m.includes('-f thread=PRRT_silent'))).toContain(
-        `Answered fixed in the round gated at ${pinned}, but pup cannot show the round's own ` +
-          'commits change ` src/index.ts `',
+        `Answered fixed in the round gated at ${pinned}, but pup cannot show the round changed ` +
+          'the content of ` src/index.ts `',
       );
       expect(resolves()).toHaveLength(1);
       expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
@@ -1636,8 +1638,8 @@ describe('startFixRound', { timeout: 30_000 }, () => {
           .filter((m) => m.includes('-f thread=PRRT_silent'))
           .at(-1),
       ).toContain(
-        `Answered fixed in the round gated at ${rewritten}, but pup cannot show the round's own ` +
-          'commits change ` src/feature.ts `',
+        `Answered fixed in the round gated at ${rewritten}, but pup cannot show the round changed ` +
+          'the content of ` src/feature.ts `',
       );
     });
 
@@ -1664,8 +1666,8 @@ describe('startFixRound', { timeout: 30_000 }, () => {
 
       expect(resolves()).toEqual([]);
       expect(replies().find((m) => m.includes('-f thread=PRRT_fixed'))).toContain(
-        `Answered fixed in the round gated at ${pinned}, but pup cannot show the round's own ` +
-          'commits change ` src/fix.ts `',
+        `Answered fixed in the round gated at ${pinned}, but pup cannot show the round changed ` +
+          'the content of ` src/fix.ts `',
       );
     });
 
@@ -1705,6 +1707,49 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         '1 thread(s) addressed and resolved, 0 answered fixed that pup could not verify, ' +
           '2 declined and 0 unanswered',
       );
+    });
+
+    // The newest summary naming a thread answers for it, by its last mention
+    // there: a mention the format does not parse is no answer, and never lets
+    // an older `fixed` stand.
+    it('takes the newest summary naming a thread, by its last mention there', async () => {
+      await gateTheRound(
+        'fixed the failing check; `PRRT_fixed` declined: the bound broke it; PRRT_declined ' +
+          'fixed: made it async; PRRT_declined declined: the call is sync after all',
+        { rejected: [`${SUMMARY}; PRRT_silent fixed: checked the bound`] },
+      );
+
+      expect(resolves()).toEqual([]);
+      expect(replies().find((m) => m.includes('-f thread=PRRT_declined'))).toContain(
+        '` the call is sync after all `',
+      );
+      expect(comments()[0]).toContain(
+        '0 thread(s) addressed and resolved, 1 answered fixed that pup could not verify, ' +
+          '1 declined and 1 unanswered',
+      );
+    });
+
+    // An armed driver is the operator's alarm (decision 50), never read as no
+    // change: one armed while the stages ran stops the answers before any
+    // post, and the gate's warning carries the alarm whole, past the cap.
+    it('answers nothing past a driver armed while the gate ran, and says so whole', async () => {
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await gateTheRound(SUMMARY, {
+        adapter: {
+          ...passingAdapter,
+          gateCommands: (repoPath) => {
+            writeFileSync(join(repoPath, '.git', 'info', 'attributes'), '* merge=pwn\n');
+            return passingAdapter.gateCommands(repoPath);
+          },
+        },
+      });
+
+      expect(ghFile('mutations')).toEqual([]);
+      expect(comments()).toEqual([]);
+      const said = warn.mock.calls.flat().join(' ');
+      expect(said).toContain("Answered none of the fix round's threads. Refusing to run git in");
+      expect(said).toContain('treat a session that wrote them as compromised.');
+      warn.mockRestore();
     });
 
     // The gate answers under the merge lock: a GitHub that hangs costs the

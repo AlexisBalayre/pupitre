@@ -118,7 +118,7 @@ interface ThreadAnswers {
   sha: string;
   /** Replied `Addressed in <sha>` and resolved. */
   addressed: number;
-  /** Answered fixed, but the round's commits leave its file unchanged: replied, left open. */
+  /** Answered fixed, but pup cannot show the round changed its file's content: left open. */
   unverified: number;
   /** Replied with the worker's reason and left open for the operator. */
   declined: number;
@@ -132,8 +132,8 @@ type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
 const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string) => string> = {
   addressed: (sha, reason) => `Addressed in ${sha}: ${reason}`,
   unverified: (sha, reason, path) =>
-    `Answered fixed in the round gated at ${sha}, but pup cannot show the round's own commits ` +
-    `change ${path}: ${reason}. Left open for the operator.`,
+    `Answered fixed in the round gated at ${sha}, but pup cannot show the round changed the ` +
+    `content of ${path}: ${reason}. Left open for the operator.`,
   declined: (sha, reason) =>
     `Declined in the fix round gated at ${sha}: ${reason}. Left open for the operator.`,
   unanswered: (sha) =>
@@ -311,11 +311,7 @@ export function answerFixRoundThreads(
   for (const id of threadIds) {
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
-    // Each summary on its own, newest first: an answer never runs from one
-    // summary into the next.
-    const answer = summaries
-      .map((summary) => threadAnswer(summary, id))
-      .find((found) => found !== undefined);
+    const answer = threadAnswer(summaries, id);
     const verdict = threadVerdict(answer?.verdict, thread.path, changed);
     if (!thread.ownReplies.some((body) => body.includes(marker))) {
       const said = REPLIES[verdict](
@@ -432,9 +428,11 @@ function filesTheRoundChanged(
       // Node reads a timeout of 0 as none.
       timeout: Math.max(1, deadline - Date.now()),
     });
+  // merge-tree runs a merge driver on a conflicted file, as the gate's does.
+  // An armed one is refused, never read as no change: it is the operator's
+  // alarm (decision 50), and no thread is answered past it.
+  assertNoArmedGitDrivers(repoPath);
   try {
-    // merge-tree runs a merge driver on a conflicted file, as the gate's does.
-    assertNoArmedGitDrivers(repoPath);
     const [start = ''] = git(['merge-tree', '--write-tree', head, targetSha]).split('\n');
     return new Set(
       git([
@@ -459,19 +457,28 @@ function filesTheRoundChanged(
 }
 
 /**
- * The worker's answer for thread `id` in its summary, as the round's kickoff
- * asks for it: `<id> fixed: <reason>` or `<id> declined: <reason>`, answers
- * apart by `;` or a line break, so none runs across one. `addressed` reads as
- * `fixed`.
+ * The worker's answer for thread `id` in the round's summaries, newest first,
+ * as the round's kickoff asks for it: `<id> fixed: <reason>` or `<id>
+ * declined: <reason>`, answers apart by `;` or a line break, so none runs
+ * across one. `addressed` reads as `fixed`. The newest summary that names the
+ * thread at all answers for it, by the last place it names it there: a
+ * mention in any other form (`` `<id>` declined ``, `<id>: declined`) is no
+ * answer, so an older `fixed` never outlives it. `id` is a minted thread id.
  */
 function threadAnswer(
-  summary: string,
+  summaries: string[],
   id: string,
 ): { verdict: 'fixed' | 'declined'; reason: string } | undefined {
-  const match = new RegExp(
-    `(?:^|[\\s;,(])${id}[^\\S\\n]+(fixed|addressed|declined)\\b[^\\S\\n]*[:—–-]?[^\\S\\n]*([^;\\n]*)`,
-    'i',
-  ).exec(summary);
+  const mention = `(?<![\\w=-])${id}(?![\\w=-])`;
+  const summary = summaries.find((said) => new RegExp(mention).test(said));
+  if (summary === undefined) return undefined;
+  const last = [...summary.matchAll(new RegExp(mention, 'g'))].at(-1)?.index ?? 0;
+  const answer = new RegExp(
+    `${id}[^\\S\\n]+(fixed|addressed|declined)\\b[^\\S\\n]*[:—–-]?[^\\S\\n]*([^;\\n]*)`,
+    'iy',
+  );
+  answer.lastIndex = last;
+  const match = answer.exec(summary);
   if (!match) return undefined;
   return {
     verdict: match[1]?.toLowerCase() === 'declined' ? 'declined' : 'fixed',

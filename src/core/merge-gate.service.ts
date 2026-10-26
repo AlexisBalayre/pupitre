@@ -1340,6 +1340,12 @@ function replyOnFixRoundThreads(
     );
   } catch (error) {
     rethrowIfKilled(error);
+    // pup's own alarm, whole: the reason cap would cut its call to treat the
+    // session as compromised.
+    if (error instanceof ArmedGitDriverError) {
+      console.error(`Answered none of the fix round's threads. ${error.message}`);
+      return;
+    }
     console.error(
       `Could not answer the fix round's threads on GitHub: ` +
         `${sanitizeReason(error instanceof Error ? error.message : String(error))}. Reply on ` +
