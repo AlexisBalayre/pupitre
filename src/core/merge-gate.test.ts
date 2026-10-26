@@ -3592,6 +3592,35 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(pushCalls()).toEqual([]);
     });
 
+    // A session can hang only the pinned worktree git (an `includeIf` path at a
+    // FIFO), so the operator's Ctrl-C lands on the HEAD read: it must come
+    // before the branch moves.
+    it('leaves the branch where it was when an interrupt kills the worktree HEAD read', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      beforeGit(
+        (args) => args.includes('symbolic-ref') && args.includes(worktree),
+        () => {
+          throw Object.assign(new Error('Command failed: git symbolic-ref'), {
+            signal: 'SIGINT',
+            status: null,
+          });
+        },
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow('Command failed: git symbolic-ref');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
     /** A driver of the session's, armed in the shared config right before the git call `at` matches. */
     const armBefore = (at: (args: string[]) => boolean, key: string, attribute: string): string => {
       const marker = join(tempDir('pup-armed-'), 'ran');

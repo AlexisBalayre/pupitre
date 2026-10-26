@@ -5689,7 +5689,10 @@ changes back into those docs is pending.
     conductor's security review, which reproduced a driver `merge-tree` ran). When the
     `read-tree` step fails, a second compare-and-swap puts the branch back on the tip the merge
     read before anything else, an armed driver and an interrupt included, and only then does
-    the refusal or the interrupt unwind the gate. A `read-tree` refused on an edit or a new file
+    the refusal or the interrupt unwind the gate. The worktree's HEAD is read before the branch
+    moves, so an interrupt there leaves nothing to put back; a session can hang only the pinned
+    worktree git (an `includeIf` path at a FIFO), and the operator's Ctrl-C would otherwise have
+    landed between the move and the undo (found on the conductor's second security review). A `read-tree` refused on an edit or a new file
     the session made after the worktree-clean stage, at a path the merge brings in, writes
     nothing. One that fails partway (a full disk, a permission, a Ctrl-C) may have written some
     files, which show as changes for the worker to discard; so the steer says the branch is back
@@ -5728,7 +5731,8 @@ changes back into those docs is pending.
     brings in, or a new file at a path it adds, made after the worktree-clean stage, fails it
     with the branch and the worktree's HEAD back on the pushed commit and nothing staged. A
     branch moved again before that undo throws with the undo's own `but expected <merge>`. A
-    `read-tree` killed by SIGINT is rethrown with the branch already back. A merge driver armed
+    `read-tree` killed by SIGINT is rethrown with the branch already back, and a worktree
+    `symbolic-ref` killed by SIGINT with the branch never moved. A merge driver armed
     at the worktree-clean stage's `status` throws `ArmedGitDriverError` before `merge-tree`
     runs, its marker unwritten; a smudge filter armed at `commit-tree` throws it before any
     `read-tree`, with the branch back on the pushed commit. None re-steers or pushes. A

@@ -973,6 +973,16 @@ function mergeTargetInto(
     ],
     piped,
   ).trim();
+  const worktreeGit = (args: string[]): string =>
+    runGit(worktree, args, { env: { ...worktreeEnv }, ...piped });
+  // Read before the branch moves, so an interrupt here leaves nothing to put
+  // back: only the read-tree step below runs while the branch holds the merge.
+  let head: string | undefined;
+  try {
+    head = worktreeGit(['symbolic-ref', '-q', 'HEAD']).trim();
+  } catch (error) {
+    rethrowIfKilled(error);
+  }
   try {
     runGit(
       repoPath,
@@ -993,14 +1003,6 @@ function mergeTargetInto(
       `${branch} moved from ${branchSha} while the gate merged ${shown} into it; nothing was ` +
       `merged.\n${commandFailureDetail(error)}`
     );
-  }
-  const worktreeGit = (args: string[]): string =>
-    runGit(worktree, args, { env: { ...worktreeEnv }, ...piped });
-  let head: string | undefined;
-  try {
-    head = worktreeGit(['symbolic-ref', '-q', 'HEAD']).trim();
-  } catch (error) {
-    rethrowIfKilled(error);
   }
   if (head !== branchRef) return undefined;
   try {
