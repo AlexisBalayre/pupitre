@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -6,16 +7,20 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmdirSync,
+  rmSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, loadavg, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
   formatDuration,
   localContext,
+  readPlainFile,
   sanitizeReason,
 } from '../adapters/capability.utils.js';
 import type {
@@ -117,9 +122,6 @@ import type {
   MergeRequest,
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
-
-// land.service.ts still imports COMMIT_SHA from here; a later task switches that import and drops this line.
-export { COMMIT_SHA } from './merge-gate.constants.js';
 
 export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
@@ -227,41 +229,175 @@ export function countChangedLines(
   return { lines, forged };
 }
 
+/** Inside the merge lock's directory: the holder's pid, which a later run reads (decision 88). */
+const MERGE_LOCK_PID_FILE = 'pid';
+
+const MERGE_LOCK_POLL_MS = 1000;
+
+/** What node outlives while it holds the merge lock: the interrupts `runGateChild` forwards. */
+const LOCK_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+
+const LOAD_POLL_MS = 5000;
+
+/**
+ * The longest `pup merge` and `pup land` wait for a merge lock a live process
+ * holds before refusing (decision 88): a gate's slot wait, load wait and test
+ * stage end to end, each bounded by a stage's timeout. A holder that keeps the
+ * lock longer is hung, and the refusal names the lock.
+ */
+export const MERGE_LOCK_WAIT_MS = 3 * GATE_COMMAND_TIMEOUT_MS;
+
+/**
+ * Whether `pid` is a live process. EPERM is one another user runs, alive all
+ * the same: a lock it holds is not stale, and reclaiming it would let two
+ * merges run at once.
+ */
+function isLiveProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * The pid a held merge lock records; undefined when there is none to read: a
+ * lock an earlier pup took, one made by hand, or anything that is not a
+ * regular file holding a positive whole number. A fifo is never opened to
+ * block on, nor a link followed.
+ */
+function mergeLockHolder(lockPath: string): number | undefined {
+  let text: string;
+  try {
+    text = readPlainFile(join(lockPath, MERGE_LOCK_PID_FILE), { followLinks: false });
+  } catch {
+    return undefined;
+  }
+  if (!/^[1-9]\d*\n?$/.test(text)) return undefined;
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) ? pid : undefined;
+}
+
+/**
+ * Move the lock directory aside under a fresh name, then remove it there, so
+ * no reader ever finds the lock without its pid. A removal that fails leaves
+ * only the aside directory, which no reader looks at.
+ */
+function dropMergeLock(lockPath: string, why: 'released' | 'reclaimed'): void {
+  const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
+  renameSync(lockPath, aside);
+  try {
+    rmSync(aside, { recursive: true, force: true });
+  } catch {
+    // see above
+  }
+}
+
+/**
+ * Remove a lock whose holder `dead` died without releasing it: a SIGKILL, a
+ * crash, a power cut. Under a second lock of its own, so two runs that both
+ * read the dead pid cannot both reclaim, the second removing the lock the
+ * first took in between; under it the pid is read again. Answers false when
+ * another run is reclaiming, and the caller treats the lock as held.
+ */
+function reclaimMergeLock(lockPath: string, dead: number): boolean {
+  const reclaiming = `${lockPath}.reclaim`;
+  try {
+    mkdirSync(reclaiming);
+  } catch {
+    return false;
+  }
+  try {
+    if (mergeLockHolder(lockPath) === dead) dropMergeLock(lockPath, 'reclaimed');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmdirSync(reclaiming);
+  }
+}
+
+/**
+ * Try the merge lock once: a directory, which only one `mkdir` can make,
+ * holding the taker's pid. Answers undefined once it is taken, and the live
+ * pid holding it otherwise; a lock whose pid is dead is reclaimed and tried
+ * again, and one with no pid to read refuses as before (decision 88).
+ */
+function tryMergeLock(lockPath: string): number | undefined {
+  for (;;) {
+    let made = false;
+    try {
+      mkdirSync(lockPath);
+      made = true;
+      writeFileSync(join(lockPath, MERGE_LOCK_PID_FILE), `${process.pid}\n`, { flag: 'wx' });
+      return undefined;
+    } catch (error) {
+      // Taken but not recorded: undone, since a lock with no pid refuses every later run.
+      if (made) {
+        rmSync(lockPath, { recursive: true, force: true });
+        throw error;
+      }
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new MergeLockHeldError(lockPath);
+    }
+    const holder = mergeLockHolder(lockPath);
+    if (holder === undefined) {
+      // Released between the mkdir and the read.
+      if (!lstatSync(lockPath, { throwIfNoEntry: false })) continue;
+      throw new MergeLockHeldError(lockPath);
+    }
+    if (isLiveProcess(holder) || !reclaimMergeLock(lockPath, holder)) return holder;
+  }
+}
+
 /**
  * Run `fn` holding the merge lock, with node kept alive through a signal while
- * it does. A terminal Ctrl-C reaches node and a child git alike: with no
- * listener node's default disposition dies mid-call and the `finally` never
- * removes the lock; with one, only the child dies, its failure unwinds the
- * stack and the lock goes. A gate stage's child is in a process group of its
- * own, out of the terminal's reach: `runGateChild` forwards the signal to it
- * and rejects once it has exited, which unwinds the same way (decision 95). A
- * signal that arrives while neither runs, during pup's own synchronous work,
- * is discarded by this listener, and the locked section runs on. Outside the
- * lock node's default applies again.
+ * it does. A terminal Ctrl-C reaches node and a child git alike, and closing
+ * the terminal sends both a SIGHUP: with no listener node's default
+ * disposition dies mid-call and the `finally` never removes the lock; with
+ * one, only the child dies, its failure unwinds the stack and the lock goes. A
+ * gate stage's child is in a process group of its own, out of the terminal's
+ * reach: `runGateChild` forwards the signal to it and rejects once it has
+ * exited, which unwinds the same way (decision 95). A signal that arrives while
+ * neither runs, during pup's own synchronous work, is discarded by this
+ * listener, and the locked section runs on. Outside the lock node's default
+ * applies again. A lock a SIGKILL or a crash strands is reclaimed by the next
+ * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
+ * line when the wait starts, and by default not at all (decision 88).
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
   fn: () => TResult | Promise<TResult>,
+  maxWaitMs = 0,
 ): Promise<TResult> {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
-  try {
-    mkdirSync(lockPath);
-  } catch {
-    throw new MergeLockHeldError(lockPath);
+  const deadline = Date.now() + maxWaitMs;
+  let waiting = false;
+  // Waited for with node's default disposition, so a Ctrl-C ends the wait;
+  // the listeners go on in the same tick as the take, leaving no turn of the
+  // event loop between them.
+  for (let holder = tryMergeLock(lockPath); holder !== undefined; holder = tryMergeLock(lockPath)) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new MergeLockHeldError(lockPath);
+    if (!waiting) {
+      waiting = true;
+      console.error(
+        `Waiting for the merge lock, held by pid ${holder}, for up to ${formatDuration(left)}.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(MERGE_LOCK_POLL_MS, left)));
   }
   const stayAlive = (): void => undefined;
-  process.on('SIGINT', stayAlive);
-  process.on('SIGTERM', stayAlive);
+  for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
   try {
     return await fn();
   } finally {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
-      rmdirSync(lockPath);
+      dropMergeLock(lockPath, 'released');
     } finally {
-      process.off('SIGINT', stayAlive);
-      process.off('SIGTERM', stayAlive);
+      for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }
   }
 }
@@ -380,6 +516,7 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
     else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
+  // The operator's and the conductor's runs wait for a live holder (decision 88).
   return withMergeLock(req.repoPath, async () => {
     // Not under the project's state dir beside the conductor's checkout: the
     // sandbox denies every gate child reads and writes under `~/.pupitre`,
@@ -407,7 +544,7 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
         // see above
       }
     }
-  });
+  }, req.wait ? MERGE_LOCK_WAIT_MS : 0);
 }
 
 /**
@@ -1257,16 +1394,25 @@ async function gateAndMerge(
   // throw, and the draft runs `claude -p` for up to two minutes, while the
   // target already holds the sha and `pup status` already reads merged.
   let isDeleted = false;
+  let keptWorktree: string | undefined;
   try {
     // By pane as well as name: a rename from inside the session would leave
     // the name pointing at nothing while the window ran on (decision 46).
     killTmux(session.id, session.tmux_target);
-    runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    try {
+      runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    } catch {
+      // A worktree the session locked, which one `--force` refuses, or an
+      // interrupt after the merge landed: kept and named in the outcome
+      // rather than skip the ratchet and the draft (decision 88). Its branch
+      // stays with it, since `update-ref -d` would pull the checkout away.
+      keptWorktree = worktree;
+    }
     // Deleted only while it still names the gated commit, in both modes: a
     // commit the session added after the pin was never measured, so it is left
     // on the branch for the operator rather than merged or thrown away.
     try {
-      isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
+      if (keptWorktree === undefined) isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
     } catch {
       // Interrupted after the merge landed: keep the branch, which the
       // `finally` still checks for commits past the pin, rather than skip the
@@ -1314,6 +1460,7 @@ async function gateAndMerge(
     debtCandidates,
     decisionRecordId,
     ...(prUrl !== undefined ? { prUrl, prWasAdopted } : {}),
+    ...(keptWorktree !== undefined ? { keptWorktree } : {}),
   };
 }
 
@@ -1391,6 +1538,59 @@ function isRerunnable(error: unknown): boolean {
     code?: string;
   };
   return status === 1 && !signal && code === undefined;
+}
+
+/**
+ * Before the gate's tests, wait until the machine's 1-minute load average is
+ * under its available parallelism (decision 88): a suite started on a machine
+ * its workers already saturate runs into its stage timeout, and the gate fails
+ * on the machine rather than the branch. Bounded as the slot wait is, since it
+ * holds the merge lock, and once that runs out the tests run anyway. One line
+ * says the wait started and one that it ran out. An interrupt ends it as a
+ * stage child's would: no child runs to forward one to, and the lock keeps
+ * node alive through it. A platform with no load average reads zeros and never
+ * waits.
+ */
+async function waitForLoad(): Promise<void> {
+  const ceiling = availableParallelism();
+  let load = loadavg()[0] ?? 0;
+  if (load < ceiling) return;
+  console.error(
+    `The 1-minute load average is ${load.toFixed(1)}, over ${ceiling}; the gate waits up to ` +
+      `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
+  );
+  const deadline = Date.now() + GATE_SLOT_WAIT_MS;
+  let interrupted: (typeof LOCK_SIGNALS)[number] | undefined;
+  let wake: () => void = () => undefined;
+  const onSignal = (signal: (typeof LOCK_SIGNALS)[number]): void => {
+    interrupted = signal;
+    wake();
+  };
+  for (const signal of LOCK_SIGNALS) process.on(signal, onSignal);
+  try {
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        console.error(
+          `The load average is still ${load.toFixed(1)} after ` +
+            `${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its tests anyway.`,
+        );
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, Math.min(LOAD_POLL_MS, left));
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      if (interrupted) throw new GateInterruptedError(interrupted);
+      load = loadavg()[0] ?? 0;
+      if (load < ceiling) return;
+    }
+  } finally {
+    for (const signal of LOCK_SIGNALS) process.off(signal, onSignal);
+  }
 }
 
 /**
@@ -1560,7 +1760,14 @@ export async function measureBranch(
     test !== undefined ||
     nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
   const suites = hasSuite
-    ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
+    ? withTestSlot(
+        { kind: 'gate', label: session.id },
+        async () => {
+          // Inside the slot, so no worker's run starts while the load falls.
+          if (req.wait) await waitForLoad();
+          return runSuites();
+        },
+        {
         onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
         // Bounded, as the wait holds the merge lock (decision 96).
         maxWaitMs: GATE_SLOT_WAIT_MS,

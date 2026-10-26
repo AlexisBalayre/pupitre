@@ -11,15 +11,15 @@ import {
   runGit,
 } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
-import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
+import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
   assertTargetName,
-  COMMIT_SHA,
   deleteBranchAt,
   fastForward,
   isAncestor,
+  MERGE_LOCK_WAIT_MS,
   newestMerge,
   type OriginUse,
   pushTarget,
@@ -40,6 +40,8 @@ interface LandRequest {
   sessionId: string;
   adapters: Adapter[];
   gateEnv?: string[];
+  /** Wait for a merge lock a live run holds, as `pup land` does, rather than refuse (decision 88). */
+  wait?: boolean;
 }
 
 /**
@@ -130,7 +132,9 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   const mergeCommit = pr.mergeCommit;
 
-  const landed = await withMergeLock(req.repoPath, () => {
+  const landed = await withMergeLock(
+    req.repoPath,
+    () => {
     // `pup fix` takes the session out of merged under this lock, maybe while
     // GitHub was being read above; landing then would tear down its live round.
     const now = getSession(db, session.id)?.state;
@@ -195,7 +199,9 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
     runGit(req.repoPath, ['update-ref', '--no-deref', `refs/remotes/origin/${target}`, originTip]);
     const targetSha = fastForwarded ? originTip : localSha;
     return { targetSha, fastForwarded, ...tearDown(req.repoPath, session, targetSha) };
-  });
+  },
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
+  );
 
   // The conductor may run this, so no human stands between an observed
   // regression and the bar: a regressed measurement is reported and left for
