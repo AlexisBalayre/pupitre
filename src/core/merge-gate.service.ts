@@ -34,6 +34,7 @@ import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import {
+  ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
   currentBranch,
@@ -44,6 +45,7 @@ import {
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
+  type WorktreeGitEnv,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -341,9 +343,10 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
   // rebase runs in the worktree and the fast-forward's checkout in the main
   // one, and a worktree-scoped config is only visible from its own worktree
   // (decision 50). The main checkout is asked again under the lock, since the
-  // stages run while the session is alive (decision 80). A re-gate rebases
-  // nothing and its worktree is gone with the first merge. The worktree is read
-  // pinned to the dirs pup trusts, as the rebase will run (decision 101).
+  // stages run while the session is alive (decision 80), and both are asked
+  // again right before an open PR's merge runs git (decision 105). A re-gate
+  // rebases nothing and its worktree is gone with the first merge. The worktree
+  // is read pinned to the dirs pup trusts, as the rebase will run (decision 101).
   assertNoArmedGitDrivers(req.repoPath);
   if (!merged) {
     assertNoArmedGitDrivers(
@@ -917,13 +920,17 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
  * reads none (decision 80). The worktree's index and files follow with the
  * pinned two-way `read-tree` the fast-forward uses, only while its HEAD is the
  * branch: a worktree the session switched elsewhere is left as it is, and one
- * whose files refuse the merge has the branch put back. Returns the failure for
- * the worker, or undefined once the branch holds the merge.
+ * where the `read-tree` fails has the branch put back. The drivers are checked
+ * again right before `merge-tree`, which runs a merge driver on a conflicted
+ * file, and before the `read-tree`, which runs a smudge filter on every file it
+ * writes, as they are before the fast-forward: the last check ran before the gh
+ * calls and the lock (decision 50). Returns the failure for the worker, or
+ * undefined once the branch holds the merge.
  */
 function mergeTargetInto(
   repoPath: string,
   worktree: string,
-  pinned: { env: NodeJS.ProcessEnv },
+  worktreeEnv: WorktreeGitEnv,
   branch: string,
   target: string,
   targetSha: string,
@@ -932,6 +939,7 @@ function mergeTargetInto(
   const shown = sanitizeReason(target);
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   const branchSha = resolveCommit(repoPath, branchRef);
+  assertNoArmedGitDrivers(repoPath);
   let tree: string;
   try {
     tree = (
@@ -986,7 +994,8 @@ function mergeTargetInto(
       `merged.\n${commandFailureDetail(error)}`
     );
   }
-  const worktreeGit = (args: string[]): string => runGit(worktree, args, { ...pinned, ...piped });
+  const worktreeGit = (args: string[]): string =>
+    runGit(worktree, args, { env: { ...worktreeEnv }, ...piped });
   let head: string | undefined;
   try {
     head = worktreeGit(['symbolic-ref', '-q', 'HEAD']).trim();
@@ -995,6 +1004,9 @@ function mergeTargetInto(
   }
   if (head !== branchRef) return undefined;
   try {
+    // Before the refresh too, which runs a clean filter on every file whose
+    // stat changed.
+    assertNoArmedGitDrivers(worktree, worktreeEnv);
     worktreeGit(['update-index', '-q', '--ignore-submodules', '--refresh']);
     worktreeGit([
       'read-tree',
@@ -1006,11 +1018,10 @@ function mergeTargetInto(
       merged,
     ]);
   } catch (error) {
-    rethrowIfKilled(error);
-    // The refused read-tree wrote nothing, so the branch goes back to the tip
-    // whose files the worktree still holds. Left on the merge, HEAD would sit
-    // over those files and status would show the target's changes reversed,
-    // staged for the next commit to take.
+    // The branch goes back to the tip whose index the worktree still holds,
+    // before anything else, an interrupt or an armed driver included. Left on
+    // the merge, HEAD would sit over those files and status would show the
+    // target's changes reversed, staged for the next commit to take.
     try {
       runGit(
         repoPath,
@@ -1026,17 +1037,23 @@ function mergeTargetInto(
         piped,
       );
     } catch (undo) {
-      rethrowIfKilled(undo);
-      return (
-        `This worktree's files refused the merge of ${shown}, and ${branch} moved from that ` +
-        `merge, ${merged}, before the gate could put it back on ${branchSha}, whose files the ` +
-        `worktree still holds. A commit over those files undoes ${shown}'s changes: check what ` +
-        `${branch} holds before the next one.\n${commandFailureDetail(error)}`
+      // The operator's, as the fast-forward's failed restore is: what the
+      // branch holds now is not something the gate can name.
+      throw new Error(
+        `The merge of ${shown} failed in ${worktree}, and putting ${branch} back from the ` +
+          `merge ${merged} on ${branchSha} failed too:\n${commandFailureDetail(undo)}\n` +
+          `While ${branch} holds the merge, a commit over this worktree's files undoes ` +
+          `${shown}'s changes. The merge failed with:\n${commandFailureDetail(error)}`,
       );
     }
+    if (error instanceof ArmedGitDriverError) throw error;
+    rethrowIfKilled(error);
+    // A refusal over a local change writes nothing, but a read-tree that
+    // failed partway (a full disk, a permission) may have written files.
     return (
-      `This worktree's files refused the merge of ${shown}, so nothing was merged. Commit or ` +
-      `discard the changes git names below; the next gate merges ${shown} again.\n` +
+      `The merge of ${shown} failed in this worktree, and ${branch} is back on ${branchSha} ` +
+      'without it. Any file git wrote before it stopped shows as a change in `git status`: ' +
+      `discard those, commit or discard your own, and the next gate merges ${shown} again.\n` +
       commandFailureDetail(error)
     );
   }
@@ -1063,7 +1080,8 @@ async function gateAndMerge(
   // (decision 101). `--ignore-submodules=all`, because a gitlink in the index
   // over a `.git` of the session's makes status run a child git in it that
   // drops the pins.
-  const pinned = { env: { ...verifiedWorktreeGitEnv(req.repoPath, worktree) } };
+  const worktreeEnv = verifiedWorktreeGitEnv(req.repoPath, worktree);
+  const pinned = { env: { ...worktreeEnv } };
   let started = Date.now();
   const dirty = runGit(
     worktree,
@@ -1126,7 +1144,7 @@ async function gateAndMerge(
     const refused = mergeTargetInto(
       req.repoPath,
       worktree,
-      pinned,
+      worktreeEnv,
       session.branch,
       target,
       targetSha,

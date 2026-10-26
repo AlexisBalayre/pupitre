@@ -3521,7 +3521,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           stage: 'fresh-base',
           status: 'fail',
           detail: expect.stringContaining(
-            "This worktree's files refused the merge of main, so nothing was merged.",
+            `The merge of main failed in this worktree, and ${BRANCH} is back on ${pushed} ` +
+              'without it.',
           ),
         });
         expect(outcome.report.stages.at(-1)?.detail).toContain(path);
@@ -3533,7 +3534,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     );
 
-    it('names the merge a branch moved off before the gate could put it back', async () => {
+    it("throws the undo's own failure when the branch cannot be put back", async () => {
       const worktree = seedSession(db, repo);
       const { pushed } = await pushedOnce(worktree);
       commitIn(repo, 'dist/app.js', 'built\n');
@@ -3547,18 +3548,111 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           sh(repo, 'git', 'update-ref', `refs/heads/${BRANCH}`, moved);
         },
       );
+      vi.mocked(steerPane).mockClear();
 
-      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+      const failure = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(db, request()),
+      ).then(
+        () => '',
+        (error: unknown) => (error as Error).message,
+      );
 
-      expect(outcome.status).toBe('rejected');
-      expect(outcome.report.stages.at(-1)).toMatchObject({
-        stage: 'fresh-base',
-        status: 'fail',
-        detail: expect.stringContaining(
-          `${BRANCH} moved from that merge, ${merged}, before the gate could put it back on ${pushed}`,
-        ),
-      });
+      expect(failure).toContain(`putting ${BRANCH} back from the merge ${merged} on ${pushed}`);
+      expect(failure).toContain(`but expected ${merged}`);
+      expect(failure).toContain('dist/app.js');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
       expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(moved);
+    });
+
+    // A Ctrl-C reaches the read-tree as well as node, and the interrupt unwinds
+    // the gate only once the branch is back.
+    it('puts the branch back before rethrowing a read-tree an interrupt killed', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      beforeGit(
+        (args) => args.includes('read-tree') && args.includes('-m'),
+        () => {
+          throw Object.assign(new Error('Command failed: git read-tree'), {
+            signal: 'SIGINT',
+            status: null,
+          });
+        },
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow('Command failed: git read-tree');
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
+    /** A driver of the session's, armed in the shared config right before the git call `at` matches. */
+    const armBefore = (at: (args: string[]) => boolean, key: string, attribute: string): string => {
+      const marker = join(tempDir('pup-armed-'), 'ran');
+      beforeGit(at, () => {
+        sh(repo, 'git', 'config', key, `touch '${marker}'; cat`);
+        mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+        writeFileSync(join(repo, '.git', 'info', 'attributes'), `* ${attribute}\n`);
+      });
+      return marker;
+    };
+
+    const ran = (command: string): boolean =>
+      vi
+        .mocked(execFileSync)
+        .mock.calls.some(([, callArgs]) => ((callArgs ?? []) as string[]).includes(command));
+
+    // The check before the lock is minutes old by then: a live session can arm
+    // a driver while the gh calls and the lock wait run.
+    it('refuses a merge driver armed after the first check, before merge-tree can run it', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      // Both sides changed the file, which merge-tree would hand the driver.
+      commitIn(repo, 'src/feature.ts', 'export const feature = 2;\n');
+      // The worktree-clean stage's status, the gate's first git under the lock.
+      const marker = armBefore((args) => args.includes('status'), 'merge.pwn.driver', 'merge=pwn');
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow(ArmedGitDriverError);
+      expect(ran('status')).toBe(true);
+      expect(ran('merge-tree')).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+    });
+
+    it('refuses a smudge filter armed after merge-tree, putting the branch back', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const marker = armBefore(
+        (args) => args.includes('commit-tree'),
+        'filter.pwn.smudge',
+        'filter=pwn',
+      );
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow(ArmedGitDriverError);
+      expect(ran('commit-tree')).toBe(true);
+      expect(ran('read-tree')).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
     });
 
     // Only exit 1 is a conflict: git with no `--write-tree` (before 2.38) dies

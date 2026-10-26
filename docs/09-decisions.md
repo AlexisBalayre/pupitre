@@ -5682,17 +5682,26 @@ changes back into those docs is pending.
     sandbox. Any other exit is git failing to merge at all (no `--write-tree` before 2.38, a
     missing object), which no worker can resolve: it throws to the operator with only objects
     written and no reject counted. A branch moved under the compare-and-swap fails fresh-base
-    the same way, with nothing merged. So does a worktree whose files refuse the `read-tree`:
-    an edit or a new file the session made after the worktree-clean stage, at a path the merge
-    brings in. An ignored file there does not refuse it: `read-tree -m -u` overwrites it as the
-    porcelain rebase did (Apple Git 2.39.5). The refused `read-tree` wrote nothing, so a second
-    compare-and-swap puts the branch back on the tip the merge read, and the worker commits or
-    clears what git names. The branch left on the merge would have had HEAD over the old tip's
-    files, with `git status` showing the target's changes reversed and staged for the next
-    commit to take; that revert would then pass fresh-base on the next gate (found on CI
-    review, replacing a first cut that left the branch there and named the `read-tree` to run).
-    A branch moved off the merge before it could be put back fails naming both. The push then
-    goes without a lease, so git refuses anything but a fast-forward of what the PR holds. A
+    the same way, with nothing merged. The drivers are checked again right before `merge-tree`,
+    which runs a merge driver on a conflicted file, and before the worktree's refresh and
+    `read-tree`, which run a clean and a smudge filter: the check before the stages ran before
+    the gh calls and the lock wait, while the session was alive (decision 50; found on the
+    conductor's security review, which reproduced a driver `merge-tree` ran). When the
+    `read-tree` step fails, a second compare-and-swap puts the branch back on the tip the merge
+    read before anything else, an armed driver and an interrupt included, and only then does
+    the refusal or the interrupt unwind the gate. A `read-tree` refused on an edit or a new file
+    the session made after the worktree-clean stage, at a path the merge brings in, writes
+    nothing. One that fails partway (a full disk, a permission, a Ctrl-C) may have written some
+    files, which show as changes for the worker to discard; so the steer says the branch is back
+    without the merge, never that nothing was written. An ignored file at such a path does not
+    refuse it: `read-tree -m -u` overwrites it as the porcelain rebase did (Apple Git 2.39.5).
+    The branch left on the merge would have had HEAD over the old tip's files, with `git
+    status` showing the target's changes reversed and staged for the next commit to take; that
+    revert would then pass fresh-base on the next gate (found on CI review, replacing a first
+    cut that left the branch there and named the `read-tree` to run). An undo that fails too
+    throws to the operator with its own error and the `read-tree`'s, as the fast-forward's
+    failed restore does, since what the branch holds then is not something the gate can name.
+    The push then goes without a lease, so git refuses anything but a fast-forward of what the PR holds. A
     session that rewrote the branch itself (a rebase or an amend in a fix round) is caught before the stages rather than by that push: when the
     remote-tracking ref of the last gate's push is not an ancestor of the branch, fresh-base
     fails and tells the worker to bring those commits back and merge rather than rebase. With no
@@ -5718,7 +5727,11 @@ changes back into those docs is pending.
     compare-and-swap fails fresh-base naming the tip it moved from. An edit to a file the merge
     brings in, or a new file at a path it adds, made after the worktree-clean stage, fails it
     with the branch and the worktree's HEAD back on the pushed commit and nothing staged. A
-    branch moved again before that undo fails naming the merge it left. None pushes. A
+    branch moved again before that undo throws with the undo's own `but expected <merge>`. A
+    `read-tree` killed by SIGINT is rethrown with the branch already back. A merge driver armed
+    at the worktree-clean stage's `status` throws `ArmedGitDriverError` before `merge-tree`
+    runs, its marker unwritten; a smudge filter armed at `commit-tree` throws it before any
+    `read-tree`, with the branch back on the pushed commit. None re-steers or pushes. A
     `merge-tree` exiting 128 throws, with no re-steer. A stale branch with no open PR is still
     rebased onto the target and lands on origin with no merge commit.
 
