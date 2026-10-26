@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { readPlainFile } from '../adapters/capability.utils.js';
 import { projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 
@@ -64,8 +65,16 @@ const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
  * CommonMark treats both as the same heading, and an operator whose
  * constraints reached no session because they typed the closing run or
  * indented the line would have no way to see why.
+ *
+ * Linear by construction: the title starts at its first non-blank character
+ * and runs to the end, and `headingTitle` cuts the closing run and trailing
+ * blanks with string operations. The lazy title, closing run and trailing
+ * blanks as one regex backtracked cubically on a line that could not match
+ * (`##`, thousands of spaces, a U+2028), and the dashboard reads the brief on
+ * every poll (decision 98). The title's first character excludes the line
+ * terminators `.` does not match, so such a line is still no heading.
  */
-const SECTION_HEADING = /^ {0,3}##(?:[ \t]+(.*?)(?:[ \t]+#+)?)?[ \t]*$/;
+const SECTION_HEADING = /^ {0,3}##(?:[ \t]+([^ \t\n\r\u2028\u2029].*)?)?$/;
 
 /** Absolute path of the project's brief, whether or not it exists yet. */
 export function briefPath(repoPath: string): string {
@@ -86,8 +95,22 @@ export function briefPath(repoPath: string): string {
  */
 export function readBrief(repoPath: string): string | undefined {
   const path = briefPath(repoPath);
-  if (!existsSync(path)) return undefined;
-  const text = readFileSync(path, 'utf8').replace(CONTROL_CHARS, '');
+  // Only a regular file of bounded size is read, checked on the descriptor
+  // opened without blocking, so nothing can be swapped in between the check
+  // and the read: a FIFO would block the reader, the dashboard's whole server
+  // and every launch with it, and a device or a huge file would be read to the
+  // end before the cap below could refuse it.
+  let raw: string;
+  try {
+    raw = readPlainFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new InvalidProfileError(
+      `The project brief at ${path} is not a plain file pup can read. ` +
+        'Replace it with `pup brief edit`.',
+    );
+  }
+  const text = raw.replace(CONTROL_CHARS, '');
   if (text.length > BRIEF_MAX_CHARS) {
     // Measured after stripping, which is the text every reader would get.
     throw new InvalidProfileError(
@@ -147,10 +170,34 @@ function sections(brief: string): BriefSection[] {
     const match = SECTION_HEADING.exec(line);
     // A heading with no title still opens a section, so what follows it cannot
     // fall back into the section above and reach a reader that one was meant for.
-    if (match) found.push({ heading: match[1] ?? '', lines: [] });
+    if (match) found.push({ heading: headingTitle(match[1] ?? ''), lines: [] });
     else found.at(-1)?.lines.push(line);
   }
   return found.map(({ heading, lines }) => ({ heading, body: lines.join('\n').trim() }));
+}
+
+/**
+ * A heading's title less its trailing blanks and its closing run of `#`, which
+ * counts as closing only after a blank, as CommonMark has it: `## C#` keeps
+ * its `#`, and `## #` is titled `#`.
+ */
+function headingTitle(text: string): string {
+  const title = trimBlanks(text);
+  let run = title.length;
+  while (run > 0 && title[run - 1] === '#') run -= 1;
+  const closed = run > 0 && run < title.length && isBlank(title[run - 1]);
+  return closed ? trimBlanks(title.slice(0, run)) : title;
+}
+
+function isBlank(char: string | undefined): boolean {
+  return char === ' ' || char === '\t';
+}
+
+/** Trailing spaces and tabs only: `trimEnd` would also take what CommonMark keeps. */
+function trimBlanks(text: string): string {
+  let end = text.length;
+  while (end > 0 && isBlank(text[end - 1])) end -= 1;
+  return text.slice(0, end);
 }
 
 /**
@@ -165,4 +212,16 @@ export function workerBrief(brief: string): string | undefined {
   );
   if (kept.length === 0) return undefined;
   return kept.map((section) => `### ${section.heading}\n${section.body}`).join('\n\n');
+}
+
+/**
+ * The brief's goal as the dashboard's Overview leads with it (decision 98): the
+ * Destination section's body, undefined when the brief has none or left it
+ * empty. Read through `readBrief` like every other reader, so it is already
+ * stripped of control characters.
+ */
+export function briefDestination(brief: string): string | undefined {
+  return sections(brief).find(
+    (section) => section.heading.toLowerCase() === 'destination' && section.body,
+  )?.body;
 }

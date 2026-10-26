@@ -2,8 +2,10 @@ import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   appendBaselineHistory,
+  baselineHistoryAsOf,
   hasBaselineHistoryEntry,
   listBaselineHistory,
+  listRecentBaselineHistory,
   type NewBaselineHistoryInput,
 } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
@@ -80,5 +82,38 @@ describe('baseline history repository', () => {
     expect(hasBaselineHistoryEntry(db, 'proj-1', '2026-08-03T10:00:00.000Z')).toBe(true);
     expect(hasBaselineHistoryEntry(db, 'proj-1', '2026-08-03T11:00:00.000Z')).toBe(false);
     expect(hasBaselineHistoryEntry(db, 'proj-2', '2026-08-03T10:00:00.000Z')).toBe(false);
+  });
+
+  it('finds the newest capture at or before a moment, and none before the first', () => {
+    ensureProject(db, 'proj-2', '/other');
+    appendBaselineHistory(db, historyInput({ capturedAt: '2026-08-01T10:00:00.000Z' }));
+    const onTheDot = appendBaselineHistory(
+      db,
+      historyInput({ capturedAt: '2026-08-02T10:00:00.000Z' }),
+    );
+    appendBaselineHistory(db, historyInput({ capturedAt: '2026-08-03T10:00:00.000Z' }));
+    appendBaselineHistory(
+      db,
+      historyInput({ projectId: 'proj-2', capturedAt: '2026-08-02T11:00:00.000Z' }),
+    );
+
+    expect(baselineHistoryAsOf(db, 'proj-1', new Date('2026-08-02T10:00:00.000Z'))?.id).toBe(
+      onTheDot,
+    );
+    expect(baselineHistoryAsOf(db, 'proj-1', new Date('2026-08-02T12:00:00.000Z'))?.id).toBe(
+      onTheDot,
+    );
+    expect(baselineHistoryAsOf(db, 'proj-1', new Date('2026-07-31T00:00:00.000Z'))).toBeUndefined();
+  });
+
+  it('lists only the newest captures, oldest of them first', () => {
+    for (const day of ['03', '01', '04', '02']) {
+      appendBaselineHistory(db, historyInput({ capturedAt: `2026-08-${day}T10:00:00.000Z` }));
+    }
+
+    expect(listRecentBaselineHistory(db, 'proj-1', 2).map((r) => r.captured_at)).toEqual([
+      '2026-08-03T10:00:00.000Z',
+      '2026-08-04T10:00:00.000Z',
+    ]);
   });
 });
