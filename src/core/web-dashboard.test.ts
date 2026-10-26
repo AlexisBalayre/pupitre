@@ -1,6 +1,6 @@
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,10 +13,15 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 
 import { hasConductorWindow } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
+import { formatDebtTransition } from './audit.service.js';
+import { appendBaselineHistory } from './baseline-history.repository.js';
+import { briefPath } from './brief.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
-import { insertLedgerEntry } from './ledger.repository.js';
+import { persistBaseline } from './init.service.js';
+import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
+import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -28,7 +33,8 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
-import { escapeHtml, startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
+import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
+import { escapeHtml } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';
@@ -160,6 +166,7 @@ describe('startWebDashboard', () => {
   const address = (): URL => new URL(dashboard.url);
   const eventsUrl = (): string => `${address().origin}/events${address().search}`;
   const host = (): string => address().host;
+  const origin = (): string => address().origin;
 
   describe('who it answers', () => {
     it('binds the loopback address and prints a url with a random token', async () => {
@@ -311,10 +318,12 @@ describe('startWebDashboard', () => {
       expect(page).toContain(`<a href="${PR}" target="_blank" rel="noopener noreferrer">`);
       expect(page).toContain('CI review: re-gated after 1 fix round; last gate: passed at');
       expect(page).toMatch(/debt #1: Oversize diff \(812 lines\) merged from session s-pr/);
-      // The planned task and the open ledger, overdue marked.
+      // The planned task; the open ledger, overdue marked, is the Debt sheet's.
       expect(page).toContain('t-planned');
-      expect(page).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
-      expect(page).toContain('accepted by alexis, review by 2000-01-01');
+      expect(page).not.toContain('accepted by alexis');
+      const debtSheet = (await get(`${dashboard.url}&sheet=debt`)).body;
+      expect(debtSheet).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
+      expect(debtSheet).toContain('accepted by alexis, review by 2000-01-01');
     });
 
     it('puts the review in the inbox when no conductor runs to gate it', async () => {
@@ -410,10 +419,191 @@ describe('startWebDashboard', () => {
 
       const page = (await get(dashboard.url)).body;
 
-      expect(page).not.toContain('<a ');
+      // The sheet links are the page's own, token and all; nothing else is a link.
+      expect(page).not.toMatch(/<a href="(?!\?token=[\w-]+&amp;sheet=\w+")/);
       expect(page).not.toContain('evil.example');
       expect(page).toContain('(PR url outside the pull-request shape; inspect the store)');
       expect(page).toContain(`question: see ${PR}`);
+    });
+  });
+
+  describe('the sheets', () => {
+    const DAY = 86_400_000;
+    const sheetUrl = (sheet: string): string => `${dashboard.url}&sheet=${sheet}`;
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is what is asserted
+    const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+    function writeBrief(text: string): void {
+      mkdirSync(dirname(briefPath(repo)), { recursive: true });
+      writeFileSync(briefPath(repo), text);
+    }
+
+    function fileDebt(
+      description: string,
+      files: string[],
+      extra: Partial<{ reason: string; acceptedBy: string }> = {},
+    ): number {
+      return insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description,
+        files,
+        reason: extra.reason ?? 'r',
+        acceptedBy: extra.acceptedBy ?? 'alexis',
+        reviewBy: '2999-01-01',
+      });
+    }
+
+    it('serves each sheet under a bar linking every sheet with the token, the current one marked', async () => {
+      const token = address().searchParams.get('token');
+      for (const [sheet, title] of [
+        ['overview', 'Overview'],
+        ['debt', 'Debt'],
+      ]) {
+        const reply = await get(sheetUrl(sheet as string));
+
+        expect(reply.status).toBe(200);
+        expect(reply.body).toContain(`<title>pup dashboard — ${title}</title>`);
+        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=overview"`);
+        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=debt"`);
+        expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
+      }
+      expect((await get(dashboard.url)).body).toContain('aria-current="page">Overview</a>');
+    });
+
+    it('refuses a sheet it does not have, and a sheet without the token', async () => {
+      expect((await get(sheetUrl('health'))).status).toBe(404);
+      expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
+    });
+
+    it('renders every sheet on an empty store with a one-line hint for each chart', async () => {
+      const overview = (await get(dashboard.url)).body;
+      const debt = (await get(sheetUrl('debt'))).body;
+
+      expect(overview).not.toContain('<svg');
+      expect(overview).toContain('No goal yet — `pup brief edit` writes the Destination.');
+      expect(overview).toContain('No task yet — `pup plan` adds one.');
+      expect(overview).toContain('No merge in the last 8 weeks.');
+      expect(overview).toContain('not measured — `pup init` measures it');
+      expect(debt).not.toContain('<svg');
+      expect(debt).toContain('No open debt — nothing to pay down.');
+    });
+
+    it("leads the Overview with the brief's Destination", async () => {
+      writeBrief('## Destination\nShip the sheets.\nThen the actions.\n\n## Priorities\nsecret\n');
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).toContain('<p class="brief">Ship the sheets.\nThen the actions.</p>');
+      expect(page).not.toContain('secret');
+    });
+
+    it('shows the figures pup audit stored and pup debt lists, each with its week', async () => {
+      const deadExports = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({ file: `src/f${i}.ts`, exportName: 'x' }));
+      const capture = (capturedAt: string, dead: number, lines: number, ratio: number) => ({
+        capturedAt,
+        adapters: ['typescript'],
+        stages: [],
+        debt: {
+          deadExports: deadExports(dead),
+          duplicatedLines: lines,
+          duplicationRule: DUPLICATION_RULE_ID,
+          coverageRatio: ratio,
+        },
+      });
+      const weekAgo = capture(new Date(Date.now() - 8 * DAY).toISOString(), 5, 120, 0.8);
+      appendBaselineHistory(db, { projectId: projectId(repo), ...weekAgo });
+      persistBaseline(db, projectId(repo), capture(new Date().toISOString(), 3, 130, 0.8234));
+      fileDebt('Oversize diff (900 lines) merged from session s-1', ['src/a.ts']);
+      const old = fileDebt('hand-filed', []);
+      db.prepare("UPDATE ledger_entries SET created_at = '2026-01-01 00:00:00' WHERE id = ?").run(
+        old,
+      );
+
+      const page = (await get(dashboard.url)).body;
+      // `pup audit` prints each figure as the after side of its transition.
+      const audited = (
+        metric: 'deadExports' | 'duplicatedLines' | 'coverageRatio',
+        value: number,
+      ) =>
+        /-> (\S+)/.exec(
+          formatDebtTransition({ metric, before: value, after: value, delta: 'unchanged' }),
+        )?.[1];
+      const tile = (label: string): string =>
+        new RegExp(
+          `<div class="k">${label}</div><div class="v">([^<]*)</div><div class="d">([^<]*)</div>`,
+        )
+          .exec(page)
+          ?.slice(1)
+          .join(' | ') ?? '';
+
+      expect(tile('open debt')).toBe(
+        `${listLedgerEntries(db, projectId(repo)).length} | 1 filed in 7 days`,
+      );
+      expect(tile('coverage')).toBe(`${audited('coverageRatio', 0.8234)} | +2.3 pt in 7 days`);
+      expect(tile('unused exports')).toBe(`${audited('deadExports', 3)} | -2 in 7 days`);
+      expect(tile('duplicated lines')).toBe(`${audited('duplicatedLines', 130)} | +10 in 7 days`);
+      expect(page).toContain('<figcaption>coverage by capture:');
+      expect(page).toContain(`sheet=debt">Debt sheet: what to pay down next →</a>`);
+    });
+
+    it('counts tasks done, in flight and planned, and merges per week by first merge', async () => {
+      seedMerge('s-a', PR);
+      seedMerge('s-b', PR);
+      appendEvent(db, 's-b', 'merge', {
+        branch: 'pup/s-b',
+        sha: 'e'.repeat(40),
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
+      db.prepare(
+        "UPDATE events SET created_at = datetime('now', '-15 days') WHERE session_id = 's-b' AND type = 'merge' AND id = (SELECT MIN(id) FROM events WHERE session_id = 's-b' AND type = 'merge')",
+      ).run();
+      seedSession('s-run', ['running']);
+      insertTask(db, {
+        id: 't-planned',
+        projectId: projectId(repo),
+        spec: JSON.stringify({ id: 't-planned', goal: 'later', scopeIn: ['src/**'] }),
+        origin: 'human',
+      });
+
+      const page = (await get(dashboard.url)).body;
+      const merges =
+        /<figcaption>Merges per week, week starting: ([^<]*)<\/figcaption>/.exec(page)?.[1] ?? '';
+
+      expect(page).toContain('<figcaption>Tasks: done 2 · in flight 1 · planned 1</figcaption>');
+      expect(merges.split(' · ').map((week) => Number(week.split(' ')[1]))).toEqual([
+        0, 0, 0, 0, 0, 1, 0, 1,
+      ]);
+    });
+
+    it('escapes every store string on both sheets, markup and control characters alike', async () => {
+      const evil = '<img src=x onerror=alert(1)>\u001b[31m\u009b2J';
+      writeBrief(`## Destination\n${evil}\n`);
+      fileDebt(`Oversize diff ${evil}`, [`src/${evil}.ts`], { reason: evil, acceptedBy: evil });
+      seedSession('s-evil', ['running'], evil);
+
+      for (const page of [(await get(dashboard.url)).body, (await get(sheetUrl('debt'))).body]) {
+        expect(page).not.toContain('<img');
+        expect(page).not.toMatch(CONTROL);
+        expect(page).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      }
+    });
+
+    it("streams a sheet's own board, and a change to it within one poll", async () => {
+      const stream = await openStream(`${origin()}/events${address().search}&sheet=debt`);
+      try {
+        const first = stream.frames[0] ?? (await stream.next());
+        expect(first).toContain('No open debt — nothing to pay down.');
+
+        const arriving = stream.next();
+        fileDebt('Complexity rise (+9 decision points) merged from session s-1', ['src/b.ts']);
+
+        expect(await arriving).toContain('<code>src/b.ts</code>');
+      } finally {
+        stream.close();
+      }
     });
   });
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
 import {
   closeLedgerEntry,
+  countLedgerEntriesSince,
   hasOpenLedgerEntry,
   insertLedgerEntry,
   listLedgerEntries,
@@ -100,5 +101,26 @@ describe('ledger repository', () => {
     const overdue = listOverdueLedgerEntries(db, 'proj-1', new Date('2026-07-22'));
 
     expect(overdue.map((e) => e.description)).toEqual(['past']);
+  });
+
+  it('counts the entries filed since a moment, closed ones included, in this project only', () => {
+    ensureProject(db, 'proj-2', '/other');
+    const old = insertLedgerEntry(db, entryInput({ description: 'old' }));
+    db.prepare("UPDATE ledger_entries SET created_at = '2026-10-01 09:00:00' WHERE id = ?").run(
+      old,
+    );
+    const closed = insertLedgerEntry(db, entryInput({ description: 'closed' }));
+    db.prepare("UPDATE ledger_entries SET created_at = '2026-10-20 09:00:00' WHERE id = ?").run(
+      closed,
+    );
+    closeLedgerEntry(db, closed);
+    const recent = insertLedgerEntry(db, entryInput({ description: 'recent' }));
+    db.prepare("UPDATE ledger_entries SET created_at = '2026-10-19 12:00:00' WHERE id = ?").run(
+      recent,
+    );
+    insertLedgerEntry(db, entryInput({ projectId: 'proj-2' }));
+
+    expect(countLedgerEntriesSince(db, 'proj-1', new Date('2026-10-19T12:00:00.000Z'))).toBe(2);
+    expect(countLedgerEntriesSince(db, 'proj-1', new Date('2026-10-19T12:00:01.000Z'))).toBe(1);
   });
 });

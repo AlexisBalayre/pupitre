@@ -46,7 +46,7 @@ import type {
   DashboardSteer,
   FleetSummary,
 } from './types/dashboard.types.js';
-import type { ProjectBaseline } from './types/init.types.js';
+import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 
 /**
@@ -861,12 +861,21 @@ function baselineOf(db: Database, pid: string): DashboardBaseline | undefined {
   if (!stored) return undefined;
   const baseline = parseJsonOr<Partial<ProjectBaseline>>(stored, {});
   if (typeof baseline.capturedAt !== 'string') return undefined;
-  const debt = baseline.debt ?? {};
+  return { capturedAt: toIsoUtc(baseline.capturedAt), ...debtFigures(baseline.debt) };
+}
+
+/**
+ * The figures a stored debt baseline holds, each only when it has the type it
+ * should: the one reading of a baseline's numbers, so the dashboard's sheets
+ * and `pup status` cannot count a capture two ways (decision 98).
+ */
+export function debtFigures(
+  debt: Partial<DebtBaseline> | undefined,
+): Omit<DashboardBaseline, 'capturedAt'> {
   return {
-    capturedAt: toIsoUtc(baseline.capturedAt),
-    ...(typeof debt.coverageRatio === 'number' ? { coverageRatio: debt.coverageRatio } : {}),
-    ...(typeof debt.duplicatedLines === 'number' ? { duplicatedLines: debt.duplicatedLines } : {}),
-    ...(Array.isArray(debt.deadExports) ? { deadExports: debt.deadExports.length } : {}),
+    ...(typeof debt?.coverageRatio === 'number' ? { coverageRatio: debt.coverageRatio } : {}),
+    ...(typeof debt?.duplicatedLines === 'number' ? { duplicatedLines: debt.duplicatedLines } : {}),
+    ...(Array.isArray(debt?.deadExports) ? { deadExports: debt.deadExports.length } : {}),
   };
 }
 

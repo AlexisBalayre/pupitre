@@ -166,3 +166,15 @@ export function workerBrief(brief: string): string | undefined {
   if (kept.length === 0) return undefined;
   return kept.map((section) => `### ${section.heading}\n${section.body}`).join('\n\n');
 }
+
+/**
+ * The brief's goal as the dashboard's Overview leads with it (decision 98): the
+ * Destination section's body, undefined when the brief has none or left it
+ * empty. Read through `readBrief` like every other reader, so it is already
+ * stripped of control characters.
+ */
+export function briefDestination(brief: string): string | undefined {
+  return sections(brief).find(
+    (section) => section.heading.toLowerCase() === 'destination' && section.body,
+  )?.body;
+}

@@ -60,3 +60,21 @@ export function listBaselineHistory(db: Database, projectId: string): BaselineHi
     .prepare('SELECT * FROM baseline_history WHERE project_id = ? ORDER BY captured_at, id')
     .all(projectId) as BaselineHistoryRow[];
 }
+
+/**
+ * The newest capture taken at or before `at`, the one a "change over N days"
+ * figure compares the current baseline with (decision 98). `captured_at` is an
+ * ISO string with a Z, so it orders as text.
+ */
+export function baselineHistoryAsOf(
+  db: Database,
+  projectId: string,
+  at: Date,
+): BaselineHistoryRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM baseline_history WHERE project_id = ? AND captured_at <= ?
+       ORDER BY captured_at DESC, id DESC LIMIT 1`,
+    )
+    .get(projectId, at.toISOString()) as BaselineHistoryRow | undefined;
+}
