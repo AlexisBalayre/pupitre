@@ -1,0 +1,318 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T11:00:20.767Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40310723423",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40310723423",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2699fb5ae9d6dd64a8ba49b215026afc6de8ec7b",
+  "source": "pr",
+  "pr_number": 178,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "412-433",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`tip ^head ^targetSha` holds only when the round's commits sit on top of `head`; once the branch was rebased during the round (a rejected gate run's own fresh-base rebase, or the worker following the gate's conflict instruction), the rebased copies of every earlier PR commit count, so any thread answered \"fixed\" on a PR file is resolved.",
+      "body": "`filesTheRoundChanged` counts the round's own commits as `git log --no-merges --name-only tip ^<head> ^<targetSha>`. That only holds while `head` (the PR head the round started from, read from the `fix_round` event) is still an ancestor of the session tip. During a round the branch is often rewritten:\n\n- **A rejected gate run in the same round.** If the target moved since the PR was gated, the first `pup merge --pr` of the round rebases the worktree's real branch onto `targetSha` (`runGit(worktree, ['rebase', targetSha], pinned)` in `gateAndMerge`). A later stage then rejects; `rejectOrBlock` only re-steers the worker and resets nothing, and a rejected run writes no `merge` event, so the next run still answers this same round. That run's `sessionTip` (read before fresh-base) is the already-rebased tip.\n- **The worker rebases or amends.** The gate's own conflict message tells the worker to `git rebase refs/heads/<target>`; a `git commit --amend` on the head commit has the same effect.\n\nEither way, every earlier PR commit is now a new sha, reachable from neither `head` nor `targetSha`, so its files land in `changed`. Review threads sit on PR files, so every thread the worker answers `fixed` becomes `addressed` and is resolved under the operator's login even if the round never touched its file. That breaks the guarantee the JSDoc and decision 90 state (\"the worker's word alone resolves nothing\"). The new test covers a rebase within a single gate run, not one carried over from an earlier rejected run.\n\nA safe fix: return an empty set unless `git merge-base --is-ancestor <head> <tip>` succeeds (run under the same `timeoutMs`). The threads then come out `unverified` and stay open for the operator.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2699fb5ae9d6dd64a8ba49b215026afc6de8ec7b/src/core/fix-round.service.ts#L412-L433",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "383-393",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Answers are read only from the newest `session_done` of the round, so when a gate run rejects and the worker calls `pup session done` again without repeating its thread answers, every thread is replied to as \"gave no answer\" and none is resolved, and the marker then stops any correction.",
+      "body": "`roundTheNewestMergeEnded` reverses the events and takes the first `session_done` between the `fix_round` and the `merge`, i.e. only the newest summary:\n\n```ts\nconst done = events\n  .filter((row) => row.id > before.id && row.id < merge.id)\n  .map(decodeEvent)\n  .find((event): event is SessionDone => event.type === 'session_done');\n```\n\nRejections inside a fix round are expected (the round has its own reject base). `rejectOrBlock` re-steers with `formatGateReport`, which ends `Fix the failures above, commit in this worktree, then run \\`pup session done \"<summary>\"\\` again.` Neither that steer nor the fix-round brief (\"Answer every thread in the summary you give `pup session done`\") asks the worker to repeat its answers, so the second summary typically reads like \"fixed the failing test\".\n\nThen `threadAnswer` finds nothing for any id: every thread gets the public reply `The fix round gated at <sha> gave no answer for this thread; left open for the operator.`, nothing is resolved, and the summary comment reports all of them unanswered. Those posts carry the `<!-- pup fix-round <sha> -->` marker, and the next merge's predecessor is a `merge`, not this `fix_round`, so no later gate run ever corrects them.\n\nA fix: read every `session_done` of the round, newest first, and join their summaries with `\\n` so `threadAnswer`'s first match (the newest answer per id) wins. Alternatively, have the rejection steer inside a fix round ask for the answers again.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2699fb5ae9d6dd64a8ba49b215026afc6de8ec7b/src/core/fix-round.service.ts#L383-L393",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "196-206",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the head carries the preflight's comment-only PENDING skip, the digest says \"ready for the operator's merge click\" whenever no thread is open. It never checks whether the earlier review it rests on was clean. That earlier review could have had important findings in its body, or threads that a worker's comment-only \"fix\" got resolved, and it would still read ready.",
+      "body": "The comment-only branch of `reviewDigest` treats \"no open thread\" as clean:\n\n```ts\nif (status?.state === 'PENDING' && status.description.startsWith(COMMENT_ONLY_STATUS)) {\n  return line(`skipped, a comment-only push (${said})`, threads, threads,\n    threads > 0 ? \"comment `@claude review` …\" : \"ready for the operator's merge click\");\n}\n```\n\nThe SUCCESS branch requires the exact status `no blocking issues` before it says ready, and decision 90 says the same: next is \"`ready for the operator's merge click` under the clean full-review status, and otherwise reading the PR\". A comment-only skip is not that status, and its description (`Not reviewed: only comments and prose changed since <sha7>`) carries no verdict; the earlier review's status sits on an older commit that `readPullRequestReview` never reads.\n\nReachable paths:\n1. **No attacker needed.** `post-review.script.ts` (L103-104, L228-233) sends a finding with no anchor to the review body and still counts it, so head A gets SUCCESS `1 important finding(s)` with 0 threads; `pup ci wait` correctly says \"read the PR\". A comment-only push follows; the preflight skips any comment-only delta after a complete record regardless of its findings (`newestCleanRecord` only drops errored/partial records) and posts the PENDING skip. `pup ci wait` now prints `0 open thread(s), 0 important → ready for the operator's merge click`.\n2. **Worker-shaped.** In a `pup fix` round the worker edits only a comment in the threads' file and answers `fixed`; the round's commit touched that file, so the threads are resolved; the push is comment-only, so the head gets the skip and the digest reads ready. The conductor's `CI_REVIEW_LOOP` then reports the PR ready for the merge click although no one reviewed or fixed the important findings.\n\nThe operator's click still gates the merge, but this is the signal the loop exists to give them. Suggested fix: on the skip with no open thread, name \"read the PR\" (this head was not reviewed and the earlier verdict isn't read) instead of ready, or read the prior review's status before saying ready; `ci-wait.test.ts`'s comment-only case (L233-245) expects \"ready\" and would need updating.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2699fb5ae9d6dd64a8ba49b215026afc6de8ec7b/src/core/ci-wait.service.ts#L196-L206",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "103-108",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Every read error that is not an interrupt is treated as one more wait, including permanent ones: gh not authenticated, PR not found, and readPullRequestReview's own '>100 review threads ... fix the PR by hand' refusal. Each of these burns the full 9-minute timeout and ends with 'Re-run `pup ci wait`'. CI_REVIEW_LOOP step 2 has the conductor re-run it up to three times, so about 27 minutes pass before the operator hears of a failure that was final on the first read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "373-376",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The only caller is `gateAndMerge`, and each of its runs first records a new `merge` event, whose predecessor is then that previous `merge` and not a `fix_round`. So no second run ever reaches a round whose answering was cut short, and the \"finishes what the first left\" claim in the JSDoc and decision 90 cannot happen. Recovery is only by hand, as the warning says; the claim should go, or a command should re-answer the round.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "588-592",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`isCutOffByNode` matches any string `code`, including spawn failures like `ENOENT`/`EACCES` (gh missing or not executable), so `answerFixRoundThreads` reports `A call answering the round's threads was cut off (ENOENT)`, which hides the real cause. Matching only `ETIMEDOUT`/`ENOBUFS` would keep the interrupt protection without the wrong label.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "35-40",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The scrub removes only non-ASCII math and other symbols, so a forged `claude-review` description can still write an ASCII `->` or `=>` and a command of its own before the real `→`. Decision 90 says a forged status \"cannot print an arrow and a next step of its own, such as a `pup merge … --accept-debt`\"; that only holds for the Unicode arrow.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "891-893",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 90's `pup ci wait` paragraph (\"Next is `pup fix <id>` when threads are open, ready … under the clean full-review status, and otherwise reading the PR\"; \"Important count is the status's `N important finding(s)`\") does not match `reviewDigest`: `pup fix` is named only under SUCCESS, the skip and FAILURE branches name `@claude review` even with open threads, and the important count is the thread count on a skip and 0 on FAILURE.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4840-4850",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 90's \"Replies\" paragraph has a broken sentence (\"answers the round the newest merge ended, and nothing for a merge that ended none:\" followed by a bare line \"the `fix_round` event just before that merge.\"), and several edited lines overflow the file's ~100-column wrap while others were left as short stray lines; re-wrap them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "333-338",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The round's four-count summary sentence is written twice: once in the PR comment in `answerFixRoundThreads` and again in the `console.error` in `replyOnFixRoundThreads` (merge-gate.service.ts L1159-1164). Adding or renaming a verdict now means editing both modules; one small formatter for the counts would keep them in step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "581-594",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`isCutOffByNode` classifies any child-process error (it is the counterpart of `rethrowIfKilled` in `git-diff.client.ts`) and is used on a `runGit` error in `filesTheRoundChanged`, yet it lives in the GitHub client with its tests in `github-client.test.ts`; move it next to `rethrowIfKilled` so one module owns process-kill classification.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "565-580",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`commentOnPullRequest` is a third near-copy of the \"gh with the body over stdin\" `execFileSync` block (after `rewritePullRequest` and `createPullRequest`); AGENTS.md's \"no abstraction until third use\" now justifies a shared helper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "35",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `SYMBOLS` regex is a character-for-character copy of the one in `dashboard.service.ts:396`; the comment calls it \"the inbox's own class\" but nothing ties them together, so they can drift. Export and reuse one constant.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "27",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`CLEAN_REVIEW_STATUS = 'no blocking issues'` is declared again here while the same unexported constant exists at `fix-round.service.ts:74`; if the poster's wording changes, `pup fix` and `pup ci wait` can disagree on what \"clean\" means. Export the existing constant and reuse it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "141-155",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pullRequestToWaitOn` repeats the \"stored PR of this session\" sequence (`newestMerge` → reject landed → reject missing `prUrl` → `originRepoSlug(pushTarget(...))` → `assertPullRequestOf`) already in `fix-round.service.ts` `storedPullRequest` and `land.service.ts`; this third use is where AGENTS.md says to extract a shared helper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "43",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`CiWaitClock` (ci-wait.service.ts) and `RoundBranch` (fix-round.service.ts:140) are exported interfaces declared inside `*.service.ts` files, against general.md §Type separation (\"Never inline an exported `type`/`interface` in a `*.service.ts`\"); they belong in `src/core/types/`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "64-66",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The boolean field `finished` in `CiWaitOutcome` breaks general.md's rule that boolean names start with `is`/`has`/`should`/`can`; `isFinished` would follow it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pup ci wait` default timeout is inlined as the string `'9'` in the CLI option and the ms-per-minute `60_000` is inlined in both the CLI and ci-wait.service.ts, against general.md §No hardcoded values (timeouts go in the area's `*.constants.ts`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"A merge that ended no fix round answers nothing (decision 90).\" above `if (pullRequest) { replyOnFixRoundThreads(...) }` restates the callee's JSDoc (\"Undefined when the newest merge ended no fix round\"), a seam duplicate per AGENTS.md §Comments; delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "104-105",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The catch-block comment \"A read node cut off, past its budget or its buffer, is one more wait, not an interrupt.\" partly restates `isCutOffByNode`'s JSDoc; only the \"one more wait\" half is new, so trim it to that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.test.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"The gate answers under the merge lock: a GitHub that hangs costs the answers' budget...\" sits above the test 'leaves open a thread on a file only the target changed while the round ran' but describes the next-but-one test ('gives up within its time budget...'); move it to the test it describes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`reviewDigest`'s JSDoc \"Each thread the poster anchors is an important finding; minors stay in the review body, and never ask for a round.\" is half-true (important count comes from the status under SUCCESS, threads only on the skip branch) and restates LOOP.md and the conductor orders; trim it to the comment-only case or drop it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Minted, so the commands the line names are built around an id the store cannot have shaped.\" above `const id = session.id;` in `waitForCiReview` describes a check done in `pullRequestToWaitOn` (`assertMintedRow`) and sits on a plain alias; fold the WHY into the `assertMintedRow` call and drop the alias.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`answerFixRoundThreads`'s 19-line JSDoc narrates the implementation (marker read-back, budget, code spans, store-text ids) already in decision 90 and the helpers' docs, with ragged wrapping; keep the public contract (what is posted, when a thread is resolved, undefined with no round) and leave the rest to the helpers.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.8214448,
+  "duration_ms": 445276,
+  "num_turns": 18,
+  "tokens": {
+    "input": 10,
+    "output": 22845,
+    "cache_read": 213497,
+    "cache_creation": 66006,
+    "total": 302358
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 274,
+      "output": 123556,
+      "cache_read": 5342250,
+      "cache_creation": 511173,
+      "cost_usd": 6.2945490000000035
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 11259,
+      "cache_read": 568988,
+      "cache_creation": 142934,
+      "cost_usd": 0.5268957999999999
+    }
+  ],
+  "permission_denials": []
+}
