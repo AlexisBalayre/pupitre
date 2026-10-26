@@ -33,6 +33,7 @@ import {
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
+import { answerFixRoundThreads } from './fix-round.service.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -1277,6 +1278,10 @@ async function gateAndMerge(
     // since the target already holds the pinned sha.
     recordMerge(db, req.repoPath, session, { sha, target, files: changedPaths, prUrl }, isDeleted);
   }
+  // A merge that ended no fix round answers nothing (decision 90).
+  if (pullRequest) {
+    replyOnFixRoundThreads(db, req.repoPath, session.id, pullRequest, targetSha);
+  }
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
     // `pup land` ratchets it once the PR has (decisions 26, 84).
@@ -1310,6 +1315,43 @@ async function gateAndMerge(
     decisionRecordId,
     ...(prUrl !== undefined ? { prUrl, prWasAdopted } : {}),
   };
+}
+
+/**
+ * The replies a gated fix round owes its threads (decision 90), told in one
+ * line. Never fatal: the PR already holds the pinned sha and the merge is
+ * recorded, so a failing gh, or one past the answers' time budget under the
+ * merge lock, costs the replies and the warning says so.
+ */
+function replyOnFixRoundThreads(
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  pullRequest: PullRequestPlan,
+  targetSha: string,
+): void {
+  try {
+    const answers = answerFixRoundThreads(db, repoPath, sessionId, pullRequest.repo, targetSha);
+    if (answers === undefined) return;
+    console.error(
+      `Answered the fix round's threads on ${answers.prUrl}: ${answers.addressed} addressed and ` +
+        `resolved, ${answers.unverified} answered fixed that pup could not verify, ` +
+        `${answers.declined} declined, ${answers.unanswered} unanswered.`,
+    );
+  } catch (error) {
+    rethrowIfKilled(error);
+    // pup's own alarm, whole: the reason cap would cut its call to treat the
+    // session as compromised.
+    if (error instanceof ArmedGitDriverError) {
+      console.error(`Answered none of the fix round's threads. ${error.message}`);
+      return;
+    }
+    console.error(
+      `Could not answer the fix round's threads on GitHub: ` +
+        `${sanitizeReason(error instanceof Error ? error.message : String(error))}. Reply on ` +
+        'and resolve them by hand.',
+    );
+  }
 }
 
 /** What the stages measured, for the caller that lands it. */

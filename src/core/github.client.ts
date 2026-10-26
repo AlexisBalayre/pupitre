@@ -8,6 +8,8 @@ import type { NewPullRequest, PullRequestRef } from './types/github.types.js';
 /** Version probe is local; PR creation talks to GitHub and gets a network budget. */
 const GH_PROBE_TIMEOUT_MS = 10_000;
 const GH_COMMAND_TIMEOUT_MS = 60_000;
+/** Node's 1 MiB default is about 16 maximum-size comments; a review query can pass it. */
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
 
 /** `git@host:owner/repo.git`, `https://host/owner/repo`, `ssh://git@host/owner/repo.git`. */
 const REMOTE_URL = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/;
@@ -48,6 +50,7 @@ function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_M
     cwd: repoPath,
     encoding: 'utf8',
     timeout,
+    maxBuffer: GH_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: scrubbedGitEnv(),
   });
@@ -268,6 +271,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
               context(name: "${REVIEW_STATUS_CONTEXT}") {
                 state
                 description
+                createdAt
                 creator { __typename login }
               }
             }
@@ -296,6 +300,10 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
             }
           }
         }
+      }
+      comments(last: ${REVIEW_PAGE}) {
+        pageInfo { hasPreviousPage }
+        nodes { body createdAt authorAssociation }
       }
     }
   }
@@ -328,6 +336,12 @@ export interface PullRequestReview {
   reviewedHead: string | undefined;
   /** The bot's `claude-review` status on the head: its verdict, or why it reached none. */
   headStatus: { state: string; description: string } | undefined;
+  /**
+   * The repo's owner commented `@claude review` on the PR after the bot set
+   * `headStatus`: the workflow reviews the head again on that comment, and
+   * nothing marks the head while it runs, so `headStatus` is the run's before.
+   */
+  isRereviewAsked: boolean;
   /** The unresolved threads the bot's newest review run opened, in GitHub's order. */
   openThreads: ReviewThread[];
 }
@@ -345,7 +359,8 @@ function nodesOf(connection: unknown): Record<string, unknown>[] {
 /**
  * What the CI review said on the PR at `url` (decision 90): its state and
  * head, the commit the review bot last reviewed, the status it pinned to the
- * head, and the threads that newest review run opened that nobody resolved. One
+ * head, whether the owner asked for a review since that status, and the
+ * threads that newest review run opened that nobody resolved. One
  * GraphQL read, so all of it describes the same moment, pinned to `repo`'s
  * host and name like every other call here. Every string in it is GitHub's
  * copy of text a session's code shaped — a path, a finding quoting that code —
@@ -358,32 +373,7 @@ export function readPullRequestReview(
   repo: string,
   timeoutMs?: number,
 ): PullRequestReview {
-  const [host, owner, name] = repo.split('/');
-  const number = /\/pull\/(\d+)$/.exec(url)?.[1];
-  if (!host || !owner || !name || number === undefined) {
-    throw new Error(`Cannot read a review of ${url} as a pull request of ${repo}.`);
-  }
-  const parsed = ghJson(
-    repoPath,
-    [
-      'api',
-      'graphql',
-      '--hostname',
-      host,
-      '-f',
-      `query=${PULL_REQUEST_REVIEW_QUERY}`,
-      '-f',
-      `owner=${owner}`,
-      '-f',
-      `name=${name}`,
-      '-F',
-      `number=${number}`,
-    ],
-    timeoutMs,
-  );
-  const pr = objectFields(
-    objectFields(objectFields(objectFields(parsed).data).repository).pullRequest,
-  );
+  const pr = queryPullRequest(repoPath, url, repo, PULL_REQUEST_REVIEW_QUERY, timeoutMs);
   const run = newestReviewRun(pr.reviews);
   const reviewedHead = objectFields(run[0]?.commit).oid;
   const head = typeof pr.headRefOid === 'string' ? pr.headRefOid : undefined;
@@ -413,11 +403,13 @@ export function readPullRequestReview(
         'hand.',
     );
   }
+  const status = reviewStatusOn(pr.commits, head);
   return {
     state: typeof pr.state === 'string' ? pr.state : undefined,
     head,
     reviewedHead: typeof reviewedHead === 'string' ? reviewedHead : undefined,
-    headStatus: reviewStatusOn(pr.commits, head),
+    headStatus: status && { state: status.state, description: status.description },
+    isRereviewAsked: status !== undefined && isReviewAskedSince(pr.comments, status.setAt),
     openThreads: newest.flatMap((thread): ReviewThread[] => {
       const [finding] = nodesOf(thread.comments);
       if (thread.isResolved !== false || typeof thread.id !== 'string') return [];
@@ -442,6 +434,186 @@ export function readPullRequestReview(
 }
 
 /**
+ * The pull request at `url` as `query` reads it, asked with its owner, name
+ * and number and pinned to `repo`'s host. Refused when the url is not one of
+ * `repo`'s pull requests by shape.
+ */
+function queryPullRequest(
+  repoPath: string,
+  url: string,
+  repo: string,
+  query: string,
+  timeoutMs?: number,
+): Record<string, unknown> {
+  const [host, owner, name] = repo.split('/');
+  const number = /\/pull\/(\d+)$/.exec(url)?.[1];
+  if (!host || !owner || !name || number === undefined) {
+    throw new Error(`Cannot read a review of ${url} as a pull request of ${repo}.`);
+  }
+  const parsed = ghJson(repoPath, graphqlArgs(host, query, { owner, name }, { number }), timeoutMs);
+  return objectFields(objectFields(objectFields(objectFields(parsed).data).repository).pullRequest);
+}
+
+/** `gh api graphql` on `host`: `fields` go raw (`-f`), so no value is read as a file; `typed` as `-F`. */
+function graphqlArgs(
+  host: string,
+  query: string,
+  fields: Record<string, string>,
+  typed: Record<string, string> = {},
+): string[] {
+  return [
+    'api',
+    'graphql',
+    '--hostname',
+    host,
+    '-f',
+    `query=${query}`,
+    ...Object.entries(fields).flatMap(([key, value]) => ['-f', `${key}=${value}`]),
+    ...Object.entries(typed).flatMap(([key, value]) => ['-F', `${key}=${value}`]),
+  ];
+}
+
+const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: ${REVIEW_PAGE}) {
+        nodes {
+          id
+          isResolved
+          path
+          finding: comments(first: 1) { nodes { author { __typename login } } }
+          replies: comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
+        }
+      }
+      comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
+    }
+  }
+}`;
+
+/** A review thread on the PR as a fix round's answers read it. */
+interface AnsweredThread {
+  id: string;
+  isResolved: boolean;
+  /** Its first comment, the finding, is the review bot's. */
+  isBots: boolean;
+  /** The file the finding is on, as GitHub reports it. */
+  path?: string;
+  /** The bodies of its comments that gh's own login wrote, newest last. */
+  ownReplies: string[];
+}
+
+/**
+ * The PR's newest review threads and the comments on it that gh's login wrote
+ * (`viewerDidAuthor`), for the replies a fix round posts (decision 90): what
+ * is already answered, so a second run for the same head posts nothing again.
+ */
+export function readThreadAnswers(
+  repoPath: string,
+  url: string,
+  repo: string,
+  timeoutMs?: number,
+): { threads: AnsweredThread[]; ownComments: string[] } {
+  const pr = queryPullRequest(repoPath, url, repo, FIX_ROUND_THREADS_QUERY, timeoutMs);
+  const ownBodies = (connection: unknown): string[] =>
+    nodesOf(connection).flatMap((comment) =>
+      comment.viewerDidAuthor === true && typeof comment.body === 'string' ? [comment.body] : [],
+    );
+  return {
+    threads: nodesOf(pr.reviewThreads).flatMap((thread): AnsweredThread[] =>
+      typeof thread.id === 'string'
+        ? [
+            {
+              id: thread.id,
+              isResolved: thread.isResolved === true,
+              isBots: isReviewBot(nodesOf(thread.finding)[0]?.author),
+              ...(typeof thread.path === 'string' ? { path: thread.path } : {}),
+              ownReplies: ownBodies(thread.replies),
+            },
+          ]
+        : [],
+    ),
+    ownComments: ownBodies(pr.comments),
+  };
+}
+
+const THREAD_REPLY_MUTATION = `mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) {
+    comment { id }
+  }
+}`;
+
+const RESOLVE_THREAD_MUTATION = `mutation($thread: ID!) {
+  resolveReviewThread(input: { threadId: $thread }) { thread { isResolved } }
+}`;
+
+/** Reply `body` on review thread `threadId` of `repo` (its `host/owner/name`), as gh's login. */
+export function replyToReviewThread(
+  repoPath: string,
+  repo: string,
+  threadId: string,
+  body: string,
+  timeoutMs?: number,
+): void {
+  ghJson(
+    repoPath,
+    graphqlArgs(hostOf(repo), THREAD_REPLY_MUTATION, { thread: threadId, body }),
+    timeoutMs,
+  );
+}
+
+/** Resolve review thread `threadId` of `repo`, as gh's login. */
+export function resolveReviewThread(
+  repoPath: string,
+  repo: string,
+  threadId: string,
+  timeoutMs?: number,
+): void {
+  ghJson(
+    repoPath,
+    graphqlArgs(hostOf(repo), RESOLVE_THREAD_MUTATION, { thread: threadId }),
+    timeoutMs,
+  );
+}
+
+/** Comment `body` on the PR at `url`, pinned to `repo`; the body over stdin, as a PR's is. */
+export function commentOnPullRequest(
+  repoPath: string,
+  url: string,
+  repo: string,
+  body: string,
+  timeoutMs = GH_COMMAND_TIMEOUT_MS,
+): void {
+  execFileSync('gh', ['pr', 'comment', url, '--repo', repo, '--body-file', '-'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+    input: body,
+    timeout: timeoutMs,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: scrubbedGitEnv(),
+  });
+}
+
+/**
+ * A child that node itself cut off, past its timeout (`ETIMEDOUT`) or its
+ * output buffer (`ENOBUFS`): node kills it with SIGTERM, which
+ * `rethrowIfKilled` reads as an interrupt. Node sets `code` only on a child it
+ * failed or stopped itself, never on an exit status or a signal from outside,
+ * so any error carrying one is the caller's own limit, which the caller
+ * answers rather than rethrows.
+ */
+export function isCutOffByNode(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+  );
+}
+
+function hostOf(repo: string): string {
+  const [host] = repo.split('/');
+  if (!host) throw new Error(`Cannot read a GitHub host from ${repo}.`);
+  return host;
+}
+
+/**
  * The bot's newest review run, newest first: its newest review, with the
  * bodiless bot reviews on the same commit just before it. When its batch
  * review is refused, the poster posts each finding as a comment of its own,
@@ -463,21 +635,50 @@ function newestReviewRun(reviews: unknown): Record<string, unknown>[] {
 }
 
 /**
- * The review bot's `claude-review` status on the PR's last commit, read only
- * when that commit is the head the PR reports: anyone who can push may set a
- * status, so another creator's reads as none. A clean one is still no proof
- * (decision 90).
+ * The review bot's `claude-review` status on the PR's last commit, and when
+ * it was set (NaN when unreadable), read only when that commit is the head the
+ * PR reports: anyone who can push may set a status, so another creator's
+ * reads as none. A clean one is still no proof (decision 90).
  */
 function reviewStatusOn(
   commits: unknown,
   head: string | undefined,
-): PullRequestReview['headStatus'] {
+): { state: string; description: string; setAt: number } | undefined {
   const commit = objectFields(nodesOf(commits).at(-1)?.commit);
   if (head === undefined || commit.oid !== head) return undefined;
   const status = objectFields(objectFields(commit.status).context);
   if (!isReviewBot(status.creator)) return undefined;
-  const { state, description } = status;
+  const { state, description, createdAt } = status;
   return typeof state === 'string'
-    ? { state, description: typeof description === 'string' ? description : '' }
+    ? {
+        state,
+        description: typeof description === 'string' ? description : '',
+        setAt: typeof createdAt === 'string' ? Date.parse(createdAt) : Number.NaN,
+      }
     : undefined;
+}
+
+/**
+ * Whether a PR comment the workflow runs a review on came after `since`: the
+ * repo owner's (its `if` takes `github.repository_owner`'s comments only),
+ * carrying `@claude review` in any case, as its `contains` reads it
+ * (`.github/workflows/claude-code-review.yml`). A time outside its shape, on
+ * either side, reads as after, so a wait goes on rather than taking the
+ * status before for the run's. So does a full page with no comment from
+ * before `since`: an ask may sit on the page before it, out of view.
+ */
+function isReviewAskedSince(comments: unknown, since: number): boolean {
+  const isAfter = (createdAt: unknown) =>
+    !((typeof createdAt === 'string' ? Date.parse(createdAt) : Number.NaN) <= since);
+  const page = nodesOf(comments);
+  if (objectFields(objectFields(comments).pageInfo).hasPreviousPage === true) {
+    if (page.every((comment) => isAfter(comment.createdAt))) return true;
+  }
+  return page.some(
+    (comment) =>
+      comment.authorAssociation === 'OWNER' &&
+      typeof comment.body === 'string' &&
+      /@claude review/i.test(comment.body) &&
+      isAfter(comment.createdAt),
+  );
 }

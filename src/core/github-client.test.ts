@@ -1,8 +1,14 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { originRepoSlug, readPullRequestReview } from './github.client.js';
+import {
+  isCutOffByNode,
+  originRepoSlug,
+  readPullRequestReview,
+  replyToReviewThread,
+} from './github.client.js';
 
 describe('originRepoSlug', () => {
   it('parses scp-style ssh remotes', () => {
@@ -155,6 +161,7 @@ describe('readPullRequestReview', () => {
       head: HEAD,
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
+      isRereviewAsked: false,
       openThreads: [
         {
           id: 'PRRT_open',
@@ -249,8 +256,59 @@ describe('readPullRequestReview', () => {
       head: HEAD,
       reviewedHead: undefined,
       headStatus: undefined,
+      isRereviewAsked: false,
       openThreads: [],
     });
+  });
+
+  // The workflow reviews the head again on its owner's `@claude review`, and
+  // nothing marks the head meanwhile (decision 90).
+  it("tells an `@claude review` the owner asked after the bot's status on the head", () => {
+    const asked = (createdAt: unknown, statusAt: unknown = '2026-10-26T10:00:00Z') => ({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      commits: {
+        nodes: [
+          {
+            commit: {
+              oid: HEAD,
+              status: {
+                context: { state: 'FAILURE', description: 'x', createdAt: statusAt, creator: BOT },
+              },
+            },
+          },
+        ],
+      },
+      comments: {
+        nodes: [{ body: 'now @CLAUDE REVIEW', createdAt, authorAssociation: 'OWNER' }],
+      },
+    });
+
+    ghAnswers(asked('2026-10-26T10:05:00Z'));
+    expect(read().isRereviewAsked).toBe(true);
+    ghAnswers(asked('2026-10-26T09:55:00Z'));
+    expect(read().isRereviewAsked).toBe(false);
+    // A time outside its shape, on either side, reads as asked: the wait goes on.
+    ghAnswers(asked(null));
+    expect(read().isRereviewAsked).toBe(true);
+    ghAnswers(asked('2026-10-26T09:55:00Z', 'yesterday'));
+    expect(read().isRereviewAsked).toBe(true);
+    // With no status of the bot's on the head, there is nothing stale to wait past.
+    ghAnswers({ ...asked('2026-10-26T10:05:00Z'), commits: { nodes: [] } });
+    expect(read().isRereviewAsked).toBe(false);
+    // A full page of comments, none from before the status, may hide an ask
+    // on the page before it; one from before shows the whole span was read.
+    const fullPage = (createdAt: string[]) => ({
+      ...asked('2026-10-26T09:55:00Z'),
+      comments: {
+        pageInfo: { hasPreviousPage: true },
+        nodes: createdAt.map((at) => ({ body: 'noise', createdAt: at, authorAssociation: 'NONE' })),
+      },
+    });
+    ghAnswers(fullPage(['2026-10-26T10:01:00Z', '2026-10-26T10:02:00Z']));
+    expect(read().isRereviewAsked).toBe(true);
+    ghAnswers(fullPage(['2026-10-26T09:59:00Z', '2026-10-26T10:02:00Z']));
+    expect(read().isRereviewAsked).toBe(false);
   });
 
   // Two runs on one head: the newest run's verdict is the review's (decision 90).
@@ -344,5 +402,48 @@ describe('readPullRequestReview', () => {
       ),
     ).toThrow(/Cannot read a review of/);
     expect(existsSync(join(ghDir, 'argv'))).toBe(false);
+  });
+});
+
+// Node kills a child it cuts off with SIGTERM, which reads as an interrupt
+// unless the caller tells the two apart by node's own `code`.
+describe('isCutOffByNode', () => {
+  const thrown = (run: () => unknown): unknown => {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    throw new Error('expected a throw');
+  };
+
+  it('reads a child past its buffer or its timeout as cut off', () => {
+    const overflow = thrown(() =>
+      execFileSync('sh', ['-c', 'yes | head -c 1048576'], { maxBuffer: 16, stdio: 'pipe' }),
+    );
+    const late = thrown(() => execFileSync('sleep', ['5'], { timeout: 100, stdio: 'pipe' }));
+
+    expect(overflow).toMatchObject({ code: 'ENOBUFS' });
+    expect(isCutOffByNode(overflow)).toBe(true);
+    expect(late).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGTERM' });
+    expect(isCutOffByNode(late)).toBe(true);
+  });
+
+  it('reads an interrupt or a failing exit as no cut-off', () => {
+    const interrupted = thrown(() => execFileSync('sh', ['-c', 'kill -INT $$'], { stdio: 'pipe' }));
+    const failed = thrown(() => execFileSync('sh', ['-c', 'exit 3'], { stdio: 'pipe' }));
+
+    expect(interrupted).toMatchObject({ signal: 'SIGINT' });
+    expect(isCutOffByNode(interrupted)).toBe(false);
+    expect(isCutOffByNode(failed)).toBe(false);
+    expect(isCutOffByNode(new Error('plain'))).toBe(false);
+  });
+});
+
+describe('replyToReviewThread', () => {
+  it('refuses a repo with no host before asking gh', () => {
+    expect(() => replyToReviewThread('/nowhere', '/owner/repo', 'PRRT_1', 'body')).toThrow(
+      'Cannot read a GitHub host from /owner/repo.',
+    );
   });
 });

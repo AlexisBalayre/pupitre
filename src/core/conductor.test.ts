@@ -38,6 +38,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
+  CI_REVIEW_LOOP,
   ConductorTellRefusedError,
   conductorCheckoutDir,
   DEFAULT_MAX_SESSIONS,
@@ -134,8 +135,23 @@ describe('startConductor', () => {
       paneId: '%3',
       socket: `pup-conductor-${projectId(REPO)}`,
     });
-    expect(prompt).toBe(readFileSync(join(outDir, 'context.md'), 'utf8'));
+    expect(prompt).toBe(`${readFileSync(join(outDir, 'context.md'), 'utf8')}\n\n${CI_REVIEW_LOOP}`);
     expect(prompt).toContain('pup launch <task> --model opus');
+  });
+
+  // The conductor owns the CI wait, so the operator's console no longer
+  // polls it (decision 90); these are the rules the kickoff must carry.
+  it('orders the CI review loop through pup ci wait and pup fix, and never a GitHub merge', () => {
+    start();
+
+    const [, prompt] = vi.mocked(kickoff).mock.calls[0] ?? [];
+    expect(prompt).toContain('`pup ci wait <session-id>`');
+    expect(prompt).toContain('run `pup fix <session-id>`');
+    expect(prompt).toContain('Stop pushing rounds for non-blocking minors alone');
+    expect(prompt).toContain("ready for the operator's merge click");
+    expect(prompt).toContain('Never merge on GitHub');
+    expect(prompt).toContain('`pup session ask`');
+    expect(prompt).toContain('needs-you inbox');
   });
 
   // Named in the argv even when the operator named neither, so the user
