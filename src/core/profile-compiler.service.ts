@@ -984,7 +984,9 @@ function buildConductorContext(
       '- `pup merge` and `pup land` wait for a merge lock another run holds, and the gate for ' +
       "the machine's load before its tests, each bounded and each saying so in one line. " +
       'Never loop on the load average before running them, and never ask the operator to ' +
-      'release the merge lock: run the command and read what it prints.\n' +
+      'release the merge lock: run the command and read what it prints. If it still refuses ' +
+      'on a held merge lock, report that refusal to the operator as it stands, and never ' +
+      'delete the lock.\n' +
       'If `pup` is not on PATH, run `node "$PUP_BIN" <command>` instead.',
     '## Protocol\n' +
       `1. \`pup status\`, then \`pup plan\`. Keep ${cap} sessions live: whenever fewer are, ` +

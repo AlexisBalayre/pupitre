@@ -4629,21 +4629,38 @@ changes back into those docs is pending.
     - The listener covers SIGHUP as well as SIGINT and SIGTERM, for as long as the lock is held,
       and only then.
     - Taking the lock writes the holder's pid into it (`pid`, a regular file, created exclusively
-      after the `mkdir`). If that write fails, the directory is removed again, since a lock with
-      no pid would refuse every later run. The lock is released by renaming it aside and removing
-      it there, so no reader ever finds the lock without its pid.
-    - A run that finds the lock reads the pid without following a link or opening a fifo. A pid
-      that is no longer alive (`kill(pid, 0)` fails with anything but EPERM) is reclaimed under a
-      second lock, `pup-merge.lock.reclaim`, and the pid is read again under it, so two runs that
-      both read the dead pid cannot both reclaim. A live pid, or EPERM (another user's process),
-      is held. A lock with no pid file, or one that does not hold a positive whole number, refuses
-      as before: an earlier pup or a hand-made lock is not guessed at.
+      after the `mkdir`, once the path is checked to be a real directory). If that write fails,
+      the pid and the directory are removed again, since a lock with no pid would refuse every
+      later run. The lock is released by renaming it aside and removing it there, so no reader
+      ever finds the lock without its pid. Only the pid file and the empty directory are removed:
+      the lock sits in a `.git` a session can write, so anything else found in it is left in the
+      aside directory and named, never removed recursively.
+    - A run that finds the lock reads the pid only from a real directory, without following a
+      link or opening a fifo. A pid that is no longer alive (`kill(pid, 0)` fails with anything
+      but EPERM) is reclaimed under a second lock, `pup-merge.lock.reclaim`, and the pid is read
+      again under it, so two runs that both read the dead pid cannot both reclaim. A reclaim lock
+      older than 10 s was stranded by a run killed mid-reclaim, which takes a few syscalls, and is
+      replaced. A live pid, or EPERM (another user's process), is held, and the refusal names the
+      pid and says not to remove the lock. A lock with no pid file, or one that does not hold a
+      positive whole number, is looked at again every 100 ms for a second, since a taker writes
+      its pid in the same tick as its `mkdir`, and then refuses as before: an earlier pup or a
+      hand-made lock is not guessed at.
     - `pup merge` and `pup land` wait for a live holder, polling once a second, for up to
-      `MERGE_LOCK_WAIT_MS` (three stage timeouts: a gate's slot wait, load wait and test stage end
-      to end). They print one line when the wait starts, naming the pid, and refuse with
-      `MergeLockHeldError` only once it runs out. Only the CLI opts in (`MergeRequest.wait`,
-      `wait` on `pup land`'s request). `pup fix` and every other caller still refuse at once. The
-      wait runs with node's default disposition, so a Ctrl-C ends it before any lock is taken.
+      `MERGE_LOCK_WAIT_MS`: what a gate with one suite can hold the lock for, its build, test run
+      and that run's re-run each bounded by a stage's timeout, plus its slot wait and its load
+      wait (50 minutes). Each nested package's suite adds a stage, so a gate over such a repo can
+      outlast it, and the waiter then refuses rather than wait on. They print one line when the
+      wait starts, naming the pid, and refuse with `MergeLockHeldError` only once it runs out.
+      Only the CLI opts in (`MergeRequest.wait`, `wait` on `pup land`'s request). `pup fix` and
+      every other caller still refuse at once. The wait runs with node's default disposition, so
+      a Ctrl-C ends it before any lock is taken.
+    - A gate whose take waited plans again under the lock (`planMerge`, every refusal
+      `runMergeGate` makes before the lock): the run that held it may have rejected and
+      re-steered the session, merged it, re-gated it or opened its fix round, or a driver may
+      have been armed since. Gated on the plan read before the wait, a second `pup merge` would
+      fast-forward main for a session already rejected and then fail its `merged` transition,
+      or record a merged session's merge and ratchet the baseline twice. `pup land` already reads
+      the session's state again under the lock.
     - Before its tests, inside its test slot so no worker's run starts while the load falls, a
       gate asked to wait (`waitForLoad`) waits until the 1-minute load average is under the
       machine's available parallelism, polling every 5 s for up to `GATE_SLOT_WAIT_MS`. It prints
@@ -4657,16 +4674,36 @@ changes back into those docs is pending.
       refuses, now reads as a merge with a kept worktree and git's words, no longer a throw.
     - The conductor's standing orders say that `pup merge` and `pup land` wait for the lock and
       the load themselves, and forbid it to loop on the load average or to ask the operator to
-      release the lock.
+      release the lock. A refusal on a held lock is reported to the operator as it stands, and
+      the conductor never deletes the lock.
+    Owed, from the security review of this change:
+    - The holder is known by its pid alone. A pid reused by another process, or one a session
+      plants (pid 1 reads as alive through EPERM), holds every waiting gate for the whole wait
+      and then refuses, the same denial a pid-less lock already causes at once. Recording the
+      process's start time beside the pid, and counting the holder alive only when both match,
+      closes it.
+    - `withTestSlot`'s wait (`test-slot.service.ts`) listens for SIGINT and SIGTERM only. With the
+      lock now holding node through a SIGHUP, closing the terminal during a gate's slot wait is
+      discarded and the gate carries on. The slot wait should listen for SIGHUP as well.
+    - `MergeLockHeldError`'s own message still says to remove a stale lock. The gate replaces it
+      for a live holder; the class should take the holder instead.
+    - Two runs that find one stranded reclaim lock in the same instant can both replace it, and
+      the second can then move aside the lock the first just took. That needs a run killed
+      mid-reclaim and then two runs interleaving in a few syscalls.
     Also from the decision 86 review (PR #150): `land.service.ts` imports `COMMIT_SHA` from
     `merge-gate.constants.ts`, and `merge-gate.service.ts` drops the re-export it kept for it
     (docs/conventions/general.md: no compatibility re-exports).
     Tests: a SIGHUP listener is held with the other two and gone after; the lock holds the taker's
     pid; a lock whose pid is dead is reclaimed and the merge lands with nothing left in `.git`; a
     lock held by a live pid, by a file that is not a pid, or by an empty file refuses and is left
-    as it was; a merge and a land asked to wait take a live holder's lock once it is released,
-    printing one line; under a fake clock the wait takes the lock once it is released and refuses
-    at the timeout, leaving the holder its lock; under a fake load source the load wait returns at
+    as it was, a live one saying not to remove it; a lock path that is a link refuses and nothing
+    it points at is read or removed; a stranded reclaim lock is replaced and a fresh one left; a
+    release leaves a planted file in the aside directory and names it; a merge and a land asked
+    to wait take a live holder's lock once it is released, printing one line; a merge that waited
+    while the holder rejected and re-steered the session, or merged it, refuses with main
+    unmoved, no reject counted and no merge recorded; under a fake clock the wait takes the lock
+    once it is released and refuses at the timeout, leaving the holder its lock, waits out a pid
+    written after the `mkdir`, and refuses a lock still without one after a second; under a fake load source the load wait returns at
     once under the ceiling, waits for the load to fall with one line, and runs the tests after its
     timeout with a one-line note; a failing post-merge worktree remove (a fake git) still ratchets
     the baseline, keeps the worktree and its branch, and names it in the outcome; the conductor

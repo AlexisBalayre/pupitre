@@ -1530,6 +1530,9 @@ describe('compileConductorProfile', () => {
 
     expect(context).toContain('Never loop on the load average before running them');
     expect(context).toContain('never ask the operator to release the merge lock');
+    expect(context).toContain(
+      'report that refusal to the operator as it stands, and never delete the lock.',
+    );
   });
 
   it('launches on the default model when no worker model is set', () => {
