@@ -1,0 +1,267 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T17:17:37.778Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40366135655",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40366135655",
+  "actor": "AlexisBalayre",
+  "commit_sha": "899e73785a900275bcb3ed398743e51bddf483a5",
+  "source": "pr",
+  "pr_number": 181,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "637-709",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Pre-lock plan: `sessionMark` is read after the plan's gh calls, so a change made during them is missed",
+      "body": "The mark is there to catch a session that changed while the pre-lock plan ran. Decision 88 names the case: \"a holder released during that plan's gh calls ... may have changed it without any wait\". The comment in `runMergeGate` names it too. But `planMerge` takes the mark last, after it has read the session and after the git and gh calls:\n\n```ts\nconst session = getSession(db, req.sessionId);\n...\nreturn { session, mark: sessionMark(db, session.id), sandbox, target, pullRequest, regate };\n```\n\nSuppose another run rejects or merges the session during `findOpenPullRequest` / `planRegate`, then releases the lock. This run takes the lock without waiting. The mark it stored already includes the change, so `sessionMark(db, req.sessionId) !== planned.mark` is false, and the stale `planned.session` (still `awaiting-review`) goes into `gateAndMerge`. `gateAndMerge` never re-reads the state before `fastForward` (or `pushBranch` with `--pr`). The first check is `transitionSession(..., 'merged')`, which throws for `rejected→merged` only after main has moved. That is the outcome decision 88 says it prevents. When this run fails instead, `rejectOrBlock` counts a second rejection.\n\nTake the mark before anything else is read, so any later change differs under the lock:\n\n```ts\nfunction planMerge(db: Database, req: MergeRequest): MergePlan {\n  const mark = sessionMark(db, req.sessionId);\n  const session = getSession(db, req.sessionId);\n  ...\n  return { session, mark, sandbox, target, pullRequest, regate };\n```\n\nThe test at `merge-gate.test.ts:2509` changes the session at the take's pid write, which comes after the mark, so it does not cover this window. A variant that changes the session inside the `findOpenPullRequest` mock would.\n\n<https://github.com/AlexisBalayre/pupitre/blob/899e73785a900275bcb3ed398743e51bddf483a5/src/core/merge-gate.service.ts#L637-L709>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "219-223",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup land`: if the audit fails after the `landed` event, overlapping sessions are never steered",
+      "body": "The `landed` event is now written under the lock. So an audit that throws after it also skips the steer. It can throw on a Ctrl-C (`GateInterruptedError`) during its test run, on a `NoAdapterError`, or on a sandbox or toolchain refusal from `measureBaseline`, and `auditProject` catches none of them:\n\n```ts\nconst audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');\nsteerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);\n```\n\nBefore this PR, a failed audit left no event, so re-running `pup land` landed and steered. Now the re-run refuses with \"has already landed\" (L71 and L152), and nothing else calls `steerOverlappingSessions`. Running sessions that overlap the landed PR are never told to take the target in (decision 99). Decision 88 hands a failed audit to `pup audit`, but it says nothing about the steer, and `pup audit` does not steer.\n\nThe steer only needs `mergeCommit`, `target` and `landed.targetSha`, all settled under the lock. Its JSDoc only requires it to run after the `landed` event. Running it before the audit restores the old guarantee. Once you move it, the test comment at `land.test.ts:632` (\"The audit is the land's last step\") goes stale.\n\n<https://github.com/AlexisBalayre/pupitre/blob/899e73785a900275bcb3ed398743e51bddf483a5/src/core/land.service.ts#L219-L223>",
+      "suggestion": "  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);\n  // The conductor may run this, so no human stands between an observed\n  // regression and the bar: a regressed measurement is reported and left for\n  // `pup audit`, which the operator runs (decision 84).\n  const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "343-351",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "On release, `dropMergeLock` renames whatever sits at the lock path aside before it checks dev/inode against the take's identity. If the held lock was removed and another run took it, this run moves that live lock aside and strands it, and a third run can then take the lock while the second is still inside. Check `directoryIdentity(lockPath)` against `identity` before the `renameSync` and leave a foreign lock in place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1899-1913",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`waitForLoad` runs right after the gate's own build stage. The 1-minute load average still counts the build that just exited, so the gate can wait (up to GATE_SLOT_WAIT_MS) on load it caused itself, which contradicts the comment \"the load measured is the machine's and not this gate's own children\". `hasSuite` is known before the build, so the wait can move above it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "297-301",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`removeLockDir`'s failure message says \"No run reads it; remove it from the trusted checkout\", but `tryMergeLock` also calls it on the live lock path to undo a failed pid write. A pid-less lock left there blocks every later merge, so the message tells the operator a blocking leftover is harmless.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "407",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`tryMergeLock` returns `LockIdentity | number | null`, and its one caller has to tell the three cases apart with `typeof`. The taken identity is stored in a variable named `holder`. A tagged result such as `{ kind: 'taken' | 'held' | 'pidless' }` would put the contract in the type.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "250",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`waitForLoad` copies the interruptible poll loop from `acquire` in test-slot.service.ts almost line for line. `LOCK_SIGNALS` is now the third definition of the interrupt-signal set: `InterruptSignal` in sandbox.utils.ts is another, and test-slot has its own SIGINT/SIGTERM literals. That spread is how the slot wait missed SIGHUP. One exported signals constant would remove it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2052-2062",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `pup merge` kept-worktree message is copied word for word from `pup land` (around L2148-2153), and `outcome.keptWorktree` is tested twice in a row. Move the kept line into the final `else`, and consider one shared print for merge and land.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2404, 4846",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR defines the `deadPid` helper twice, identical down to its JSDoc. `holdLock` is scoped to one describe, so the `withMergeLock` tests and land.test.ts write out `mkdirSync(lock); writeFileSync(join(lock, 'pid'), ...)` by hand. Hoist both helpers to file scope.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2514-2527, 4914-4920, 4954-4964",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Three new tests repeat the same scaffold: save the real `writeFileSync`, intercept only the lock's pid path, restore it in `onTestFinished`. Only the action at the pid write differs. A file-scope `onPidWrite(pidFile, act)` helper would hold the scaffold once (`aroundPidWrite` already has this shape).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "43-44",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`LandRequest.wait` is always `true` in production, since `pup land` is its only caller, so the non-waiting default is reached only from tests. A future caller that forgets the flag silently refuses instead of waiting. Consider making waiting the default for land.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "232-262",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new lock and load timing constants (`MERGE_LOCK_PID_FILE`, `MERGE_LOCK_POLL_MS`, `MERGE_LOCK_PID_GRACE_MS`, `RECLAIM_STALE_MS`, `LOAD_POLL_MS`, the exported `MERGE_LOCK_WAIT_MS`) live in the service file, while `MERGE_LOCK_DIRNAME` and `GATE_COMMAND_TIMEOUT_MS` sit in merge-gate.constants.ts. general.md §No hardcoded values puts them in `*.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "770-787",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "New booleans `waited`, `announced` and the `wait?: boolean` request fields don't start with is/has/should/can, as general.md §Type safety requires.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "783-787",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Waited for with node's default disposition...\" sits above `let identity` but describes the wait loop and the `process.on` loop. Its first half repeats `withMergeLock`'s JSDoc, so keep only the same-tick point, next to the listeners. In `runMergeGate`, \"The operator's and the conductor's runs wait for a live holder\" repeats the `MergeRequest.wait` JSDoc (AGENTS.md §Comments).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1114-1119",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A new module mock of `node:os`, and a wider `node:fs` mock covering `writeFileSync`, are added only to stub the load average and a pid-write failure. testing.md §When `vi.mock` is right reserves module mocks for behaviour out of scope for a test process. `waitForLoad` already takes `readLoad` and `ceiling` for injection.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "343-350",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "One line of `reclaimMergeLock`'s JSDoc (\"planted, and is replaced. Answers false when another run is reclaiming, and the caller\") runs far past the wrap width of the lines around it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "494-512",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In `withMergeLock`'s JSDoc, \"printing one line when the wait starts, and by default not at all\" reads as if the printing is what defaults to nothing. Say the default `maxWaitMs` of 0 refuses at once. The doc also doesn't mention the unannounced wait on a lock with no pid.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "decision 88",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 88's pid-less bullet says the lock is looked at again every 100 ms for a second before refusing, but that only happens in a waiting caller. With `maxWaitMs = 0` (`pup fix` and every caller other than the CLI), it refuses on the first look.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "524-531",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "If the lock directory is gone when the locked section ends, `renameSync` in the release throws ENOENT out of the `finally` and replaces `fn`'s result. A merge that already fast-forwarded then reports a crash, and a land skips its audit and steer. The old `rmdirSync` threw the same way.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.716335500000001,
+  "duration_ms": 375056,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 19443,
+    "cache_read": 386937,
+    "cache_creation": 77339,
+    "total": 483733
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 200,
+      "output": 107582,
+      "cache_read": 3485585,
+      "cache_creation": 450783,
+      "cost_usd": 5.335489
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 10773,
+      "cache_read": 318225,
+      "cache_creation": 96500,
+      "cost_usd": 0.38084650000000003
+    }
+  ],
+  "permission_denials": []
+}
