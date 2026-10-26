@@ -34,10 +34,15 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
 
-// The real rmSync, wrapped so a test can make the gate checkout's removal fail.
+// The real rmSync, wrapped so a test can make the gate checkout's removal fail,
+// and the real writeFileSync, so one can fail the merge lock's pid write.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
+  };
 });
 
 // The real loadavg, wrapped so a gate asked to wait never waits on this
@@ -4850,6 +4855,44 @@ describe('withMergeLock', () => {
     }
   });
 
+  it('treats a stale reclaim lock it cannot remove as held', async () => {
+    const repo = lockedRepo();
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${deadPid()}\n`);
+    const reclaiming = `${lock}.reclaim`;
+    mkdirSync(reclaiming);
+    writeFileSync(join(reclaiming, 'planted'), 'x');
+    const then = new Date(Date.now() - 60_000);
+    utimesSync(reclaiming, then, then);
+    const fn = vi.fn();
+
+    await expect(withMergeLock(repo, fn)).rejects.toThrow(MergeLockHeldError);
+    expect(fn).not.toHaveBeenCalled();
+    expect(readdirSync(reclaiming)).toEqual(['planted']);
+    expect(existsSync(join(lock, 'pid'))).toBe(true);
+  });
+
+  // A lock with no pid refuses every later run, so a take that cannot record
+  // its pid is undone.
+  it('undoes a take whose pid cannot be written, leaving no lock', async () => {
+    const repo = lockedRepo();
+    const pidFile = join(repo, '.git', 'pup-merge.lock', 'pid');
+    const real = vi.mocked(writeFileSync).getMockImplementation();
+    vi.mocked(writeFileSync).mockImplementation(((...args: Parameters<typeof writeFileSync>) => {
+      if (args[0] === pidFile) throw new Error('disk full');
+      return real?.(...args);
+    }) as never);
+    onTestFinished(() => {
+      vi.mocked(writeFileSync).mockImplementation(real as never);
+    });
+    const fn = vi.fn();
+
+    await expect(withMergeLock(repo, fn)).rejects.toThrow('disk full');
+    expect(fn).not.toHaveBeenCalled();
+    expect(readdirSync(join(repo, '.git'))).toEqual([]);
+  });
+
   // The lock sits in a `.git` the session can write: only the pid pup wrote
   // goes with it.
   it('removes only its pid on release, leaving and naming anything else put there', async () => {
@@ -4985,6 +5028,20 @@ describe('waitForLoad (decision 88)', () => {
           `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
       ],
     ]);
+  });
+
+  // The lock keeps node alive through the signal, so the wait has to end on
+  // it itself, as a stage child's forwarded interrupt would.
+  it('ends on an interrupt with GateInterruptedError, and stops listening', async () => {
+    const before = process.listeners('SIGHUP');
+    const waited = waitForLoad(() => 9, 4);
+    const interrupted = expect(waited).rejects.toThrow(GateInterruptedError);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    process.emit('SIGHUP', 'SIGHUP');
+
+    await interrupted;
+    expect(process.listeners('SIGHUP')).toEqual(before);
   });
 
   it('runs the tests anyway once the wait runs out, with a one-line note', async () => {

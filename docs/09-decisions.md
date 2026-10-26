@@ -4697,15 +4697,17 @@ changes back into those docs is pending.
     pid; a lock whose pid is dead is reclaimed and the merge lands with nothing left in `.git`; a
     lock held by a live pid, by a file that is not a pid, or by an empty file refuses and is left
     as it was, a live one saying not to remove it; a lock path that is a link refuses and nothing
-    it points at is read or removed; a stranded reclaim lock is replaced and a fresh one left; a
-    release leaves a planted file in the aside directory and names it; a merge and a land asked
+    it points at is read or removed; a stranded reclaim lock is replaced, a fresh one left, and a
+    stale one that cannot be removed treated as held; a take whose pid write fails leaves no
+    lock; a release leaves a planted file in the aside directory and names it; a merge and a land asked
     to wait take a live holder's lock once it is released, printing one line; a merge that waited
     while the holder rejected and re-steered the session, or merged it, refuses with main
     unmoved, no reject counted and no merge recorded; under a fake clock the wait takes the lock
     once it is released and refuses at the timeout, leaving the holder its lock, waits out a pid
     written after the `mkdir`, and refuses a lock still without one after a second; under a fake load source the load wait returns at
     once under the ceiling, waits for the load to fall with one line, and runs the tests after its
-    timeout with a one-line note; a failing post-merge worktree remove (a fake git) still ratchets
+    timeout with a one-line note, and an interrupt during it rejects with
+    `GateInterruptedError` and leaves no listener; a failing post-merge worktree remove (a fake git) still ratchets
     the baseline, keeps the worktree and its branch, and names it in the outcome; the conductor
     context forbids the load loops and the lock hand-offs.
 

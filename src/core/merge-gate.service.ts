@@ -341,7 +341,7 @@ function makeDir(dir: string): boolean {
  * first took in between; under it the pid is read again. A reclaim lock older
  * than `RECLAIM_STALE_MS` was stranded by a run killed mid-reclaim and is
  * replaced. Answers false when another run is reclaiming, and the caller
- * treats the lock as held.
+ * treats the lock as held; a lock that cannot be moved aside throws.
  */
 function reclaimMergeLock(lockPath: string, dead: number): boolean {
   const reclaiming = `${lockPath}.reclaim`;
@@ -358,8 +358,6 @@ function reclaimMergeLock(lockPath: string, dead: number): boolean {
   try {
     if (mergeLockHolder(lockPath) === dead) dropMergeLock(lockPath, 'reclaimed');
     return true;
-  } catch {
-    return false;
   } finally {
     try {
       rmdirSync(reclaiming);
