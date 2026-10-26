@@ -63,6 +63,21 @@ describe('chart.utils', () => {
     expect(svg).toMatch(/>…[^<]*&lt;b&gt;\.ts<\/text>/);
   });
 
+  it.each([
+    ['infinite values', [Number.POSITIVE_INFINITY, 1, Number.NaN]],
+    ['finite extremes whose span overflows', [-1e308, 1e308, 0]],
+  ])('draws no NaN for %s', (_case, values) => {
+    const data = values.map((value, i) => ({ label: String(i), value }));
+    const svg = [
+      barChart(data, { title: 'Bars' }),
+      barChart(data, { title: 'Rows', layout: 'rows' }),
+      lineChart(data, { title: 'Line' }),
+      sparkline(data, { title: 'Spark' }),
+    ].join('');
+
+    expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
+  });
+
   it('draws a single-point line without dividing by zero', () => {
     const svg = lineChart([{ label: 'only', value: 3 }], { title: 'One' });
 

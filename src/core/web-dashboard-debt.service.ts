@@ -4,10 +4,10 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { barChart, type ChartDatum } from './chart.utils.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
-import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { asStringArray, displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import { DAY_MS, escapeHtml, hint, section } from './web-dashboard-sheet.utils.js';
 
-/** One open ledger entry as the Debt sheet reads it, every string already through `sanitizeReason`. */
+/** One open ledger entry as the Debt sheet reads it, every string already through `oneLine`. */
 export interface DebtSheetEntry {
   id: string;
   description: string;
@@ -54,6 +54,15 @@ const AGES: { label: string; underDays: number }[] = [
 ];
 
 /**
+ * A ledger field on one line with no control character (decision 29) and no
+ * direction mark: a U+202E in a path would show the operator a file name other
+ * than the one the entry holds.
+ */
+function oneLine(text: string): string {
+  return displayText(sanitizeReason(text));
+}
+
+/**
  * The open ledger as the Debt sheet reads it (decision 98), oldest first like
  * `pup debt`. Overdue is `listOverdueLedgerEntries`'s rule, the one `pup
  * status` marks by; a `files` column that does not parse names no file.
@@ -64,12 +73,12 @@ export function readDebtSheet(db: Database, repoPath: string, now: number): Debt
   return listLedgerEntries(db, pid).map((entry) => {
     const filed = Date.parse(toIsoUtc(entry.created_at));
     return {
-      id: sanitizeReason(String(entry.id)),
-      description: sanitizeReason(entry.description),
-      reason: sanitizeReason(entry.reason),
-      acceptedBy: sanitizeReason(entry.accepted_by),
-      reviewBy: sanitizeReason(entry.review_by),
-      files: [...new Set(asStringArray(parseJsonOr<unknown>(entry.files, [])).map(sanitizeReason))],
+      id: oneLine(String(entry.id)),
+      description: oneLine(entry.description),
+      reason: oneLine(entry.reason),
+      acceptedBy: oneLine(entry.accepted_by),
+      reviewBy: oneLine(entry.review_by),
+      files: [...new Set(asStringArray(parseJsonOr<unknown>(entry.files, [])).map(oneLine))],
       ageDays: Number.isNaN(filed) ? 0 : Math.max(0, Math.floor((now - filed) / DAY_MS)),
       overdue: overdue.has(entry.id),
     };
@@ -87,7 +96,9 @@ export function payDownRanking(entries: DebtSheetEntry[]): RankedFile[] {
   const byFile = new Map<string, DebtSheetEntry[]>();
   for (const entry of entries) {
     for (const file of entry.files.length > 0 ? entry.files : [NO_FILE]) {
-      byFile.set(file, [...(byFile.get(file) ?? []), entry]);
+      const held = byFile.get(file);
+      if (held) held.push(entry);
+      else byFile.set(file, [entry]);
     }
   }
   return [...byFile]
@@ -115,7 +126,8 @@ export function renderDebtSheet(entries: DebtSheetEntry[]): string {
     return section('Open debt', hint('No open debt — nothing to pay down.'));
   }
   const overdue = entries.filter((entry) => entry.overdue).length;
-  const oldest = Math.max(...entries.map((entry) => entry.ageDays));
+  // Reduced, not spread: a spread of a large ledger overflows the call stack.
+  const oldest = entries.reduce((max, entry) => Math.max(max, entry.ageDays), 0);
   const ranked = payDownRanking(entries);
   return [
     section(

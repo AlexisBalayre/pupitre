@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { type IncomingHttpHeaders, request } from 'node:http';
 import { dirname, join } from 'node:path';
@@ -589,6 +590,55 @@ describe('startWebDashboard', () => {
         expect(page).not.toMatch(CONTROL);
         expect(page).toContain('&lt;img src=x onerror=alert(1)&gt;');
       }
+    });
+
+    it('reads a brief heading that cannot match in linear time, on the poll the server answers from', async () => {
+      // Thousands of blanks then a line separator backtracked cubically under the old heading match.
+      writeBrief(`## Destination\nShip it.\n##${' '.repeat(7950)}\u2028\n`);
+
+      const started = Date.now();
+      const page = (await get(dashboard.url)).body;
+
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(page).toContain('<p class="brief">Ship it.');
+    });
+
+    it('refuses a brief that is not a regular file instead of blocking on it', async () => {
+      mkdirSync(dirname(briefPath(repo)), { recursive: true });
+      execFileSync('mkfifo', [briefPath(repo)]);
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).toContain('is not a regular file of at most 32000 bytes');
+    });
+
+    it('replaces direction marks in the Destination and every ledger field', async () => {
+      const spoof = 'src/evil\u202egnp.ts';
+      writeBrief(`## Destination\nreach ${spoof}\n`);
+      fileDebt(`Oversize diff ${spoof}`, [spoof], { reason: spoof, acceptedBy: spoof });
+
+      for (const page of [(await get(dashboard.url)).body, (await get(sheetUrl('debt'))).body]) {
+        expect(page).not.toContain('\u202e');
+      }
+      expect((await get(sheetUrl('debt'))).body).toContain('<code>src/evil\ufffdgnp.ts</code>');
+    });
+
+    it('treats a figure stored as Infinity as unmeasured, and draws no NaN', async () => {
+      const debt = '{"deadExports":[],"duplicatedLines":1e999,"coverageRatio":1e999}';
+      for (const day of ['01', '02']) {
+        db.prepare(
+          "INSERT INTO baseline_history (project_id, captured_at, stages, debt) VALUES (?, ?, '[]', ?)",
+        ).run(projectId(repo), `2026-10-${day}T00:00:00.000Z`, debt);
+      }
+      db.prepare('UPDATE projects SET baseline = ? WHERE id = ?').run(
+        `{"capturedAt":"2026-10-02T00:00:00.000Z","adapters":[],"stages":[],"debt":${debt}}`,
+        projectId(repo),
+      );
+
+      const page = (await get(dashboard.url)).body;
+
+      expect(page).not.toMatch(/NaN|Infinity/);
+      expect(page).toContain('<div class="k">duplicated lines</div><div class="v">—</div>');
     });
 
     it("streams a sheet's own board, and a change to it within one poll", async () => {

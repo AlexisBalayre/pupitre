@@ -40,6 +40,12 @@ const BAR_RADIUS = 4;
 const plain = (value: number): string => String(value);
 
 /**
+ * A bar's length: a value that is not a finite non-negative number draws no
+ * mark, where it would scale every other bar to NaN. Its figure still prints.
+ */
+const drawable = (value: number): number => (Number.isFinite(value) ? Math.max(0, value) : 0);
+
+/**
  * The SVG and, under it, the figure line: every value in words, so the
  * numbers read without the chart — to a screen reader, in a text-only
  * browser, or when the drawing is too small to tell two bars apart.
@@ -88,7 +94,7 @@ export function barChart(
   options: ChartOptions & { layout?: 'columns' | 'rows' },
 ): string {
   const format = options.format ?? plain;
-  const max = Math.max(1, ...data.map((d) => d.value));
+  const max = Math.max(1, ...data.map((d) => drawable(d.value)));
   const tip = (d: ChartDatum): string =>
     `<title>${escapeHtml(`${d.label}: ${format(d.value)}`)}</title>`;
   if (options.layout === 'rows') {
@@ -97,7 +103,7 @@ export function barChart(
     const plotWidth = WIDTH - labelWidth - valueWidth;
     const marks = data.map((d, i) => {
       const y = i * ROW_HEIGHT;
-      const w = (Math.max(0, d.value) / max) * plotWidth;
+      const w = (drawable(d.value) / max) * plotWidth;
       return (
         `<g>${tip(d)}<text class="axis" x="${at(labelWidth - 6)}" y="${at(y + 15)}" text-anchor="end">${escapeHtml(fitLabel(d.label, ROW_LABEL_CHARS))}</text>` +
         (w > 0 ? bar(labelWidth, y + 4, w, ROW_HEIGHT - 8, true) : '') +
@@ -112,7 +118,7 @@ export function barChart(
   const slot = WIDTH / Math.max(1, data.length);
   const barWidth = Math.min(48, slot * 0.6);
   const marks = data.map((d, i) => {
-    const h = (Math.max(0, d.value) / max) * (base - top);
+    const h = (drawable(d.value) / max) * (base - top);
     const x = i * slot + (slot - barWidth) / 2;
     return (
       `<g>${tip(d)}${h > 0 ? bar(x, base - h, barWidth, h, false) : ''}` +
@@ -135,12 +141,14 @@ function points(
   values: number[],
   box: { left: number; top: number; width: number; height: number },
 ): [number, number][] {
-  const min = Math.min(...values);
-  const span = Math.max(...values) - min || 1;
+  const finite = values.map((value) => (Number.isFinite(value) ? value : 0));
+  const min = Math.min(...finite);
+  // Halved, so two finite extremes (±1e308) cannot overflow the span to Infinity.
+  const span = Math.max(...finite) / 2 - min / 2 || 1;
   const step = values.length > 1 ? box.width / (values.length - 1) : 0;
-  return values.map((value, i) => [
+  return finite.map((value, i) => [
     box.left + i * step,
-    box.top + box.height - ((value - min) / span) * box.height,
+    box.top + box.height - ((value / 2 - min / 2) / span) * box.height,
   ]);
 }
 

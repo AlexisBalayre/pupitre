@@ -865,16 +865,16 @@ function baselineOf(db: Database, pid: string): DashboardBaseline | undefined {
 }
 
 /**
- * The figures a stored debt baseline holds, each only when it has the type it
- * should: the one reading of a baseline's numbers, so the dashboard's sheets
+ * The figures a stored debt baseline holds, each only when it is a finite
+ * number (JSON's `1e999` parses to Infinity), or for unused exports an array: the one reading of a baseline's numbers, so the dashboard's sheets
  * and `pup status` cannot count a capture two ways (decision 98).
  */
 export function debtFigures(
   debt: Partial<DebtBaseline> | undefined,
 ): Omit<DashboardBaseline, 'capturedAt'> {
   return {
-    ...(typeof debt?.coverageRatio === 'number' ? { coverageRatio: debt.coverageRatio } : {}),
-    ...(typeof debt?.duplicatedLines === 'number' ? { duplicatedLines: debt.duplicatedLines } : {}),
+    ...(Number.isFinite(debt?.coverageRatio) ? { coverageRatio: debt?.coverageRatio } : {}),
+    ...(Number.isFinite(debt?.duplicatedLines) ? { duplicatedLines: debt?.duplicatedLines } : {}),
     ...(Array.isArray(debt?.deadExports) ? { deadExports: debt.deadExports.length } : {}),
   };
 }

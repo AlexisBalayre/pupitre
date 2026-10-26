@@ -4,7 +4,7 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
   type BaselineHistoryRow,
   baselineHistoryAsOf,
-  listBaselineHistory,
+  listRecentBaselineHistory,
 } from './baseline-history.repository.js';
 import { briefDestination, readBrief } from './brief.service.js';
 import { barChart, type ChartDatum, sparkline } from './chart.utils.js';
@@ -18,8 +18,8 @@ import {
 } from './dashboard.service.js';
 import { countLedgerEntriesSince, listLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
-import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import { getProject, listEvents, listSessions } from './session.repository.js';
+import { displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { getProject } from './session.repository.js';
 import type {
   DashboardBaseline,
   DashboardNeed,
@@ -91,9 +91,10 @@ export function readOverview(db: Database, repoPath: string, now: number): Overv
 
 /**
  * The brief's Destination as the page's lead. `readBrief` has stripped control
- * characters but kept the layout a Markdown document is written in, so only the
- * escaping is left to the page, which keeps the line breaks. A brief over its
- * cap is the operator's to shorten, said in its place rather than failing the
+ * characters but kept the layout a Markdown document is written in, so the
+ * page is left the direction marks, which `displayText` replaces, and the
+ * escaping, and keeps the line breaks. A brief over its cap, or not a regular
+ * file, is the operator's to fix, said in its place rather than failing the
  * sheet.
  */
 function readGoal(repoPath: string): OverviewView['goal'] {
@@ -106,7 +107,7 @@ function readGoal(repoPath: string): OverviewView['goal'] {
   const destination = brief === undefined ? undefined : briefDestination(brief);
   return destination === undefined
     ? { hint: 'No goal yet — `pup brief edit` writes the Destination.' }
-    : { text: destination };
+    : { text: displayText(destination) };
 }
 
 const pct = (ratio: number): string => `${Math.round(ratio * 1000) / 10}%`;
@@ -165,12 +166,10 @@ function figureTiles(
   const pastRow = baselineHistoryAsOf(db, pid, new Date(now - WEEK_MS));
   const pastDebt = pastRow && captureDebt(pastRow);
   const past = debtFigures(pastDebt);
-  const captures = listBaselineHistory(db, pid)
-    .slice(-TREND_CAPTURES)
-    .map((row) => ({
-      at: toIsoUtc(sanitizeReason(row.captured_at)).slice(5, 10),
-      figures: debtFigures(captureDebt(row)),
-    }));
+  const captures = listRecentBaselineHistory(db, pid, TREND_CAPTURES).map((row) => ({
+    at: toIsoUtc(sanitizeReason(row.captured_at)).slice(5, 10),
+    figures: debtFigures(captureDebt(row)),
+  }));
   const filed = countLedgerEntriesSince(db, pid, new Date(now - WEEK_MS));
   return [
     {
@@ -229,14 +228,23 @@ function taskCounts(snapshot: DashboardSnapshot): OverviewView['tasks'] {
  * `merge` event: a fix round's re-gate records another, and is not new work.
  * The weeks end with today, in UTC, so the buckets move once a day and an
  * unchanged store renders the same board in between.
+ *
+ * One grouped query rather than each session's events, since it runs on every
+ * poll; the store has no events query of this shape, and this is its only
+ * reader. A session whose first merge is older than the window is left out
+ * there, not after the read.
  */
 function mergesPerWeek(db: Database, now: number): ChartDatum[] {
   const end = Math.floor(now / DAY_MS) * DAY_MS + DAY_MS;
   const counts = new Array<number>(MERGE_WEEKS).fill(0);
-  for (const session of listSessions(db)) {
-    const merge = listEvents(db, session.id).find((event) => event.type === 'merge');
-    if (!merge) continue;
-    const week = Math.floor((end - Date.parse(toIsoUtc(merge.created_at))) / WEEK_MS);
+  const firstMerges = db
+    .prepare(
+      `SELECT MIN(created_at) AS at FROM events WHERE type = 'merge'
+       GROUP BY session_id HAVING MIN(created_at) >= datetime(?)`,
+    )
+    .all(new Date(end - MERGE_WEEKS * WEEK_MS).toISOString()) as { at: string }[];
+  for (const { at } of firstMerges) {
+    const week = Math.floor((end - Date.parse(toIsoUtc(at))) / WEEK_MS);
     const slot = MERGE_WEEKS - 1 - week;
     if (week >= 0 && week < MERGE_WEEKS) counts[slot] = (counts[slot] ?? 0) + 1;
   }

@@ -78,3 +78,21 @@ export function baselineHistoryAsOf(
     )
     .get(projectId, at.toISOString()) as BaselineHistoryRow | undefined;
 }
+
+/**
+ * The newest `limit` captures, oldest of them first: a trend that draws the
+ * last few reads only those, however long the history grows (decision 98).
+ */
+export function listRecentBaselineHistory(
+  db: Database,
+  projectId: string,
+  limit: number,
+): BaselineHistoryRow[] {
+  const newestFirst = db
+    .prepare(
+      `SELECT * FROM baseline_history WHERE project_id = ?
+       ORDER BY captured_at DESC, id DESC LIMIT ?`,
+    )
+    .all(projectId, limit) as BaselineHistoryRow[];
+  return newestFirst.reverse();
+}

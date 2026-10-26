@@ -5,6 +5,7 @@ import {
   baselineHistoryAsOf,
   hasBaselineHistoryEntry,
   listBaselineHistory,
+  listRecentBaselineHistory,
   type NewBaselineHistoryInput,
 } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
@@ -103,5 +104,16 @@ describe('baseline history repository', () => {
       onTheDot,
     );
     expect(baselineHistoryAsOf(db, 'proj-1', new Date('2026-07-31T00:00:00.000Z'))).toBeUndefined();
+  });
+
+  it('lists only the newest captures, oldest of them first', () => {
+    for (const day of ['03', '01', '04', '02']) {
+      appendBaselineHistory(db, historyInput({ capturedAt: `2026-08-${day}T10:00:00.000Z` }));
+    }
+
+    expect(listRecentBaselineHistory(db, 'proj-1', 2).map((r) => r.captured_at)).toEqual([
+      '2026-08-03T10:00:00.000Z',
+      '2026-08-04T10:00:00.000Z',
+    ]);
   });
 });
