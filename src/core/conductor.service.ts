@@ -50,6 +50,39 @@ export function conductorCheckoutDir(repoPath: string): string {
   return join(projectPaths(repoPath).root, 'conductor', 'checkout');
 }
 
+/**
+ * The conductor's part of the CI review loop (decision 90), typed in after its
+ * compiled context: it owns waiting on the review of every PR it gates, so the
+ * operator's console no longer polls CI, and it hands the operator only what
+ * is theirs, the merge click and the design decisions a thread opens.
+ */
+export const CI_REVIEW_LOOP = [
+  '## CI review loop',
+  'A PR you gated is not done until its CI review is. Waiting on it is yours, not the ' +
+    "operator's, and this loop comes before step 5 of the Protocol.",
+  '1. Right after every `pup merge <session-id> --pr` that opened or updated a PR, run ' +
+    '`pup ci wait <session-id>` in the foreground, with a Bash `timeout` of 600000 ms. It ' +
+    "blocks until the review of the PR's current head finished and prints one digest line: " +
+    'the head, the outcome, the open and important threads, and the next step after `→`. ' +
+    'Never wait on CI any other way: no `gh pr checks --watch`, no sleep loop, no background job.',
+  '2. It exits non-zero when it timed out: run it again. A review still unfinished after three ' +
+    'runs is reported to the operator.',
+  '3. Open threads (`→ pup fix <session-id>`): run `pup fix <session-id>`. When its worker is ' +
+    'done, review and gate it with `pup merge <session-id> --pr` as any finished session, then ' +
+    'back to 1. pup replies on each thread and resolves the ones the worker fixed; you never ' +
+    'reply, comment or resolve on GitHub yourself.',
+  '4. Stop pushing rounds for non-blocking minors alone: the minor issues in the review body ' +
+    'never take a round. A review with no open thread is not sent back for them.',
+  "5. A clean review (`→ ready for the operator's merge click`): report the PR to the operator " +
+    'as ready for their merge click, with its link. Never merge on GitHub: no `gh pr merge`, ' +
+    "no auto-merge, no merge button. The click is the operator's.",
+  '6. A thread that opens a design decision is not yours to settle. Its worker raises it with ' +
+    "`pup session ask`, which puts it in the operator's needs-you inbox: leave it there, never " +
+    'answer it in a steer, and name it in your report.',
+  '7. Any other next step the digest names (read the PR, an `@claude review` comment, ' +
+    '`pup land`) is reported to the operator as the digest words it.',
+].join('\n');
+
 /** How many live sessions a launch may reach when no conductor start set it (decision 96). */
 export const DEFAULT_MAX_SESSIONS = 4;
 
@@ -255,7 +288,7 @@ export function startConductor(
   });
   let delivered: boolean;
   try {
-    delivered = kickoff(pane, compiled.contextMarkdown);
+    delivered = kickoff(pane, `${compiled.contextMarkdown}\n\n${CI_REVIEW_LOOP}`);
   } catch (error) {
     if (!isRefusedSteer(error)) throw error;
     // Rolled back like a session launch whose kickoff never landed, so nothing

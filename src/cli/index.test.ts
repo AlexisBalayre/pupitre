@@ -116,6 +116,8 @@ vi.mock('../core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
   startFixRound: vi.fn(),
 }));
+// The wait's gh reads and clock are ci-wait.test.ts's.
+vi.mock('../core/ci-wait.service.js', () => ({ waitForCiReview: vi.fn() }));
 // The server and its socket are web-dashboard.test.ts's; here it binds nothing.
 vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
 // The browser opener is `pup dashboard --open`'s one boundary; every other
@@ -174,6 +176,7 @@ import {
   SteerNotDeliveredError,
   saveSessionEnv,
 } from '../claude/session-runtime.service.js';
+import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
   ConductorTellRefusedError,
   isConductorRunning,
@@ -5998,6 +6001,64 @@ describe('CLI commands', () => {
         '  s1  CI review status reads clean on its head (any repo workflow can set it): read ' +
           `the PR, then your merge click  → ${PR}`,
       );
+    });
+  });
+
+  describe('ci wait', () => {
+    it('prints the one digest line, with the timeout in minutes', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(waitForCiReview).mockResolvedValue({ finished: true, line: 'digest → pup fix s1' });
+
+      await buildProgram().parseAsync(['ci', 'wait', 's1', '--timeout', '2'], { from: 'user' });
+
+      expect(firstCall(waitForCiReview)[1]).toEqual({
+        repoPath: repo,
+        target: 's1',
+        timeoutMs: 120_000,
+      });
+      expect(logs).toEqual(['digest → pup fix s1']);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('refuses with the scrubbed reason when the wait cannot start', async () => {
+      useCwd(initRepo());
+      vi.mocked(waitForCiReview).mockRejectedValue(new Error('No session s9.\u001b[2J'));
+
+      await buildProgram().parseAsync(['ci', 'wait', 's9'], { from: 'user' });
+
+      expect(errors).toEqual(['No session s9. [2J']);
+      expect(logs).toEqual([]);
+    });
+
+    it('exits non-zero when the wait timed out', async () => {
+      useCwd(initRepo());
+      vi.mocked(waitForCiReview).mockResolvedValue({
+        finished: false,
+        line: 'No finished CI review',
+      });
+
+      await buildProgram().parseAsync(['ci', 'wait', 's1'], { from: 'user' });
+
+      expect(firstCall(waitForCiReview)[1]).toMatchObject({ timeoutMs: 540_000 });
+      expect(logs).toEqual(['No finished CI review']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('is refused to sessions, and refuses a timeout that is no positive number', async () => {
+      useCwd(initRepo());
+      await buildProgram().parseAsync(['ci', 'wait', 's1', '--timeout', '0'], { from: 'user' });
+      expect(errors).toEqual(['--timeout takes a positive number of minutes.']);
+
+      errors.length = 0;
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      await buildProgram().parseAsync(['ci', 'wait', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup ci wait` is refused to sessions; the operator or the conductor runs it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(waitForCiReview).not.toHaveBeenCalled();
     });
   });
 

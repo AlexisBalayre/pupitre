@@ -41,6 +41,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn <session>`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
 | Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |
+| Wait on and answer the CI review | `pup ci wait <session\|pr> [--timeout <minutes>]` blocks until the review of the PR's head finished and prints one digest line ending in the next step; `pup fix <session>` hands its open threads back to the worker, and the re-gate replies on and resolves them |
 | Debt and decisions | `pup debt`, `pup debt close <n>`, `pup log [module]`, `pup audit` |
 | Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override; `--max-sessions <n>` sets the session cap, default 4), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |
@@ -66,9 +67,10 @@ model or `--effort max`.
 ## Tiers you must respect
 
 - Sessions edit code inside their scope and nothing else. The conductor plans, launches, steers
-  and kills, edits nothing, and is refused `pup merge`, `pup respawn`, `pup debt close` and
-  `--project`. Only the operator gates, closes debt and registers projects. Do not work around a
-  refusal for a session or conductor; report it.
+  and kills, gates with `pup merge --pr`, waits on CI and runs fix rounds; it edits nothing, and
+  is refused a plain `pup merge`, `pup respawn`, `pup debt close` and `--project`. Only the
+  operator merges locally, closes debt and registers projects. Do not work around a refusal for a
+  session or conductor; report it.
 - The conductor runs in tmux on its own socket. `pup status` prints the attach line when it is
   up. Hand it an order with `pup conductor tell "<message>"`, which keeps the text off tmux's
   argv and says whether it landed, or look at it with `pup attach` (Ctrl-b d detaches).
@@ -81,6 +83,7 @@ model or `--effort max`.
 ## The per-task loop
 
 Worker done -> security review of `main...HEAD` in `.worktrees/<task>` -> one steer with the
-must-fix items -> gate with `pup merge <task> --pr` -> address the CI review -> human merges ->
+must-fix items -> gate with `pup merge <task> --pr` -> `pup ci wait <task>`, then `pup fix <task>`
+and a re-gate while threads are open (the conductor runs this when it is up) -> human merges ->
 pull, `pnpm worktree:remove --merged`, `pup audit`, next task. Details, the gate's flags and the gotchas
 that bite every project are in [LOOP.md](LOOP.md); read it before your first gate or steer.
