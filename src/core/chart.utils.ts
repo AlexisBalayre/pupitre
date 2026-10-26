@@ -31,6 +31,9 @@ export const CHART_CSS = `  figure.chart { margin: 4px 0 0; }
   figure.spark svg { max-width: 120px; }`;
 
 const WIDTH = 560;
+/** The columns' and the line's height, and where their baseline sits, above the axis labels. */
+const PLOT_HEIGHT = 140;
+const PLOT_BASE = PLOT_HEIGHT - 20;
 const AXIS_FONT_PX = 11;
 /** Width the rows layout gives its labels; a longer one keeps its tail, where a path's file name is. */
 const ROW_LABEL_CHARS = 38;
@@ -112,9 +115,8 @@ export function barChart(
     });
     return figure('chart', options, data, data.length * ROW_HEIGHT, WIDTH, marks.join(''));
   }
-  const height = 140;
   const top = 16;
-  const base = height - 20;
+  const base = PLOT_BASE;
   const slot = WIDTH / Math.max(1, data.length);
   const barWidth = Math.min(48, slot * 0.6);
   const marks = data.map((d, i) => {
@@ -123,17 +125,16 @@ export function barChart(
     return (
       `<g>${tip(d)}${h > 0 ? bar(x, base - h, barWidth, h, false) : ''}` +
       `<text class="value" x="${at(x + barWidth / 2)}" y="${at(base - h - 4)}" text-anchor="middle">${escapeHtml(format(d.value))}</text>` +
-      `<text class="axis" x="${at(i * slot + slot / 2)}" y="${height - 4}" text-anchor="middle">${escapeHtml(d.label)}</text></g>`
+      `<text class="axis" x="${at(i * slot + slot / 2)}" y="${PLOT_HEIGHT - 4}" text-anchor="middle">${escapeHtml(d.label)}</text></g>`
     );
   });
-  return figure(
-    'chart',
-    options,
-    data,
-    height,
-    WIDTH,
-    `<line class="base" x1="0" x2="${WIDTH}" y1="${base}" y2="${base}"/>${marks.join('')}`,
-  );
+  return plotted(options, data, marks.join(''));
+}
+
+/** The frame the columns and the line share: full width, a fixed height, the baseline under the marks. */
+function plotted(options: ChartOptions, data: ChartDatum[], marks: string): string {
+  const baseline = `<line class="base" x1="0" x2="${WIDTH}" y1="${PLOT_BASE}" y2="${PLOT_BASE}"/>`;
+  return figure('chart', options, data, PLOT_HEIGHT, WIDTH, `${baseline}${marks}`);
 }
 
 /** Where each value falls in a box, x evenly spaced, y scaled between the series' own min and max. */
@@ -162,10 +163,9 @@ const polyline = (coords: [number, number][]): string =>
  */
 export function lineChart(data: ChartDatum[], options: ChartOptions): string {
   const format = options.format ?? plain;
-  const height = 140;
   const coords = points(
     data.map((d) => d.value),
-    { left: 8, top: 16, width: WIDTH - 16, height: height - 44 },
+    { left: 8, top: 16, width: WIDTH - 16, height: PLOT_HEIGHT - 44 },
   );
   const ends = [0, data.length - 1].filter((i, n, all) => all.indexOf(i) === n);
   const marks = ends.map((i) => {
@@ -175,18 +175,10 @@ export function lineChart(data: ChartDatum[], options: ChartOptions): string {
     return (
       `<g><title>${escapeHtml(`${d.label}: ${format(d.value)}`)}</title><circle class="dot" cx="${at(x)}" cy="${at(y)}" r="4"/>` +
       `<text class="value" x="${at(x)}" y="${at(y - 8)}" text-anchor="${anchor}">${escapeHtml(format(d.value))}</text>` +
-      `<text class="axis" x="${at(x)}" y="${height - 4}" text-anchor="${anchor}">${escapeHtml(d.label)}</text></g>`
+      `<text class="axis" x="${at(x)}" y="${PLOT_HEIGHT - 4}" text-anchor="${anchor}">${escapeHtml(d.label)}</text></g>`
     );
   });
-  const base = height - 20;
-  return figure(
-    'chart',
-    options,
-    data,
-    height,
-    WIDTH,
-    `<line class="base" x1="0" x2="${WIDTH}" y1="${base}" y2="${base}"/>${polyline(coords)}${marks.join('')}`,
-  );
+  return plotted(options, data, `${polyline(coords)}${marks.join('')}`);
 }
 
 /** A line small enough to sit in a figure tile: no axis, the last value dotted. */
