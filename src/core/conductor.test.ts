@@ -328,7 +328,9 @@ describe('stopConductor and isConductorRunning', () => {
  * faked per docs/conventions/testing.md: what is under test is what pup asks
  * codegraph to index and what it then hands `claude`.
  */
-describe('startConductor code graph', () => {
+// Real git repos and checkouts per test, several conductor starts in some: a
+// generous timeout so machine load can't flake it, as `runMergeGate` has.
+describe('startConductor code graph', { timeout: 20_000 }, () => {
   let home: string;
   let repo: string;
   let cgLog: string;
