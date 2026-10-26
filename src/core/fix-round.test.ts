@@ -1275,25 +1275,6 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     /** The branch as a direct call names it: `tip` on main, which has not moved. */
     const onMain = (tip: string) => ({ tip, targetSha: sh(repo, 'git', 'rev-parse', 'main') });
 
-    /** Another PR landing on main while the round runs: it changes `src/index.ts`. */
-    function mainMoves(): void {
-      mkdirSync(join(repo, 'src'), { recursive: true });
-      writeFileSync(join(repo, 'src', 'index.ts'), 'export const index = 2;\n');
-      sh(repo, 'git', 'add', 'src/index.ts');
-      sh(
-        repo,
-        'git',
-        '-c',
-        'user.email=m@test',
-        '-c',
-        'user.name=main',
-        'commit',
-        '-q',
-        '-m',
-        'main moves',
-      );
-    }
-
     /**
      * A round on the four threads, its worker done with `summary`, gated
      * again; `meanwhile` runs while the worker works. Each of `rejected` is a
@@ -1450,11 +1431,27 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     // round's start to the pin would count main's files as the round's.
     it('leaves open a thread on a file only the target changed while the round ran', async () => {
       const fixed = await gateTheRound(`${SUMMARY}; PRRT_silent fixed: checked the bound`, {
-        meanwhile: mainMoves,
+        meanwhile: () => {
+          mkdirSync(join(repo, 'src'), { recursive: true });
+          writeFileSync(join(repo, 'src', 'index.ts'), 'export const index = 2;\n');
+          sh(repo, 'git', 'add', 'src/index.ts');
+          sh(
+            repo,
+            'git',
+            '-c',
+            'user.email=m@test',
+            '-c',
+            'user.name=main',
+            'commit',
+            '-q',
+            '-m',
+            'main moves',
+          );
+        },
       });
       const pinned = sh(origin, 'git', 'rev-parse', BRANCH);
 
-      // The gate rebased the round's commit onto the moved main.
+      // The gate merged the moved main into the round's branch.
       expect(pinned).not.toBe(fixed);
       expect(replies().find((m) => m.includes('-f thread=PRRT_silent'))).toContain(
         `Answered fixed in the round gated at ${pinned}, but pup cannot show the round's own ` +
@@ -1464,28 +1461,52 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
     });
 
-    // The rejected run rebased the branch onto the moved main, and a rejection
-    // resets nothing: the passing run reads a tip whose PR commit has a new
-    // sha, in neither the round's start nor main, as a rebase or an amend of
-    // the worker's leaves it. That commit's file is no proof of a fix.
-    it('resolves nothing on a branch an earlier run of the round rebased', async () => {
+    // A rebase or an amend carries the PR's commits from before the round under
+    // new shas, in neither the round's start nor main: their files are no
+    // proof of a fix, so a tip the start is no ancestor of counts none.
+    it('resolves nothing on a branch rewritten since the round started', async () => {
+      // On the file of the PR's commit from before the round.
+      const paths = { ...PATHS, PRRT_silent: 'src/feature.ts' };
       const fixed = await gateTheRound(`${SUMMARY}; PRRT_silent fixed: checked the bound`, {
-        meanwhile: mainMoves,
-        rejected: ['fixed the failing check'],
-        // On the file of the PR's commit from before the round.
-        paths: { ...PATHS, PRRT_silent: 'src/feature.ts' },
+        paths,
       });
-      const pinned = sh(origin, 'git', 'rev-parse', BRANCH);
+      expect(resolves()).toEqual([expect.stringMatching(/-f thread=PRRT_fixed\s*$/)]);
+      const commitTree = (tree: string, parent: string, message: string) =>
+        sh(
+          repo,
+          'git',
+          '-c',
+          'user.email=f@test',
+          '-c',
+          'user.name=fix',
+          'commit-tree',
+          tree,
+          '-p',
+          parent,
+          '-m',
+          message,
+        );
+      const amended = commitTree(`${pinned}^{tree}`, 'main', 'feature, amended');
+      const rewritten = commitTree(`${fixed}^{tree}`, amended, 'src/fix.ts');
+      answersOnGitHub({ paths });
 
-      expect(pinned).not.toBe(fixed);
-      expect(resolves()).toEqual([]);
-      expect(replies().find((m) => m.includes('-f thread=PRRT_silent'))).toContain(
-        `Answered fixed in the round gated at ${pinned}, but pup cannot show the round's own ` +
-          'commits change ` src/feature.ts `',
+      const answers = answerFixRoundThreads(
+        db,
+        repo,
+        SESSION_ID,
+        'github.com/owner/repo',
+        onMain(rewritten),
       );
-      expect(comments()[0]).toContain(
-        '0 thread(s) addressed and resolved, 2 answered fixed that pup could not verify, ' +
-          '1 declined and 0 unanswered',
+
+      expect(answers).toMatchObject({ addressed: 0, unverified: 2, declined: 1, unanswered: 0 });
+      expect(resolves()).toHaveLength(1);
+      expect(
+        replies()
+          .filter((m) => m.includes('-f thread=PRRT_silent'))
+          .at(-1),
+      ).toContain(
+        `Answered fixed in the round gated at ${fixed}, but pup cannot show the round's own ` +
+          'commits change ` src/feature.ts `',
       );
     });
 

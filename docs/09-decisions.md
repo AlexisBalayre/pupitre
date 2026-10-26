@@ -4840,8 +4840,10 @@ changes back into those docs is pending.
     ended none:
     the `fix_round` event just before that merge. A round `pup kill` undid is back in `merged`,
     which a re-gate takes, so it never reaches the answers. Every event is read through
-    `decodeEvent`, never `JSON.parse`. The answers are read from the newest `session_done` between
-    the two, by `<id> fixed|addressed|declined: <reason>`, apart by `;` or a newline. One GraphQL read (`readThreadAnswers`, pinned like every gh call) lists
+    `decodeEvent`, never `JSON.parse`. The answers are read from every `session_done` between
+    the two, newest first, by `<id> fixed|addressed|declined: <reason>`, apart by `;` or a newline:
+    a run the round's checks rejected steers the worker to fix only the failures, so the summary
+    after it may answer no thread, and each thread keeps its newest answer. One GraphQL read (`readThreadAnswers`, pinned like every gh call) lists
     the PR's threads with `isResolved`, their `path`, whether the bot wrote the first comment, and
     the replies
     and PR comments the viewer wrote (`viewerDidAuthor`). A thread is answered only when its id has
@@ -4852,10 +4854,15 @@ changes back into those docs is pending.
       gh login, so the worker's word alone never makes one. The round's commits are the non-merge
       commits on the branch tip the gate read before fresh-base, in neither the round's start
       head nor the target sha (`git log --no-merges --no-renames --name-only -z <tip> ^<head>
-      ^<target>`). A diff from the start head to the pin would not do: fresh-base takes the
-      target in before the pin, so a file another PR changed on main would count as fixed;
-    - fixed by the worker's word, with no change to that file (or no round head to compare): the
-      reason and the file, and the thread stays open;
+      ^<target>`), and only while the start head is still an ancestor of that tip (`git
+      merge-base --is-ancestor`): a rebase or an amend carries the PR's earlier commits under new
+      shas, in neither the head nor the target, so their files would read as fixed, and a
+      rewritten branch counts none. Fresh-base refuses most such branches (decision 105); this
+      check is the answers' own. A diff from the start head to the pin would not do: fresh-base
+      takes the target in before the pin, so a file another PR changed on main would count as
+      fixed;
+    - fixed by the worker's word, with no change to that file (or no round head to compare, or a
+      branch rewritten since it): the reason and the file, and the thread stays open;
     - declined: the reason, and the thread stays open for the operator;
     - not answered in the summary: a reply saying so, and it stays open.
     Then one summary comment per round (`gh pr comment --body-file -`) counts the four. The
@@ -4865,7 +4872,7 @@ changes back into those docs is pending.
     `<!-- pup fix-round <sha> -->`, read back before posting, so a second gate of the same head
     posts nothing again and a run cut short finishes what the first left; the marker needs no
     store event, so the event types are untouched. The gate answers while it holds the merge lock,
-    so every gh call of a round, and the `git log` above, share one 60 s budget, each call's
+    so every gh call of a round, and the two git calls above, share one 60 s budget, each call's
     timeout being what is left of it. Node kills a child past its timeout (`ETIMEDOUT`) or its
     output buffer (`ENOBUFS`) with SIGTERM, which `rethrowIfKilled` would read as the operator's
     interrupt, so any error carrying node's own `code` (`isCutOffByNode`; an exit status or a
@@ -4894,7 +4901,10 @@ changes back into those docs is pending.
     of its own, such as a `pup merge … --accept-debt`, for the conductor to act on. The important
     count is the status's `N important finding(s)`. Next is `pup fix <id>` when
     threads are open, `ready for the operator's merge click` under the clean full-review status,
-    and otherwise reading the PR. Nothing prints while it waits. The default timeout is 9 minutes,
+    and otherwise reading the PR. A comment-only skip is no verdict: the earlier head's status is
+    not read, and a finding with no anchor stays in the review body with no thread, so the skip
+    names an `@claude review` comment under open threads and reading the PR with none. Nothing
+    prints while it waits. The default timeout is 9 minutes,
     so the call fits under a 10-minute Bash timeout; a timeout exits 1 with the last thing seen
     and the re-run command.
     The conductor's part is `CI_REVIEW_LOOP`, typed in after its compiled context at kickoff. It
@@ -4919,7 +4929,9 @@ changes back into those docs is pending.
     and the command. For part 2, `fix-round.test.ts` fakes gh's mutations and the
     `viewerDidAuthor` read: a gated round replies once per thread, resolves the fixed ones and
     leaves the declined open, leaves open a thread answered fixed whose file the round never
-    changed, or that only main changed while the round ran (the gate rebases onto it), posts
+    changed, that only main changed while the round ran (the gate merges it in), or that only a
+    PR commit rewritten since the round started changed, takes each thread's newest answer across
+    the round's summaries, posts
     nothing again on a second run, gives up within its budget on a gh that hangs,
     and answers nothing with no round or a failing gh. `ci-wait.test.ts` runs a sequenced fake gh
     on a fake clock: a review on an older head is waited past, a timeout exits unfinished, a read
