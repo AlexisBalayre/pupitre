@@ -975,6 +975,10 @@ function mergeTargetInto(
   ).trim();
   const worktreeGit = (args: string[]): string =>
     runGit(worktree, args, { env: { ...worktreeEnv }, ...piped });
+  // A compare-and-swap: git refuses unless the branch is still at `from`.
+  const swapBranch = (message: string, to: string, from: string): void => {
+    runGit(repoPath, ['update-ref', '--no-deref', '-m', message, branchRef, to, from], piped);
+  };
   // Read before the branch moves, so an interrupt here leaves nothing to put
   // back: only the read-tree step below runs while the branch holds the merge.
   let head: string | undefined;
@@ -984,19 +988,7 @@ function mergeTargetInto(
     rethrowIfKilled(error);
   }
   try {
-    runGit(
-      repoPath,
-      [
-        'update-ref',
-        '--no-deref',
-        '-m',
-        `pup merge: merge ${target}`,
-        branchRef,
-        merged,
-        branchSha,
-      ],
-      piped,
-    );
+    swapBranch(`pup merge: merge ${target}`, merged, branchSha);
   } catch (error) {
     rethrowIfKilled(error);
     return (
@@ -1025,19 +1017,7 @@ function mergeTargetInto(
     // the merge, HEAD would sit over those files and status would show the
     // target's changes reversed, staged for the next commit to take.
     try {
-      runGit(
-        repoPath,
-        [
-          'update-ref',
-          '--no-deref',
-          '-m',
-          `pup merge: undo merge of ${target}`,
-          branchRef,
-          branchSha,
-          merged,
-        ],
-        piped,
-      );
+      swapBranch(`pup merge: undo merge of ${target}`, branchSha, merged);
     } catch (undo) {
       // The operator's, as the fast-forward's failed restore is: what the
       // branch holds now is not something the gate can name.
@@ -1151,15 +1131,13 @@ async function gateAndMerge(
       target,
       targetSha,
     );
+    if (refused) {
+      stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
+      return failed();
+    }
     stages.push(
-      timedSince(
-        started,
-        refused
-          ? { stage: 'fresh-base', status: 'fail', detail: refused }
-          : { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` },
-      ),
+      timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
     );
-    if (refused) return failed();
   } else {
     try {
       runGit(worktree, ['rebase', targetSha], pinned);
@@ -1194,6 +1172,10 @@ async function gateAndMerge(
   // detached it or switched branch leaves the pinned branch behind the target:
   // no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
+    const onto = `refs/heads/${sanitizeReason(target)}`;
+    const [step, fix] = isPrBranch
+      ? ['merge', `merge ${onto} into it`]
+      : ['rebase', `rebase it onto ${onto}`];
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
     stages.push(
@@ -1202,9 +1184,7 @@ async function gateAndMerge(
         status: 'fail',
         detail:
           `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
-          `after the auto-${isPrBranch ? 'merge' : 'rebase'}. Check out ${session.branch} in this ` +
-          `worktree and ${isPrBranch ? 'merge' : 'rebase it onto'} ` +
-          `refs/heads/${sanitizeReason(target)}${isPrBranch ? ' into it' : ''}.`,
+          `after the auto-${step}. Check out ${session.branch} in this worktree and ${fix}.`,
       }),
     );
     return failed();
