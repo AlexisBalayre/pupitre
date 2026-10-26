@@ -12,7 +12,7 @@ import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.cli
 import {
   assertGhAvailable,
   commentOnPullRequest,
-  isGhTimeout,
+  isCutOffByNode,
   originRepoSlug,
   type PullRequestReview,
   type ReviewThread,
@@ -114,6 +114,16 @@ export interface ThreadAnswers {
   declined: number;
   /** Named in the round but answered nowhere in the worker's summary: left open. */
   unanswered: number;
+}
+
+/**
+ * What the gate read of the branch a fix round is gated on: its tip before
+ * fresh-base took the target in, and the target it based on. The round's own
+ * commits are between the two, the target's are not.
+ */
+export interface RoundBranch {
+  tip: string;
+  targetSha: string;
 }
 
 /** The PR a merged session's newest merge opened, as the store and origin vouch for it. */
@@ -226,8 +236,8 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * the `fix_round` event named gets one reply naming the merge's sha with the
  * worker's one-line answer from its `pup session done` summary. A thread is
  * resolved, under the operator's gh login, only when the worker answered it
- * fixed and the round's commits change the file it is on: the worker's word
- * alone resolves nothing. Every other thread keeps its reply and stays open
+ * fixed and the round's own commits change the file it is on: the worker's
+ * word alone resolves nothing, and neither does a file the target changed. Every other thread keeps its reply and stays open
  * for the operator. Then one summary comment on the PR for the round. Every
  * post carries a marker naming the sha, read back first, so a second run for
  * the same head posts nothing again, and a run cut short finishes what the
@@ -235,8 +245,9 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * finding first is answered: the ids are store text. The worker's words are
  * session text, so each reason is one scrubbed line inside a code span, where
  * GitHub renders no markdown and notifies no mention. The gate runs this under
- * the merge lock, so every gh call shares one `budgetMs`, and running out is a
- * plain error, never read as an interrupt. Undefined when the newest merge
+ * the merge lock, so every gh and git call shares one `budgetMs`, and a call
+ * node cut off, past the budget or its buffer, is a plain error, never read
+ * as an interrupt. Undefined when the newest merge
  * ended no fix round.
  */
 export function answerFixRoundThreads(
@@ -244,6 +255,7 @@ export function answerFixRoundThreads(
   repoPath: string,
   sessionId: string,
   repo: string,
+  branch: RoundBranch,
   budgetMs = ANSWER_BUDGET_MS,
 ): ThreadAnswers | undefined {
   const round = roundTheNewestMergeEnded(db, sessionId);
@@ -261,12 +273,17 @@ export function answerFixRoundThreads(
     try {
       return call(left);
     } catch (error) {
-      if (isGhTimeout(error)) throw outOfTime;
-      throw error;
+      if (!isCutOffByNode(error)) throw error;
+      const { code } = error as { code: string };
+      throw code === 'ETIMEDOUT'
+        ? outOfTime
+        : new Error(`A call answering the round's threads was cut off (${sanitizeReason(code)})`);
     }
   };
   const onGitHub = withinBudget((timeoutMs) => readThreadAnswers(repoPath, prUrl, repo, timeoutMs));
-  const changed = filesTheRoundChanged(repoPath, head, sha);
+  const changed = withinBudget((timeoutMs) =>
+    filesTheRoundChanged(repoPath, head, branch, timeoutMs),
+  );
   const marker = `<!-- pup fix-round ${sha} -->`;
   const answers: ThreadAnswers = {
     prUrl,
@@ -362,23 +379,46 @@ function roundTheNewestMergeEnded(
 }
 
 /**
- * The files the round's commits changed, from the head it started at to the
- * sha its gate pinned, both renamed sides kept. None when the start is unknown
- * or git cannot compare the two: nothing is then resolved.
+ * The files the round's own commits changed: every non-merge commit on the
+ * branch tip the gate read before fresh-base that is neither in the head the
+ * round started at nor in the target, both renamed sides kept. A file the
+ * target changed, through the gate's rebase or a merge of the worker's, never
+ * counts. None when the start is unknown or git cannot answer: nothing is then
+ * resolved.
  */
 function filesTheRoundChanged(
   repoPath: string,
   head: string | undefined,
-  sha: string,
+  branch: RoundBranch,
+  timeoutMs: number,
 ): Set<string> {
-  if (head === undefined || head === sha) return new Set();
+  const { tip, targetSha } = branch;
+  if (head === undefined || !COMMIT_SHA.test(tip) || !COMMIT_SHA.test(targetSha)) {
+    return new Set();
+  }
   try {
     return new Set(
-      runGit(repoPath, ['diff', '--name-only', '--no-renames', head, sha])
-        .split('\n')
+      runGit(
+        repoPath,
+        [
+          'log',
+          '--no-merges',
+          '--no-renames',
+          '--format=',
+          '--name-only',
+          '-z',
+          tip,
+          `^${head}`,
+          `^${targetSha}`,
+          '--',
+        ],
+        { timeout: timeoutMs },
+      )
+        .split('\0')
         .filter(Boolean),
     );
   } catch (error) {
+    if (isCutOffByNode(error)) throw error;
     rethrowIfKilled(error);
     return new Set();
   }

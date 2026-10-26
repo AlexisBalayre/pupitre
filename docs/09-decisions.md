@@ -4843,10 +4843,13 @@ changes back into those docs is pending.
     and PR comments the viewer wrote (`viewerDidAuthor`). A thread is answered only when its id has
     a GraphQL node id's shape, GitHub lists it on this PR, and its first comment is the bot's: the
     ids are store text. Each gets one reply (`addPullRequestReviewThreadReply`):
-    - fixed, and the round's commits (`git diff --name-only --no-renames <round head> <sha>`)
-      change the thread's file: `Addressed in <sha>: <reason>`, then resolved
-      (`resolveReviewThread`). A resolve is posted under the operator's gh login, so the worker's
-      word alone never makes one;
+    - fixed, and the round's own commits change the thread's file: `Addressed in <sha>:
+      <reason>`, then resolved (`resolveReviewThread`). A resolve is posted under the operator's
+      gh login, so the worker's word alone never makes one. The round's commits are the non-merge
+      commits on the branch tip the gate read before fresh-base, in neither the round's start
+      head nor the target sha (`git log --no-merges --no-renames --name-only -z <tip> ^<head>
+      ^<target>`). A diff from the start head to the pin would not do: fresh-base takes the
+      target in before the pin, so a file another PR changed on main would count as fixed;
     - fixed by the worker's word, with no change to that file (or no round head to compare): the
       reason and the file, and the thread stays open;
     - declined: the reason, and the thread stays open for the operator;
@@ -4858,10 +4861,13 @@ changes back into those docs is pending.
     `<!-- pup fix-round <sha> -->`, read back before posting, so a second gate of the same head
     posts nothing again and a run cut short finishes what the first left; the marker needs no
     store event, so the event types are untouched. The gate answers while it holds the merge lock,
-    so every gh call of a round shares one 60 s budget, each call's timeout being what is left of
-    it. Node kills a gh past its timeout with SIGTERM, which `rethrowIfKilled` would read as the
-    operator's interrupt, so a timeout (`isGhTimeout`, code `ETIMEDOUT`) is turned into a plain
-    error naming the budget. Answering is never fatal: the merge is already recorded, so a
+    so every gh call of a round, and the `git log` above, share one 60 s budget, each call's
+    timeout being what is left of it. Node kills a child past its timeout (`ETIMEDOUT`) or its
+    output buffer (`ENOBUFS`) with SIGTERM, which `rethrowIfKilled` would read as the operator's
+    interrupt, so any error carrying node's own `code` (`isCutOffByNode`; an exit status or a
+    signal from outside carries none) is turned into a plain error naming the budget or the
+    code. gh's JSON calls get a 64 MiB buffer: node's 1 MiB default is about 16 maximum-size
+    comments, which a public PR's review query can pass. Answering is never fatal: the merge is already recorded, so a
     failing or out-of-budget gh prints a warning to reply and resolve by hand, and success prints
     one line of counts.
     `pup ci wait <session|pr> [--timeout <minutes>]` blocks in the caller's foreground and prints
@@ -4870,7 +4876,7 @@ changes back into those docs is pending.
     session's row must be minted (`assertMintedRow`) before any command is built on its id, since
     the digest names `pup fix <id>` or `pup land <id>` and the row is store text. It is refused to
     sessions. Every 30 s it reads the PR with `readPullRequestReview`, each read with a 20 s
-    budget; a failed read, a timed-out one included, is one more wait. The head is read afresh each time, so a review
+    budget; a failed read, one node cut off included, is one more wait. The head is read afresh each time, so a review
     or a status on an older head never answers for a head pushed since. The review is finished
     when the PR's head carries:
     - the bot's `SUCCESS` status, with the bot's newest review on that head;
@@ -4909,11 +4915,14 @@ changes back into those docs is pending.
     and the command. For part 2, `fix-round.test.ts` fakes gh's mutations and the
     `viewerDidAuthor` read: a gated round replies once per thread, resolves the fixed ones and
     leaves the declined open, leaves open a thread answered fixed whose file the round never
-    changed, posts nothing again on a second run, gives up within its budget on a gh that hangs,
+    changed, or that only main changed while the round ran (the gate rebases onto it), posts
+    nothing again on a second run, gives up within its budget on a gh that hangs,
     and answers nothing with no round or a failing gh. `ci-wait.test.ts` runs a sequenced fake gh
     on a fake clock: a review on an older head is waited past, a timeout exits unfinished, a read
     that timed out is one more wait, a forged arrow is scrubbed, an unminted row is refused, and
-    the comment-only, `FAILURE`, `MERGED`, partial and PR-number cases each end in their digest. `conductor.test.ts` checks the
+    the comment-only, `FAILURE`, `MERGED`, partial and PR-number cases each end in their digest.
+    `github-client.test.ts` reads real children past their buffer and timeout as cut off, and an
+    interrupt or a failing exit as not. `conductor.test.ts` checks the
     kickoff carries the loop's rules.
 
 91. **`pup dashboard` serves a read-only live page on 127.0.0.1, behind a token minted per run,

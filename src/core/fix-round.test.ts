@@ -1270,11 +1270,18 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         ? readFileSync(join(ghDir, 'comments'), 'utf8').split('\n--\n').filter(Boolean)
         : [];
 
-    /** A round on the four threads, its worker done with `summary`, gated again. */
-    async function gateTheRound(summary: string): Promise<string> {
+    /** The branch as a direct call names it: `tip` on main, which has not moved. */
+    const onMain = (tip: string) => ({ tip, targetSha: sh(repo, 'git', 'rev-parse', 'main') });
+
+    /**
+     * A round on the four threads, its worker done with `summary`, gated
+     * again; `meanwhile` runs while the worker works.
+     */
+    async function gateTheRound(summary: string, meanwhile?: () => void): Promise<string> {
       await gateWithPr();
       reviewOnGitHub({ threads: ROUND_THREADS.filter(({ id }) => id !== 'PRRT_human') });
       await fix();
+      meanwhile?.();
       // The round named `PRRT_human` too, as a store edit could have.
       db.prepare(
         "UPDATE events SET payload = json_set(payload, '$.threads[3]', 'PRRT_human') WHERE type = 'fix_round'",
@@ -1341,7 +1348,13 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         comments: [marker],
       });
 
-      const answers = answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo');
+      const answers = answerFixRoundThreads(
+        db,
+        repo,
+        SESSION_ID,
+        'github.com/owner/repo',
+        onMain(fixed),
+      );
 
       expect(answers).toEqual({
         prUrl: PR_URL,
@@ -1365,7 +1378,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         resolved: ['PRRT_fixed'],
         comments: [marker],
       });
-      answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo');
+      answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(fixed));
 
       expect(replies()).toHaveLength(4);
       expect(resolves()).toHaveLength(1);
@@ -1392,15 +1405,47 @@ describe('startFixRound', { timeout: 30_000 }, () => {
 
     // The gate answers under the merge lock: a GitHub that hangs costs the
     // answers' budget, and its timeout is no interrupt to rethrow.
+    // The gate's fresh-base takes main in before the pin, so a diff from the
+    // round's start to the pin would count main's files as the round's.
+    it('leaves open a thread on a file only the target changed while the round ran', async () => {
+      const fixed = await gateTheRound(`${SUMMARY}; PRRT_silent fixed: checked the bound`, () => {
+        mkdirSync(join(repo, 'src'), { recursive: true });
+        writeFileSync(join(repo, 'src', 'index.ts'), 'export const index = 2;\n');
+        sh(repo, 'git', 'add', 'src/index.ts');
+        sh(
+          repo,
+          'git',
+          '-c',
+          'user.email=m@test',
+          '-c',
+          'user.name=main',
+          'commit',
+          '-q',
+          '-m',
+          'main moves',
+        );
+      });
+      const pinned = sh(origin, 'git', 'rev-parse', BRANCH);
+
+      // The gate rebased the round's commit onto the moved main.
+      expect(pinned).not.toBe(fixed);
+      expect(replies().find((m) => m.includes('-f thread=PRRT_silent'))).toContain(
+        `Answered fixed in the round gated at ${pinned}, but its commits leave ` +
+          '` src/index.ts ` unchanged',
+      );
+      expect(resolves()).toHaveLength(1);
+      expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
+    });
+
     it('gives up within its time budget on a GitHub that does not answer', async () => {
-      await gateTheRound(SUMMARY);
+      const fixed = await gateTheRound(SUMMARY);
       const posted = ghFile('mutations').length;
       writeFileSync(join(ghDir, 'answers-slow'), '');
 
       const started = Date.now();
       let error: unknown;
       try {
-        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', 1000);
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', onMain(fixed), 1000);
       } catch (thrown) {
         error = thrown;
       }
@@ -1415,7 +1460,15 @@ describe('startFixRound', { timeout: 30_000 }, () => {
 
     it('answers nothing for a merge that ended no round, and a failing gh costs only the replies', async () => {
       await gateWithPr();
-      expect(answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo')).toBeUndefined();
+      expect(
+        answerFixRoundThreads(
+          db,
+          repo,
+          SESSION_ID,
+          'github.com/owner/repo',
+          onMain('a'.repeat(40)),
+        ),
+      ).toBeUndefined();
 
       reviewOnGitHub({ threads: ROUND_THREADS.slice(0, 1) });
       await fix();

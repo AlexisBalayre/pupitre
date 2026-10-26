@@ -3,7 +3,7 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { rethrowIfKilled } from './git-diff.client.js';
 import {
   assertGhAvailable,
-  isGhTimeout,
+  isCutOffByNode,
   originRepoSlug,
   type PullRequestReview,
   readPullRequestReview,
@@ -101,8 +101,9 @@ export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise
       if ('line' in digest) return { finished: true, line: digest.line };
       lastSeen = digest.waiting;
     } catch (error) {
-      // A read past its own budget is one more wait, not an interrupt.
-      if (!isGhTimeout(error)) rethrowIfKilled(error);
+      // A read node cut off, past its budget or its buffer, is one more wait,
+      // not an interrupt.
+      if (!isCutOffByNode(error)) rethrowIfKilled(error);
       lastSeen = `the last read failed: ${shown(error instanceof Error ? error.message : String(error))}`;
     }
     const left = deadline - clock.now();

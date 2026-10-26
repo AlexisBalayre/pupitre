@@ -1,8 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { originRepoSlug, readPullRequestReview } from './github.client.js';
+import { isCutOffByNode, originRepoSlug, readPullRequestReview } from './github.client.js';
 
 describe('originRepoSlug', () => {
   it('parses scp-style ssh remotes', () => {
@@ -344,5 +345,40 @@ describe('readPullRequestReview', () => {
       ),
     ).toThrow(/Cannot read a review of/);
     expect(existsSync(join(ghDir, 'argv'))).toBe(false);
+  });
+});
+
+// Node kills a child it cuts off with SIGTERM, which reads as an interrupt
+// unless the caller tells the two apart by node's own `code`.
+describe('isCutOffByNode', () => {
+  const thrown = (run: () => unknown): unknown => {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    throw new Error('expected a throw');
+  };
+
+  it('reads a child past its buffer or its timeout as cut off', () => {
+    const overflow = thrown(() =>
+      execFileSync('sh', ['-c', 'yes | head -c 1048576'], { maxBuffer: 16, stdio: 'pipe' }),
+    );
+    const late = thrown(() => execFileSync('sleep', ['5'], { timeout: 100, stdio: 'pipe' }));
+
+    expect(overflow).toMatchObject({ code: 'ENOBUFS' });
+    expect(isCutOffByNode(overflow)).toBe(true);
+    expect(late).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGTERM' });
+    expect(isCutOffByNode(late)).toBe(true);
+  });
+
+  it('reads an interrupt or a failing exit as no cut-off', () => {
+    const interrupted = thrown(() => execFileSync('sh', ['-c', 'kill -INT $$'], { stdio: 'pipe' }));
+    const failed = thrown(() => execFileSync('sh', ['-c', 'exit 3'], { stdio: 'pipe' }));
+
+    expect(interrupted).toMatchObject({ signal: 'SIGINT' });
+    expect(isCutOffByNode(interrupted)).toBe(false);
+    expect(isCutOffByNode(failed)).toBe(false);
+    expect(isCutOffByNode(new Error('plain'))).toBe(false);
   });
 });

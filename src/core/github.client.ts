@@ -8,6 +8,8 @@ import type { NewPullRequest, PullRequestRef } from './types/github.types.js';
 /** Version probe is local; PR creation talks to GitHub and gets a network budget. */
 const GH_PROBE_TIMEOUT_MS = 10_000;
 const GH_COMMAND_TIMEOUT_MS = 60_000;
+/** Node's 1 MiB default is about 16 maximum-size comments; a review query can pass it. */
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
 
 /** `git@host:owner/repo.git`, `https://host/owner/repo`, `ssh://git@host/owner/repo.git`. */
 const REMOTE_URL = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/;
@@ -48,6 +50,7 @@ function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_M
     cwd: repoPath,
     encoding: 'utf8',
     timeout,
+    maxBuffer: GH_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: scrubbedGitEnv(),
   });
@@ -577,14 +580,17 @@ export function commentOnPullRequest(
 }
 
 /**
- * A gh call that ran past its timeout. Node kills it with SIGTERM, which
- * `rethrowIfKilled` reads as an interrupt; this is the caller's own budget
- * running out, which the caller answers rather than rethrows.
+ * A child that node itself cut off, past its timeout (`ETIMEDOUT`) or its
+ * output buffer (`ENOBUFS`): node kills it with SIGTERM, which
+ * `rethrowIfKilled` reads as an interrupt. Node sets `code` only on a child it
+ * failed or stopped itself, never on an exit status or a signal from outside,
+ * so any error carrying one is the caller's own limit, which the caller
+ * answers rather than rethrows.
  */
-export function isGhTimeout(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error
-    ? error.code === 'ETIMEDOUT'
-    : false;
+export function isCutOffByNode(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+  );
 }
 
 function hostOf(repo: string): string {

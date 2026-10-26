@@ -33,7 +33,7 @@ import {
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
-import { answerFixRoundThreads } from './fix-round.service.js';
+import { answerFixRoundThreads, type RoundBranch } from './fix-round.service.js';
 import {
   armedGitDrivers,
   assertNoArmedGitDrivers,
@@ -952,6 +952,9 @@ async function gateAndMerge(
   // live session commits or tags meanwhile. The stages read that sha's files
   // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
+  // The branch as the session left it, before the rebase takes the target in:
+  // a fix round's own commits are read from here (decision 90).
+  const sessionTip = resolveCommit(req.repoPath, branchRef);
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
@@ -1098,7 +1101,12 @@ async function gateAndMerge(
     // since the target already holds the pinned sha.
     recordMerge(db, req.repoPath, session, { sha, target, files: changedPaths, prUrl }, isDeleted);
   }
-  if (isFixRound && pullRequest) replyOnFixRoundThreads(db, req.repoPath, session.id, pullRequest);
+  if (isFixRound && pullRequest) {
+    replyOnFixRoundThreads(db, req.repoPath, session.id, pullRequest, {
+      tip: sessionTip,
+      targetSha,
+    });
+  }
   if (
     // In PR mode the target branch has not moved, so the bar must not either:
     // `pup land` ratchets it once the PR has (decisions 26, 84).
@@ -1145,9 +1153,10 @@ function replyOnFixRoundThreads(
   repoPath: string,
   sessionId: string,
   pullRequest: PullRequestPlan,
+  branch: RoundBranch,
 ): void {
   try {
-    const answers = answerFixRoundThreads(db, repoPath, sessionId, pullRequest.repo);
+    const answers = answerFixRoundThreads(db, repoPath, sessionId, pullRequest.repo, branch);
     if (answers === undefined) return;
     console.error(
       `Answered the fix round's threads on ${answers.prUrl}: ${answers.addressed} addressed and ` +
