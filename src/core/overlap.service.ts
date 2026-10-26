@@ -12,6 +12,19 @@ import type { OverlapPair, ScopeConflict } from './types/overlap.types.js';
 export const WATCH_INTERVAL_MS = 15_000;
 export const WATCH_STALE_AFTER_MS = 3 * WATCH_INTERVAL_MS;
 
+/**
+ * Files a peer-joined introduction leaves out (decision 104): two workers
+ * appending to the decisions log conflict whatever they agree, so a word
+ * between them settles nothing. The main-landed notice keeps it, since that
+ * conflict is the one it resolves.
+ */
+const APPEND_ONLY_FILES: ReadonlySet<string> = new Set(['docs/09-decisions.md']);
+
+/** The shared files worth introducing a peer for; none means no introduction. */
+export function filesWorthANotice(files: string[]): string[] {
+  return files.filter((file) => !APPEND_ONLY_FILES.has(file));
+}
+
 /** Pairwise same-file intersections, session ids in insertion order, files sorted. */
 export function intersectSessionFiles(filesBySession: Record<string, string[]>): OverlapPair[] {
   const entries = Object.entries(filesBySession).map(
