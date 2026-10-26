@@ -1,8 +1,19 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectPaths } from '../core/paths.utils.js';
@@ -203,29 +214,35 @@ function tmuxEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * What `pup init --session-env` refuses to name (decision 106): the peer
- * channel, whose socket and token in the conductor's Bash would let a session
- * it launches speak as the conductor; the API credentials; `PUP_*`, which says
- * what a window is; `TMUX`, which picks the server; and `NODE_OPTIONS`, which
- * is code execution. Everything else `NOT_INHERITED` strips may be named.
+ * The only names `pup init --session-env` may record (decision 106): the
+ * config a run pins for its workers, none of it a credential. A closed list,
+ * not a denylist over the namespace `NOT_INHERITED` strips: `CLAUDE*` and
+ * `ANTHROPIC_*` are open-ended and hold the peer channel, the nested-session
+ * marker and every credential Claude Code adds, and the rest of the namespace
+ * holds the loaders and git's redirects, as `SETTABLE_VARS` says of gate
+ * children. The file the names live in is writable by any session, so the
+ * list is what bounds a session's choice, and it is checked on the way in and
+ * on the way out.
  */
-const NEVER_SESSION_ENV = [
-  /^CLAUDE_CODE_MESSAGING_/,
-  /^ANTHROPIC_API_KEY$/,
-  /^ANTHROPIC_AUTH_TOKEN$/,
-  /^PUP_/,
-  /^TMUX$/,
-  /^NODE_OPTIONS$/,
+const SESSION_ENV_ALLOWED = [
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+  'CLAUDE_CODE_ENABLE_TELEMETRY',
 ];
 
-/** A name tmux's `-e NAME=value` reads back as that name, split at its first '='. */
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Far past any list of `SESSION_ENV_ALLOWED`'s names; anything bigger is not one. */
+const SESSION_ENV_FILE_MAX_BYTES = 4096;
 
 /** The first of `names` `--session-env` refuses, or undefined when it takes them all. */
 export function refusedSessionEnv(names: string[]): string | undefined {
-  return names.find(
-    (name) => !ENV_NAME.test(name) || NEVER_SESSION_ENV.some((pattern) => pattern.test(name)),
-  );
+  return names.find((name) => !SESSION_ENV_ALLOWED.includes(name));
+}
+
+/** The names `--session-env` takes, for a refusal to list. */
+export function sessionEnvAllowed(): string {
+  return SESSION_ENV_ALLOWED.join(', ');
 }
 
 /** Where `pup init --session-env` keeps the names, beside the project's store. */
@@ -237,25 +254,45 @@ function sessionEnvFile(repoPath: string): string {
  * Record the names every session and conductor window is handed from the
  * launching shell (decision 106). Refused names throw: the CLI checks them
  * first, and a caller that did not has a bug to surface, not a list to trim.
+ * Written beside and renamed over, so a launch never reads half a list.
  */
 export function saveSessionEnv(repoPath: string, names: string[]): void {
   const refused = refusedSessionEnv(names);
   if (refused !== undefined) throw new Error(`${refused} cannot be passed to session windows.`);
   const file = sessionEnvFile(repoPath);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(names)}\n`);
+  const staged = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(staged, `${JSON.stringify(names)}\n`);
+  renameSync(staged, file);
 }
 
 /**
- * The names `pup init --session-env` recorded, none when it never ran. The file
- * sits where any process of the operator's user can write it, so it is checked
- * again on the way out: a name written there by hand is dropped, as
- * `--gate-env` drops the loader names (decision 36), never handed to a window.
+ * The names `pup init --session-env` recorded, none when it never ran. Any
+ * session can write the file, so it is read like a pointer a session wrote:
+ * no symlink followed, no fifo blocked on, a regular file of bounded size, and
+ * whatever does not parse as a list reads as none. Every name is checked
+ * against the allowlist again, and one off it is dropped, never handed on.
  */
 export function readSessionEnv(repoPath: string): string[] {
-  const file = sessionEnvFile(repoPath);
-  if (!existsSync(file)) return [];
-  const stored: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  let fd: number;
+  try {
+    fd = openSync(
+      sessionEnvFile(repoPath),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch {
+    return [];
+  }
+  let stored: unknown;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > SESSION_ENV_FILE_MAX_BYTES) return [];
+    stored = JSON.parse(readFileSync(fd, 'utf8'));
+  } catch {
+    return [];
+  } finally {
+    closeSync(fd);
+  }
   return Array.isArray(stored)
     ? stored.filter(
         (name): name is string =>
@@ -273,10 +310,37 @@ export function readSessionEnv(repoPath: string): string[] {
 function sessionEnv(repoPath: string): Record<string, string> {
   return Object.fromEntries(
     readSessionEnv(repoPath).flatMap((name) => {
-      const value = process.env[name];
+      const value = Object.hasOwn(process.env, name) ? process.env[name] : undefined;
       return value === undefined ? [] : [[name, value]];
     }),
   );
+}
+
+/**
+ * The Claude Code config dir a window of this project runs on: the launching
+ * shell's `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude`
+ * otherwise. What the launch hashes for decision 9's drift check, and where
+ * the window's `.claude.json` and transcripts live. Refused unless absolute:
+ * tmux expands no `~`, and a relative one would resolve against each window's
+ * own cwd, a different dir for every session.
+ */
+export function claudeUserDir(repoPath: string): string {
+  const named = sessionEnv(repoPath).CLAUDE_CONFIG_DIR;
+  if (named === undefined) return join(homedir(), '.claude');
+  if (!isAbsolute(named)) {
+    throw new Error(
+      `CLAUDE_CONFIG_DIR is ${JSON.stringify(named)}, which --session-env passes to every ` +
+        'window: it must be an absolute path.',
+    );
+  }
+  return named;
+}
+
+/** The `.claude.json` a window's trust is read from: in its config dir when one is named. */
+function claudeJsonFor(repoPath: string): string {
+  return sessionEnv(repoPath).CLAUDE_CONFIG_DIR === undefined
+    ? CLAUDE_JSON
+    : join(claudeUserDir(repoPath), '.claude.json');
 }
 
 function tmux(socket: string | undefined, args: string[]): string {
@@ -436,7 +500,10 @@ function spawnDetachedSession(
     ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
     '-c',
     opts.cwd,
-    ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
+    ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => [
+      '-e',
+      tmuxWord(`${key}=${value}`),
+    ]),
     ...opts.command,
   ]).trim();
   // Checked where it is minted: this id is what every later command trusts,
@@ -445,6 +512,16 @@ function spawnDetachedSession(
     throw new Error(`tmux new-session printed ${JSON.stringify(printed)}, not a pane id.`);
   }
   return printed;
+}
+
+/**
+ * An argument tmux reads as itself. tmux takes an argument ending in ';' as
+ * the end of a command, so a value ending in one would cut the launch's argv
+ * there; `\;` is its escape for a literal one, and it drops only that
+ * backslash, so a value already ending in `\;` keeps its own.
+ */
+function tmuxWord(arg: string): string {
+  return arg.endsWith(';') ? `${arg.slice(0, -1)}\\;` : arg;
 }
 
 /**
@@ -471,6 +548,9 @@ export function preseedTrust(
     projects[path] = { ...projects[path], hasTrustDialogAccepted: true };
   }
   config.projects = projects;
+  // A config dir `--session-env` names may not exist yet; Claude Code would
+  // make it on start, after the dialog this is here to skip (decision 106).
+  mkdirSync(dirname(claudeJsonPath), { recursive: true });
   writeFileSync(claudeJsonPath, JSON.stringify(config, null, 2));
 }
 
@@ -594,7 +674,7 @@ const SESSION_NICENESS = '10';
  * and hand the process the same bypass-permissions, user-setting-sources argv.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
-  preseedTrust(opts.cwd, CLAUDE_JSON, opts.git);
+  preseedTrust(opts.cwd, claudeJsonFor(opts.repoPath), opts.git);
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
@@ -1136,15 +1216,20 @@ function killTarget(target: string, socket?: string): void {
  * Transcript directory Claude Code uses for a given worktree (munged real
  * path). The munge is a closed allowlist — every character outside
  * `[a-zA-Z0-9]` becomes `-` — so the result is always one segment directly
- * under `~/.claude/projects`, whatever the path held. `pup` stamps a session's
+ * under `projects` in the config dir, whatever the path held. `claudeDir` is
+ * the window's (`claudeUserDir`), `~/.claude` unless `--session-env` names
+ * another (decision 106). `pup` stamps a session's
  * `transcript_path` with this at launch, and the dashboard checks the stored
  * column against this derivation before reading it (decision 67), so the
  * guarantee is load-bearing: a munge that let a separator or a `..` through
  * would let a store row aim the operator's reader anywhere on disk.
  */
-export function transcriptDir(worktreePath: string): string {
+export function transcriptDir(
+  worktreePath: string,
+  claudeDir = join(homedir(), '.claude'),
+): string {
   const munged = worktreePath.replace(/[^a-zA-Z0-9]/g, '-');
-  return join(homedir(), '.claude', 'projects', munged);
+  return join(claudeDir, 'projects', munged);
 }
 
 function watcherTarget(repoProjectId: string): string {

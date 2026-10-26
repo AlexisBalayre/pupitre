@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir, constants as osConstants, tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
@@ -14,6 +14,7 @@ import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capa
 import {
   attachCommand,
   attachWindow,
+  claudeUserDir,
   conductorName,
   hasSessionWindow,
   killWatcher,
@@ -22,6 +23,7 @@ import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
+  sessionEnvAllowed,
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
@@ -464,7 +466,8 @@ const GATE_ENV_DESCRIPTION =
 // Decision 106.
 const SESSION_ENV_DESCRIPTION =
   'env var names every session and conductor window gets from the launching shell, ' +
-  'comma-separated; kept until the next --session-env, "" clears them';
+  'comma-separated, among CLAUDE_CONFIG_DIR and the effort, subagent-model and telemetry ' +
+  'ones; kept until the next --session-env, "" clears them';
 
 // Decision 99.
 const ALLOW_OVERLAP_DESCRIPTION = 'no effect: overlap is always allowed (removed next release)';
@@ -668,7 +671,7 @@ function createOrRefuse(
       repoPath,
       base: DEFAULT_BASE_PROFILE,
       task,
-      claudeUserDir: join(homedir(), '.claude'),
+      claudeUserDir: claudeUserDir(repoPath),
       ...fields,
     }),
   );
@@ -876,9 +879,8 @@ export function buildProgram(): Command {
       const refusedName = sessionEnv && refusedSessionEnv(sessionEnv);
       if (refusedName !== undefined) {
         return refuse(
-          `--session-env cannot pass ${sanitizeReason(refusedName)}: the peer channel, API ` +
-            'credentials, PUP_*, TMUX and NODE_OPTIONS never reach a session window, and a name ' +
-            'is letters, digits and underscores.',
+          `--session-env cannot pass ${sanitizeReason(refusedName)}: it takes only ` +
+            `${sessionEnvAllowed()}.`,
         );
       }
       if (refusedUnsandboxed()) return;
@@ -1096,7 +1098,7 @@ export function buildProgram(): Command {
               repoPath,
               base: DEFAULT_BASE_PROFILE,
               taskId,
-              claudeUserDir: join(homedir(), '.claude'),
+              claudeUserDir: claudeUserDir(repoPath),
               model: opts.model,
               effort: opts.effort,
               overlapVia: conductorAttribution().overlapVia,
@@ -1157,7 +1159,7 @@ export function buildProgram(): Command {
           db,
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: join(homedir(), '.claude'),
+          claudeUserDir: claudeUserDir(repoPath),
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,
@@ -2191,7 +2193,7 @@ export function buildProgram(): Command {
         outcome = await startFixRound(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: join(homedir(), '.claude'),
+          claudeUserDir: claudeUserDir(repoPath),
           sessionId: session,
           override: { model: opts.model, effort: opts.effort },
           overrideVia: callingConductor() ? 'conductor' : 'operator',

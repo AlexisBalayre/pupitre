@@ -62,7 +62,12 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   transcriptDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .transcriptDir,
   // The real rule and the real file, under the throwaway HOME: which names
-  // `pup init --session-env` refuses and keeps is the contract (decision 106).
+  // `pup init --session-env` refuses and keeps, and the config dir a launch
+  // hashes from them, are the contract (decision 106).
+  claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .claudeUserDir,
+  sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .sessionEnvAllowed,
   readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .readSessionEnv,
   refusedSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
@@ -1962,6 +1967,10 @@ describe('CLI commands', () => {
       'PUP_SESSION_ID',
       'TMUX',
       'NODE_OPTIONS',
+      'CLAUDECODE',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'LD_PRELOAD',
+      'GIT_DIR',
     ])('refuses `init --session-env` naming %s, and stores nothing', async (name) => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
@@ -1971,7 +1980,11 @@ describe('CLI commands', () => {
       });
 
       expect(process.exitCode).toBe(1);
-      expect(errors).toEqual([expect.stringContaining(`--session-env cannot pass ${name}:`)]);
+      expect(errors).toEqual([
+        `--session-env cannot pass ${name}: it takes only CLAUDE_CONFIG_DIR, ` +
+          'CLAUDE_CODE_EFFORT_LEVEL, CLAUDE_CODE_SUBAGENT_MODEL, CLAUDE_CODE_SUBAGENT_MODEL_FORCE, ' +
+          'CLAUDE_CODE_ENABLE_TELEMETRY.',
+      ]);
       expect(logs).toEqual([]);
       expect(readSessionEnv(repo)).toEqual([]);
       expect(recordedOrigin(repo)).toBeNull();

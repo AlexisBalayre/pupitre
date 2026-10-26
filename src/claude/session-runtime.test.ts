@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -60,6 +61,7 @@ import {
   attachArgs,
   attachCommand,
   attachWindow,
+  claudeUserDir,
   conductorName,
   conductorPane,
   deadTurnError,
@@ -309,6 +311,17 @@ describe('refusedSessionEnv, saveSessionEnv and readSessionEnv', () => {
     vi.unstubAllEnvs();
   });
 
+  const ALLOWED = [
+    'CLAUDE_CONFIG_DIR',
+    'CLAUDE_CODE_EFFORT_LEVEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+    'CLAUDE_CODE_ENABLE_TELEMETRY',
+  ];
+
+  // A closed list: the namespace decision 47 strips by pattern is open-ended,
+  // and holds the peer channel, the nested-session marker, every credential
+  // and, past it, the loaders and git's redirects (decision 106).
   it.each([
     'CLAUDE_CODE_MESSAGING_SOCKET',
     'CLAUDE_CODE_MESSAGING_TOKEN',
@@ -318,7 +331,29 @@ describe('refusedSessionEnv, saveSessionEnv and readSessionEnv', () => {
     'PUP_CONDUCTOR',
     'TMUX',
     'NODE_OPTIONS',
-    'A=B',
+    'CLAUDECODE',
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_PID',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_EFFORT',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_CUSTOM_HEADERS',
+    'ANTHROPIC_FOUNDRY_API_KEY',
+    'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
+    'CLAUDE_CODE_SSE_PORT',
+    'DYLD_INSERT_LIBRARIES',
+    'LD_PRELOAD',
+    'GIT_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_CONFIG_COUNT',
+    'HOME',
+    'PATH',
+    'SHELL',
+    'BASH_ENV',
+    'ENV',
+    '__proto__',
+    'constructor',
     '',
   ])('refuses %j, and names it', (name) => {
     expect(refusedSessionEnv(['CLAUDE_CONFIG_DIR', name])).toBe(name);
@@ -327,32 +362,80 @@ describe('refusedSessionEnv, saveSessionEnv and readSessionEnv', () => {
     );
   });
 
-  it.each([
-    'CLAUDE_CONFIG_DIR',
-    'CLAUDE_CODE_EFFORT_LEVEL',
-    'CLAUDE_CODE_SUBAGENT_MODEL',
-    'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
-    'CLAUDE_CODE_ENABLE_TELEMETRY',
-    'ANTHROPIC_MODEL',
-    'TMUX_TMPDIR',
-  ])('takes %s', (name) => {
+  it.each(ALLOWED)('takes %s', (name) => {
     expect(refusedSessionEnv([name])).toBeUndefined();
   });
 
-  it('reads back what was saved, none before, and drops a refused name written by hand', () => {
+  it('reads back what was saved, none before, and drops a name off the list written by hand', () => {
     const home = tempDir('pup-session-env-home-');
     vi.stubEnv('HOME', home);
     expect(readSessionEnv('/tmp/repo')).toEqual([]);
 
-    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY']);
-    expect(readSessionEnv('/tmp/repo')).toEqual([
-      'CLAUDE_CONFIG_DIR',
-      'CLAUDE_CODE_ENABLE_TELEMETRY',
-    ]);
+    saveSessionEnv('/tmp/repo', ALLOWED);
+    expect(readSessionEnv('/tmp/repo')).toEqual(ALLOWED);
+    const dir = join(home, '.pupitre', projectId('/tmp/repo'));
+    // Renamed into place: no staged copy is left beside it.
+    expect(readdirSync(dir)).toEqual(['session-env.json']);
 
-    const file = join(home, '.pupitre', projectId('/tmp/repo'), 'session-env.json');
-    writeFileSync(file, JSON.stringify(['CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CONFIG_DIR', 7]));
+    writeFileSync(
+      join(dir, 'session-env.json'),
+      JSON.stringify(['CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDECODE', 'CLAUDE_CONFIG_DIR', 7]),
+    );
     expect(readSessionEnv('/tmp/repo')).toEqual(['CLAUDE_CONFIG_DIR']);
+  });
+
+  // Any session can write the file, so it is read like a pointer one wrote.
+  it.each([
+    ['a file that does not parse', (file: string) => writeFileSync(file, '["CLAUDE_CONFIG_DIR"')],
+    ['a file that is no list', (file: string) => writeFileSync(file, '{"CLAUDE_CONFIG_DIR":1}')],
+    [
+      'a file past the size cap',
+      (file: string) => writeFileSync(file, JSON.stringify(Array(1000).fill('CLAUDE_CONFIG_DIR'))),
+    ],
+    [
+      'a symlink to a list',
+      (file: string) => {
+        const target = join(tempDir('pup-session-env-target-'), 'list.json');
+        writeFileSync(target, '["CLAUDE_CONFIG_DIR"]');
+        symlinkSync(target, file);
+      },
+    ],
+    ['a fifo', (file: string) => execFileSync('mkfifo', [file])],
+    ['a directory', (file: string) => mkdirSync(file)],
+  ])('reads %s as no names, without blocking', (_, plant) => {
+    const home = tempDir('pup-session-env-home-');
+    vi.stubEnv('HOME', home);
+    const dir = join(home, '.pupitre', projectId('/tmp/repo'));
+    mkdirSync(dir, { recursive: true });
+    plant(join(dir, 'session-env.json'));
+
+    expect(readSessionEnv('/tmp/repo')).toEqual([]);
+  });
+});
+
+describe('claudeUserDir', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("is ~/.claude unless --session-env names CLAUDE_CONFIG_DIR, then the shell's value", () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    expect(claudeUserDir('/tmp/repo')).toBe(join(homedir(), '.claude'));
+
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
+    expect(claudeUserDir('/tmp/repo')).toBe('/tmp/w4b-config');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+    expect(claudeUserDir('/tmp/repo')).toBe(join(homedir(), '.claude'));
+  });
+
+  // tmux expands no `~`, and a relative dir resolves against each window's cwd.
+  it.each(['~/w4b', 'w4b-config', ''])('refuses a CLAUDE_CONFIG_DIR of %j', (value) => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', value);
+
+    expect(() => claudeUserDir('/tmp/repo')).toThrow('it must be an absolute path');
   });
 });
 
@@ -606,21 +689,26 @@ describe('launchSession', () => {
   // its own `-e`, with the launching shell's value (decision 106).
   it('hands the window each named variable from the launching shell, and tmux none of them', () => {
     vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
-    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY', 'UNSET_HERE']);
-    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    const configDir = tempDir('pup-w4b-config-');
+    saveSessionEnv(repo, [
+      'CLAUDE_CONFIG_DIR',
+      'CLAUDE_CODE_ENABLE_TELEMETRY',
+      'CLAUDE_CODE_SUBAGENT_MODEL',
+    ]);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
     vi.stubEnv('CLAUDE_CODE_ENABLE_TELEMETRY', '1');
-    vi.stubEnv('UNSET_HERE', undefined);
+    vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', undefined);
 
     launchSession(opts);
 
     expect(launchedWindowEnv()).toMatchObject({
-      CLAUDE_CONFIG_DIR: '/tmp/w4b-config',
+      CLAUDE_CONFIG_DIR: configDir,
       CLAUDE_CODE_ENABLE_TELEMETRY: '1',
       PUP_SESSION_ID: 's-1',
     });
     // A name the shell has no value for is not set empty: the window keeps
     // whatever default Claude Code has for it.
-    expect(Object.keys(launchedWindowEnv())).not.toContain('UNSET_HERE');
+    expect(Object.keys(launchedWindowEnv())).not.toContain('CLAUDE_CODE_SUBAGENT_MODEL');
     for (const [, , options] of vi
       .mocked(execFileSync)
       .mock.calls.filter(([file]) => file === 'tmux')) {
@@ -630,10 +718,26 @@ describe('launchSession', () => {
     }
   });
 
+  // The window reads its trust from the config dir it runs on: seeded in
+  // ~/.claude.json, a worker on another dir would stop at the dialog.
+  it("seeds trust in the named config dir's .claude.json, making the dir if need be", () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const configDir = join(tempDir('pup-w4b-config-'), 'fresh');
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+
+    launchSession(opts);
+
+    const projects = readProjects(join(configDir, '.claude.json'));
+    expect(projects[opts.worktreePath]?.hasTrustDialogAccepted).toBe(true);
+    expect(projects[repo]?.hasTrustDialogAccepted).toBe(true);
+  });
+
   it('keeps stripping a variable the operator did not name', () => {
     vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const configDir = tempDir('pup-w4b-config-');
     saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
-    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
     vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', 'max');
     vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'peer-token');
 
@@ -651,12 +755,20 @@ describe('launchSession', () => {
   });
 
   // What the fake cannot show: that the `-e` lands on the window and stays off
-  // the server a client starts. The launch's own argv and client environment,
+  // the server a client starts, and that a value ending in ';' is not read as
+  // the end of tmux's command. The launch's own argv and client environment,
   // run against the installed tmux, on a socket of this test's own.
-  it('sets a named variable on the window and leaves it out of show-environment -g', async (ctx) => {
+  it('sets the named variables on the window, and leaves them out of show-environment -g', async (ctx) => {
     vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
-    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
-    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    const configDir = tempDir('pup-w4b-config-');
+    saveSessionEnv(repo, [
+      'CLAUDE_CONFIG_DIR',
+      'CLAUDE_CODE_SUBAGENT_MODEL',
+      'CLAUDE_CODE_EFFORT_LEVEL',
+    ]);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+    vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'opus;');
+    vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', 'high;');
     vi.stubEnv('TMUX', undefined);
     launchSession(opts);
     const [, spawn = [], options] =
@@ -676,14 +788,20 @@ describe('launchSession', () => {
       if (/not permitted|permission denied/i.test(started.stderr ?? '')) {
         ctx.skip(`no tmux socket here: ${started.stderr.trim()}`);
       }
+      expect(started.stderr).toBe('');
       expect(started.status).toBe(0);
 
-      expect(tmuxHere(['show-environment', '-t', '=pup-s-1', 'CLAUDE_CONFIG_DIR']).stdout).toBe(
-        'CLAUDE_CONFIG_DIR=/tmp/w4b-config\n',
+      const windowEnv = tmuxHere(['show-environment', '-t', '=pup-s-1']).stdout.split('\n');
+      expect(windowEnv).toEqual(
+        expect.arrayContaining([
+          `CLAUDE_CONFIG_DIR=${configDir}`,
+          'CLAUDE_CODE_SUBAGENT_MODEL=opus;',
+          'CLAUDE_CODE_EFFORT_LEVEL=high;',
+        ]),
       );
       const global = tmuxHere(['show-environment', '-g']).stdout;
       expect(global).toContain('PATH=');
-      expect(global).not.toContain('CLAUDE_CONFIG_DIR');
+      expect(global).not.toMatch(/CLAUDE/);
     } finally {
       tmuxHere(['kill-server']);
     }
@@ -938,6 +1056,12 @@ describe('transcriptDir', () => {
     expect(dirname(dir)).toBe(join(homedir(), '.claude', 'projects'));
     expect(basename(dir)).toBe('-repo-----worktrees-t-1');
     expect(basename(dir)).not.toMatch(/[/.]/);
+  });
+
+  it('derives the same segment under a config dir --session-env names (decision 106)', () => {
+    expect(transcriptDir('/repo/.worktrees/t-1', '/tmp/w4b-config')).toBe(
+      join('/tmp/w4b-config', 'projects', '-repo--worktrees-t-1'),
+    );
   });
 });
 
@@ -1773,8 +1897,9 @@ describe('launchConductor', () => {
 
   it('hands the conductor the named variables too, so the sessions it launches get them', () => {
     vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const configDir = tempDir('pup-w4b-config-');
     saveSessionEnv(CONDUCTOR.repoPath, ['CLAUDE_CONFIG_DIR']);
-    vi.stubEnv('CLAUDE_CONFIG_DIR', '/tmp/w4b-config');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
 
     try {
       launchConductor(CONDUCTOR);
@@ -1787,7 +1912,10 @@ describe('launchConductor', () => {
         .mocked(execFileSync)
         .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
       [];
-    expect(spawn).toContain('CLAUDE_CONFIG_DIR=/tmp/w4b-config');
+    expect(spawn).toContain(`CLAUDE_CONFIG_DIR=${configDir}`);
+    expect(readProjects(join(configDir, '.claude.json'))[CONDUCTOR.repoPath]).toEqual({
+      hasTrustDialogAccepted: true,
+    });
   });
 
   it('passes the conductor its own model and effort', () => {

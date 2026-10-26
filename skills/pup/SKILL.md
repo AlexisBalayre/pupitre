@@ -32,7 +32,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 
 | Want | Command |
 | --- | --- |
-| Onboard a repo (operator only) | `pup init` in the repo; `pup init --gate-env A,B` for gate env vars; `pup init --session-env A,B` for variables every session window gets from the launching shell |
+| Onboard a repo (operator only) | `pup init` in the repo; `pup init --gate-env A,B` for gate env vars; `pup init --session-env A,B` for the config variables (`CLAUDE_CONFIG_DIR`, effort, subagent model, telemetry) every session window gets from the launching shell |
 | Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"... [--tier critical|standard]` |
 | Backlog | `pup plan` (list, with each task's tier), `pup plan drop|edit <task>` |
 | Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor |
