@@ -68,6 +68,13 @@ export interface CapabilityContext {
   /** Checkout to read tool declarations from. Never session-writable. */
   configPath: string;
   /**
+   * The commit `measurePath` was cut at, when it is the gate's checkout. What
+   * git must read of that commit is read from `configPath`'s repo, which holds
+   * it, and never through the checkout: its HEAD and `commondir` sit in an
+   * admin dir a session can rewrite (decision 101). Absent outside the gate.
+   */
+  measureSha?: string;
+  /**
    * Env names the operator allowed into capability children with `--gate-env`
    * (decision 36). Optional because absence narrows the child's environment
    * rather than widening it — the safe direction for a caller that forgets,

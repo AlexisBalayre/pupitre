@@ -43,7 +43,11 @@ import { tempDir } from '../test/temp-dir.mock.js';
 import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { ArmedGitDriverError, WorktreeConfigError } from './git-diff.client.js';
+import {
+  ArmedGitDriverError,
+  WorktreeConfigError,
+  WorktreeRepointedError,
+} from './git-diff.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
@@ -647,6 +651,80 @@ describe('launchTask armed-driver guard', () => {
     expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
   });
 
+  // The add comes before the pinned checkout (decision 101), so a checkout that
+  // throws (a commondir rewritten in between, a full disk) must take the
+  // worktree and branch with it, or the retry fails on both (decision 40), and
+  // the refusal must say so rather than ask for a repair of what is gone.
+  it.each([
+    [
+      'a read-tree that fails',
+      (once: string) =>
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+      /No space left on device/,
+    ],
+    [
+      'a commondir rewritten right after the add',
+      (once: string) =>
+        `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; ${realGit()} "$@" || exit $?; echo ${tempDir('pup-elsewhere-')}/.git > ${join(repo, '.git', 'worktrees', 't-1', 'commondir')}; exit 0; fi ;; esac`,
+      WorktreeRepointedError,
+    ],
+  ])('undoes the add on %s, says so, and the retry launches', (_, shimCase, refusal) => {
+    planTask(db, { repoPath: repo, task: spec() });
+    const shim = tempDir('pup-git-');
+    const once = join(shim, 'once');
+    writeFileSync(once, '');
+    writeFileSync(
+      join(shim, 'git'),
+      ['#!/bin/sh', shimCase(once), `exec ${realGit()} "$@"`].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
+
+    const error = caught(launch);
+    expect(() => {
+      throw error;
+    }).toThrow(refusal);
+    expect((error as Error).message).toMatch(
+      /The launch's new worktree and its branch pup\/t-1 were removed, so nothing needs restoring: retry the launch once the cause is cleared[.,]/,
+    );
+    // In place of the refusal's own advice, never beside it.
+    expect((error as Error).message).not.toMatch(/worktree repair/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(existsSync(join(repo, '.worktrees', 't-1'))).toBe(false);
+    expect(gitIn(repo, 'worktree', 'list', '--porcelain')).not.toContain('.worktrees');
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
+
+    expect(launch()).toBe('t-1');
+    expect(existsSync(join(repo, '.worktrees', 't-1', 'src/core/github.client.ts'))).toBe(true);
+  });
+
+  // `worktree prune` keeps a locked registration and says nothing, so the
+  // undo checks the admin dir is gone before it claims the worktree is, and
+  // leaves the branch the registration still holds.
+  it('names both for removal when the prune keeps the new worktree registered', () => {
+    planTask(db, { repoPath: repo, task: spec() });
+    const shim = tempDir('pup-git-');
+    const once = join(shim, 'once');
+    writeFileSync(once, '');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; touch "$GIT_DIR/locked"; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
+        `exec ${realGit()} "$@"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
+
+    expect(launch).toThrow(
+      /No space left on device[\s\S]* The launch could not remove its new worktree \S+\/\.worktrees\/t-1 and branch pup\/t-1: remove both, then retry the launch\.$/,
+    );
+    expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).not.toBe('');
+  });
+
   // A refusal inside `launchTask` alone would leave the spec the operator just
   // abandoned in the backlog, unclaimed and attributed to them (decision 41).
   it('writes no task row when `pup new` is refused', () => {
@@ -734,6 +812,35 @@ describe('launchTask worktree-config guard', () => {
     expect(launch()).toBe('t-1');
   });
 
+  // Every path pup trusts is built as `<repo>/.git/...`. Under a gitfile those
+  // name nothing, so the config check above would read nothing and the
+  // window's pointer check would refuse only after the row and the worktree
+  // exist; the gitfile is refused first (decision 101).
+  it('refuses a repo whose .git is a gitfile before any row, worktree or branch', () => {
+    const separate = tempDir('pup-wtconfig-separate-');
+    const gitfileRepo = tempDir('pup-wtconfig-gitfile-');
+    gitIn(gitfileRepo, 'init', '-b', 'main', `--separate-git-dir=${join(separate, 'git')}`);
+    gitIn(gitfileRepo, 'config', 'user.email', 't@t');
+    gitIn(gitfileRepo, 'config', 'user.name', 't');
+    commitIn(gitfileRepo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(gitfileRepo), gitfileRepo);
+    planTask(db, { repoPath: gitfileRepo, task: spec() });
+
+    expect(() =>
+      launchTask(db, {
+        repoPath: gitfileRepo,
+        base: DEFAULT_BASE_PROFILE,
+        taskId: 't-1',
+        claudeUserDir: join(gitfileRepo, '.claude'),
+      }),
+    ).toThrow(/its \.git is not a directory\. pup pins a session to the repository/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
+      n: 0,
+    });
+    expect(existsSync(join(gitfileRepo, '.worktrees'))).toBe(false);
+    expect(gitIn(gitfileRepo, 'branch', '--list', 'pup/t-1')).toBe('');
+  });
+
   it('writes no task row when `pup new` is refused', () => {
     expect(() =>
       createSession(db, {
@@ -748,6 +855,11 @@ describe('launchTask worktree-config guard', () => {
     expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
   });
 });
+
+/** The git a shim on PATH hands every call it does not intercept to. */
+function realGit(): string {
+  return execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+}
 
 /** What `act` threw, for the assertions a `toThrow` matcher cannot make. */
 function caught(act: () => unknown): unknown {
