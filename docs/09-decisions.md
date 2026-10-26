@@ -5645,9 +5645,11 @@ changes back into those docs is pending.
     gone after the prune, which keeps a locked registration without a word, and they claim the
     removal only then (CI review of #173). The conductor's first cut has no undo and needs none.
     A later start that finds its checkout without an index, as an interrupted or failed
-    `read-tree` leaves it, cuts it again from the tip with `checkoutPinned`. A `checkout` would
-    refuse the files already written as untracked on every start, and no catch sees an interrupt
-    (CI review of #173). The
+    `read-tree` leaves it, removes the checkout and cuts it again from the tip, as a first start
+    would, and no catch sees an interrupt (CI review of #173). Not in place: a `checkout` refuses
+    the files already written as untracked, and a `read-tree` over them left HEAD at the old cut
+    and kept the files the tip had dropped since, so the next start's `checkout` aborted once the
+    target moved (conductor review of the round). The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's

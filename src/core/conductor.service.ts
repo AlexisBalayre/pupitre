@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile } from '../adapters/capability.utils.js';
@@ -131,20 +131,23 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   const tip = runGit(repoPath, ['rev-parse', '--verify', `refs/heads/${target}^{commit}`]).trim();
   if (existsSync(join(checkoutDir, '.git'))) {
     const git = verifiedWorktreeGitEnv(repoPath, checkoutDir);
-    // No index: a first cut's read-tree that never finished, interrupted or
-    // out of disk, left files a `checkout` would refuse as untracked on every
-    // later start. Cut again from the tip instead, which no catch could cover.
-    if (!lstatSync(join(git.GIT_DIR, 'index'), { throwIfNoEntry: false })) {
-      return checkoutPinned(repoPath, checkoutDir, tip);
+    if (lstatSync(join(git.GIT_DIR, 'index'), { throwIfNoEntry: false })) {
+      runGit(checkoutDir, ['checkout', '--detach', tip], { env: { ...git } });
+      return git;
     }
-    runGit(checkoutDir, ['checkout', '--detach', tip], { env: { ...git } });
-    return git;
+    // No index: a first cut whose read-tree never finished, interrupted or out
+    // of disk. A `checkout` refuses its files as untracked on every later
+    // start, and a read-tree over them leaves HEAD at that cut, which aborts
+    // the next `checkout`, and keeps files the tip has since dropped. So it
+    // goes, and is cut again below, which no catch could do for an interrupt.
+    rmSync(checkoutDir, { recursive: true, force: true });
   }
   // An operator who clears `~/.pupitre` leaves the registration behind, and
   // `worktree add` then refuses the path forever ("missing but already
   // registered") — the conductor would silently never get a graph again.
-  // Prune drops only registrations whose directory is already gone, so it
-  // heals that and touches nothing that still exists.
+  // Prune drops only registrations whose directory is already gone, the half
+  // cut's just removed among them, so it heals both and touches nothing that
+  // still exists.
   runGit(repoPath, ['worktree', 'prune']);
   mkdirSync(dirname(checkoutDir), { recursive: true });
   // `--no-checkout`: the add's own checkout would read the admin dir's

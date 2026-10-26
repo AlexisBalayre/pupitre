@@ -570,9 +570,11 @@ describe('startConductor code graph', () => {
   // The first cut is an add, then a pinned `read-tree -u`. An interrupt or a
   // full disk partway through the read-tree leaves files and no index, which
   // git's own cleanup of a failed add never sees. A `checkout` from there
-  // refuses those files as untracked on every later start, so the conductor
-  // would go without a graph until someone deleted the checkout.
-  it('heals a first cut whose read-tree never finished', () => {
+  // refuses those files as untracked on every later start. A read-tree over
+  // them kept HEAD at that cut and the files the target had dropped since, so
+  // the next start's `checkout` aborted once the target moved again: either
+  // way the conductor went without a graph for good (conductor review).
+  it('re-cuts a first cut whose read-tree never finished, at the tip it moved to', () => {
     fakeCodegraph(INDEXES);
     const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     const shim = tempDir('pup-git-');
@@ -590,14 +592,28 @@ describe('startConductor code graph', () => {
     expect(launchedWith()?.mcpConfigPath).toBeUndefined();
     vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     fakeCodegraph(INDEXES);
+    gitIn(repo, 'rm', '-q', 'tracked.ts');
+    writeFileSync(join(repo, 'second.ts'), 'export const second = 2;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'second');
+
+    start();
+
+    expect(existsSync(join(checkout(), 'tracked.ts'))).toBe(false);
+    expect(existsSync(join(checkout(), 'second.ts'))).toBe(true);
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
+    writeFileSync(join(repo, 'tracked.ts'), 'export const tracked = 3;\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '-qm', 'third');
 
     start();
 
     expect(readFileSync(join(checkout(), 'tracked.ts'), 'utf8')).toBe(
-      'export const tracked = 1;\n',
+      'export const tracked = 3;\n',
     );
     expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
-    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
     expect(launchedWith()?.mcpConfigPath).toBeDefined();
   });
 
