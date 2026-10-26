@@ -1,0 +1,200 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T16:26:25.695Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40358140237",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40358140237",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e",
+  "source": "pr",
+  "pr_number": 179,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/ui/actions.service.ts",
+      "line": "103",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the operator launches from `pup ui` (press `l`) or starts the conductor from it (press `c`), pup still passes `claudeUserDir: join(homedir(), '.claude')`. But `spawnClaudeWindow` opens that same window on the `CLAUDE_CONFIG_DIR` the list names. So the `profile_hash` recorded for those sessions covers a config dir they do not run on. That breaks decision 106's rule that every launch hashes `claudeUserDir(repoPath)`.",
+      "body": "**The dashboard's two launch paths still hash `~/.claude`, but their windows now run on the named `CLAUDE_CONFIG_DIR`.**\n\nThis PR switches `pup new`, `pup launch`, `pup conductor start` and `pup fix` to `claudeUserDir(repoPath)`. Two dashboard actions still hardcode the old dir:\n\n```ts\n// launchSelected, the `l` key (line 103)\nclaudeUserDir: join(homedir(), '.claude'),\n// toggleConductor, the `c` key (line 241)\nclaudeUserDir: join(homedir(), '.claude'),\n```\n\n- https://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/src/cli/ui/actions.service.ts#L96-L112\n- https://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/src/cli/ui/actions.service.ts#L236-L244\n\nBoth paths still reach `spawnClaudeWindow`, which now spreads `...sessionEnv(opts.repoPath)` into the window's `-e`. It also seeds trust through `claudeJsonFor(opts.repoPath)`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/src/claude/session-runtime.service.ts#L676-L689\n\nSo a session or conductor started from `pup ui` runs on the named dir. Its profile hash comes from `snapshotUserConfigHash(source.claudeUserDir)` (`session-lifecycle.service.ts:477`, `conductor.service.ts:230`), and that hashes `~/.claude`. The same project then records hashes over different dirs depending on whether a session came from the CLI or the dashboard.\n\nDecision 106 says those four commands hash the named dir. Its \"Owed\" paragraph lists only the transcript readers and the `claude -p` utilities, not the dashboard:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/docs/09-decisions.md#L6021-L6030\n\nBefore this PR, `tmuxEnv` stripped `CLAUDE_CONFIG_DIR` from every window, so `~/.claude` was the right dir to hash. One more gap: these paths never call `claudeUserDir` early, so a relative value only fails later, inside `spawnClaudeWindow`.\n\n**Fix:** at both sites, pass `claudeUserDir(deps.repoPath)`, imported from `../../claude/session-runtime.service.js`. The `homedir` and `join` imports may then be unused. Alternatively, list the dashboard under decision 106's \"Owed\".",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "674",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the recorded list names `CLAUDE_CONFIG_DIR` and the shell's value is not absolute (for example a quoted `~/x`), `claudeUserDir` throws a plain `Error`. `pup new`, `pup audit --sweep`, `pup launch` and `pup conductor start` all rethrow it as an uncaught crash. Only `pup fix` turns it into a refusal.",
+      "body": "**A relative `CLAUDE_CONFIG_DIR` crashes most launch commands with a stack trace instead of refusing.**\n\nWhen the value is not absolute, `claudeUserDir(repoPath)` throws a plain `Error` (`session-runtime.service.ts:330-335`):\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/src/claude/session-runtime.service.ts#L327-L336\n\nDecision 106 says \"A launch refuses otherwise\". The `launchOrRefuse` doc treats anything outside `expected` as a bug, and `fatalExitCode` (index.ts:2517-2535) says anything uncaught \"is a bug and stays a crash\". Three of the four new call sites let this error reach that path:\n\n- **`pup new` and `pup audit --sweep`** go through `createOrRefuse` → `launchOrRefuse`. A plain `Error` is not in `[InvalidProfileError, ...NO_ROOM_ERRORS]`, so line 642 rethrows it.\n- **`pup launch`** fails the same way: `Error` is not in its `expected` list.\n- **`pup conductor start`**: its `catch` handles only `LaunchRolledBackError` (line 1169) and rethrows everything else.\n\nThe operator therefore gets a Node stack trace for a configuration mistake. `pup fix` hits the same error and prints a one-line refusal through `refuseScrubbed` (line 2205).\n\nA realistic trigger is `export CLAUDE_CONFIG_DIR='~/.claude-w4b'`: the quotes stop the shell expanding `~`. Nothing is persisted before the throw, but the refusal contract breaks on a reachable path, and no CLI test covers it.\n\n- https://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/src/cli/index.ts#L636-L677\n- https://github.com/AlexisBalayre/pupitre/blob/fb1a439e0f6a64d5ff9cc9dc4fa062e904bc711e/src/cli/index.ts#L1157-L1174\n\n**Fix:** either throw a named error class from `claudeUserDir` and add it to the `expected` lists and the conductor `catch`, or resolve `claudeUserDir(repoPath)` once before launching and refuse there, scrubbed, since the message quotes the env value.",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "677-683",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`session-env.json` is resolved up to four times per launch: once by the CLI's `claudeUserDir`, then twice in `claudeJsonFor` and once more for the `-e` spread in `spawnClaudeWindow`. Any session can rewrite the file in between, so the hashed dir, the trust-seed dir and the window's env can disagree. Read it once per launch and pass the snapshot through.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "277-300",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`readSessionEnv` hand-rolls the open(O_NOFOLLOW|O_NONBLOCK) + fstat regular-file/size-cap + read sequence that `readPlainFile(path, { followLinks: false })` in `src/adapters/capability.utils.ts:21-40` already provides (and `git-diff.client.ts`/`codegraph.client.ts` repeat), so the next hardening fix has one more copy to land in.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1227-1233",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`transcriptDir`'s new `claudeDir` parameter has no production caller. Only the new test passes it, and decision 106 lists the transcript callers as owed. That breaks general.md §Altitude/YAGNI (\"Don't add parameters … for requirements that don't exist yet\"), and its doc describes the stamp and dashboard check as if they already use the window's dir.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "244-246",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sessionEnvAllowed()` is a one-caller wrapper that only `join`s the private `SESSION_ENV_ALLOWED` for the CLI's refusal message. Inline it, or export the constant (general.md §Altitude: inline by default without a second caller or a stated WHY).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.test.ts",
+      "line": "760-805",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 106's Tests paragraph says the real-tmux test sets values ending in `;` and `\\;`, but the test only stubs `'opus;'` and `'high;'`. The `tmuxWord` path where an existing `\\;` must survive tmux's unescaping is never exercised against real tmux.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "1958-2015",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `--session-env` tests were inserted between the existing comment (\"The conductor is the operator's delegate for setup … (decision 48)\") and the `lets the conductor run init` test it describes. The comment now reads as if it describes the refusal tests; move the new block above it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6040-6056",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 106's 17-line *Tests.* paragraph lists individual test cases and credential/loader families. That repeats both the decision's own allowlist rationale and the test files, and it will drift as the tests change. A one-line summary of what is covered would do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.test.ts",
+      "line": "446-448",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The closed-list-vs-denylist rationale appears three times: in decision 106, in `SESSION_ENV_ALLOWED`'s JSDoc and again in a test comment. Cut the test copy to a \"(decision 106)\" pointer.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "677-683",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`claudeUserDir(repoPath)` reads `session-env.json` in the CLI to choose the dir the profile hash covers. `spawnClaudeWindow` reads the file again, seconds later, to choose the dir the window runs on. A session that rewrites the file in between makes even the CLI's `pup launch`, `pup new` and `pup fix` hash one dir and run another.",
+      "refutation": "The gap between the two reads is real, but it gives an attacker nothing new. No code reads `profile_hash`: it is only written (session.repository.ts:419-428). Decision text at docs/09-decisions.md:2674-2678 says \"nothing reads the hash\", and decision 9 detects drift rather than preventing it. A session that writes `[\"CLAUDE_CONFIG_DIR\"]` before the launch, with no race at all, is the exposure decision 106 explicitly accepts (\"The file is a session's to write … The list bounds that choice\", 09-decisions.md:6004-6007). The same window also lets a session edit the hashed dir directly. Kept as a consistency nit (read the file once per launch)."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-spec, because the PR closes no issue and references no spec source. Scaled correctness and security to 2 instances each for a diff of about 672 lines (360 of them tests). Kept maintainability at 1 sonnet instance because the non-test logic change is about 220 lines."
+    },
+    {
+      "component": "validator",
+      "description": "The validator for the dashboard-hash finding had `gh pr view 179 --json ...` refused and fell back to bare `gh pr view 179`. That did not affect its verdict."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.165144200000001,
+  "duration_ms": 320901,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 20288,
+    "cache_read": 304033,
+    "cache_creation": 70799,
+    "total": 395132
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 146,
+      "output": 75039,
+      "cache_read": 1999850,
+      "cache_creation": 313668,
+      "cost_usd": 3.6820709999999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 14227,
+      "cache_read": 428412,
+      "cache_creation": 119148,
+      "cost_usd": 0.4830732
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 179 --repo AlexisBalayre/pupitre --json body --jq .body"
+    }
+  ]
+}
