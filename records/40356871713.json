@@ -1,0 +1,218 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T16:17:29.529Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40356871713",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40356871713",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4e566f7a9092e6dd39a928fecf459ad4fa10cd19",
+  "source": "pr",
+  "pr_number": 178,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "3c10a28670c2c7ada3c75347a255d3c246f66479",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "147-155, 218-228",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "196-228",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "472-482",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "35-40",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "206-228",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When GitHub's head is unreadable (`review.head === undefined`), `isPinned` is false, so an OPEN PR now ends the wait with \"the head moved off <pin>\" and points to `pup merge <id> --pr`. That re-gate refuses an unreadable head. Before this delta the wait kept waiting, and `land.service.ts:97` treats an unreadable head as not moved (`pr.head !== undefined && pr.head !== sha`). In practice `headRefOid` is non-null, so this only matters for a malformed answer. Keeping the old behaviour, treating an unreadable head as one more wait, would match land's reading.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "671-677",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Any GitHub account can stall `pup ci wait` until its timeout. Posting 100 PR comments after the bot's `claude-review` status sets `hasPreviousPage` with every comment on the page newer than the status, so `isRereviewAsked` reads true. The wait then times out with \"a review of <head> asked by comment after its status\" and \"Re-run `pup ci wait <id>`\". This fails closed: no false verdict, no new next step, bounded by `timeoutMs`. But it contradicts decision 86's \"Another account's comment starts no run, so it holds nothing\". The waiting text also tells the conductor an ask happened when none did. On a public repo the flood can be repeated on every re-run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "667-684",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "An owner `@claude review` comment made while another review run is still in flight is not detected. The workflow's job concurrency queues the comment's run, and the in-flight run's poster then sets a `claude-review` status newer than the comment. So `isRereviewAsked` reads false, and `pup ci wait` can finish on the first run's verdict while the queued re-review is still pending. The window is small and the first run reviewed the same head.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "88",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The change turns the existing `FORMAT_CHARS` regex into an exported constant of `fix-round.service.ts`, and `ci-wait.service.ts` now imports it from there. That makes one service import another service's internal constant. `general.md` §No hardcoded values puts constants in the area's `*.constants.ts`. Move it into a constants file both services import, such as `merge-gate.constants.ts`, or next to `sanitizeReason` in `capability.utils.ts`, with a shared strip-then-sanitize helper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "406-412",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Two sources of truth for one review verdict. `PullRequestReview` gains the derived boolean `isRereviewAsked`, and the digest in `ci-wait` then decides on it separately from the raw fields. `reviewStatusOn` now returns an internal `setAt`, and the caller immediately re-maps the result with `status && { state, description }` to drop that field and keep the public shape. This is the only place `setAt` is used, so the exported type and the internal type now differ by one field.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "667-684",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`isReviewAskedSince` hardcodes the workflow's trigger (`/@claude review/i`, `authorAssociation === 'OWNER'`). The comment cites `.github/workflows/claude-code-review.yml` for the rules, but nothing ties the code to that file, so a workflow edit leaves the client wrong without any signal. A check that the repo's own `.github/workflows/claude-code-review.yml` still contains the trigger string would be cheap protection.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "518",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `reason` closure reads the shared module-level sticky `VERDICT.lastIndex` lazily. It is correct only because it is called right after a successful `exec` that matched a verdict word. A failed `exec` resets `lastIndex` to 0, so any later reorder or deferred call would silently slice from the wrong offset (Mysterious Name / hidden temporal coupling).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "512",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The three-way branch inside the nested summary/clause/id loop has no comment on its precedence. When an id opens a clause, the branch overwrites any earlier answer for that id, even with `undefined`. A mid-clause id only sets an answer if it is colon-form, and otherwise only records a first sighting. The `named.has(id)` guard is what makes a mention inside a reason never downgrade an answer, and nothing says so. The loop is also three levels deep, with an `undefined` map value doubling as 'named but unanswered'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.test.ts",
+      "line": "1771-1789",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test builds a summary of about 1 MB, but `threadAnswers` reads only `SUMMARY_MAX_CHARS` (64 KiB) of it. Even a per-mention algorithm would finish 64 KiB within the 2 s bound, so the test cannot catch the regression it names. The doc line it backs (\"reads a megabyte of mentions within a time bound\") overstates it the same way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4970-4972",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The sentence still says answers are taken \"by its last mention in the newest summary naming it\". The text added later in that sentence, and `threadAnswers`, say a mention inside a reason neither answers nor cancels within its summary. The rule is now \"by its last answer\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "4864, 4974",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two lines this delta edits in decision 90 run well past the file's ~100-column wrap, because new text was spliced onto old lines without re-wrapping: L4864 ends with \"One GraphQL read (`readThreadAnswers`, pinned\", and L4974 is \"reads a megabyte of mentions within a time bound, posts nothing again on a second run, gives up within its budget on a gh\". Re-wrap both paragraphs.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "maintainability",
+      "description": "Both maintainability instances skipped the test files in their slices (ci-wait.test.ts, github-client.test.ts, fix-round.test.ts), so the delta's tests got no maintainability coverage."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not read the test files or docs/09-decisions.md, so its coverage of the delta was partial."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.4237048,
+  "duration_ms": 245530,
+  "num_turns": 21,
+  "tokens": {
+    "input": 14,
+    "output": 15060,
+    "cache_read": 348356,
+    "cache_creation": 90541,
+    "total": 453971
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 94,
+      "output": 63883,
+      "cache_read": 1489712,
+      "cache_creation": 235297,
+      "cost_usd": 3.0240864000000007
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 11718,
+      "cache_read": 271249,
+      "cache_creation": 102095,
+      "cost_usd": 0.39961839999999993
+    }
+  ],
+  "permission_denials": []
+}
