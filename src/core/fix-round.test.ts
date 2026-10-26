@@ -1730,19 +1730,14 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     });
 
     // A reviewer flags one cause in several places, so a reason cites other
-    // threads, or its own: an id inside a reason is in no answer's place, so
-    // it neither answers that thread nor cancels its answer, in its summary or
-    // an older one. An answer after prose still reads.
-    it('reads an id cited inside a reason as no answer, and as no cancel', async () => {
+    // threads, or its own: an id inside a reason answers nothing, even with a
+    // verdict word after it, and cancels no answer of its summary. Mid-clause,
+    // only the colon form answers, so an answer after prose still reads.
+    it('reads an id cited inside a reason as no answer, and as no cancel within its summary', async () => {
       const fixed = await gateTheRound(
-        'fixed the failing check PRRT_fixed hid; PRRT_declined declined: the call is sync, as ' +
-          'PRRT_fixed assumed',
-        {
-          rejected: [
-            'Answered all three. PRRT_fixed fixed: bounded the loop, the bound PRRT_fixed asked ' +
-              'for; PRRT_silent fixed: same bound as PRRT_fixed',
-          ],
-        },
+        'Answered all three. PRRT_fixed fixed: bounded the loop, the bound PRRT_fixed asked ' +
+          'for; PRRT_declined declined: not a bug, as PRRT_fixed fixed it upstream; ' +
+          'PRRT_silent declined: same reasoning as PRRT_declined addressed upstream',
       );
 
       expect(resolves()).toHaveLength(1);
@@ -1751,12 +1746,46 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         `Addressed in ${fixed}: \` bounded the loop, the bound PRRT_fixed asked for \``,
       );
       expect(replies().find((m) => m.includes('-f thread=PRRT_declined'))).toContain(
-        '` the call is sync, as PRRT_fixed assumed `',
+        '` not a bug, as PRRT_fixed fixed it upstream `',
       );
       expect(comments()[0]).toContain(
-        '1 thread(s) addressed and resolved, 1 answered fixed that pup could not verify, ' +
-          '1 declined and 0 unanswered',
+        '1 thread(s) addressed and resolved, 0 answered fixed that pup could not verify, ' +
+          '2 declined and 0 unanswered',
       );
+    });
+
+    // A later summary that names a thread only inside a reason is still a
+    // later word on it: the older `fixed` does not stand past it.
+    it('lets no older answer stand past a later summary citing its thread', async () => {
+      await gateTheRound('reverted the bound added for PRRT_fixed, it broke the build', {
+        rejected: [SUMMARY],
+      });
+
+      expect(resolves()).toEqual([]);
+      expect(comments()[0]).toContain(
+        '0 thread(s) addressed and resolved, 0 answered fixed that pup could not verify, ' +
+          '1 declined and 2 unanswered',
+      );
+    });
+
+    // The gate reads the summaries under the merge lock, and they are session
+    // text: a megabyte of mentions costs one pass, not one per mention.
+    it('reads a summary of many mentions in one pass', async () => {
+      await gateTheRound(
+        `PRRT_declined declined: the call is sync; ${'a PRRT_fixed PRRT_silent '.repeat(40_000)}`,
+      );
+      const started = Date.now();
+
+      const answers = answerFixRoundThreads(
+        db,
+        repo,
+        SESSION_ID,
+        'github.com/owner/repo',
+        mainSha(),
+      );
+
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(answers).toMatchObject({ addressed: 0, unverified: 0, declined: 1, unanswered: 2 });
     });
 
     // An armed driver is the operator's alarm (decision 50), never read as no

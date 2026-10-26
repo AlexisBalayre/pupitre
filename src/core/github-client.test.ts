@@ -296,6 +296,19 @@ describe('readPullRequestReview', () => {
     // With no status of the bot's on the head, there is nothing stale to wait past.
     ghAnswers({ ...asked('2026-10-26T10:05:00Z'), commits: { nodes: [] } });
     expect(read().isRereviewAsked).toBe(false);
+    // A full page of comments, none from before the status, may hide an ask
+    // on the page before it; one from before shows the whole span was read.
+    const fullPage = (createdAt: string[]) => ({
+      ...asked('2026-10-26T09:55:00Z'),
+      comments: {
+        pageInfo: { hasPreviousPage: true },
+        nodes: createdAt.map((at) => ({ body: 'noise', createdAt: at, authorAssociation: 'NONE' })),
+      },
+    });
+    ghAnswers(fullPage(['2026-10-26T10:01:00Z', '2026-10-26T10:02:00Z']));
+    expect(read().isRereviewAsked).toBe(true);
+    ghAnswers(fullPage(['2026-10-26T09:59:00Z', '2026-10-26T10:02:00Z']));
+    expect(read().isRereviewAsked).toBe(false);
   });
 
   // Two runs on one head: the newest run's verdict is the review's (decision 90).

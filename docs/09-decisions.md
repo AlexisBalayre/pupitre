@@ -4845,15 +4845,23 @@ changes back into those docs is pending.
     round's checks rejected steers the worker to fix only the failures, so the summary after it
     may answer no thread, and each thread keeps its newest answer. Each summary is read on its
     own, newest first, and no answer runs across a line break, so an id ending one summary or line
-    never takes the verdict that starts the next. A summary names a thread only where an answer
-    could stand: its id followed by a verdict, or opening a clause (the summary's start, or after
-    `;` or a line break) past nothing but a bullet, emphasis or a backtick. An id cited inside a
-    reason (`PRRT_b fixed: same as PRRT_a`, or a reason naming its own thread) stands in no such
-    place, so it neither answers nor cancels: counting every mention cancelled the cited thread's
-    answer, as review bots flag one cause in several places. The newest summary that names a
-    thread so answers for it, by the last such place there: one in any other form (`` `<id>`
-    declined ``, `<id>: declined`, `**<id>** declined`) is no answer, so an older `fixed` never
-    outlives it. One GraphQL read (`readThreadAnswers`, pinned
+    never takes the verdict that starts the next. An answer stands where an id opens a clause (the
+    summary's start, or after `;` or a line break) past nothing but punctuation, a bullet,
+    emphasis or a backtick, or mid-clause in the colon form alone (`<id> fixed:`), so an answer
+    after prose still reads. An id cited inside a reason (`PRRT_b fixed: same as PRRT_a`, `as
+    PRRT_a addressed upstream`, a reason naming its own thread) answers nothing and cancels no
+    answer of its summary: counting every mention cancelled the cited thread's answer, as review
+    bots flag one cause in several places, and a verdict word with no colon after a cited id
+    turned a decline into a resolve. The newest summary that names a thread at all answers for
+    it, by its last answer there: a clause the id opens in any other form (`` `<id>` declined ``,
+    `<id>: declined`, `**<id>** declined`) is no answer, and neither is a summary naming it only
+    inside reasons, so an older `fixed` never outlives a later word on it. The gate reads the
+    summaries under the merge lock, and a worker can append any number of megabyte summaries,
+    so they are read in one pass for every thread: split once on `;` and line breaks, each run
+    of id characters looked up among the round's threads, only the newest 16 summaries and the
+    first 64 KiB of each, a reason cut at 1,000 characters before it is scrubbed. A pass per
+    mention, each re-reading the summary up to it, took 14 s on one 1 MB summary of mentions. A
+    thread answered only past those caps reads as unanswered and stays open. One GraphQL read (`readThreadAnswers`, pinned
     like every gh call) lists the PR's threads with `isResolved`, their `path`, whether the bot
     wrote the first comment, and the replies and PR comments the viewer wrote
     (`viewerDidAuthor`). A thread is answered only when its id has
@@ -4918,7 +4926,9 @@ changes back into those docs is pending.
     before while the repo owner commented `@claude review` after it: the read takes the status's
     `createdAt` and the PR's newest 100 comments, and an owner's comment carrying the words in any
     case, as the workflow's `if` and `contains` take it, keeps the wait going when it is newer or
-    either time is unreadable. Another account's comment starts no run, so it holds nothing.
+    either time is unreadable. Another account's comment starts no run, so it holds nothing. A
+    full page of comments (`hasPreviousPage`) with none from before the status may hide an ask on
+    the page before it, so it reads as asked too.
     The digest reads `<url> at <head>: review <outcome>; N open thread(s), M important → <next>`.
     Every string GitHub or gh returned is stripped of format characters first (tag characters,
     bidi controls, zero-widths: `sanitizeReason` keeps them, a terminal hides them, and the
@@ -4959,7 +4969,9 @@ changes back into those docs is pending.
     worker cherry-picked that change, that only a PR commit rewritten since the round started
     changed, or whose fix a later run of the round reverted, takes each thread's newest answer
     across the round's summaries, by its last mention in the newest summary naming it, and none
-    across a line break, reads an id cited inside a reason as neither an answer nor a cancel, posts nothing again on a second run, gives up within its budget on a gh
+    across a line break, reads an id cited inside a reason as neither an answer nor a cancel
+    within its summary, lets no older answer stand past a later summary citing the thread,
+    reads a megabyte of mentions within a time bound, posts nothing again on a second run, gives up within its budget on a gh
     that hangs, and answers nothing with no round, a failing gh, or a driver armed while the gate
     ran. `ci-wait.test.ts` runs a sequenced fake gh
     on a fake clock: a review on an older head is waited past, a timeout exits unfinished, a read

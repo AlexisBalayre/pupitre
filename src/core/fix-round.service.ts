@@ -92,8 +92,24 @@ const THREAD_BODY_MAX_CHARS = 4_000;
 const CI_REVIEW_LOOKUP_TIMEOUT_MS = 10_000;
 /** A GraphQL node id, as GitHub mints a review thread's; anything else in the store is skipped. */
 const THREAD_ID = /^[A-Za-z0-9_=-]{1,100}$/;
-/** A summary up to an id that opens a clause: only a bullet, emphasis or a backtick since its start. */
-const OPENS_A_CLAUSE = /(?:^|[;\n])[^\w;\n]*$/;
+/**
+ * The newest summaries a round's answers are read from, and how much of each:
+ * the gate reads them under the merge lock, and they are session text. A
+ * thread answered only past these reads as unanswered, and stays open.
+ */
+const SUMMARIES_READ = 16;
+const SUMMARY_MAX_CHARS = 64 * 1024;
+/** Where a reason is cut before it is scrubbed: one long clause costs no more than this. */
+const REASON_MAX_CHARS = 1_000;
+/** A run of the characters a thread id is made of: an id where it names one. */
+const ID_TOKEN = /[\w=-]+/g;
+/** What follows an id that answers: a word, then an optional `:` or dash, the reason after it. */
+const VERDICT = /\s+(\w+)\s*([:—–-]?)\s*/y;
+const VERDICTS = new Map<string, WorkerAnswer['verdict']>([
+  ['fixed', 'fixed'],
+  ['addressed', 'fixed'],
+  ['declined', 'declined'],
+]);
 type SessionDone = Extract<SessionEvent, { type: 'session_done' }>;
 /** Every gh call answering a round's threads, together: the gate holds the merge lock meanwhile. */
 const ANSWER_BUDGET_MS = 60_000;
@@ -129,6 +145,12 @@ interface ThreadAnswers {
 }
 
 type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
+
+/** One thread's answer in the worker's `pup session done` summary. */
+interface WorkerAnswer {
+  verdict: 'fixed' | 'declined';
+  reason: string;
+}
 
 /** The reply each verdict posts on its thread, before the marker; `reason` and `path` are code spans. */
 const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string) => string> = {
@@ -302,6 +324,7 @@ export function answerFixRoundThreads(
     filesTheRoundChanged(repoPath, head, sha, targetSha, timeoutMs),
   );
   const marker = `<!-- pup fix-round ${sha} -->`;
+  const workerAnswers = threadAnswers(summaries, threadIds);
   const answers: ThreadAnswers = {
     prUrl,
     sha,
@@ -313,7 +336,7 @@ export function answerFixRoundThreads(
   for (const id of threadIds) {
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
-    const answer = threadAnswer(summaries, id);
+    const answer = workerAnswers.get(id);
     const verdict = threadVerdict(answer?.verdict, thread.path, changed);
     if (!thread.ownReplies.some((body) => body.includes(marker))) {
       const said = REPLIES[verdict](
@@ -459,48 +482,49 @@ function filesTheRoundChanged(
 }
 
 /**
- * The worker's answer for thread `id` in the round's summaries, newest first,
- * as the round's kickoff asks for it: `<id> fixed: <reason>` or `<id>
+ * The worker's answer for each of `ids` in the round's summaries, newest
+ * first, as the round's kickoff asks for it: `<id> fixed: <reason>` or `<id>
  * declined: <reason>`, answers apart by `;` or a line break, so none runs
- * across one. `addressed` reads as `fixed`. A summary answers for the thread
- * where it names it in an answer's place: followed by a verdict, or opening a
- * clause past nothing but punctuation. The newest summary that does answers
- * for it, by the last such place there: one in any other form (`` `<id>`
- * declined ``, `<id>: declined`) is no answer, so an older `fixed` never
- * outlives it. An id cited inside a reason (`PRRT_b fixed: same as PRRT_a`)
- * is in no answer's place, so it neither answers nor cancels. `id` is a
- * minted thread id.
+ * across one. `addressed` reads as `fixed`. An answer stands where an id opens
+ * a clause, past nothing but punctuation, or mid-clause in the colon form
+ * alone (`<id> fixed:`), so an id cited inside a reason (`same as PRRT_a`,
+ * `as PRRT_a addressed upstream`) answers nothing. The newest summary that
+ * names a thread at all answers for it, by its last answer there: a clause
+ * the id opens in any other form (`` `<id>` declined ``, `<id>: declined`) is
+ * no answer, and neither is a summary naming it only inside reasons, so an
+ * older `fixed` never outlives a later word on it. One pass over the newest
+ * `SUMMARIES_READ` summaries, `SUMMARY_MAX_CHARS` of each, for every thread.
  */
-function threadAnswer(
-  summaries: string[],
-  id: string,
-): { verdict: 'fixed' | 'declined'; reason: string } | undefined {
-  const mention = new RegExp(`(?<![\\w=-])${id}(?![\\w=-])`, 'g');
-  const answer = new RegExp(
-    `${id}[^\\S\\n]+(fixed|addressed|declined)\\b[^\\S\\n]*[:—–-]?[^\\S\\n]*([^;\\n]*)`,
-    'iy',
-  );
-  const answerAt = (summary: string, index: number) => {
-    answer.lastIndex = index;
-    return answer.exec(summary);
-  };
-  for (const summary of summaries) {
-    const last = [...summary.matchAll(mention)]
-      .map((found) => found.index)
-      .filter(
-        (index) =>
-          answerAt(summary, index) !== null || OPENS_A_CLAUSE.test(summary.slice(0, index)),
-      )
-      .at(-1);
-    if (last === undefined) continue;
-    const match = answerAt(summary, last);
-    if (!match) return undefined;
-    return {
-      verdict: match[1]?.toLowerCase() === 'declined' ? 'declined' : 'fixed',
-      reason: match[2] ?? '',
-    };
+function threadAnswers(summaries: string[], ids: string[]): Map<string, WorkerAnswer | undefined> {
+  const answers = new Map<string, WorkerAnswer | undefined>();
+  const pending = new Set(ids);
+  for (const summary of summaries.slice(0, SUMMARIES_READ)) {
+    // Each id this summary names, with its last answer here, if any.
+    const named = new Map<string, WorkerAnswer | undefined>();
+    for (const clause of summary.slice(0, SUMMARY_MAX_CHARS).split(/[;\n]/)) {
+      const opening = /^\W*/.exec(clause)?.[0].length;
+      for (const found of clause.matchAll(ID_TOKEN)) {
+        const [id] = found;
+        if (!pending.has(id)) continue;
+        VERDICT.lastIndex = found.index + id.length;
+        const [, word = '', separator] = VERDICT.exec(clause) ?? [];
+        const verdict = VERDICTS.get(word.toLowerCase());
+        const reason = () => clause.slice(VERDICT.lastIndex, VERDICT.lastIndex + REASON_MAX_CHARS);
+        if (found.index === opening) {
+          named.set(id, verdict && { verdict, reason: reason() });
+        } else if (verdict && separator === ':') {
+          named.set(id, { verdict, reason: reason() });
+        } else if (!named.has(id)) {
+          named.set(id, undefined);
+        }
+      }
+    }
+    for (const [id, answer] of named) {
+      answers.set(id, answer);
+      pending.delete(id);
+    }
   }
-  return undefined;
+  return answers;
 }
 
 /**

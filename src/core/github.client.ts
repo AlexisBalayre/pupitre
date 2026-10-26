@@ -301,7 +301,10 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
           }
         }
       }
-      comments(last: ${REVIEW_PAGE}) { nodes { body createdAt authorAssociation } }
+      comments(last: ${REVIEW_PAGE}) {
+        pageInfo { hasPreviousPage }
+        nodes { body createdAt authorAssociation }
+      }
     }
   }
 }`;
@@ -661,13 +664,21 @@ function reviewStatusOn(
  * carrying `@claude review` in any case, as its `contains` reads it
  * (`.github/workflows/claude-code-review.yml`). A time outside its shape, on
  * either side, reads as after, so a wait goes on rather than taking the
- * status before for the run's.
+ * status before for the run's. So does a full page with no comment from
+ * before `since`: an ask may sit on the page before it, out of view.
  */
 function isReviewAskedSince(comments: unknown, since: number): boolean {
-  return nodesOf(comments).some((comment) => {
-    if (comment.authorAssociation !== 'OWNER' || typeof comment.body !== 'string') return false;
-    if (!/@claude review/i.test(comment.body)) return false;
-    const at = typeof comment.createdAt === 'string' ? Date.parse(comment.createdAt) : Number.NaN;
-    return !(at <= since);
-  });
+  const isAfter = (createdAt: unknown) =>
+    !((typeof createdAt === 'string' ? Date.parse(createdAt) : Number.NaN) <= since);
+  const page = nodesOf(comments);
+  if (objectFields(objectFields(comments).pageInfo).hasPreviousPage === true) {
+    if (page.every((comment) => isAfter(comment.createdAt))) return true;
+  }
+  return page.some(
+    (comment) =>
+      comment.authorAssociation === 'OWNER' &&
+      typeof comment.body === 'string' &&
+      /@claude review/i.test(comment.body) &&
+      isAfter(comment.createdAt),
+  );
 }
