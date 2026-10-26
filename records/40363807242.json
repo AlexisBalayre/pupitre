@@ -1,0 +1,235 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T17:01:16.305Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40363807242",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40363807242",
+  "actor": "AlexisBalayre",
+  "commit_sha": "24cf3117eeb956809b3bd4efef609d0176bae600",
+  "source": "pr",
+  "pr_number": 180,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "129, 196-198",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A coverage change under 0.05 percentage points (pt) prints as \"0 pt in 7 days\" instead of \"no change in 7 days\". The guard is a strict float compare (value === before), and the rounding gives 0 or -0, which signed() prints as \"0\". Comparing the rounded delta to 0, rather than the raw values, would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "249-251",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A first merge stamped exactly at midnight UTC on a week's first day is counted in the week before, because end - t equals a whole number of weeks and Math.floor drops it a bucket. One stamped exactly 56 days before the window's end passes the >= query and is then thrown away (week === 8). Bucketing from the window start instead fixes both: Math.floor((t - (end - MERGE_WEEKS * WEEK_MS)) / WEEK_MS) used directly as the slot.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-debt.service.ts",
+      "line": "107-115",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pay-down ranking adds floating-point weights (`1 + entry.ageDays / WEIGHT_DOUBLING_DAYS`) and compares them with plain subtraction (`b.weight - a.weight ||`). Two files whose weights should be equal can differ by about 1 ulp when their entries' ages are not multiples of 30, for example ages [7, 23] against [0, 30]. That skips the documented tie-break (more entries, then path) and gives an order the page cannot explain, since it shows both weights rounded to the same figure. Comparing the integers `entries.length * 30 + sum(ageDays)` would make ties exact.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "115-133, 184-198",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The Overview tiles re-implement pup audit's comparison and formatting: the duplicationRule comparability check copies audit.service.ts compareDebt, `pct` copies formatDebtValue, and METRICS labels overlap DEBT_METRIC_LABELS, so the week's change can drift from what `pup audit` reports; exporting and reusing compareDebt/formatDebtValue would keep one source of truth.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "139-143",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "storedDebt re-reads and re-parses the projects.baseline row that buildDashboardSnapshot's baselineOf already parsed, just for duplicationRule, and skips baselineOf's capturedAt check, so two readers of one row apply different validity rules; carrying the rule through the snapshot or debtFigures would avoid the second read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "82-85",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`displayText(sanitizeReason(entry.description))` is written inline (commented \"as on the Debt sheet\") while the Debt sheet names the same scrub `oneLine`; moving `oneLine` into web-dashboard-sheet.utils.ts would give every sheet one display scrub.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "54-56, 152",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Adding a sheet means editing SHEETS (sheet.utils), SHEET_TITLES and the dispatch ternary `sheet === 'debt' ? renderDebtSheet(...) : renderOverview(...)`, which silently routes any unwired sheet to Overview; a single `Record<SheetName, { title, render }>` would make each planned sheet (Health, Tasks, Decisions) one compiler-checked entry.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "159-181",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`lineChart` has no production caller (only chart.test.ts; Overview uses barChart and sparkline), and `plotted` was split out only to share code with it; under AGENTS.md's Altitude rule it could wait until a sheet draws a line chart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-debt.service.ts",
+      "line": "11",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`export interface DebtSheetEntry` is declared in a *.service.ts file, against docs/conventions/general.md §Type separation (\"Never inline an exported type/interface in a *.service.ts or *.routes.ts file\"); it belongs in a *.types.ts under src/core/types/.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "866-871",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new debtFigures JSDoc wraps mid-sentence into an overlong line and says unused exports may be \"an array\" without saying the figure is the stored array's length; reflow it and say \"unused exports as the length of the stored array\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "37",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The WebDebtEntry comment says \"every field already through `sanitizeReason`\", but readOverview now also runs the description through displayText; say so.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "95-102",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The readGoal JSDoc sentence \"so the page is left the direction marks, which `displayText` replaces, and the escaping, and keeps the line breaks\" is garbled; rewrite as \"the page replaces direction marks via displayText, escapes, and keeps the line breaks\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "150-160, 235-239",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The figureTiles JSDoc breaks mid-sentence and repeats decision 98, and mergesPerWeek's \"the store has no events query of this shape, and this is its only reader\" will go stale; keep only \"one grouped query, since it runs on every poll\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "193",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The tile copy 'no capture 7 days back' reads as if no captures exist when there are only recent ones; the code wants a capture at least 7 days old, so 'no capture older than 7 days' is more accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "376-379, 472-474",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Session and task text on the Overview (branch, goal, question, steer \"by\", route reason, backlog goal and origin) only goes through sanitizeReason, not displayText. So a U+202E or U+2066–2069 in a session-written branch or an agent-planned task goal still reorders that row. The hardening for decision 98 covers ledger fields and the Destination only, and these rows were moved unchanged from the decision-91 page.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6119",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "docs/09-decisions.md is not in numeric order (decision 99 sits at line 5401, before 97 and the new 98), so decisions are hard to find by number; the drift predates this PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.043409700000001,
+  "duration_ms": 249811,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 14160,
+    "cache_read": 219981,
+    "cache_creation": 47378,
+    "total": 281529
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 148,
+      "output": 63708,
+      "cache_read": 2949875,
+      "cache_creation": 341864,
+      "cost_usd": 3.7161810000000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 8220,
+      "cache_read": 332587,
+      "cache_creation": 84684,
+      "cost_usd": 0.32722870000000004
+    }
+  ],
+  "permission_denials": []
+}
