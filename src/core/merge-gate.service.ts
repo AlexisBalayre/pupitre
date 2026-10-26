@@ -916,8 +916,9 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
  * into the message; nothing here reads per-branch config, as the fast-forward
  * reads none (decision 80). The worktree's index and files follow with the
  * pinned two-way `read-tree` the fast-forward uses, only while its HEAD is the
- * branch: a worktree the session switched elsewhere is left as it is. Returns
- * the failure for the worker, or undefined once the branch holds the merge.
+ * branch: a worktree the session switched elsewhere is left as it is, and one
+ * whose files refuse the merge has the branch put back. Returns the failure for
+ * the worker, or undefined once the branch holds the merge.
  */
 function mergeTargetInto(
   repoPath: string,
@@ -939,7 +940,10 @@ function mergeTargetInto(
       )[0] as string
     ).trim();
   } catch (error) {
-    rethrowIfKilled(error);
+    // 1 is a conflict. Any other status (a signal, no `--write-tree` before git
+    // 2.38, a missing object) is git failing to merge at all, which no worker
+    // can resolve: thrown to the operator, with only objects written.
+    if ((error as { status?: unknown }).status !== 1) throw error;
     return (
       `Auto-merge of ${shown} hit conflicts. Run ` +
       `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
@@ -1003,10 +1007,37 @@ function mergeTargetInto(
     ]);
   } catch (error) {
     rethrowIfKilled(error);
+    // The refused read-tree wrote nothing, so the branch goes back to the tip
+    // whose files the worktree still holds. Left on the merge, HEAD would sit
+    // over those files and status would show the target's changes reversed,
+    // staged for the next commit to take.
+    try {
+      runGit(
+        repoPath,
+        [
+          'update-ref',
+          '--no-deref',
+          '-m',
+          `pup merge: undo merge of ${target}`,
+          branchRef,
+          branchSha,
+          merged,
+        ],
+        piped,
+      );
+    } catch (undo) {
+      rethrowIfKilled(undo);
+      return (
+        `This worktree's files refused the merge of ${shown}, and ${branch} moved from that ` +
+        `merge, ${merged}, before the gate could put it back on ${branchSha}, whose files the ` +
+        `worktree still holds. A commit over those files undoes ${shown}'s changes: check what ` +
+        `${branch} holds before the next one.\n${commandFailureDetail(error)}`
+      );
+    }
     return (
-      `${branch} now holds the merge of ${shown} at ${merged}, but this worktree changed while ` +
-      `the gate ran and still holds ${branchSha}'s files. Set your changes aside, run ` +
-      `\`git read-tree -m -u ${branchSha} ${merged}\`, then commit.\n${commandFailureDetail(error)}`
+      `This worktree's files refused the merge of ${shown}, so nothing was merged. Commit or ` +
+      `discard the changes git names below; the next gate merges ${shown} again.\n` +
+      commandFailureDetail(error)
     );
   }
   return undefined;

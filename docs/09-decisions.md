@@ -5675,15 +5675,25 @@ changes back into those docs is pending.
     in the merge commit pushed to the PR; `--verify-signatures` and `-s <name>` (a
     `git-merge-<name>` from PATH) went the same way (found on security review of the first cut,
     reproduced on Apple Git 2.39.5). The fast-forward dropped the porcelain merge for the same
-    surface in decision 80. A conflict (`merge-tree` exits non-zero) writes nothing and fails
+    surface in decision 80. A conflict (`merge-tree` exits 1) writes nothing and fails
     fresh-base with `Run git merge refs/heads/<target>, resolve the conflicts, and commit the
     merge`, which re-steers the worker and counts toward the reject cap like a rebase conflict
     (decision 15); the porcelain merge the worker runs there is the worker's own, inside its
-    sandbox. A branch moved under the compare-and-swap, or a worktree that changed so the
-    `read-tree` refuses, fails fresh-base the same way, the latter naming the `read-tree` to
-    run once the changes are set aside. The push then goes without a lease, so git refuses anything but a
-    fast-forward of what the PR holds. A session that rewrote the branch itself (a rebase or an
-    amend in a fix round) is caught before the stages rather than by that push: when the
+    sandbox. Any other exit is git failing to merge at all (no `--write-tree` before 2.38, a
+    missing object), which no worker can resolve: it throws to the operator with only objects
+    written and no reject counted. A branch moved under the compare-and-swap fails fresh-base
+    the same way, with nothing merged. So does a worktree whose files refuse the `read-tree`:
+    an edit or a new file the session made after the worktree-clean stage, at a path the merge
+    brings in. An ignored file there does not refuse it: `read-tree -m -u` overwrites it as the
+    porcelain rebase did (Apple Git 2.39.5). The refused `read-tree` wrote nothing, so a second
+    compare-and-swap puts the branch back on the tip the merge read, and the worker commits or
+    clears what git names. The branch left on the merge would have had HEAD over the old tip's
+    files, with `git status` showing the target's changes reversed and staged for the next
+    commit to take; that revert would then pass fresh-base on the next gate (found on CI
+    review, replacing a first cut that left the branch there and named the `read-tree` to run).
+    A branch moved off the merge before it could be put back fails naming both. The push then
+    goes without a lease, so git refuses anything but a fast-forward of what the PR holds. A
+    session that rewrote the branch itself (a rebase or an amend in a fix round) is caught before the stages rather than by that push: when the
     remote-tracking ref of the last gate's push is not an ancestor of the branch, fresh-base
     fails and tells the worker to bring those commits back and merge rather than rebase. With no
     tracking ref (a PR pushed from another clone) the push alone guards. A branch no open PR
@@ -5705,10 +5715,12 @@ changes back into those docs is pending.
     into <branch>`. A gate whose build fails after the merge leaves the worktree on the merge,
     clean, with the target's files; with the worktree's HEAD detached it moves the branch to the
     merge and leaves the worktree on the pushed commit. A branch moved just before the
-    compare-and-swap fails fresh-base naming the tip it moved from, and an edit to a file the
-    merge brings in, made after the worktree-clean stage, fails it naming the `read-tree` to run.
-    Neither pushes. A stale branch with no open PR is still rebased onto the target and lands on origin
-    with no merge commit.
+    compare-and-swap fails fresh-base naming the tip it moved from. An edit to a file the merge
+    brings in, or a new file at a path it adds, made after the worktree-clean stage, fails it
+    with the branch and the worktree's HEAD back on the pushed commit and nothing staged. A
+    branch moved again before that undo fails naming the merge it left. None pushes. A
+    `merge-tree` exiting 128 throws, with no re-steer. A stale branch with no open PR is still
+    rebased onto the target and lands on origin with no merge commit.
 
 103. **The idle prompt is a turn end, a turn ended on the session's own background shell reads
     `working on a background shell`, and workers commit and test in the foreground
