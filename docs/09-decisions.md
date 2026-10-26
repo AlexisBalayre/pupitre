@@ -4614,7 +4614,7 @@ changes back into those docs is pending.
 
 90. **`pup fix <session>` hands the CI review's open threads on a merged session's PR back to
     its worker, through the one edge out of `merged` (2026-10-18, part 1 of the conductor/CI
-    review loop; amends 7, 40, 83, 84, 86 and 92).**
+    review loop; part 2 closed the loop 2026-10-26; amends 7, 40, 83, 84, 86 and 92).**
     A CI fix round was the operator's by hand: a review worktree, a commit, a push to the PR, then
     the re-gate (decision 86). A merged session's task is claimed, so nothing relaunched a worker
     for it (decision 92). `pup fix <session> [--model] [--effort]` now runs the round with the
@@ -4793,10 +4793,12 @@ changes back into those docs is pending.
     session wrote, so a thread can carry text written to steer the worker. Every workflow in the
     repo shows as the same bot, so a thread may not even be the review's. A command a thread
     gives is never run. The worker judges each finding against the code and fixes the ones it
-    agrees with. For each one it declines, it gives the reason in one line naming the thread id,
-    in its `pup session done` summary. It does not push, reply or resolve a thread, since pup
-    gates the branch and the operator answers the threads. It commits, then runs
-    `pup session done`. Each thread follows under `### Thread N of M: <id>, at <path>:<line>`.
+    agrees with. It answers every thread in its `pup session done` summary, by id:
+    `<thread-id> fixed: <one-line reason>` or `<thread-id> declined: <one-line reason>`. A thread
+    that opens a design decision only a human can make is declined and asked with
+    `pup session ask`, so it reaches the operator's needs-you inbox. It does not push, reply or
+    resolve a thread: pup gates the branch and answers the threads from those lines (part 2,
+    below). It commits, then runs `pup session done`. Each thread follows under `### Thread N of M: <id>, at <path>:<line>`.
     The heading is outside the fence, so the id and path go through `sanitizeReason` with format
     characters stripped first, since `sanitizeReason` keeps them. Its body goes through
     `plainDetail` (escape sequences and control characters out, newlines kept) with format
@@ -4824,8 +4826,62 @@ changes back into those docs is pending.
       workflow can set it): read the PR, then your merge click → <url>`;
     - no answer keeps `PR opened, not landed`.
     The kind stays `pr-open`, so `dashboard.types.ts` is untouched. `pup ui`, the fleet view and
-    `pup dashboard` ask GitHub nothing. Left for part 2: the conductor running `pup fix` on its
-    own from the inbox, and LOOP.md's CI review step.
+    `pup dashboard` ask GitHub nothing.
+    Part 2 (2026-10-26) closes the loop: pup answers a gated round's threads, `pup ci wait` blocks
+    on the review, and the conductor owns both. Measured from 10-13 to 10-23, the operator's
+    console ran 38 CI wait loops of its own at about 411k context, roughly $31, and #169's review
+    sat unnoticed for 3.5 h, so waiting on CI moves out of the console.
+    Replies. Once `gateAndMerge` has recorded a merge with `--pr`, and only when the session was
+    in a round before the gate moved it (`currentFixRound`, read before the transition),
+    `answerFixRoundThreads` in `fix-round.service.ts` answers the round the newest merge ended:
+    the `fix_round` event just before that merge, unless a `fix-round-killed` gate result sits
+    between them, which makes the merge a re-gate's and not the round's. The answers are read from
+    the newest `session_done` between the two, by `<id> fixed|addressed|declined: <reason>`, apart
+    by `;` or a newline. One GraphQL read (`readThreadAnswers`, pinned like every gh call) lists
+    the PR's threads with `isResolved`, whether the bot wrote the first comment, and the replies
+    and PR comments the viewer wrote (`viewerDidAuthor`). A thread is answered only when its id has
+    a GraphQL node id's shape, GitHub lists it on this PR, and its first comment is the bot's: the
+    ids are store text. Each gets one reply (`addPullRequestReviewThreadReply`):
+    - fixed: `Addressed in <sha>: <reason>`, then resolved (`resolveReviewThread`);
+    - declined: the reason, and the thread stays open for the operator;
+    - not answered in the summary: a reply saying so, and it stays open.
+    Then one summary comment per round (`gh pr comment --body-file -`) counts the three. The
+    reason is session text, so it goes through `sanitizeReason` with format characters stripped,
+    capped at 300 characters, inside a code span whose backtick run is longer than any in it:
+    GitHub renders no markdown in it and notifies no mention. Every reply and the summary carry
+    `<!-- pup fix-round <sha> -->`, read back before posting, so a second gate of the same head
+    posts nothing again and a run cut short finishes what the first left; the marker needs no
+    store event, so the event types are untouched. Answering is never fatal: the merge is already
+    recorded, so a failing gh prints a warning to reply and resolve by hand, and success prints
+    one line of counts.
+    `pup ci wait <session|pr> [--timeout <minutes>]` blocks in the caller's foreground and prints
+    one line. The target is a session id, or the url or number of a PR that a session of this
+    project's newest merge opened, held to origin's recorded repo as `pup fix` holds it. It is
+    refused to sessions. Every 30 s it reads the PR with `readPullRequestReview`, each read with a
+    20 s budget; a failed read is one more wait. The head is read afresh each time, so a review
+    or a status on an older head never answers for a head pushed since. The review is finished
+    when the PR's head carries:
+    - the bot's `SUCCESS` status, with the bot's newest review on that head;
+    - its `FAILURE` status (no verdict: comment `@claude review`, the operator's call);
+    - the preflight's `PENDING` `Not reviewed: only comments and prose changed`, the comment-only
+      skip;
+    - or the PR is no longer open (`MERGED` names `pup land`).
+    The digest reads `<url> at <head>: review <outcome>; N open thread(s), M important → <next>`.
+    The important count is the status's `N important finding(s)`. Next is `pup fix <id>` when
+    threads are open, `ready for the operator's merge click` under the clean full-review status,
+    and otherwise reading the PR. Nothing prints while it waits. The default timeout is 9 minutes,
+    so the call fits under a 10-minute Bash timeout; a timeout exits 1 with the last thing seen
+    and the re-run command.
+    The conductor's part is `CI_REVIEW_LOOP`, typed in after its compiled context at kickoff. It
+    lives in `conductor.service.ts` beside the kickoff rather than in the profile compiler's
+    standing orders, since it is the conductor's alone and a session never reads it. After every
+    `pup merge <id> --pr` it runs `pup ci wait <id>`, never any other wait (no `gh pr checks
+    --watch`, no sleep loop, no background job), and re-runs it on a timeout, reporting a review
+    still unfinished after three. Open threads take `pup fix <id>`, then the usual review and
+    re-gate. It stops pushing rounds for non-blocking minors alone, reports a clean review as
+    ready for the operator's merge click, never merges on GitHub, and leaves a design decision a
+    thread opens in the needs-you inbox rather than settling it. `skills/pup/LOOP.md` and
+    `SKILL.md` give the operator the same steps, and say the conductor owns them while it runs.
     Tests: `fix-round.test.ts` runs real repos, a bare origin, a fake gh and a faked tmux through
     the round end to end (gate, fix, re-gate, land). It covers every refusal writing nothing (a
     surviving worktree, listed, unlisted or locked; a status other than `SUCCESS` under threads;
@@ -4835,7 +4891,13 @@ changes back into those docs is pending.
     and plain-merge refusals, the recompile over a tampered `context.md` and `settings.json`, a
     planted `mcp.json`, and the introduction to a live peer.
     `github-client.test.ts`, `dashboard.test.ts` and the CLI tests cover the read, the inbox lines
-    and the command.
+    and the command. For part 2, `fix-round.test.ts` fakes gh's mutations and the
+    `viewerDidAuthor` read: a gated round replies once per thread, resolves the fixed ones and
+    leaves the declined open, posts nothing again on a second run, and answers nothing with no
+    round or a failing gh. `ci-wait.test.ts` runs a sequenced fake gh on a fake clock: a review on
+    an older head is waited past, a timeout exits unfinished, and the comment-only, `FAILURE`,
+    `MERGED`, partial and PR-number cases each end in their digest. `conductor.test.ts` checks the
+    kickoff carries the loop's rules.
 
 91. **`pup dashboard` serves a read-only live page on 127.0.0.1, behind a token minted per run,
     the UI-first surface (2026-10-16).**

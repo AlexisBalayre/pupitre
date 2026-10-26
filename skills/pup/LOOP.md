@@ -36,23 +36,34 @@ Never validate a change to the gate with the gate on its own branch.
 
 ## 4. CI review
 
-Wait with `until gh pr checks <n> | grep -v pending`. Address review threads in a hand-made
-worktree (`git worktree add .worktrees/<task>-review pup/<task>`, install deps), reply and
-resolve each thread, leave one PR comment for notes taken versus left as is, then
-`git worktree remove` it. Before pushing a rename or a move, grep the decisions doc for the old
-name. Never claim a fix in a reply before it is pushed.
-
-After pushing a fix round, re-gate before anyone merges the PR:
+When the conductor runs, this loop is its job, not the console's: it waits on every PR it gates,
+runs the fix rounds and reports each PR ready for your merge click. Leave the waiting to it.
+Without a conductor, run the same steps yourself:
 
 ```
-pup merge <task> --pr
+pup ci wait <task>          # blocks until the review of the PR's head finished; one digest line
+pup fix <task>              # when the digest names it: the threads go back to the task's worker
+pup merge <task> --pr       # re-gate the round once the worker is done and reviewed
 ```
 
-The PR vouches only for the sha the gate pinned, and `pup land` refuses a PR whose head moved past
-it. The re-gate runs every stage on the pushed head, rewrites the PR description and records the
-new sha. It needs the local `pup/<task>` at the PR's head, which the review worktree leaves it at.
-Pass the same `--accept-debt` flags if stages flag again; a kind already in the ledger is not
-filed twice.
+Run `pup ci wait` in the foreground with a Bash `timeout` of 600000 ms; its default timeout is 9
+minutes and it exits non-zero when it ran out, so run it again. Never wait any other way: no
+`gh pr checks --watch`, no sleep loop, no background job. The digest names the head, the outcome,
+the open and important threads, and the next step after `→`:
+
+- `pup fix <task>`: open threads. The worker answers each one in its `pup session done`
+  summary. Review its commits, then re-gate with `pup merge <task> --pr`, then `pup ci wait`
+  again. The re-gate pins the pushed head, the only sha the PR vouches for and `pup land`
+  accepts.
+- `ready for the operator's merge click`: read the PR, then merge it on GitHub yourself.
+- Anything else (read the PR, comment `@claude review`, `pup land`) is yours to act on as it
+  says.
+
+Once a round is gated, pup replies on each thread it named: `Addressed in <sha>` with the
+worker's reason, and resolves it; a declined thread gets the reason and stays open for you. One
+summary comment per round. Never reply or resolve by hand on top of that. Minor issues in the
+review body never take a round alone. A thread that opens a design decision reaches your
+needs-you inbox through the worker's `pup session ask`: answer it there.
 
 ## 5. After the human merges
 

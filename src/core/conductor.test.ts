@@ -139,6 +139,21 @@ describe('startConductor', () => {
     expect(prompt).toContain('pup launch <task> --model opus');
   });
 
+  // The conductor owns the CI wait, so the operator's console no longer
+  // polls it (decision 90); these are the rules the kickoff must carry.
+  it('orders the CI review loop through pup ci wait and pup fix, and never a GitHub merge', () => {
+    start();
+
+    const [, prompt] = vi.mocked(kickoff).mock.calls[0] ?? [];
+    expect(prompt).toContain('`pup ci wait <session-id>`');
+    expect(prompt).toContain('run `pup fix <session-id>`');
+    expect(prompt).toContain('Stop pushing rounds for non-blocking minors alone');
+    expect(prompt).toContain("ready for the operator's merge click");
+    expect(prompt).toContain('Never merge on GitHub');
+    expect(prompt).toContain('`pup session ask`');
+    expect(prompt).toContain('needs-you inbox');
+  });
+
   // Named in the argv even when the operator named neither, so the user
   // settings the window inherits never decide them (decision 92).
   it('opens the window on Opus 5.5 at high effort by default', () => {
