@@ -1159,7 +1159,7 @@ function replyOnFixRoundThreads(
     if (answers === undefined) return;
     console.error(
       `Answered the fix round's threads on ${answers.prUrl}: ${answers.addressed} addressed and ` +
-        `resolved, ${answers.unverified} answered fixed with no change to their file, ` +
+        `resolved, ${answers.unverified} answered fixed that pup could not verify, ` +
         `${answers.declined} declined, ${answers.unanswered} unanswered.`,
     );
   } catch (error) {

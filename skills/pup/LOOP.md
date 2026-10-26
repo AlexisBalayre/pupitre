@@ -61,7 +61,8 @@ the open and important threads, and the next step after `→`:
 
 Once a round is gated, pup replies on each thread it named: `Addressed in <sha>` with the
 worker's reason, and resolves it when the round's commits change the thread's file. A thread
-answered fixed with no change to its file, or declined, gets the reason and stays open for you. One
+answered fixed with no change to its file pup can show (none, or a branch rebased or amended since
+the round began), or declined, gets the reason and stays open for you. One
 summary comment per round. Never reply or resolve by hand on top of that. Minor issues in the
 review body never take a round alone. A thread that opens a design decision reaches your
 needs-you inbox through the worker's `pup session ask`: answer it there.

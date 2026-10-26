@@ -124,8 +124,8 @@ type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
 const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string) => string> = {
   addressed: (sha, reason) => `Addressed in ${sha}: ${reason}`,
   unverified: (sha, reason, path) =>
-    `Answered fixed in the round gated at ${sha}, but its commits leave ${path} unchanged: ` +
-    `${reason}. Left open for the operator.`,
+    `Answered fixed in the round gated at ${sha}, but pup cannot show the round's own commits ` +
+    `change ${path}: ${reason}. Left open for the operator.`,
   declined: (sha, reason) =>
     `Declined in the fix round gated at ${sha}: ${reason}. Left open for the operator.`,
   unanswered: (sha) =>
@@ -250,7 +250,7 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * Answer on GitHub the threads of the fix round the session's newest merge
  * ended (decision 90), once the gate pinned and pushed its head: each thread
  * the `fix_round` event named gets one reply naming the merge's sha with the
- * worker's one-line answer from its `pup session done` summary. A thread is
+ * worker's newest one-line answer from its `pup session done` summaries. A thread is
  * resolved, under the operator's gh login, only when the worker answered it
  * fixed and the round's own commits change the file it is on: the worker's
  * word alone resolves nothing, and neither does a file the target changed.
@@ -333,7 +333,7 @@ export function answerFixRoundThreads(
     const left = answers.unverified + answers.declined + answers.unanswered;
     const body =
       `CI fix round gated at ${sha}: ${answers.addressed} thread(s) addressed and resolved, ` +
-      `${answers.unverified} answered fixed with no change to their file, ` +
+      `${answers.unverified} answered fixed that pup could not verify, ` +
       `${answers.declined} declined and ${answers.unanswered} unanswered` +
       (left > 0 ? ', left open for the operator.' : '.') +
       `\n\n${marker}`;
@@ -358,8 +358,11 @@ function threadVerdict(
 /**
  * The fix round the newest merge ended: the `fix_round` event just before it
  * among the merge, round and landing events, with the merge's url and pin, the
- * head the round started from, and the summary of the newest
- * `pup session done` between the two. None when the merge followed no round.
+ * head the round started from, and the summaries of every `pup session done`
+ * between the two, newest first, one per line: a gate run the round's checks
+ * rejected asks only for the failures fixed, so a later summary may answer no
+ * thread, and a thread's newest answer is the one `threadAnswer` reads. None
+ * when the merge followed no round.
  * Only the gate of a session in its round reaches here: a round `pup kill`
  * undid is back in `merged`, which a re-gate takes and never answers.
  */
@@ -380,16 +383,17 @@ function roundTheNewestMergeEnded(
   const { prUrl, sha } = merged;
   if (prUrl === undefined || sha === undefined || !COMMIT_SHA.test(sha)) return undefined;
   const { head, threads } = round.fields;
-  const done = events
+  const summaries = events
     .filter((row) => row.id > before.id && row.id < merge.id)
     .map(decodeEvent)
-    .find((event): event is SessionDone => event.type === 'session_done');
+    .filter((event): event is SessionDone => event.type === 'session_done')
+    .map((done) => done.summary);
   return {
     prUrl,
     sha,
     head: typeof head === 'string' ? head : undefined,
     threadIds: asStringArray(threads),
-    summary: done?.summary ?? '',
+    summary: summaries.join('\n'),
   };
 }
 
@@ -398,8 +402,10 @@ function roundTheNewestMergeEnded(
  * branch tip the gate read before fresh-base that is neither in the head the
  * round started at nor in the target, both renamed sides kept. A file the
  * target changed, through the gate's rebase or a merge of the worker's, never
- * counts. None when the start is unknown or git cannot answer: nothing is then
- * resolved.
+ * counts. None when the start is unknown, is no longer an ancestor of the tip,
+ * or git cannot answer: nothing is then resolved. A branch rewritten since the
+ * round started, by an earlier run's rebase or the worker's rebase or amend,
+ * carries every PR commit under a new sha, none of them told from the round's.
  */
 function filesTheRoundChanged(
   repoPath: string,
@@ -409,8 +415,12 @@ function filesTheRoundChanged(
 ): Set<string> {
   const { tip, targetSha } = branch;
   // Store and gate text, handed to git as revisions: each must be a sha.
-  if (![head, tip, targetSha].every((rev) => COMMIT_SHA.test(rev ?? ''))) return new Set();
+  if (head === undefined || ![head, tip, targetSha].every((rev) => COMMIT_SHA.test(rev))) {
+    return new Set();
+  }
+  const deadline = Date.now() + timeoutMs;
   try {
+    runGit(repoPath, ['merge-base', '--is-ancestor', head, tip], { timeout: timeoutMs });
     return new Set(
       runGit(
         repoPath,
@@ -426,7 +436,8 @@ function filesTheRoundChanged(
           `^${targetSha}`,
           '--',
         ],
-        { timeout: timeoutMs },
+        // Node reads a timeout of 0 as none.
+        { timeout: Math.max(1, deadline - Date.now()) },
       )
         .split('\0')
         .filter(Boolean),

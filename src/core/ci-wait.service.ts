@@ -194,14 +194,17 @@ function reviewDigest(
   const threads = review.openThreads.length;
   const isOnHead = review.head !== undefined && review.reviewedHead === review.head;
   if (status?.state === 'PENDING' && status.description.startsWith(COMMENT_ONLY_STATUS)) {
-    // The newest review is on an earlier head, the code this push left as it was.
+    // The newest review is on an earlier head, the code this push left as it
+    // was. Its verdict is on that head's status, which is not read here, and
+    // no open thread is no verdict: findings with no anchor stay in the body.
     return line(
       `skipped, a comment-only push (${said})`,
       threads,
       threads,
       threads > 0
         ? "comment `@claude review` on the PR to have the head reviewed (the operator's call)"
-        : "ready for the operator's merge click",
+        : "read the PR: this head was not reviewed, and the earlier review's verdict is not " +
+            "read here (the operator's call)",
     );
   }
   if (status?.state === 'FAILURE') {

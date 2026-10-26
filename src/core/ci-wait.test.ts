@@ -238,10 +238,12 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
         description: 'Not reviewed: only comments and prose changed since aaaaaaa',
       },
     });
+    // No open thread is no verdict: the earlier head's status is not read.
     expect((await wait()).line).toBe(
       `${PR_URL} at ${HEAD}: review skipped, a comment-only push (Not reviewed: only comments ` +
-        'and prose changed since aaaaaaa); 0 open thread(s), 0 important → ready for the ' +
-        "operator's merge click",
+        'and prose changed since aaaaaaa); 0 open thread(s), 0 important → read the PR: this ' +
+        "head was not reviewed, and the earlier review's verdict is not read here (the " +
+        "operator's call)",
     );
 
     writeFileSync(join(ghDir, 'n'), '0');
