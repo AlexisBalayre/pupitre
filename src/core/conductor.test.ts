@@ -567,6 +567,40 @@ describe('startConductor code graph', () => {
     expect(existsSync(marker)).toBe(true);
   });
 
+  // The first cut is an add, then a pinned `read-tree -u`. An interrupt or a
+  // full disk partway through the read-tree leaves files and no index, which
+  // git's own cleanup of a failed add never sees. A `checkout` from there
+  // refuses those files as untracked on every later start, so the conductor
+  // would go without a graph until someone deleted the checkout.
+  it('heals a first cut whose read-tree never finished', () => {
+    fakeCodegraph(INDEXES);
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const shim = tempDir('pup-git-');
+    writeFileSync(
+      join(shim, 'git'),
+      [
+        '#!/bin/sh',
+        `case " $* " in *" read-tree "*) printf 'export const tr' > "$GIT_WORK_TREE/tracked.ts"; exit 130 ;; esac`,
+        `exec ${realGit} "$@"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
+    start();
+    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    fakeCodegraph(INDEXES);
+
+    start();
+
+    expect(readFileSync(join(checkout(), 'tracked.ts'), 'utf8')).toBe(
+      'export const tracked = 1;\n',
+    );
+    expect(gitIn(checkout(), 'rev-parse', 'HEAD')).toBe(gitIn(repo, 'rev-parse', 'main'));
+    expect(gitIn(checkout(), 'status', '--porcelain')).toBe('');
+    expect(launchedWith()?.mcpConfigPath).toBeDefined();
+  });
+
   // Clearing `~/.pupitre` leaves the worktree registration behind, and
   // `worktree add` refuses the path forever once it does. Without the prune the
   // conductor silently never gets a graph again.

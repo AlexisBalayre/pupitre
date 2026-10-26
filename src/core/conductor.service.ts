@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile } from '../adapters/capability.utils.js';
@@ -125,10 +125,19 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   if (!target) {
     throw new Error(`Main worktree at ${repoPath} is not on a branch; no merge target to index.`);
   }
+  // `refs/heads/`: a bare name resolves a same-named tag first (decision 80).
+  // One sha for the add and its checkout: a target that moved between them
+  // would leave HEAD at the old tip and the index at the new one.
+  const tip = runGit(repoPath, ['rev-parse', '--verify', `refs/heads/${target}^{commit}`]).trim();
   if (existsSync(join(checkoutDir, '.git'))) {
     const git = verifiedWorktreeGitEnv(repoPath, checkoutDir);
-    // `refs/heads/`: a bare name resolves a same-named tag first (decision 80).
-    runGit(checkoutDir, ['checkout', '--detach', `refs/heads/${target}`], { env: { ...git } });
+    // No index: a first cut's read-tree that never finished, interrupted or
+    // out of disk, left files a `checkout` would refuse as untracked on every
+    // later start. Cut again from the tip instead, which no catch could cover.
+    if (!lstatSync(join(git.GIT_DIR, 'index'), { throwIfNoEntry: false })) {
+      return checkoutPinned(repoPath, checkoutDir, tip);
+    }
+    runGit(checkoutDir, ['checkout', '--detach', tip], { env: { ...git } });
     return git;
   }
   // An operator who clears `~/.pupitre` leaves the registration behind, and
@@ -139,10 +148,7 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   runGit(repoPath, ['worktree', 'prune']);
   mkdirSync(dirname(checkoutDir), { recursive: true });
   // `--no-checkout`: the add's own checkout would read the admin dir's
-  // `commondir` before any check of it (decision 101). One sha for both: a
-  // target that moved between them would leave HEAD at the old tip and the
-  // index at the new one.
-  const tip = runGit(repoPath, ['rev-parse', '--verify', `refs/heads/${target}^{commit}`]).trim();
+  // `commondir` before any check of it (decision 101).
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', checkoutDir, tip]);
   return checkoutPinned(repoPath, checkoutDir, tip);
 }

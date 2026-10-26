@@ -250,9 +250,27 @@ describe('indexDirectory', () => {
     ).toMatchObject({
       'core.fsmonitor': '',
       'core.hooksPath': '/dev/null',
+      'core.splitIndex': 'false',
       'diff.ignoreSubmodules': 'all',
       'status.submoduleSummary': 'false',
     });
+  });
+
+  // Under `core.splitIndex`, which the shared config or the operator's global
+  // one can turn on, codegraph's `status` re-splits pup's checked snapshot and
+  // writes its base to `<GIT_DIR>/sharedindex.*`, the admin dir a session
+  // writes. Every later read of the snapshot then loads that base, a gitlink
+  // swapped into it included (CI review of #173).
+  it("keeps the binary's git from splitting the snapshot into the admin dir", () => {
+    const fake = fakeCodegraph('#!/bin/sh\ngit status --porcelain >/dev/null\nexit 0');
+    const repo = makeRepo();
+    sh(repo, 'git', 'config', 'core.splitIndex', 'true');
+
+    indexDirectory(join(fake.dir, 'codegraph'), pins(repo));
+
+    expect(
+      readdirSync(join(repo, '.git')).filter((name) => name.startsWith('sharedindex.')),
+    ).toEqual([]);
   });
 
   // Over a gitlink, `status` runs a child git in the submodule's directory,
@@ -496,6 +514,7 @@ describe('codegraphMcpConfig', () => {
     });
     expect(gitConfigOf(server.env)).toMatchObject({
       'core.fsmonitor': '',
+      'core.splitIndex': 'false',
       'diff.ignoreSubmodules': 'all',
       'status.submoduleSummary': 'false',
     });

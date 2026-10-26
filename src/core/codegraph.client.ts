@@ -54,11 +54,14 @@ const INDEX_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'USER']
  * 101). Like a `-c`, it outranks whatever config the repo git reads, so a
  * `core.fsmonitor` armed there never runs. A `filter.<x>.clean` has no
  * disarm, its name being the writer's choice, which is why the indexer's git
- * is also pinned to the trusted dirs (`indexEnv`).
+ * is also pinned to the trusted dirs (`indexEnv`). `core.splitIndex=false`
+ * keeps that git's `status` from re-splitting the snapshot pup checked into a
+ * `sharedindex.*` in the admin dir, which every later read would load.
  */
 function codegraphGitConfig(): Record<string, string> {
   const entries = [
     ...GIT_SAFE_CONFIG.filter((arg) => arg !== '-c'),
+    'core.splitIndex=false',
     'diff.ignoreSubmodules=all',
     'status.submoduleSummary=false',
   ];

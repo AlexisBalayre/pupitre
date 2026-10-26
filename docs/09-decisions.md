@@ -5588,7 +5588,8 @@ changes back into those docs is pending.
     repo's `.git` is never followed. Nested repos are neither excluded nor refused, which
     codegraph's own `codegraph.json` could undo; the pins make their `.git` inert. (3) codegraph's
     argv is not pup's, so it gets `GIT_SAFE_CONFIG` as command-scope config through
-    `GIT_CONFIG_COUNT`, with `diff.ignoreSubmodules=all` and `status.submoduleSummary=false`. A
+    `GIT_CONFIG_COUNT`, with `diff.ignoreSubmodules=all`, `status.submoduleSummary=false` and
+    `core.splitIndex=false`. A
     `.gitmodules` `ignore = none` still outranks that, and a submodule's child git clears the
     pins, so a tree whose index holds a gitlink is not indexed: the launch, respawn or fix round
     opens without a graph and says so. Without a gitlink, `.gitmodules` names nothing git would
@@ -5601,7 +5602,10 @@ changes back into those docs is pending.
     `sharedindex.*` from the admin dir, checks the copy, hands codegraph `GIT_INDEX_FILE=<copy>`
     and removes it once codegraph returns. git opens that `sharedindex.*` itself, so the flatten
     and the check run under codegraph's timeout, and a fifo there costs the graph rather than
-    holding the caller. (4) `launchSession` takes the project's `repoPath` from its three callers
+    holding the caller. Without `core.splitIndex=false`, a split turned on in the shared config
+    or the operator's global one had codegraph's first `status` split the checked copy again and
+    write its base to `<GIT_DIR>/sharedindex.*`, in the admin dir, so its next `ls-files` loaded
+    whatever base a sibling session had swapped in there (CI review of #173). (4) `launchSession` takes the project's `repoPath` from its three callers
     (session-lifecycle, session-handoff, fix-round), and never derives it from the row's
     `worktree_path`. A row naming `/tmp/x/.worktrees/<id>` beside a session-built `/tmp/x/.git`
     is checked against the project's admin dir, which its gitfile does not name, and is refused.
@@ -5639,7 +5643,11 @@ changes back into those docs is pending.
     carries it appended. A fix round whose checkout throws is undone the same way, its branch
     kept, since it holds the head the retry starts from. Both undos check that the admin dir is
     gone after the prune, which keeps a locked registration without a word, and they claim the
-    removal only then (CI review of #173). The
+    removal only then (CI review of #173). The conductor's first cut has no undo and needs none.
+    A later start that finds its checkout without an index, as an interrupted or failed
+    `read-tree` leaves it, cuts it again from the tip with `checkoutPinned`. A `checkout` would
+    refuse the files already written as untracked on every start, and no catch sees an interrupt
+    (CI review of #173). The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
