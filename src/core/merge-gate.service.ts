@@ -1137,7 +1137,8 @@ async function gateAndMerge(
 /**
  * The replies a gated fix round owes its threads (decision 90), told in one
  * line. Never fatal: the PR already holds the pinned sha and the merge is
- * recorded, so a failing gh costs the replies and the warning says so.
+ * recorded, so a failing gh, or one past the answers' time budget under the
+ * merge lock, costs the replies and the warning says so.
  */
 function replyOnFixRoundThreads(
   db: Database,
@@ -1150,7 +1151,8 @@ function replyOnFixRoundThreads(
     if (answers === undefined) return;
     console.error(
       `Answered the fix round's threads on ${answers.prUrl}: ${answers.addressed} addressed and ` +
-        `resolved, ${answers.declined} declined, ${answers.unanswered} unanswered.`,
+        `resolved, ${answers.unverified} answered fixed with no change to their file, ` +
+        `${answers.declined} declined, ${answers.unanswered} unanswered.`,
     );
   } catch (error) {
     rethrowIfKilled(error);

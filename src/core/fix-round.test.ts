@@ -203,7 +203,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         '  case "$*" in',
         // One line per mutation, so a test counts the replies and resolves.
         `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
-        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
         '  esac',
         `  cat ${ghDir}/review.json; exit 0`,
         'fi',
@@ -1215,6 +1215,13 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       { id: 'PRRT_silent', body: 'Unchecked index.' },
       { id: 'PRRT_human', body: 'Not the bot.' },
     ];
+    /** The file each finding is on: only `PRRT_fixed`'s is one the round's commit changes. */
+    const PATHS: Record<string, string> = {
+      PRRT_fixed: 'src/fix.ts',
+      PRRT_declined: 'src/await.ts',
+      PRRT_silent: 'src/index.ts',
+      PRRT_human: 'src/human.ts',
+    };
 
     /**
      * What the threads read answers: every round thread unresolved and the
@@ -1239,6 +1246,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
                 nodes: ROUND_THREADS.map(({ id }) => ({
                   id,
                   isResolved: resolved.includes(id),
+                  path: PATHS[id],
                   finding: {
                     nodes: [
                       { author: id === 'PRRT_human' ? { __typename: 'User', login: 'a' } : BOT },
@@ -1313,8 +1321,9 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       // Pinned to origin's host, as every gh call is.
       expect(replies().every((m) => m.startsWith('api graphql --hostname github.com '))).toBe(true);
       expect(comments()).toEqual([
-        `CI fix round gated at ${fixed}: 1 thread(s) addressed and resolved, 1 declined and 1 ` +
-          `unanswered, left open for the operator.\n\n${marker}`,
+        `CI fix round gated at ${fixed}: 1 thread(s) addressed and resolved, 0 answered fixed ` +
+          'with no change to their file, 1 declined and 1 unanswered, left open for the ' +
+          `operator.\n\n${marker}`,
       ]);
       expect(ghCalls()).toContain(
         `pr comment ${PR_URL} --repo github.com/owner/repo --body-file -`,
@@ -1338,6 +1347,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         prUrl: PR_URL,
         sha: fixed,
         addressed: 1,
+        unverified: 0,
         declined: 1,
         unanswered: 1,
       });
@@ -1360,6 +1370,47 @@ describe('startFixRound', { timeout: 30_000 }, () => {
       expect(replies()).toHaveLength(4);
       expect(resolves()).toHaveLength(1);
       expect(comments()).toHaveLength(1);
+    });
+
+    // The worker's word alone resolves nothing under the operator's login: the
+    // round's commits must change the file the finding is on.
+    it('leaves open a thread answered fixed whose file the round never changed', async () => {
+      const fixed = await gateTheRound(`${SUMMARY}; PRRT_silent fixed: checked the bound`);
+
+      const silent = replies().find((m) => m.includes('-f thread=PRRT_silent'));
+      expect(silent).toContain(
+        `-f body=Answered fixed in the round gated at ${fixed}, but its commits leave ` +
+          '` src/index.ts ` unchanged: ` checked the bound `. Left open for the operator.',
+      );
+      expect(resolves()).toHaveLength(1);
+      expect(resolves()[0]).toMatch(/-f thread=PRRT_fixed\s*$/);
+      expect(comments()[0]).toContain(
+        '1 thread(s) addressed and resolved, 1 answered fixed with no change to their file, ' +
+          '1 declined and 0 unanswered, left open for the operator.',
+      );
+    });
+
+    // The gate answers under the merge lock: a GitHub that hangs costs the
+    // answers' budget, and its timeout is no interrupt to rethrow.
+    it('gives up within its time budget on a GitHub that does not answer', async () => {
+      await gateTheRound(SUMMARY);
+      const posted = ghFile('mutations').length;
+      writeFileSync(join(ghDir, 'answers-slow'), '');
+
+      const started = Date.now();
+      let error: unknown;
+      try {
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', 1000);
+      } catch (thrown) {
+        error = thrown;
+      }
+
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect((error as Error).message).toBe(
+        "GitHub took longer than the 1 s the round's answers may hold the merge lock",
+      );
+      expect(error).not.toHaveProperty('signal');
+      expect(ghFile('mutations')).toHaveLength(posted);
     });
 
     it('answers nothing for a merge that ended no round, and a failing gh costs only the replies', async () => {

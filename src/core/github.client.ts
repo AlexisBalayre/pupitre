@@ -463,6 +463,7 @@ const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number:
         nodes {
           id
           isResolved
+          path
           finding: comments(first: 1) { nodes { author { __typename login } } }
           replies: comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
         }
@@ -478,6 +479,8 @@ export interface AnsweredThread {
   isResolved: boolean;
   /** Its first comment, the finding, is the review bot's. */
   isBots: boolean;
+  /** The file the finding is on, as GitHub reports it. */
+  path?: string;
   /** The bodies of its comments that gh's own login wrote, newest last. */
   ownReplies: string[];
 }
@@ -491,8 +494,9 @@ export function readThreadAnswers(
   repoPath: string,
   url: string,
   repo: string,
+  timeoutMs?: number,
 ): { threads: AnsweredThread[]; ownComments: string[] } {
-  const pr = queryPullRequest(repoPath, url, repo, FIX_ROUND_THREADS_QUERY);
+  const pr = queryPullRequest(repoPath, url, repo, FIX_ROUND_THREADS_QUERY, timeoutMs);
   const ownBodies = (connection: unknown): string[] =>
     nodesOf(connection).flatMap((comment) =>
       comment.viewerDidAuthor === true && typeof comment.body === 'string' ? [comment.body] : [],
@@ -505,6 +509,7 @@ export function readThreadAnswers(
               id: thread.id,
               isResolved: thread.isResolved === true,
               isBots: isReviewBot(nodesOf(thread.finding)[0]?.author),
+              ...(typeof thread.path === 'string' ? { path: thread.path } : {}),
               ownReplies: ownBodies(thread.replies),
             },
           ]
@@ -530,13 +535,27 @@ export function replyToReviewThread(
   repo: string,
   threadId: string,
   body: string,
+  timeoutMs?: number,
 ): void {
-  ghJson(repoPath, graphqlArgs(hostOf(repo), THREAD_REPLY_MUTATION, { thread: threadId, body }));
+  ghJson(
+    repoPath,
+    graphqlArgs(hostOf(repo), THREAD_REPLY_MUTATION, { thread: threadId, body }),
+    timeoutMs,
+  );
 }
 
 /** Resolve review thread `threadId` of `repo`, as gh's login. */
-export function resolveReviewThread(repoPath: string, repo: string, threadId: string): void {
-  ghJson(repoPath, graphqlArgs(hostOf(repo), RESOLVE_THREAD_MUTATION, { thread: threadId }));
+export function resolveReviewThread(
+  repoPath: string,
+  repo: string,
+  threadId: string,
+  timeoutMs?: number,
+): void {
+  ghJson(
+    repoPath,
+    graphqlArgs(hostOf(repo), RESOLVE_THREAD_MUTATION, { thread: threadId }),
+    timeoutMs,
+  );
 }
 
 /** Comment `body` on the PR at `url`, pinned to `repo`; the body over stdin, as a PR's is. */
@@ -545,15 +564,27 @@ export function commentOnPullRequest(
   url: string,
   repo: string,
   body: string,
+  timeoutMs = GH_COMMAND_TIMEOUT_MS,
 ): void {
   execFileSync('gh', ['pr', 'comment', url, '--repo', repo, '--body-file', '-'], {
     cwd: repoPath,
     encoding: 'utf8',
     input: body,
-    timeout: GH_COMMAND_TIMEOUT_MS,
+    timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: scrubbedGitEnv(),
   });
+}
+
+/**
+ * A gh call that ran past its timeout. Node kills it with SIGTERM, which
+ * `rethrowIfKilled` reads as an interrupt; this is the caller's own budget
+ * running out, which the caller answers rather than rethrows.
+ */
+export function isGhTimeout(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? error.code === 'ETIMEDOUT'
+    : false;
 }
 
 function hostOf(repo: string): string {

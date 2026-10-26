@@ -12,6 +12,7 @@ import { assertNoArmedGitDrivers, rethrowIfKilled, runGit } from './git-diff.cli
 import {
   assertGhAvailable,
   commentOnPullRequest,
+  isGhTimeout,
   originRepoSlug,
   type PullRequestReview,
   type ReviewThread,
@@ -38,6 +39,7 @@ import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
   currentFixRound,
+  decodeEvent,
   type EventRow,
   getSession,
   listEvents,
@@ -81,6 +83,8 @@ const THREAD_BODY_MAX_CHARS = 4_000;
 const CI_REVIEW_LOOKUP_TIMEOUT_MS = 10_000;
 /** A GraphQL node id, as GitHub mints a review thread's; anything else in the store is skipped. */
 const THREAD_ID = /^[A-Za-z0-9_=-]{1,100}$/;
+/** Every gh call answering a round's threads, together: the gate holds the merge lock meanwhile. */
+const ANSWER_BUDGET_MS = 60_000;
 
 interface FixRoundRequest extends ProfileSource {
   sessionId: string;
@@ -104,6 +108,8 @@ export interface ThreadAnswers {
   sha: string;
   /** Replied `Addressed in <sha>` and resolved. */
   addressed: number;
+  /** Answered fixed, but the round's commits leave its file unchanged: replied, left open. */
+  unverified: number;
   /** Replied with the worker's reason and left open for the operator. */
   declined: number;
   /** Named in the round but answered nowhere in the worker's summary: left open. */
@@ -218,110 +224,164 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * Answer on GitHub the threads of the fix round the session's newest merge
  * ended (decision 90), once the gate pinned and pushed its head: each thread
  * the `fix_round` event named gets one reply naming the merge's sha with the
- * worker's one-line answer from its `pup session done` summary. A thread it
- * fixed is resolved; one it declined, or never answered, keeps its reply and
- * stays open for the operator. Then one summary comment on the PR for the
- * round. Every post carries a marker naming the sha, read back first, so a
- * second run for the same head posts nothing again, and a run cut short
- * finishes what the first left. Only a thread GitHub still lists on this PR
- * with the bot's finding first is answered: the ids are store text. The
- * worker's words are session text, so each reason is one scrubbed line inside
- * a code span, where GitHub renders no markdown and notifies no mention.
- * Undefined when the newest merge ended no fix round.
+ * worker's one-line answer from its `pup session done` summary. A thread is
+ * resolved, under the operator's gh login, only when the worker answered it
+ * fixed and the round's commits change the file it is on: the worker's word
+ * alone resolves nothing. Every other thread keeps its reply and stays open
+ * for the operator. Then one summary comment on the PR for the round. Every
+ * post carries a marker naming the sha, read back first, so a second run for
+ * the same head posts nothing again, and a run cut short finishes what the
+ * first left. Only a thread GitHub still lists on this PR with the bot's
+ * finding first is answered: the ids are store text. The worker's words are
+ * session text, so each reason is one scrubbed line inside a code span, where
+ * GitHub renders no markdown and notifies no mention. The gate runs this under
+ * the merge lock, so every gh call shares one `budgetMs`, and running out is a
+ * plain error, never read as an interrupt. Undefined when the newest merge
+ * ended no fix round.
  */
 export function answerFixRoundThreads(
   db: Database,
   repoPath: string,
   sessionId: string,
   repo: string,
+  budgetMs = ANSWER_BUDGET_MS,
 ): ThreadAnswers | undefined {
   const round = roundTheNewestMergeEnded(db, sessionId);
   if (round === undefined) return undefined;
-  const { prUrl, sha, threadIds, summary } = round;
+  const { prUrl, sha, head, threadIds, summary } = round;
   assertPullRequestOf(prUrl, repo, 'No thread was answered.');
-  const onGitHub = readThreadAnswers(repoPath, prUrl, repo);
+  const deadline = Date.now() + budgetMs;
+  const withinBudget = <TResult>(call: (timeoutMs: number) => TResult): TResult => {
+    const outOfTime = new Error(
+      `GitHub took longer than the ${Math.round(budgetMs / 1000)} s the round's answers may ` +
+        'hold the merge lock',
+    );
+    const left = deadline - Date.now();
+    if (left <= 0) throw outOfTime;
+    try {
+      return call(left);
+    } catch (error) {
+      if (isGhTimeout(error)) throw outOfTime;
+      throw error;
+    }
+  };
+  const onGitHub = withinBudget((timeoutMs) => readThreadAnswers(repoPath, prUrl, repo, timeoutMs));
+  const changed = filesTheRoundChanged(repoPath, head, sha);
   const marker = `<!-- pup fix-round ${sha} -->`;
-  const answers: ThreadAnswers = { prUrl, sha, addressed: 0, declined: 0, unanswered: 0 };
+  const answers: ThreadAnswers = {
+    prUrl,
+    sha,
+    addressed: 0,
+    unverified: 0,
+    declined: 0,
+    unanswered: 0,
+  };
   for (const id of threadIds) {
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
     const answer = threadAnswer(summary, id);
-    const verdict = answer?.verdict ?? 'unanswered';
+    const isChanged = thread.path !== undefined && changed.has(thread.path);
+    const verdict =
+      answer === undefined
+        ? 'unanswered'
+        : answer.verdict === 'declined'
+          ? 'declined'
+          : isChanged
+            ? 'addressed'
+            : 'unverified';
     if (!thread.ownReplies.some((body) => body.includes(marker))) {
       const said =
         answer === undefined
           ? `The fix round gated at ${sha} gave no answer for this thread; left open for the operator.`
-          : verdict === 'fixed'
+          : verdict === 'addressed'
             ? `Addressed in ${sha}: ${codeSpan(answer.reason)}`
-            : `Declined in the fix round gated at ${sha}: ${codeSpan(answer.reason)}. Left open ` +
-              'for the operator.';
-      replyToReviewThread(repoPath, repo, id, `${said}\n\n${marker}`);
+            : verdict === 'unverified'
+              ? `Answered fixed in the round gated at ${sha}, but its commits leave ` +
+                `${codeSpan(thread.path ?? 'no file')} unchanged: ${codeSpan(answer.reason)}. ` +
+                'Left open for the operator.'
+              : `Declined in the fix round gated at ${sha}: ${codeSpan(answer.reason)}. Left open ` +
+                'for the operator.';
+      withinBudget((timeoutMs) =>
+        replyToReviewThread(repoPath, repo, id, `${said}\n\n${marker}`, timeoutMs),
+      );
     }
-    if (verdict === 'fixed' && !thread.isResolved) resolveReviewThread(repoPath, repo, id);
-    answers[verdict === 'fixed' ? 'addressed' : verdict]++;
+    if (verdict === 'addressed' && !thread.isResolved) {
+      withinBudget((timeoutMs) => resolveReviewThread(repoPath, repo, id, timeoutMs));
+    }
+    answers[verdict]++;
   }
   if (!onGitHub.ownComments.some((body) => body.includes(marker))) {
-    const left = answers.declined + answers.unanswered;
-    commentOnPullRequest(
-      repoPath,
-      prUrl,
-      repo,
+    const left = answers.unverified + answers.declined + answers.unanswered;
+    const body =
       `CI fix round gated at ${sha}: ${answers.addressed} thread(s) addressed and resolved, ` +
-        `${answers.declined} declined and ${answers.unanswered} unanswered` +
-        (left > 0 ? ', left open for the operator.' : '.') +
-        `\n\n${marker}`,
-    );
+      `${answers.unverified} answered fixed with no change to their file, ` +
+      `${answers.declined} declined and ${answers.unanswered} unanswered` +
+      (left > 0 ? ', left open for the operator.' : '.') +
+      `\n\n${marker}`;
+    withinBudget((timeoutMs) => commentOnPullRequest(repoPath, prUrl, repo, body, timeoutMs));
   }
   return answers;
 }
 
 /**
  * The fix round the newest merge ended: the `fix_round` event just before it
- * among the merge, round and landing events, with the merge's url and pin and
- * the summary of the newest `pup session done` between the two. None when the
- * merge followed no round, or the round was killed back to merged first, so
- * the merge is a re-gate's and not the round's.
+ * among the merge, round and landing events, with the merge's url and pin, the
+ * head the round started from, and the summary of the newest
+ * `pup session done` between the two. None when the merge followed no round.
+ * Only the gate of a session in its round reaches here: a round `pup kill`
+ * undid is back in `merged`, which a re-gate takes and never answers.
  */
 function roundTheNewestMergeEnded(
   db: Database,
   sessionId: string,
-): { prUrl: string; sha: string; threadIds: string[]; summary: string } | undefined {
+): { prUrl: string; sha: string; head?: string; threadIds: string[]; summary: string } | undefined {
   const events = listEvents(db, sessionId).reverse();
   const [merge, before] = events.filter((row) =>
     ['fix_round', 'merge', 'landed'].includes(row.type),
   );
   if (merge?.type !== 'merge' || before?.type !== 'fix_round') return undefined;
-  const fields = (row: EventRow): Record<string, unknown> => {
-    try {
-      const parsed: unknown = JSON.parse(row.payload);
-      return parsed !== null && typeof parsed === 'object'
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch {
-      return {};
-    }
-  };
-  const { prUrl, sha } = fields(merge);
-  const { threads } = fields(before);
-  if (typeof prUrl !== 'string' || typeof sha !== 'string' || !COMMIT_SHA.test(sha)) {
-    return undefined;
-  }
-  const between = events.filter((row) => row.id > before.id && row.id < merge.id);
-  if (
-    between.some((row) => row.type === 'gate_result' && fields(row).kind === 'fix-round-killed')
-  ) {
-    return undefined;
-  }
-  const done = between.find((row) => row.type === 'session_done');
-  const summary = done === undefined ? '' : fields(done).summary;
+  const merged = decodeEvent(merge);
+  const round = decodeEvent(before);
+  if (merged.type !== 'merge' || round.type !== 'other') return undefined;
+  const { prUrl, sha } = merged;
+  if (prUrl === undefined || sha === undefined || !COMMIT_SHA.test(sha)) return undefined;
+  const { head, threads } = round.fields;
+  const done = events
+    .filter((row) => row.id > before.id && row.id < merge.id)
+    .map(decodeEvent)
+    .find((event) => event.type === 'session_done');
   return {
     prUrl,
     sha,
+    ...(typeof head === 'string' && COMMIT_SHA.test(head) ? { head } : {}),
     threadIds: Array.isArray(threads)
       ? threads.filter((id): id is string => typeof id === 'string')
       : [],
-    summary: typeof summary === 'string' ? summary : '',
+    summary: done?.type === 'session_done' ? (done.summary ?? '') : '',
   };
+}
+
+/**
+ * The files the round's commits changed, from the head it started at to the
+ * sha its gate pinned, both renamed sides kept. None when the start is unknown
+ * or git cannot compare the two: nothing is then resolved.
+ */
+function filesTheRoundChanged(
+  repoPath: string,
+  head: string | undefined,
+  sha: string,
+): Set<string> {
+  if (head === undefined || head === sha) return new Set();
+  try {
+    return new Set(
+      runGit(repoPath, ['diff', '--name-only', '--no-renames', head, sha])
+        .split('\n')
+        .filter(Boolean),
+    );
+  } catch (error) {
+    rethrowIfKilled(error);
+    return new Set();
+  }
 }
 
 /**

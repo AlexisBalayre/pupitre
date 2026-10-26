@@ -3,11 +3,13 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { rethrowIfKilled } from './git-diff.client.js';
 import {
   assertGhAvailable,
+  isGhTimeout,
   originRepoSlug,
   type PullRequestReview,
   readPullRequestReview,
 } from './github.client.js';
 import {
+  assertMintedRow,
   assertPullRequestOf,
   newestMerge,
   type OriginUse,
@@ -25,6 +27,17 @@ const READ_TIMEOUT_MS = 20_000;
 const CLEAN_REVIEW_STATUS = 'no blocking issues';
 /** What the preflight's PENDING status says on a push it skipped as comment-only. */
 const COMMENT_ONLY_STATUS = 'Not reviewed: only comments and prose changed';
+/**
+ * Symbols a GitHub string could pass off as the digest's own `→`, so a forged
+ * status could not name a next step of its own: every arrow and emoji, the
+ * inbox's own class (`dashboard.service.ts`). ASCII stays.
+ */
+const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
+
+/** A string GitHub or gh returned, as the line prints it: one scrubbed line, no symbols. */
+function shown(text: string): string {
+  return sanitizeReason(text).replace(SYMBOLS, '-');
+}
 
 /** The wait's sense of time, which a test replaces. */
 export interface CiWaitClock {
@@ -43,6 +56,8 @@ export interface CiWaitRequest {
   target: string;
   timeoutMs: number;
   pollMs?: number;
+  /** One read's budget, which a test shortens. */
+  readTimeoutMs?: number;
   clock?: CiWaitClock;
 }
 
@@ -69,18 +84,26 @@ export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise
   const { session, prUrl, repo } = pullRequestToWaitOn(db, req.repoPath, req.target);
   assertGhAvailable(CI_WAIT_USE.command);
   const clock = req.clock ?? REAL_CLOCK;
-  const id = sanitizeReason(session.id);
+  // Minted, so the commands the line names are built around an id the store
+  // cannot have shaped.
+  const id = session.id;
   const deadline = clock.now() + req.timeoutMs;
   let lastSeen = 'GitHub was not read';
   for (;;) {
     try {
-      const review = readPullRequestReview(req.repoPath, prUrl, repo, READ_TIMEOUT_MS);
+      const review = readPullRequestReview(
+        req.repoPath,
+        prUrl,
+        repo,
+        req.readTimeoutMs ?? READ_TIMEOUT_MS,
+      );
       const digest = reviewDigest(id, prUrl, review);
       if ('line' in digest) return { finished: true, line: digest.line };
       lastSeen = digest.waiting;
     } catch (error) {
-      rethrowIfKilled(error);
-      lastSeen = `the last read failed: ${sanitizeReason(error instanceof Error ? error.message : String(error))}`;
+      // A read past its own budget is one more wait, not an interrupt.
+      if (!isGhTimeout(error)) rethrowIfKilled(error);
+      lastSeen = `the last read failed: ${shown(error instanceof Error ? error.message : String(error))}`;
     }
     const left = deadline - clock.now();
     if (left <= 0) {
@@ -107,14 +130,15 @@ function pullRequestToWaitOn(
   target: string,
 ): { session: SessionRow; prUrl: string; repo: string } {
   const session = getSession(db, target) ?? sessionThatOpened(db, repoPath, target);
-  const shown = sanitizeReason(target);
+  const named = shown(target);
   if (session === undefined) {
     throw new Error(
-      `No session ${shown}, and no session of this project opened a PR ${shown}. ` +
+      `No session ${named}, and no session of this project opened a PR ${named}. ` +
         CI_WAIT_USE.untouched,
     );
   }
-  const id = sanitizeReason(session.id);
+  assertMintedRow(repoPath, session, CI_WAIT_USE.untouched);
+  const id = session.id;
   const merge = newestMerge(db, session.id);
   if (merge === 'landed') {
     throw new Error(`Session ${id} has already landed. ${CI_WAIT_USE.untouched}`);
@@ -154,7 +178,7 @@ function reviewDigest(
   prUrl: string,
   review: PullRequestReview,
 ): { line: string } | { waiting: string } {
-  const head = sanitizeReason(review.head ?? 'an unreadable head');
+  const head = shown(review.head ?? 'an unreadable head');
   const line = (outcome: string, threads: number, important: number, next: string) => ({
     line:
       `${prUrl} at ${head}: review ${outcome}; ${threads} open thread(s), ${important} ` +
@@ -162,10 +186,10 @@ function reviewDigest(
   });
   if (review.state === 'MERGED') return line('moot, the PR merged', 0, 0, `pup land ${id}`);
   if (review.state !== 'OPEN') {
-    return line(`moot, the PR is ${sanitizeReason(review.state ?? 'unreadable')}`, 0, 0, 'none');
+    return line(`moot, the PR is ${shown(review.state ?? 'unreadable')}`, 0, 0, 'none');
   }
   const status = review.headStatus;
-  const said = status === undefined ? 'no status' : sanitizeReason(status.description);
+  const said = status === undefined ? 'no status' : shown(status.description);
   const threads = review.openThreads.length;
   const isOnHead = review.head !== undefined && review.reviewedHead === review.head;
   if (status?.state === 'PENDING' && status.description.startsWith(COMMENT_ONLY_STATUS)) {
