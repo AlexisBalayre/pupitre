@@ -1,0 +1,186 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-26T11:07:17.020Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40311551538",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40311551538",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c8b9cdd4fda604083c5ee8f1d0b50c568a9396ba",
+  "source": "pr",
+  "pr_number": 173,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "134",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The conductor's `WorktreeRepointedError` from `verifiedWorktreeGitEnv`/`checkoutPinned` reaches the operator only through `prepareGraph`'s `failureSummary`, which cuts at 300 characters; with ordinary paths the problem text alone runs ~370 characters, so the `worktree repair` advice (and the `config.worktree` variant's \"Remove the file…\" advice) is always cut off. Catch it in `refreshConductorCheckout` and rethrow a short advice-first message, as the unlock refusal was shortened.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "152-170",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`startConductor` never calls `assertNoWorktreeConfig`, so in a repo whose `.git` is a gitfile (linked worktree, submodule, `--separate-git-dir`) the lock check lstats a path under a file, `worktree add` registers the checkout in the real gitdir, and `checkoutPinned` refuses it as a compromised session on every start, leaving a stray registration. Refuse the gitfile case before the prune/add with the same `isDirectory()` check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "402",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`restoreWorktree`'s new `assertNoWorktreeConfig(repoPath)` passes its refusals up unchanged, so `pup fix` prints \"Refusing to launch a session in <repo>: …\" without the `No fix round was started.` (`NOT_STARTED`) ending its other pre-edge refusals carry; wrap it like `orNotStarted(() => assertTargetName(...))`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "279-285",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In a project that commits a submodule, `assertNoGitlink` now refuses indexing on every launch, respawn and fix round, yet the profile compiler still emits the `## Code graph` section whenever a binary is found, so every session is told to reach for a `codegraph_explore` tool that is never connected; drop the section (or the binary) in that case so context and MCP config agree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "152-165",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The conductor re-cut adds a third inline copy of \"`worktree prune`, then lstat the admin dir to confirm the registration is gone\" (also in `dropUncheckedWorktree` and `dropUncheckedRound`); at the AGENTS.md third-use threshold, a `pruneWorktreeRegistration(repoPath, worktreePath): boolean` beside `worktreeGitEnv` in git-diff.client.ts would hold the fact once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "125-126",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`snapshotIndex` and `assertNoGitlink` borrow `INDEX_TIMEOUT_MS` (180 s, documented as the codegraph indexing ceiling) for pup's own one-file git reads, so its name and doc no longer fit two of three uses and a planted fifo `sharedindex.*` stalls a respawn, fix round or conductor start for 3 minutes; give these reads their own short, named timeout.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "118-120",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment \"Inside the caller's try: an armed driver costs the conductor its graph, not its window\" is stale: `graphForConductor` no longer has a try; the envelope is `prepareGraph`'s. Say \"Runs inside `prepareGraph`'s failure envelope\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`graphForConductor`'s JSDoc adds \"and runs only once a binary is found\", which restates `prepareGraph`'s JSDoc (\"It runs inside the failure envelope, once a binary is found\"), a seam duplicate under the AGENTS.md Comments rule; drop it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`prepareGraph`'s new JSDoc sentence \"`pinned` answers the dirs the indexer's git is pinned to\" is unclear and omits that `pinned` is a thunk called once a binary is found whose throw is caught as \"no graph\"; say so plainly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "205-217",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The gate's pinned `read-tree --reset -u` still loads the existing index from the session-writable `$GIT_DIR/index` in the admin dir; a session racing to drop an index with skip-worktree entries between `worktree add --no-checkout` and the read-tree could keep chosen committed files out of the measured checkout (git internals, unverified). The old unpinned read-tree read the same index; running the gate's read-tree with `GIT_INDEX_FILE` under the private mkdtemp root would close it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read only conductor.service.ts, conductor.test.ts and codegraph.client.ts (4 tool calls) and said the other 18 files, docs/conventions/general.md and naming.md, and decision 101's format went unreviewed. Conventions coverage this round is partial."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no CI, infra, protocol or settings surface was touched) and review-spec (the PR names no closing issue or spec source)."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.6008668,
+  "duration_ms": 472739,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 18103,
+    "cache_read": 326626,
+    "cache_creation": 67926,
+    "total": 412667
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 256,
+      "output": 150652,
+      "cache_read": 6623486,
+      "cache_creation": 529085,
+      "cost_usd": 7.1879642000000015
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 11011,
+      "cache_read": 678981,
+      "cache_creation": 93929,
+      "cost_usd": 0.41290260000000006
+    }
+  ],
+  "permission_denials": []
+}
