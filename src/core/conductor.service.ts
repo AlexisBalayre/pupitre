@@ -155,12 +155,12 @@ function refreshConductorCheckout(repoPath: string, checkoutDir: string): Worktr
   // finished leaves its own lock. Kept, the add refuses the path on every
   // start, or takes another admin dir, which the pins refuse.
   if (lstatSync(worktreeGitEnv(repoPath, checkoutDir).GIT_DIR, { throwIfNoEntry: false })) {
-    // Short: the operator reads it through `failureSummary`, which cuts at 300
-    // characters, and the path is most of it.
+    // No path: the operator's line already opens with it ("Could not index
+    // <checkout>"), and `failureSummary` cuts what follows at 300 characters.
     throw new Error(
-      "Refusing to cut the conductor's checkout: it is still registered after a prune. If " +
-        `locked, run \`git worktree unlock ${checkoutDir}\` in the main checkout and restart ` +
-        'the conductor.',
+      "Refusing to cut the conductor's checkout: git still registers it after a prune. If it " +
+        'is locked, run `git worktree unlock` on it from the main checkout and restart the ' +
+        'conductor.',
     );
   }
   mkdirSync(dirname(checkoutDir), { recursive: true });

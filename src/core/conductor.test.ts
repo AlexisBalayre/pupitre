@@ -631,8 +631,10 @@ describe('startConductor code graph', () => {
     start();
 
     expect(launchedWith()?.mcpConfigPath).toBeUndefined();
-    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain(
-      `run \`git worktree unlock ${checkout()}\` in the main checkout and restart the conductor.`,
+    const printed = vi.mocked(console.error).mock.calls.flat().join(' ');
+    expect(printed).toContain(`Could not index ${checkout()}: `);
+    expect(printed).toContain(
+      'run `git worktree unlock` on it from the main checkout and restart the conductor.',
     );
     gitIn(repo, 'worktree', 'unlock', checkout());
 

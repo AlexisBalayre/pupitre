@@ -5652,7 +5652,8 @@ changes back into those docs is pending.
     target moved (conductor review of the round). Its admin dir is checked gone after the prune, as
     the undos check theirs: a `locked` file, which a `worktree add` killed before it finished
     leaves, kept the registration, and the add then failed on every start. The start now refuses
-    before the add and names `git worktree unlock <checkout>` as the way out. The
+    before the add and names `git worktree unlock` on the checkout as the way out, without its
+    path: the line that prints it opens with the path, and cuts the reason at 300 characters. The
     gate's checkout is named after its `mkdtemp` root,
     since as `checkout` it took the admin dir `checkout1` whenever the conductor's held
     `checkout`, a name the pins cannot predict. `GIT_WORK_TREE` replaces the gate's
