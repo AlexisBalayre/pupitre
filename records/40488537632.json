@@ -1,0 +1,177 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T10:32:07.830Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40488537632",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40488537632",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0fa4876650d3f2f0dfb82fdc46f05d96bd330f89",
+  "source": "pr",
+  "pr_number": 184,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/check-file-layout.sh",
+      "line": "20-35",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The lint script ignores project.env's 'an empty value turns off the check' contract, which the hook honours (exits 0 when either key is empty). An empty FILE_NAMING_SCOPE_REGEX matches every path, so README.md and package.json fail. An empty FILE_NAMING_REGEX still leaves the folder check running. A removed key aborts under set -u. Add `[ -n \"${FILE_NAMING_SCOPE_REGEX:-}\" ] && [ -n \"${FILE_NAMING_REGEX:-}\" ] || exit 0` after load_project_env.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/project.env",
+      "line": "30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above the naming block still says 'the 25 roles of docs/conventions/naming.md' and scopes to src/ only. Dropping integration.test leaves 24 roles in FILE_NAMING_REGEX/FILE_NAMING_HINT (the README now says 24), and the scope is now src|test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/project.env",
+      "line": "33",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Removing integration.test from FILE_NAMING_REGEX means a new foo.integration.test.ts is now blocked. docs/conventions/naming.md:69 still lists that role, and AGENTS.md's Testing area (and .claude/rules/testing-conventions.md) still globs **/*.integration.test.ts. Either keep the role or drop it from the docs in the same change.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/check-file-layout.sh",
+      "line": "38",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A path containing a newline is matched against the allowlist as several patterns (grep -qxF treats \\n as a separator), so a misnamed file under a directory named e.g. `src/core/merge-gate.errors.ts\\nx/` matches an allowlist entry and passes lint. Reject paths containing a newline before the grep.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/validate-file-naming.sh",
+      "line": "28-40",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The repo has no top-level test/ directory: tests live under src/, and vitest.config.ts includes only src/**/*.test.ts. So the new `test/` scope alternative is dead, and the mock=helpers rule and 'test mocks in test/helpers/' hint point at a folder that doesn't exist (the existing mock is src/test/temp-dir.mock.ts).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/check-file-layout.sh",
+      "line": "21-33",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The role-to-folder logic (role derivation, the FILE_NAMING_ROLE_DIRS loop, the parent-dir compare) is written out separately in the hook and in the lint script, so the two can drift even though both claim to apply 'the same two checks'. A shared helper in hooks/lib/project-env.sh, which both already source, would hold it once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/validate-file-naming.sh",
+      "line": "37",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The block message hardcodes the layout ('src/<area>/{types,enums,errors,interfaces,constants}/, test mocks in test/helpers/'), which repeats FILE_NAMING_ROLE_DIRS. Editing the config would leave this text stale. Build the text from the map or move it into the config.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/check-file-layout.sh",
+      "line": "15",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`[ -f \"$ALLOW\" ] || : > \"$ALLOW\"` makes the lint command create the committed allowlist as a side effect, so a deleted allowlist silently becomes an empty one. Dropping the line is simpler.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/README.md",
+      "line": "20",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The validate-file-naming.sh table row now packs the full lint-script and allowlist explanation into one cell, and that text is already in check-file-layout.sh's header. Consider trimming the row to a pointer.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "package.json",
+      "line": "48",
+      "area": "context",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Nothing the repo automates runs `pnpm lint`, so the new layout check and its allowlist must-shrink invariant only fire when someone runs `pnpm lint` by hand; the Stop hook and pre-commit run the biome-only LINT_CMD and CI has no lint step.",
+      "refutation": "pup's merge gate runs it. src/adapters/typescript.adapter.ts:47 sets GATE_STAGES = ['build','test','lint'], and lines 254-256 emit `<pm> run <stage>` for every stage that package.json defines. packageManager() resolves to pnpm, so src/core/merge-gate.service.ts (gateCommands/commandFor, ~L1892) runs `pnpm run lint`, which is biome followed by scripts/check-file-layout.sh. The Stop hook and pre-commit don't run it, but the gate does, so 'nothing automated runs it' is false."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The reviewer briefs gave the PR's restored config copies as `.claude-pr/<path relative to .claude/>`, but the real layout is `.claude-pr/.claude/<path>`. Correctness and security found it. Context and docs did not, and fell back to the base-branch copies plus `gh pr diff`. The diff covers every changed line, so their coverage held."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0759177999999996,
+  "duration_ms": 268681,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 12675,
+    "cache_read": 248308,
+    "cache_creation": 44427,
+    "total": 305422
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 74,
+      "output": 40937,
+      "cache_read": 1145871,
+      "cache_creation": 115448,
+      "cost_usd": 1.7587312000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 10579,
+      "cache_read": 250856,
+      "cache_creation": 74494,
+      "cost_usd": 0.3171866
+    }
+  ],
+  "permission_denials": []
+}
