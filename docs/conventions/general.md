@@ -5,7 +5,7 @@ Universal rules for **every** `*.ts` file in `src/`. Area-specific docs ([naming
 `.claude/rules/core-conventions.md` imports this file and `naming.md` for every `*.ts(x)` file.
 
 **Genre contract:** obligations only (rules, gotchas, decision rules, naming). System description
-lives in `docs/00`–`09`.
+lives in `docs/00`–`08` and the decision records under `docs/adr/`.
 
 ## File naming
 

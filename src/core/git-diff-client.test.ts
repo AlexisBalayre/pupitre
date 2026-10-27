@@ -91,6 +91,25 @@ describe('gitDiffAddedLines', () => {
   });
 });
 
+// Each file's hunks are read with its path as a pathspec, which git would
+// parse as magic unless told it is literal (decision 113).
+describe('a changed path that reads as pathspec magic', () => {
+  it('has its hunks read, so patch coverage and the recount count its lines', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, ':(top)foo'), 'one\ntwo\n');
+    commitAll(repo, 'magic');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ':(top)foo': [1, 2] });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', ':(top)foo')).toEqual({
+      added: 2,
+      deleted: 0,
+    });
+  });
+});
+
 // A session can write `diff.external` or a textconv driver into the shared,
 // untracked `$GIT_COMMON_DIR/config` and `info/attributes`. Without the
 // per-call disarm git runs the command and emits no hunks, and an empty
@@ -219,6 +238,59 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
   });
+
+  // Merged, the two hunks would report every line between them as added, lines
+  // tests already cover, and lift an untested change over the bar (decision 113).
+  it('keeps the hunks exact when diff.interHunkContext is set', () => {
+    const lines = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`);
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `top\n${lines.join('\n')}\nend\n`);
+    commitAll(repo, 'change');
+    sh(repo, 'git', 'config', 'diff.interHunkContext', '1000');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
+  });
+
+  // Patience and histogram anchor only on lines unique to each file, so they
+  // read the block a swap moves past as deleted and re-added: 101 covered
+  // lines that would lift an untested change over the bar (decision 113).
+  it('keeps the hunks to the swapped lines when diff.algorithm is set', () => {
+    const repeated = Array.from({ length: 100 }, () => 'x++;').join('\n');
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `first\n${repeated}\nlast\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `last\n${repeated}\nfirst\n`);
+    commitAll(repo, 'swap');
+    sh(repo, 'git', 'config', 'diff.algorithm', 'patience');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
+  });
+});
+
+// Under `diff.renames=copies` a new file copied from one the branch changes is
+// scored as its edits from that file's old content, so a 300-line file counted
+// as a few lines and slipped under the oversize flag (decision 113).
+describe('gitDiffNumstat under a session-written diff.renames=copies', () => {
+  it('counts every line of a new file copied from a changed one', () => {
+    const lines = Array.from({ length: 300 }, (_, index) => `line ${index + 1}`);
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\nend\n`);
+    writeFileSync(join(repo, 'b.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'copy');
+    sh(repo, 'git', 'config', 'diff.renames', 'copies');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: 1, deleted: 0 },
+      { path: 'b.ts', added: 300, deleted: 0 },
+    ]);
+  });
 });
 
 // `--text` restores the `-U0` patch above but not `--numstat`: under the same
@@ -245,7 +317,7 @@ describe('gitDiffBinaryRecount', () => {
     expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 3, deleted: 2 });
   });
 
-  it('recounts a new text file under core.attributesFile and core.bigFileThreshold', () => {
+  it('recounts a new text file under core.attributesFile', () => {
     const repo = repoWith({ 'a.ts': 'one\n' }, { 'fresh.ts': 'one\ntwo\n' });
     const attributes = join(repo, '.git', 'forged-attributes');
     writeFileSync(attributes, '* binary\n');
@@ -255,14 +327,21 @@ describe('gitDiffBinaryRecount', () => {
       added: 2,
       deleted: 0,
     });
+  });
 
-    sh(repo, 'git', 'config', '--unset', 'core.attributesFile');
+  // Below the threshold git calls every file binary; pinned, a text file is
+  // counted plainly and never needs the recount (decision 113).
+  it('counts a text file plainly under a session-written core.bigFileThreshold of 1', () => {
+    const repo = repoWith({ 'a.ts': 'one\n' }, { 'a.ts': 'one\ntwo\n', 'fresh.ts': 'one\ntwo\n' });
     sh(repo, 'git', 'config', 'core.bigFileThreshold', '1');
 
-    expect(gitDiffNumstat(repo, 'main', 'feature')[0]?.added).toBeNull();
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts')).toEqual({
-      added: 2,
-      deleted: 0,
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: 1, deleted: 0 },
+      { path: 'fresh.ts', added: 2, deleted: 0 },
+    ]);
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({
+      'a.ts': [2],
+      'fresh.ts': [1, 2],
     });
   });
 

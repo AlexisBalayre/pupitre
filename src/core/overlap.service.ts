@@ -13,16 +13,17 @@ export const WATCH_INTERVAL_MS = 15_000;
 export const WATCH_STALE_AFTER_MS = 3 * WATCH_INTERVAL_MS;
 
 /**
- * Files a peer-joined introduction leaves out (decision 104): two workers
- * appending to the decisions log conflict whatever they agree, so a word
- * between them settles nothing. The main-landed notice keeps it, since that
- * conflict is the one it resolves.
+ * Files a peer-joined introduction leaves out (decision 104): a landed
+ * decision under docs/adr/ only takes appends, and so does the index each new
+ * one adds a line to (decision 109). Two workers appending to the same file
+ * conflict whatever they agree, so a word between them settles nothing. The
+ * main-landed notice keeps them, since that conflict is the one it resolves.
  */
-const APPEND_ONLY_FILES: ReadonlySet<string> = new Set(['docs/09-decisions.md']);
+const APPEND_ONLY_DIR = 'docs/adr/';
 
 /** The shared files worth introducing a peer for; none means no introduction. */
 export function filesWorthANotice(files: string[]): string[] {
-  return files.filter((file) => !APPEND_ONLY_FILES.has(file));
+  return files.filter((file) => !file.startsWith(APPEND_ONLY_DIR));
 }
 
 /** Pairwise same-file intersections, session ids in insertion order, files sorted. */
