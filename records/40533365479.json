@@ -1,0 +1,121 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T15:45:43.488Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40533365479",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40533365479",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8e582bef4cebb31486437bb3307def960747e90e",
+  "source": "pr",
+  "pr_number": 190,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md",
+      "line": "1-4",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0113 changes what decision 53 says: 0053 line 12 claims `core.bigFileThreshold=1` makes every text file `-\\t-`, and 0113 pins that away. Neither file links the other. Add `- Amends: [0053](…)` to 0113 and `- Amended by: [0113](…)` to 0053, following the 0076/0074 header practice described in ADR 0109.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "353-356, 500-505",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new GIT_SAFE_CONFIG and diffHunks comments spell out the whole mechanism (`-\\t-` → forged; patience/histogram reading a block as deleted and re-added). ADR 113 and the test comments say the same thing. A one-line WHY plus `(decision 113)` would do (AGENTS.md §Comments).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "241-295",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new interHunkContext, diff-algorithm, copies-numstat and `:(top)foo` tests each inline the makeRepo/commit/checkout -b feature/commit scaffold. The `repoWith(base, feature)` helper already does this, but it is scoped inside the gitDiffBinaryRecount describe. Moving it to module scope would remove the repetition.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/README.md",
+      "line": "135",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The index entry and title for 0113 have no trailing period after the date, while 0107 and 0111 end in `(2026-10-27).`. The index is already inconsistent (0109 also has none), so ignore this if the generator decides.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "513-523",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "On macOS, a session-written `core.precomposeUnicode=true` (it lives in the shared common-dir config) rewrites diffHunks' NFD path argument to NFC. `--literal-pathspecs` does not stop this, so a file committed under an NFD name returns no hunks and drops out of patch coverage. Pinning `-c core.precomposeUnicode=false` on this call would close it. Darwin only; not reproduced on Linux.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2112315,
+  "duration_ms": 247680,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 8577,
+    "cache_read": 238298,
+    "cache_creation": 42457,
+    "total": 289344
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 43900,
+      "cache_read": 1083589,
+      "cache_creation": 157186,
+      "cost_usd": 2.0082588
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 5761,
+      "cache_read": 132462,
+      "cache_creation": 52829,
+      "cost_usd": 0.2029727
+    }
+  ],
+  "permission_denials": []
+}
