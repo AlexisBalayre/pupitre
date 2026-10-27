@@ -26,6 +26,7 @@ import {
   HOOK_TIMEOUT_SECONDS,
   RECHECK_HASH_MAX_BYTES,
   RECHECK_MAX_DIRTY_PATHS,
+  SLIM_CONTEXT_ENV,
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
@@ -51,6 +52,20 @@ const SHELL_UNSAFE_PATH = /['"\n`$\\]/;
  * rule takes the tools out of the model's toolset, sessions and conductor alike.
  */
 const UNANSWERABLE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
+
+/**
+ * Tools a worker never calls, denied by bare name, which takes the definition
+ * out of its context rather than refusing a call (decision 107). The conductor
+ * keeps them: it is the operator's window as much as pup's.
+ */
+const WORKER_UNUSED_TOOLS = ['SendFeedback', 'ScheduleWakeup', 'ReportFindings'];
+
+/**
+ * Claude Code sends the skill listing only while the Skill tool is in the
+ * toolset, so denying it is the one switch that empties the listing: overrides
+ * go by skill name, with no wildcard (decision 107).
+ */
+const SKILL_TOOL = 'Skill';
 
 /** What a session's compile takes beyond the task: launch-time facts (decisions 96, 99). */
 type SessionCompileInput = CompileInput & { peers?: SessionPeer[]; testCommand?: GateCommand };
@@ -815,7 +830,18 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
       Notification: [...eventEntry, ...(layerHooks.Notification ?? [])],
     },
     // A layer adds denials after decision 74's and can never drop one (decision 77).
-    permissions: { deny: [...new Set([...UNANSWERABLE_TOOLS, ...(merged.deny ?? [])])] },
+    // A profile that names a skill keeps the Skill tool, and with it the whole listing.
+    permissions: {
+      deny: [
+        ...new Set([
+          ...UNANSWERABLE_TOOLS,
+          ...WORKER_UNUSED_TOOLS,
+          ...(merged.skills?.length ? [] : [SKILL_TOOL]),
+          ...(merged.deny ?? []),
+        ]),
+      ],
+    },
+    env: SLIM_CONTEXT_ENV,
   };
 
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());
@@ -1070,6 +1096,7 @@ export function compileConductorProfile(
       ] as HookMatcherEntry[],
     },
     permissions: { deny: UNANSWERABLE_TOOLS },
+    env: SLIM_CONTEXT_ENV,
   };
   const files: Record<string, string> = {
     'context.md': contextMarkdown,
