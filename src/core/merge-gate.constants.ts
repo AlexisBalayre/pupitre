@@ -5,19 +5,21 @@
 export const DIFF_SIZE_FLAG_LINES = 600;
 
 /**
- * Test files by name, across the languages the adapters ship: JS/TS
- * `*.test.*` and `*.spec.*`, pytest's `test_*.py` and `*_test.py`, Go's
- * `*_test.go`. Spelling only, so a helper under a test directory with no test
- * name counts as source, the safe direction to be wrong in (decision 107).
+ * The one test spelling the diff-size stage trusts: what a vitest `include`
+ * conventionally collects, where parking production code fails the test stage
+ * (decision 39). `*.spec.*`, `.test.mts`, `.test.tsx` and Python names are
+ * collected by nothing pup can confirm, so they count as source (decision 107).
  */
-export const DIFF_SIZE_TEST_FILE_PATTERNS = [
-  /\.(?:test|spec)\.[cm]?[jt]sx?$/,
-  /(?:^|\/)test_[^/]*\.py$/,
-  /_test\.(?:py|go)$/,
-];
+export const DIFF_SIZE_TEST_SUFFIX = '.test.ts';
 
 /** Counted apart from source in the diff-size stage: prose, not code to review for size. */
 export const DIFF_SIZE_DOCS_DIR = 'docs/';
+
+/**
+ * Prose under `DIFF_SIZE_DOCS_DIR`. `.mdx` is left out because it compiles to
+ * a component, and anything else under `docs/` may be running code (decision 107).
+ */
+export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.txt', '.adoc'];
 
 /** Excluded from the diff-size count — machine-generated churn, not review surface. */
 export const LOCKFILE_NAMES = [

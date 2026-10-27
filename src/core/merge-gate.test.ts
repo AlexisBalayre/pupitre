@@ -2283,10 +2283,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // Decision 107: only source lines count toward the flag, and the detail
   // names the split.
   it('counts test files and docs/ apart from source and passes on source alone', async () => {
-    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'tests/**', 'docs/**'] });
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n'.repeat(227));
     commitIn(worktree, 'src/feature.test.ts', 'const line = 1;\n'.repeat(300));
-    commitIn(worktree, 'tests/test_feature.py', 'line = 1\n'.repeat(60));
+    commitIn(worktree, 'src/other.test.ts', 'const line = 1;\n'.repeat(60));
     commitIn(worktree, 'docs/feature.md', 'A line of prose.\n'.repeat(85));
 
     const outcome = await merge();
@@ -2299,21 +2299,105 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  it('names every test spelling the adapters ship as a test file', async () => {
-    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'pkg/**'] });
-    commitIn(worktree, 'src/a.spec.tsx', 'x\n');
-    commitIn(worktree, 'src/b.test.mjs', 'x\n');
-    commitIn(worktree, 'src/c_test.py', 'x\n');
-    commitIn(worktree, 'pkg/d_test.go', 'x\n');
-    commitIn(worktree, 'src/test_helpers/e.ts', 'x\n');
-    commitIn(worktree, 'src/docs/f.md', 'x\n');
+  // Only `.test.ts` is a spelling a vitest include is trusted to collect
+  // (decision 39); the rest import as production code and nothing fails.
+  it('counts every test spelling but .test.ts as source', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/a.spec.ts', 'x\n');
+    commitIn(worktree, 'src/b.test.mts', 'x\n');
+    commitIn(worktree, 'src/c.test.tsx', 'x\n');
+    commitIn(worktree, 'src/d.test.js', 'x\n');
+    commitIn(worktree, 'src/test_e.py', 'x\n');
+    commitIn(worktree, 'src/f_test.py', 'x\n');
+    commitIn(worktree, 'src/test_helpers/g.ts', 'x\n');
+    commitIn(worktree, 'src/h.test.ts', 'x\n');
 
     const outcome = await merge();
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
       status: 'pass',
-      detail: '2 source + 4 test + 0 docs changed lines',
+      detail: '7 source + 1 test + 0 docs changed lines',
+    });
+  });
+
+  // Running code lives under docs/ too (Docusaurus, Sphinx's conf.py), and a
+  // link can point anywhere.
+  it('counts only prose under docs/ as docs, and a link there as source', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/guide.md', 'prose\n'.repeat(3));
+    commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(5));
+    commitIn(worktree, 'docs/impl.ts', 'export const impl = 1;\n'.repeat(2));
+    commitIn(worktree, 'docs/page.mdx', '# page\n'.repeat(4));
+    commitIn(worktree, 'src/docs/h.md', 'prose\n');
+    symlinkSync('guide.md', join(worktree, 'docs/link.md'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link docs/link.md');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '8 source + 0 test + 8 docs changed lines',
+    });
+  });
+
+  describe('with a source file renamed onto a test name', () => {
+    /** `count` distinct lines from `from`, so git can tell a rename from a rewrite. */
+    function numbered(count: number, from = 0): string {
+      return Array.from({ length: count }, (_, i) => `export const v${from + i} = 1;\n`).join('');
+    }
+
+    function renameOntoTest(worktree: string): void {
+      sh(worktree, 'git', 'mv', 'src/big.ts', 'src/big.test.ts');
+      // 400 of 1000 lines rewritten: still similar enough for git to pair them.
+      writeFileSync(join(worktree, 'src/big.test.ts'), numbered(600) + numbered(400, 5000));
+      sh(worktree, 'git', 'commit', '-qam', 'rename src/big.ts');
+    }
+
+    it('counts the rewrite as source', async () => {
+      commitIn(repo, 'src/big.ts', numbered(1000));
+      const worktree = seedSession(db, repo);
+      renameOntoTest(worktree);
+
+      const outcome = await merge();
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
+        '800 source + 0 test + 0 docs changed lines: source exceeds the 600-line flag',
+      );
+    });
+
+    // `diff.renames` is shared config a session can write; with it off the
+    // numstat shows a delete and an add, and the add must not read as a test.
+    it('counts it as source with rename detection switched off in the shared config', async () => {
+      commitIn(repo, 'src/big.ts', numbered(1000));
+      const worktree = seedSession(db, repo);
+      renameOntoTest(worktree);
+      sh(repo, 'git', 'config', 'diff.renames', 'false');
+
+      const outcome = await merge();
+
+      expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
+        '2000 source + 0 test + 0 docs changed lines',
+      );
+    });
+
+    it('still counts a test renamed onto another test name as test', async () => {
+      commitIn(repo, 'src/old.test.ts', numbered(100));
+      const worktree = seedSession(db, repo);
+      sh(worktree, 'git', 'mv', 'src/old.test.ts', 'src/new.test.ts');
+      writeFileSync(join(worktree, 'src/new.test.ts'), numbered(90) + numbered(10, 5000));
+      sh(worktree, 'git', 'commit', '-qam', 'rename src/old.test.ts');
+
+      const outcome = await merge();
+
+      expect(untimed(outcome.report.stages)).toContainEqual({
+        stage: 'diff-size',
+        status: 'pass',
+        detail: '0 source + 20 test + 0 docs changed lines',
+      });
     });
   });
 

@@ -72,8 +72,9 @@ import {
 import {
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_DOCS_DIR,
+  DIFF_SIZE_DOCS_EXTENSIONS,
   DIFF_SIZE_FLAG_LINES,
-  DIFF_SIZE_TEST_FILE_PATTERNS,
+  DIFF_SIZE_TEST_SUFFIX,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_ENVIRONMENT_DIR,
   GATE_OUTPUT_TAIL_CHARS,
@@ -203,16 +204,76 @@ function failingTestNames(error: unknown): string {
   return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
-/** Which part of the diff-size split a changed path counts toward (decision 107). */
-function diffSizeKind(path: string): 'source' | 'test' | 'docs' {
-  if (path.startsWith(DIFF_SIZE_DOCS_DIR)) return 'docs';
-  if (DIFF_SIZE_TEST_FILE_PATTERNS.some((pattern) => pattern.test(path))) return 'test';
+/** A changed path's new mode, and the path it was renamed from if git paired one. */
+interface RawDiffEntry {
+  mode: string;
+  renamedFrom?: string;
+}
+
+/**
+ * The branch diff's `--raw` entries by new path. `-M` is passed rather than
+ * left to `diff.renames`, which sits in the shared config a session can write,
+ * so a rename onto a test name is paired whatever that config says.
+ */
+function rawDiffEntries(
+  repoPath: string,
+  target: string,
+  branch: string,
+): Map<string, RawDiffEntry> {
+  const fields = runGit(repoPath, [
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-color',
+    '-z',
+    '--raw',
+    '-M',
+    `${target}...${branch}`,
+  ]).split('\0');
+  const entries = new Map<string, RawDiffEntry>();
+  for (let i = 0; i < fields.length; i++) {
+    const header = fields[i];
+    if (!header?.startsWith(':')) continue;
+    // ":<old mode> <new mode> <old sha> <new sha> <status>", then one path, or
+    // the old and the new path for a rename or copy.
+    const [, mode = '', , , status = ''] = header.slice(1).split(' ');
+    if (/^[RC]/.test(status)) {
+      const from = fields[i + 1] ?? '';
+      const to = fields[i + 2] ?? '';
+      entries.set(to, status.startsWith('R') ? { mode, renamedFrom: from } : { mode });
+      i += 2;
+    } else {
+      entries.set(fields[i + 1] ?? '', { mode });
+      i += 1;
+    }
+  }
+  return entries;
+}
+
+/**
+ * Which part of the diff-size split a changed path counts toward (decision
+ * 107). A symlink is source wherever it sits, as it can point anywhere; a test
+ * is only the trusted suffix, and never a file renamed onto it from a name
+ * that was not one, which would carry production code in under the test count.
+ */
+function diffSizeKind(path: string, entry: RawDiffEntry | undefined): 'source' | 'test' | 'docs' {
+  if (entry?.mode === '120000') return 'source';
+  if (
+    path.startsWith(DIFF_SIZE_DOCS_DIR) &&
+    DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension))
+  ) {
+    return 'docs';
+  }
+  const isTest = (candidate: string): boolean => candidate.endsWith(DIFF_SIZE_TEST_SUFFIX);
+  if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
+    return 'test';
+  }
   return 'source';
 }
 
 /**
  * Adds + deletes across the branch diff, excluding lockfiles and binary files,
- * split into source, test files and `docs/` (decision 107). A null numstat is
+ * split into source, test files and prose under `docs/` (decision 107). A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
  * to call it binary by something no diff shows (decision 53).
@@ -224,15 +285,17 @@ export function countChangedLines(
 ): { source: number; test: number; docs: number; forged: string[] } {
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
+  const raw = rawDiffEntries(repoPath, target, branch);
   for (const stat of gitDiffNumstat(repoPath, target, branch)) {
     if (LOCKFILE_NAMES.includes(stat.path)) continue;
+    const kind = diffSizeKind(stat.path, raw.get(stat.path));
     if (stat.added !== null && stat.deleted !== null) {
-      counts[diffSizeKind(stat.path)] += stat.added + stat.deleted;
+      counts[kind] += stat.added + stat.deleted;
       continue;
     }
     const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
     if (!recount) continue;
-    counts[diffSizeKind(stat.path)] += recount.added + recount.deleted;
+    counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);
   }
   return { ...counts, forged };

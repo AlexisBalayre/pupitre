@@ -6341,21 +6341,38 @@ changes back into those docs is pending.
     600-line flag (`DIFF_SIZE_FLAG_LINES`) applies to source alone, and the stage detail names
     the split, `227 source + 360 test + 85 docs changed lines`, on a pass and a flag alike.
     Lockfiles stay excluded and a forged binary is still recounted and flagged at any size
-    (decision 53), into whichever part its path names. A test file is one by name across the
-    languages the adapters ship (`*.test.*` and `*.spec.*` for JS/TS, `test_*.py` and
-    `*_test.py`, `*_test.go`); a helper under a test directory with no test name counts as
-    source, the safe direction to be wrong in, as with decision 39's duplication rule. Docs
-    are paths under `docs/` at the repo root. Leaving them out of the size is not leaving them
+    (decision 53), into whichever part its path names. A test file is only a `*.test.ts`,
+    the one spelling decision 39 trusts: what a vitest `include` conventionally collects, so
+    production code parked there fails the test stage. `*.spec.*`, `.test.mts`, `.test.tsx`,
+    `.test.js` and pytest's `test_*.py` and `*_test.py` import as ordinary modules and fail
+    nothing when they hold no tests, so they count as source. A file renamed onto a test name
+    from a name that was not one counts as source too, or `git mv big.ts big.test.ts` plus a
+    rewrite would carry production code in under the test count. The rename is read from the
+    branch's `--raw` diff with `-M`, never left to `diff.renames`, which sits in the shared
+    config a session can write. Docs are prose under `docs/` at the repo root: `.md`, `.rst`,
+    `.txt` and `.adoc`. Projects keep running code under `docs/` (Docusaurus, Sphinx's
+    `conf.py`, swag's `docs/docs.go`), and `.mdx` compiles to a component, so those count as
+    source. A symlink counts as source wherever it sits, since it can point anywhere (all
+    three found on security review of the first cut, which took every JS/TS, Python and Go
+    test spelling and every path under `docs/`). Leaving them out of the size is not leaving them
     out of the gate: the scope audit and review still see every changed path, and the oversize
     ledger entry still names every changed file. The entry keeps its `Oversize diff (N lines)`
     wording, now with the source count, so a re-gate still reads an entry filed before this as
     the same kind (decision 86). The review queue's `changedLines` and risk keep counting every
     changed line: they estimate what a reviewer reads, tests and docs included.
     `docs/04-gates-and-debt.md` described the stage as "diff size vs task size", which the code
-    never had; it now says what is counted. Tests: a 227/360/85 split passes with that detail,
-    a 700-line test-only diff passes, 601 source lines flag whatever the tests add, every test
-    spelling counts as test while a `src/docs/` file and an unnamed helper count as source, a
-    root lockfile counts nothing and a lockfile-named file elsewhere still counts.
+    never had; it now says what is counted. Owed, each its own task: a `*.test.ts` outside the
+    runner's `include` (here anything outside `src/**`) still counts as test, and closing that
+    needs the trusted checkout's runner config from the adapters (vitest's `include`, pytest's
+    `python_files` from both checkouts, decision 31's pattern); and `gitDiffNumstat` keeps only
+    the part of a path before its first tab, so `src/a.test.ts<TAB>z/impl.ts` counts as test.
+    Tests: a 227/360/85 split passes with that detail, a 700-line test-only diff passes, 601
+    source lines flag whatever the tests add, every test spelling but `.test.ts` counts as
+    source, code, `.mdx`, a symlink and a `src/docs/` file count as source while `.md` and
+    `.rst` under `docs/` count as docs, a source file renamed onto a test name counts as source
+    with rename detection on and off in the shared config while a test renamed onto a test
+    stays a test, a root lockfile counts nothing and a lockfile-named file elsewhere still
+    counts.
 
 ## Implementation notes
 
