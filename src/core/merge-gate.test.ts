@@ -2300,8 +2300,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   });
 
   // Only `.test.ts` is a spelling a vitest include is trusted to collect
-  // (decision 39); the rest import as production code and nothing fails.
-  it('counts every test spelling but .test.ts as source', async () => {
+  // (decision 39); the rest import as production code and nothing fails. A
+  // name holding a space, a quote, `?` or `#` is never one whole token, so no
+  // name search could find what imports it.
+  it('counts every test spelling but .test.ts, and a name no token spells, as source', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/a.spec.ts', 'x\n');
     commitIn(worktree, 'src/b.test.mts', 'x\n');
@@ -2311,18 +2313,20 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'src/f_test.py', 'x\n');
     commitIn(worktree, 'src/test_helpers/g.ts', 'x\n');
     commitIn(worktree, 'src/h.test.ts', 'x\n');
+    commitIn(worktree, 'src/i j.test.ts', 'x\n');
+    commitIn(worktree, 'src/k#l.test.ts', 'x\n');
 
     const outcome = await merge();
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
       status: 'pass',
-      detail: '7 source + 1 test + 0 docs changed lines',
+      detail: '9 source + 1 test + 0 docs changed lines',
     });
   });
 
   // Running code lives under docs/ too (Docusaurus, Sphinx's conf.py), and a
-  // link can point anywhere.
+  // link can point anywhere, so it and the prose it reaches count as source.
   it('counts only prose under docs/ as docs, and a link there as source', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
     commitIn(worktree, 'docs/guide.md', 'prose\n'.repeat(3));
@@ -2340,7 +2344,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
       status: 'pass',
-      detail: '9 source + 0 test + 8 docs changed lines',
+      detail: '12 source + 0 test + 5 docs changed lines',
     });
   });
 
@@ -2425,6 +2429,132 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       stage: 'diff-size',
       status: 'pass',
       detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // A Vue component or a Vite entry loads a module as code does; prose under
+  // docs/ loads nothing.
+  it('reads every file naming a test but prose under docs/', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(
+      worktree,
+      'src/App.vue',
+      '<script setup lang="ts">import { v } from \'./big.test.js\';</script>\n',
+    );
+    commitIn(worktree, 'src/page.test.ts', 'export const p = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/index.html', '<script type="module" src="./page.test.ts"></script>\n');
+    commitIn(worktree, 'src/quiet.test.ts', 'const q = 1;\n'.repeat(3));
+    commitIn(worktree, 'docs/guide.md', 'See `./quiet.test.js`.\n');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '9 source + 3 test + 1 docs changed lines',
+    });
+  });
+
+  // Resolved, the specifier would land on the decoy and the test file would
+  // go unnamed.
+  it('names a test file whatever sits at the literal path', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'src/big.test.js', 'export {};\n');
+    commitIn(worktree, 'src/use.ts', "export { v } from './big.test.js';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '7 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // A million tokens times 200 targets of one name held the merge lock for
+  // minutes; the test timeout is the bound.
+  it('weighs a name once per file however many tokens and targets share it', async () => {
+    const worktree = seedSession(db, repo);
+    for (let i = 0; i < 200; i++) {
+      mkdirSync(join(worktree, `src/d${i}`), { recursive: true });
+      writeFileSync(join(worktree, `src/d${i}/x.test.ts`), 'x\n');
+    }
+    commitIn(worktree, 'src/use.ts', `${'x.test '.repeat(1_000_000)}\n`);
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '201 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // `git grep` never reads a link's blob, so a link is read from the tree:
+  // what it reaches is code under another name.
+  it('counts the doc, test or directory a symlink reaches as source', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/impl.md', 'print(1)\n'.repeat(5));
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(3));
+    commitIn(worktree, 'docs/guide/a.md', 'prose\n'.repeat(2));
+    commitIn(worktree, 'docs/other.md', 'prose\n'.repeat(4));
+    commitIn(worktree, 'src/plain.test.ts', 'x\n');
+    mkdirSync(join(worktree, 'src/pkg'));
+    symlinkSync('../../docs/impl.md', join(worktree, 'src/pkg/impl.py'));
+    symlinkSync('big.test.ts', join(worktree, 'src/impl.ts'));
+    symlinkSync('../docs/guide', join(worktree, 'src/guide'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link into docs and a test');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '13 source + 1 test + 4 docs changed lines',
+    });
+  });
+
+  // Lexically `src/x.py` lands on the decoy `src/impl.md`, which is where the
+  // gate's link check reads it; through `src/l` it lands on `docs/impl.md`. No
+  // lexical reading knows, so the link reaches everything.
+  it('reads a link with a .. after a named segment as reaching every path', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/sub/a.md', 'prose\n');
+    commitIn(worktree, 'docs/impl.md', 'print(1)\n'.repeat(5));
+    commitIn(worktree, 'src/impl.md', 'decoy\n');
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(2));
+    symlinkSync('../docs/sub', join(worktree, 'src/l'));
+    symlinkSync('l/../impl.md', join(worktree, 'src/x.py'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link through a link');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '11 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Docusaurus compiles `.md` under root docs/ as MDX, which can export code.
+  it('counts Markdown under docs/ as source beside a Docusaurus config', async () => {
+    const worktree = seedSession(db, repo, {
+      scopeIn: ['src/**', 'docs/**', 'docusaurus.config.ts'],
+    });
+    commitIn(worktree, 'docusaurus.config.ts', 'export default {};\n');
+    commitIn(worktree, 'docs/big.md', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(2));
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 2 docs changed lines',
     });
   });
 

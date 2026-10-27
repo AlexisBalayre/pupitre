@@ -31,7 +31,6 @@ import type {
   GateStage,
   NestedPackage,
 } from '../adapters/types/adapter.types.js';
-import { isSourceFile, resolveImport } from '../adapters/typescript-source.utils.js';
 import {
   killSession as killTmux,
   SteerNotDeliveredError,
@@ -74,6 +73,7 @@ import {
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_DOCS_DIR,
   DIFF_SIZE_DOCS_EXTENSIONS,
+  DIFF_SIZE_DOCUSAURUS_CONFIG,
   DIFF_SIZE_FLAG_LINES,
   DIFF_SIZE_TEST_SUFFIX,
   GATE_COMMAND_TIMEOUT_MS,
@@ -251,21 +251,87 @@ function rawDiffEntries(
   return entries;
 }
 
+type DiffSizeKind = 'source' | 'test' | 'docs';
+
 /**
- * Which part of the diff-size split a changed path counts toward (decision
- * 110). A symlink is source wherever it sits, as it can point anywhere; a test
- * is only the trusted suffix, and never a file renamed onto it from a name
- * that was not one, which would carry production code in under the test count.
+ * What the branch's tree tells the diff-size split beyond a path's own name
+ * (decision 110): whether a symlink can reach the path, and whether a
+ * Docusaurus config compiles the Markdown under `docs/`.
  */
-function diffSizeKind(path: string, entry: RawDiffEntry | undefined): 'source' | 'test' | 'docs' {
-  if (entry?.mode === '120000') return 'source';
+interface BranchTree {
+  linked: (path: string) => boolean;
+  markdownIsCode: boolean;
+}
+
+/**
+ * The branch's tree as the split reads it. A symlink reaches the path it lands
+ * on and everything under it, read from its blob lexically from the link's
+ * directory; `git grep` never reads a link's blob, so this is the one place a
+ * link is seen. One whose target is absolute, lands outside the repo, or has a
+ * `..` after a named segment, which climbs from wherever that segment resolves
+ * and no lexical reading knows, may land anywhere and reaches every path.
+ */
+function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const landings: string[] = [];
+  let anywhere = false;
+  let markdownIsCode = false;
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+    if (!entry) continue;
+    // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
+    const tab = entry.indexOf('\t');
+    const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
+    const path = entry.slice(tab + 1);
+    markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path);
+    if (mode !== '120000') continue;
+    const target = runGit(repoPath, ['cat-file', 'blob', oid]);
+    const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
+    const firstName = segments.findIndex((segment) => segment !== '..');
+    const lands = join(dirname(path), target).replace(/\/+$/, '');
+    anywhere ||=
+      target.startsWith('/') ||
+      (firstName !== -1 && segments.slice(firstName).includes('..')) ||
+      lands === '..' ||
+      lands.startsWith('../');
+    landings.push(lands);
+  }
+  return {
+    linked: (path) =>
+      anywhere ||
+      landings.some((lands) => lands === '.' || path === lands || path.startsWith(`${lands}/`)),
+    markdownIsCode,
+  };
+}
+
+/**
+ * A character no token spells a name with: whitespace and quotes end a token,
+ * and a `?` or `#` is cut as a query or fragment. A test file named with one
+ * can be imported with no token naming it, so it counts as source.
+ */
+const UNSPELLABLE_NAME = /[\s'"`?#]/;
+
+/**
+ * Which part of the diff-size split a path counts toward (decision 110). A
+ * symlink is source wherever it sits, and so is any path one can reach. A test
+ * is only the trusted suffix under a name a token can spell, and never a file
+ * renamed onto it from a name that was not one, which would carry production
+ * code in under the test count. `.md` under `docs/` is code where a Docusaurus
+ * config compiles it.
+ */
+function diffSizeKind(
+  path: string,
+  entry: RawDiffEntry | undefined,
+  tree: BranchTree,
+): DiffSizeKind {
+  if (entry?.mode === '120000' || tree.linked(path)) return 'source';
   if (
     path.startsWith(DIFF_SIZE_DOCS_DIR) &&
-    DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension))
+    DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension)) &&
+    !(tree.markdownIsCode && path.endsWith('.md'))
   ) {
     return 'docs';
   }
-  const isTest = (candidate: string): boolean => candidate.endsWith(DIFF_SIZE_TEST_SUFFIX);
+  const isTest = (candidate: string): boolean =>
+    candidate.endsWith(DIFF_SIZE_TEST_SUFFIX) && !UNSPELLABLE_NAME.test(basename(candidate));
   if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
     return 'test';
   }
@@ -274,47 +340,41 @@ function diffSizeKind(path: string, entry: RawDiffEntry | undefined): 'source' |
 
 const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
 
-/** Ends a specifier token: a quote or whitespace. */
-const SPECIFIER_DELIMITER = /[\s'"`]/;
-
 /**
- * Each token of `text` holding `name`, grown outward from every `indexOf` hit
- * to the nearest quote or whitespace. Linear: a regex with an unanchored
- * leading class backtracks quadratically on one long unspaced line, which held
+ * A run between quotes or whitespace, which is how an import specifier, a
+ * `src` attribute or a `package.json` value is spelt. One class with nothing
+ * after it to backtrack into, so linear on any line: a pattern finding a name
+ * inside a token backtracked quadratically on one long unspaced line, and held
  * the merge lock for minutes on a 1 MB file.
  */
-function tokensHolding(text: string, name: string): string[] {
-  const tokens: string[] = [];
-  let floor = 0;
-  for (let hit = text.indexOf(name); hit !== -1; hit = text.indexOf(name, floor)) {
-    let start = hit;
-    while (start > floor && !SPECIFIER_DELIMITER.test(text.charAt(start - 1))) start -= 1;
-    let end = hit + name.length;
-    while (end < text.length && !SPECIFIER_DELIMITER.test(text.charAt(end))) end += 1;
-    tokens.push(text.slice(start, end));
-    floor = end;
-  }
-  return tokens;
-}
+const SPECIFIER_TOKEN = /[^\s'"`]+/g;
 
 /**
- * Per code file on `branch` that names one of `targets`, the targets it names.
- * A relative specifier that resolves names that file alone; any other token
- * ending in a target's name (an alias, a `#` import, a comment) names every
- * target of that name, as over-counting source is the safe direction. A `?` or
- * `#` suffix (`?raw`) is cut first. Only files mentioning a name are read,
- * found by `git grep` with colour pinned off: `color.grep=always` in the
- * shared config would wrap each path in escapes, and a listing entry that does
- * not start with the branch refuses rather than skips (decision 110).
+ * Per file on `branch` that names one of `targets`, the targets it names. A
+ * token names every target whose name its last segment spells, less a `?` or
+ * `#` suffix (`?raw`) and a JS or TS extension. A relative specifier is not
+ * resolved: a decoy file at its literal path would take the resolution and
+ * hide the target, and matching by name only over-counts source, the safe
+ * direction. Every file `git grep` lists is read but those `skip` names,
+ * whatever its extension, since a Vue component, a Vite `index.html` or a
+ * `package.json` loads a module as well as code does. A file costs one pass
+ * over its text and one lookup per distinct name it spells, however many
+ * tokens repeat a name or targets share it. Grep runs with colour pinned off:
+ * `color.grep=always` in the shared config would wrap each path in escapes,
+ * and a listing entry that does not start with the branch refuses rather than
+ * skips (decision 110).
  */
 function filesNaming(
   repoPath: string,
   branch: string,
-  files: Set<string>,
   targets: string[],
+  skip: (path: string) => boolean,
 ): Map<string, Set<string>> {
   const named = new Map<string, Set<string>>();
-  const stems = [...new Set(targets.map(testStem))];
+  const byName = new Map<string, string[]>();
+  for (const target of targets) {
+    byName.set(testStem(target), [...(byName.get(testStem(target)) ?? []), target]);
+  }
   let listing = '';
   try {
     listing = runGit(repoPath, [
@@ -328,7 +388,7 @@ function filesNaming(
       '-z',
       '-F',
       '--no-textconv',
-      ...stems.flatMap((stem) => ['-e', stem]),
+      ...[...byName.keys()].flatMap((name) => ['-e', name]),
       branch,
       '--',
     ]);
@@ -344,23 +404,14 @@ function filesNaming(
       throw new Error(`git grep listed ${JSON.stringify(entry)}, not a path under ${prefix}`);
     }
     const importer = entry.slice(prefix.length);
-    if (!isSourceFile(importer)) continue;
+    if (skip(importer)) continue;
     const text = runGit(repoPath, ['cat-file', 'blob', `${branch}:${importer}`]);
-    const hits = new Set<string>();
-    for (const stem of stems) {
-      for (const token of tokensHolding(text, stem)) {
-        const specifier = token.replace(/(?<=.)[?#].*$/s, '');
-        const resolved = specifier.startsWith('.')
-          ? resolveImport(importer, specifier, files)
-          : undefined;
-        if (resolved) {
-          if (targets.includes(resolved)) hits.add(resolved);
-          continue;
-        }
-        const name = basename(specifier).replace(/\.[cm]?[jt]sx?$/, '');
-        for (const target of targets) if (testStem(target) === name) hits.add(target);
-      }
+    const names = new Set<string>();
+    for (const [token] of text.matchAll(SPECIFIER_TOKEN)) {
+      const name = basename(token.replace(/(?<=.)[?#].*$/s, '')).replace(/\.[cm]?[jt]sx?$/, '');
+      if (byName.has(name)) names.add(name);
     }
+    const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
     hits.delete(importer);
     if (hits.size > 0) named.set(importer, hits);
   }
@@ -368,25 +419,30 @@ function filesNaming(
 }
 
 /**
- * The `tests` non-test code on `branch` reaches: production code can import a
+ * The `tests` other code on `branch` reaches: production code can import a
  * `*.test.ts` that also holds one test, which vitest collects and passes, or
  * reach it through another test file that re-exports it (decision 110). Each
  * round asks which files name the tests found so far; a test file naming one
- * is followed in turn, until no new test file turns up.
+ * is followed in turn, until no new test file turns up. `kindOf` says what a
+ * naming file is: prose under `docs/` loads nothing and is skipped, and a file
+ * neither docs nor a test is code.
  */
-function reachableTestFiles(repoPath: string, branch: string, tests: string[]): Set<string> {
+function reachableTestFiles(
+  repoPath: string,
+  branch: string,
+  tests: string[],
+  kindOf: (path: string) => DiffSizeKind,
+): Set<string> {
   if (tests.length === 0) return new Set();
-  const files = new Set(
-    runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0'),
-  );
   const reached = new Set<string>();
   const importsOf = new Map<string, Set<string>>();
   const seen = new Set(tests);
   let round = tests;
   while (round.length > 0) {
     const next: string[] = [];
-    for (const [importer, named] of filesNaming(repoPath, branch, files, round)) {
-      if (!importer.endsWith(DIFF_SIZE_TEST_SUFFIX)) {
+    const naming = filesNaming(repoPath, branch, round, (path) => kindOf(path) === 'docs');
+    for (const [importer, named] of naming) {
+      if (kindOf(importer) !== 'test') {
         for (const test of named) reached.add(test);
         continue;
       }
@@ -424,14 +480,16 @@ export function countChangedLines(
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
   const raw = rawDiffEntries(repoPath, target, branch);
+  const tree = readBranchTree(repoPath, branch);
+  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
   const stats = gitDiffNumstat(repoPath, target, branch).filter(
     (stat) => !LOCKFILE_NAMES.includes(stat.path),
   );
-  const kinds = new Map(
-    stats.map((stat) => [stat.path, diffSizeKind(stat.path, raw.get(stat.path))]),
-  );
+  const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
   const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
-  for (const path of reachableTestFiles(repoPath, branch, tests)) kinds.set(path, 'source');
+  for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
+    kinds.set(path, 'source');
+  }
   for (const stat of stats) {
     const kind = kinds.get(stat.path) ?? 'source';
     if (stat.added !== null && stat.deleted !== null) {
