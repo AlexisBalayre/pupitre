@@ -1,0 +1,288 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T14:42:27.567Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40522332985",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40522332985",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c07c379a36abd9ac3712fb270630a034f324b944",
+  "source": "pr",
+  "pr_number": 191,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "21",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`APPEND_ONLY_FILES` still names `docs/09-decisions.md`, which this PR deletes. `filesWorthANotice` now filters out nothing, and the file decision 104 exempts can never appear in an overlap again.",
+      "body": "**The decision 104 exemption stops working after this PR.**\n\n```ts\nconst APPEND_ONLY_FILES: ReadonlySet<string> = new Set(['docs/09-decisions.md']);\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/src/core/overlap.service.ts#L15-L26>\n\n**Why the set now matches nothing.** Introductions come from `scopeConflicts`, which resolves scopes through `git ls-files`, so only tracked paths can match. This PR deletes `docs/09-decisions.md`, so no session's files can include it. `filesWorthANotice` therefore filters nothing. That affects both places it is used: the peer-joined steer and the kickoff's `## Peers` list (`session-lifecycle.service.ts:269`).\n\n**The conflict 104 describes has moved to a new file.** Every PR that adds a decision now has to regenerate the index in `docs/adr/README.md`, because `pnpm lint` fails when the index is stale. The new `NNNN-*.md` file is not tracked yet, so the README is the only file two decision-adding scopes share. Each such branch inserts its index line just before `<!-- adr-index:end -->`. [Decision 104](https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/docs/adr/0104-peer-joined-introductions-and-main-landed-notices-go.md#L24-L36) rules that an introduction cannot settle this kind of conflict, yet those two workers now get one.\n\n**Fixing it takes more than one line:**\n- Point the set at `docs/adr/README.md`.\n- Move the tests that pin the exemption to the new path. `session-lifecycle.test.ts:447-462` and `land.test.ts:509-516` commit the old path into a temp repo, so they still pass and hide the dead filter.\n- Update the \"decisions log\" JSDoc in `overlap.service.ts` and `session-lifecycle.service.ts`.\n- Record the moved exemption against 104, since 104 names `docs/09-decisions.md`.",
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/domain-modeling/DECISION-FORMAT.md",
+      "line": "3-42",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The skill that records decisions still says \"There is no `docs/adr/` directory and no per-decision file\". It tells agents to add entries to `docs/09-decisions.md` under `##` sections, and its numbering command reads a file this PR deletes. An agent following it will recreate the old log or pick a wrong number.",
+      "body": "**Agents are sent to this skill to record a decision, and it still describes the old single file.**\n\n`domain-modeling`'s description says to use it \"when … recording or editing a numbered decision in `docs/09-decisions.md`\" (`SKILL.md` L3). After this PR its instructions contradict [`docs/adr/README.md`](https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/docs/adr/README.md#L6-L23) on four points.\n\n- **Where decisions live.** `DECISION-FORMAT.md` L3-4 says: \"Decisions live in `docs/09-decisions.md` as one numbered list entry. There is no `docs/adr/` directory and no per-decision file.\" `SKILL.md` L19 repeats \"This repo has **no `docs/adr/`** … not as an ADR file.\"\n- **The template.** L13-21 says to append `NN.` entries under the `##` sections. Decision 109 drops those sections.\n- **Numbering.** L35's `git show origin/main:docs/09-decisions.md | grep …` fails once this PR lands and prints no number. The README has its own `git ls-tree` recipe.\n- **The index.** The skill never mentions regenerating it, so a decision written this way fails `pnpm lint`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/.claude/skills/domain-modeling/DECISION-FORMAT.md#L3-L42>\n\nSo the next agent that records a decision would recreate `docs/09-decisions.md`, or get no number. Point the skill at `docs/adr/README.md` and remove its duplicate rules. The stale lines are `SKILL.md` L3, 8, 15, 19, 27 and 58, plus `DECISION-FORMAT.md` L3-42.",
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/review-conventions.md",
+      "line": "15",
+      "area": "context",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Agent and skill definitions still tell reviewers to read `docs/09-decisions.md`, which this PR deletes, so their decision-grounding step points at a missing file after merge.",
+      "body": "**After this PR, several agents and skills tell their reader to ground their work in a file that no longer exists.**\n\nThe PR deletes `docs/09-decisions.md` but leaves `.claude/` untouched. Your own acceptance criterion is \"no file outside docs/adr still references docs/09-decisions.md\", and about 50 references remain. These are instructions, not just mentions:\n\n- [`review-conventions.md` L15](https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/.claude/agents/review-conventions.md#L15): the decisions to cite, which \"win over `docs/00`–`08`\". This reviewer runs on every CI review.\n- [`review-security.md` L11](https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/.claude/agents/review-security.md#L11) and [`security-reviewer.md` L3, L11](https://github.com/AlexisBalayre/pupitre/blob/c07c379a36abd9ac3712fb270630a034f324b944/.claude/agents/security-reviewer.md#L11-L13): \"Ground every finding in `docs/09-decisions.md` — decisions 24–30 record the accepted exposures\". Without those, the reviewer cannot tell an accepted exposure from a new one.\n- `convention-checker.md` L24 and `architecture-explainer.md` L3 and L22-34. The explainer routes every *why* question to the missing file.\n- `pr-description/SKILL.md` L34, 40, 191 and 253, and `pr-ci-review/SKILL.md` L74.\n\nThe decision numbers are still valid, but nothing tells these agents to look in `docs/adr/`. A path swap to `docs/adr/`, found through `docs/adr/README.md`, fixes them all. The vocabulary-only mentions in `tdd`, `to-spec`, `to-tickets`, `wayfinder`, `prototype`, `codebase-design`, `improve-codebase-architecture`, `diagnosing-bugs`, `writing-for-agents`, `wait-what` and `.claude/skills/README.md` should get the same swap.",
+      "suggestion": null
+    },
+    {
+      "file": "package.json",
+      "line": "48-49",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`lint` now checks the ADR index but `lint:fix` does not regenerate it, so after a stale-index failure `pnpm lint:fix` (which `scripts/pre-commit` and CONTRIBUTING.md recommend) changes nothing; append `&& bash scripts/adr-index.sh` to `lint:fix`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/project.env",
+      "line": "12",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`LINT_CMD` calls biome directly, so the Stop hook and `scripts/pre-commit` never run `adr-index.sh --check`; a stale index is caught only by `pnpm lint` (the merge gate's lint stage), not by the hooks AGENTS.md says run lint automatically.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "24-28",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Nothing checks that both index markers exist: without the begin marker `render` echoes the README unchanged so `--check` always passes; without the end marker `--check` fails and the regenerate it recommends silently drops everything after the index.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "15-17",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A decision file whose line 1 is not `# ...` or that lacks a `- Status:` line is indexed as `- [](file) ()` and `--check` stays green, so the header format the README requires is never enforced.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "32-38",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`--check` compares via `$(...)`, which strips trailing newlines, while regenerate writes exactly one, so a README with extra trailing blank lines or no final newline passes the check yet would still be changed by a regenerate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/README.md",
+      "line": "15-16",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The numbering recipe `git ls-tree --name-only origin/main docs/adr/ | sort | tail -n 2` prints the highest ADR and then `docs/adr/README.md`, so the number is the second-to-last line (and `sort` is redundant); `grep -E '/[0-9]{4}-' | tail -n 1` would say what it means.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0014-v1-gate-slims-to.md",
+      "line": "1",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The title and permanent filename \"v1 gate slims to\" were cut at the original bold lead's colon, so the index entry is a sentence fragment; a fuller title (e.g. \"v1 gate slims to build, tests, lint, scope audit, diff-size flag and a minimal ledger\") would be better fixed before the filename becomes a stable identifier.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0041-a-launch-is-refused-when-its-scope-collides.md",
+      "line": "1-4",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "0041's title says \"the refusal is superseded by decision 99\" while its header reads `- Status: accepted`, so the index lists it as \"(accepted)\"; only half is superseded, so Amended by is defensible, but the status and title disagree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0106-pup-init-session-env-a-b-names-the.md",
+      "line": "1",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The titles of 0106, 0107 and 0111 (the decisions merged in from main) end in \"(date).\" with a trailing period that every other dated title drops, so the index is inconsistent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0109-one-file-per-decision-under-docs-adr-numbered.md",
+      "line": "7",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "0109 says `docs/09-decisions.md` \"reached 6,300 lines\", but this diff deletes 6,510 lines and the PR body says 5,037; use one measured figure or drop the count.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0109-one-file-per-decision-under-docs-adr-numbered.md",
+      "line": "19-21",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Departure from the template: the template keeps `docs/adr/`, and pupitre had departed from it with one log\" never defines \"the template\" and labels a return as a departure; one plain WHY sentence would read better.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/README.md",
+      "line": "6-21",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Each ADR states its title twice (the `# NNNN.` header the index reads and the old bold body line) and its links in both directions (`Amends:` / `Amended by:`), but the README only tells a new decision to add `Amends:`, so back-links and titles will drift as amendments land.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "15-18",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The index copies each H1 whole, dated cross-reference parentheticals included (0088's line runs to about 250 characters), so a decision's links live in the title, the body and the Amends lines at once and can disagree with Status.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "AGENTS.md",
+      "line": "11-12",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new rule \"Read the ADRs your change touches\" drops the old \"before implementing\" timing, and the README rules that now bind it are not auto-loaded.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing-utils.test.ts",
+      "line": "33",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The non-critical companion scope entry changed from a file path to the directory `'docs/adr/'`; it still works, but a real file such as `docs/adr/README.md` would keep the filler's shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "8",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Minor drift from the sibling scripts (`worktree-create.sh`): they bind `ROOT=$(git rev-parse --show-toplevel)` before `cd \"$ROOT\"`, while this script does the `cd` inline.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "13-35",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`--check` only compares the rendered index to the README. It never rejects two files with the same `NNNN`. The README's own numbering rule makes two parallel PRs pick the same number, and its fix for the resulting conflict is to regenerate, so a duplicate lands with lint green.",
+      "refutation": "The gap is real, but this PR doesn't introduce it, and it doesn't need fixing before merge. The old `docs/09-decisions.md` had no numbering rule and no check. Its entries were not in order (97 after 100, 105 before 103, 98 after 104), so two PRs that picked the same number could already merge with no conflict. The new index is sorted by filename, so two same-number PRs always conflict on the same line before `<!-- adr-index:end -->`, and that conflict shows both entries to whoever resolves it. The damage is limited to an ambiguous doc number. A check for duplicate prefixes would be a cheap nit-level improvement."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The validator for the duplicate-number finding reported that `gh pr view` was denied. It did not need the PR body for its verdict."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.476526300000001,
+  "duration_ms": 430848,
+  "num_turns": 23,
+  "tokens": {
+    "input": 18,
+    "output": 21865,
+    "cache_read": 512070,
+    "cache_creation": 88704,
+    "total": 622657
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 210,
+      "output": 92969,
+      "cache_read": 3859370,
+      "cache_creation": 421565,
+      "cost_usd": 5.006030999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 16184,
+      "cache_read": 283378,
+      "cache_creation": 112095,
+      "cost_usd": 0.47049530000000006
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 191 --repo AlexisBalayre/pupitre --json title,body,files"
+    }
+  ]
+}
