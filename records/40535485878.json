@@ -1,0 +1,100 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T15:55:59.608Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40535485878",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40535485878",
+  "actor": "AlexisBalayre",
+  "commit_sha": "684c043735bd28c3396c25025a09fa6ccc0036f5",
+  "source": "pr",
+  "pr_number": 192,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "16-27",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc says \"a landed decision under docs/adr/ only takes appends\", and the ADR 0104 amendment and the overlap.test.ts comment say \"every write under docs/adr/ is an append\". docs/adr/README.md allows edits in place: `Amended by:` header lines, a `Status: superseded by` change, and its own editable prose sections. Prefer wording like \"writes under docs/adr/ are almost always appends\". This is not a regression: the old docs/09-decisions.md exemption carried the same exposure.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0104-peer-joined-introductions-and-main-landed-notices-go.md",
+      "line": "63",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The amendment cites `(task t-mvqhkm3t, ...)`, but docs/adr/README.md asks for amendments to be \"dated, with the PR\", and the precedent in 0038 reads `*Amended 2026-10-14 (PR #142):*`. Cite PR #192 instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/overlap.test.ts",
+      "line": "65-66",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `describe('filesWorthANotice')` never says why the docs/adrift.md case exists. A short clause such as \"docs/adrift.md pins the trailing slash\" would keep that reason next to the test instead of only in the ADR amendment.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9986402,
+  "duration_ms": 86499,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 5775,
+    "cache_read": 182130,
+    "cache_creation": 33655,
+    "total": 221570
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 30,
+      "output": 10881,
+      "cache_read": 426008,
+      "cache_creation": 77314,
+      "cost_usd": 0.7904766
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 5047,
+      "cache_read": 181156,
+      "cache_creation": 55812,
+      "cost_usd": 0.20816359999999998
+    }
+  ],
+  "permission_denials": []
+}
