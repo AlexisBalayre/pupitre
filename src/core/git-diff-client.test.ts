@@ -950,6 +950,33 @@ describe('worktree git pins (decision 101)', () => {
 describe('assertNoWorktreeConfig', () => {
   let repo: string;
 
+  // Written from outside the repo, which git refuses to open once the value is unreadable.
+  const setExtension = (target: string, value: string) =>
+    sh(
+      dirname(target),
+      'git',
+      'config',
+      '--file',
+      join(target, '.git/config'),
+      'extensions.worktreeConfig',
+      value,
+    );
+
+  /** The commands the refusal's hint asks the operator to paste, in order. */
+  const hintCommands = (target: string): string[] => {
+    try {
+      assertNoWorktreeConfig(target);
+    } catch (error) {
+      const steps = (error as Error).message.split('Otherwise run ')[1] ?? '';
+      return [...steps.matchAll(/`(git [^`]*)`/g)].map((match) => match[1] as string);
+    }
+    throw new Error(`${target} was not refused`);
+  };
+
+  /** What pasting `command` into a shell in `cwd` does. */
+  const paste = (cwd: string, command: string) =>
+    execFileSync('sh', ['-c', command], { cwd, encoding: 'utf8', env: GIT_ENV, stdio: 'pipe' });
+
   beforeEach(() => {
     repo = makeRepo();
     mkdirSync(join(repo, 'src'));
@@ -977,30 +1004,93 @@ describe('assertNoWorktreeConfig', () => {
     expect(() => assertNoWorktreeConfig(repo)).toThrow(/config\.worktree exists/);
     unlinkSync(join(repo, '.git/config.worktree'));
 
-    // Written from outside the repo, which git refuses to open once the value is unreadable.
-    const setExtension = (value: string) =>
-      sh(
-        dirname(repo),
-        'git',
-        'config',
-        '--file',
-        join(repo, '.git/config'),
-        'extensions.worktreeConfig',
-        value,
-      );
-    setExtension('true');
-    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on/);
-    setExtension('maybe');
-    const unset = ['-C', '/', 'config', '--file', join(repo, '.git/config')];
+    setExtension(repo, 'true');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on in /);
+    setExtension(repo, 'maybe');
     expect(() => assertNoWorktreeConfig(repo)).toThrow(
-      `git ${unset.join(' ')} --unset extensions.worktreeConfig`,
+      /extensions\.worktreeConfig is on, or holds a value git cannot read, in /,
     );
-    // The hint's unset works on a value git cannot read, run from inside the repo too.
-    sh(repo, 'git', ...unset, '--unset', 'extensions.worktreeConfig');
-    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
-    setExtension('false');
+    setExtension(repo, 'false');
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
+
+  // `git sparse-checkout disable` fails while the value is unreadable, and turns
+  // the extension back on once it runs, so the hint unsets before and after it.
+  it('leads an unreadable value with the unset, and its steps clear a sparse checkout', () => {
+    sh(repo, 'git', 'sparse-checkout', 'set', 'src');
+    setExtension(repo, 'maybe');
+    const [unset, disable] = hintCommands(repo);
+    expect(unset).toBe(
+      `git -C / config --file '${join(repo, '.git/config')}' --unset-all extensions.worktreeConfig`,
+    );
+    expect(disable).toBe('git sparse-checkout disable');
+    expect(() => paste(repo, disable as string)).toThrow(/bad boolean config value/);
+
+    paste(repo, unset as string);
+    paste(repo, disable as string);
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on in /);
+    paste(repo, unset as string);
+    unlinkSync(join(repo, '.git/config.worktree'));
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // `--unset` refuses a key set twice ("multiple values"), so the hint's would fail here.
+  it('unsets every copy of a key set twice', () => {
+    writeFileSync(
+      join(repo, '.git/config'),
+      `${readFileSync(join(repo, '.git/config'), 'utf8')}[extensions]\n` +
+        '\tworktreeConfig = maybe\n\tworktreeConfig = maybe\n',
+    );
+    const [unset] = hintCommands(repo);
+
+    paste(repo, unset as string);
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // sanitizeReason folds whitespace, blanks control chars and truncates, so a
+  // command built from its output would unset some other file.
+  it.each([
+    ['two spaces', 'My  Project'],
+    ['a tab', 'My\tProject'],
+    ['a newline', 'My\nProject'],
+    ['ESC and CSI', 'My\u001b[31m\u009bProject'],
+    // Two components: under Linux's short /tmp one name of NAME_MAX stays under the cap.
+    ['a path past the truncation', `${'p'.repeat(200)}/${'p'.repeat(200)}`],
+  ])('prints no paste-ready unset for a path with %s, and no control char', (_, name) => {
+    const odd = join(tempDir('pup-diff-'), name);
+    mkdirSync(odd, { recursive: true });
+    sh(odd, 'git', 'init', '-q', '-b', 'main');
+    setExtension(odd, 'maybe');
+    let message = '';
+    try {
+      assertNoWorktreeConfig(odd);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is the point
+    expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(hintCommands(odd)[0]).toBe(
+      'git -C / config --file <repo>/.git/config --unset-all extensions.worktreeConfig',
+    );
+    expect(message).toContain('with <repo> typed by hand');
+  });
+
+  it.each(['true', 'maybe'])(
+    'quotes a repo path a shell would split, so the pasted unset runs alone (%s)',
+    (value) => {
+      const parent = tempDir('pup-diff-');
+      const odd = join(parent, 'a b; $(touch pwned) repo');
+      mkdirSync(odd);
+      sh(odd, 'git', 'init', '-q', '-b', 'main');
+      setExtension(odd, value);
+      const unset = hintCommands(odd).find((command) => command.startsWith('git -C / config'));
+
+      paste(parent, unset as string);
+      expect(existsSync(join(parent, 'pwned'))).toBe(false);
+      expect(() => assertNoWorktreeConfig(odd)).not.toThrow();
+    },
+  );
 
   // Under a gitfile, `<repo>/.git/config` names nothing: the check would read
   // no config and pass, and the pins built from the same path would be refused
