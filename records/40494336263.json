@@ -1,0 +1,84 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T11:14:10.850Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40494336263",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40494336263",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4db492825c659d7f73471be3318bfb726c15bdc8",
+  "source": "pr",
+  "pr_number": 183,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "b96809e1a29ab2b273e9530de426120352f7f09d",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "1057",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "1057",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new comment is hard to follow. 'one name of NAME_MAX stays under the cap' never says which cap it means, which is sanitizeReason's 300-code-point truncation of the whole path. 'Two components' reads as a label rather than a reason. Consider: '// One name is capped at NAME_MAX (255), which under Linux's short /tmp leaves the whole path under sanitizeReason's cap.'",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5833354000000001,
+  "duration_ms": 62207,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 2776,
+    "cache_read": 186033,
+    "cache_creation": 31098,
+    "total": 219917
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 22,
+      "output": 5549,
+      "cache_read": 268802,
+      "cache_creation": 53816,
+      "cost_usd": 0.5272024
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 8,
+      "output": 1303,
+      "cache_read": 38545,
+      "cache_creation": 15693,
+      "cost_usd": 0.056133
+    }
+  ],
+  "permission_denials": []
+}
