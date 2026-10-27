@@ -1,7 +1,7 @@
 # 0047. A conductor session is the operator's delegate for everything but the merge, and every session is addressable by its peer name (2026-09-12)
 
 - Status: accepted
-- Amended by: [0075](0075-the-conductor-gates-a-branch-with-pup-merge.md), [0087](0087-pastes-go-through-a-buffer-named-for-the.md)
+- Amended by: [0075](0075-the-conductor-gates-a-branch-with-pup-merge.md), [0087](0087-pastes-go-through-a-buffer-named-for-the.md), [0106](0106-pup-init-session-env-a-b-names-the.md)
 
 47. **A conductor session is the operator's delegate for everything but the merge, and every
     session is addressable by its peer name (2026-09-12).** The loop the operator runs by hand

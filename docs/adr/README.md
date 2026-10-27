@@ -128,6 +128,7 @@ for the cross-references the text states, then the decision itself.
 - [0103. The idle prompt is a turn end, a turn ended on the session's own background shell reads `working on a background shell`, and workers commit and test in the foreground (2026-10-25)](0103-the-idle-prompt-is-a-turn-end-a.md) (accepted)
 - [0104. Peer-joined introductions and main-landed notices go only to running sessions, and an overlap on this log alone introduces no one (2026-10-25)](0104-peer-joined-introductions-and-main-landed-notices-go.md) (accepted)
 - [0105. A branch an open PR holds is never rebased: fresh-base merges the target into it, and the push does not force (2026-10-25)](0105-a-branch-an-open-pr-holds-is-never.md) (accepted)
+- [0106. `pup init --session-env A,B` names the variables every session and conductor window gets from the launching shell, through the window's own `-e`, from a closed list (2026-10-26).](0106-pup-init-session-env-a-b-names-the.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes
