@@ -1,0 +1,130 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T16:14:12.487Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40538309013",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40538309013",
+  "actor": "AlexisBalayre",
+  "commit_sha": "241ebb7a545e3106364250d82f5e2a1305525dbb",
+  "source": "pr",
+  "pr_number": 193,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "37-39",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The \"missing title fails\" and \"missing status fails\" tests also pass with the new title/status check (`scripts/adr-index.sh` L18-21) deleted. `fixture` writes the index with only 0001 in it, and then the bad 0002 is added. If the check is removed, `index()` prints `- [](0002-second.md) (accepted)` (or `- [0002. Second](0002-second.md) ()`). That line is not in the README, so `--check` exits 1 because the index is stale. That is the exit code both tests want. stderr goes to `/dev/null`, so nothing tells the two causes apart.",
+      "body": "The \"missing title\" and \"missing status\" tests don't exercise the new validation in `index()`. `fixture` writes the index with only `0001` in it. Then a bad `0002` is added and `--check` runs. If you remove the `[ -z \"$title\" ] || [ -z \"$status\" ]` guard, `index()` still emits a line for `0002` (`- [](0002-second.md) (accepted)`). The README doesn't hold that line, so `--check` exits 1 as \"stale\", which is the exit code both tests want. They pass either way. stderr goes to `/dev/null`, so the two failure reasons can't be told apart. These two tests are the only evidence for the acceptance criterion \"`--check` fails on a decision file with no title or no Status line\".\n\nhttps://github.com/AlexisBalayre/pupitre/blob/241ebb7a545e3106364250d82f5e2a1305525dbb/scripts/adr-index.test.sh#L37-L39\n\n```bash\nfixture; printf 'no title\\n\\n- Status: accepted\\n' > \"$dir/0002-second.md\"; expect \"missing title fails\" 1 \"$dir\"\nfixture; printf '# 0002. Second\\n\\nbody\\n' > \"$dir/0002-second.md\"; expect \"missing status fails\" 1 \"$dir\"\n```\n\nRun these two cases in write mode (no `--check`) and expect exit 1. Without the guard, write mode succeeds, so only the validation can make it fail. One way: let `expect` pass the remaining arguments through (`expect <name> <0|1> <dir> [args...]`), keep `--check` for the other cases, and leave it off for these two. Optionally, also check that the README was not rewritten.",
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "9-14",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`fixture` calls `mktemp -d` seven times per run and never deletes the directories. There is no `trap 'rm -rf …' EXIT` and no `rm` at the end. That conflicts with decision 0100 (\"every temp directory a test makes is removed when the test finishes\"). Also, nothing runs this file: no `package.json` script, no `lint` or `test` hook, and no workflow under `.github/` references it. So the acceptance tests only run if someone runs them by hand, and they can rot silently.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "26-31",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The marker check only tests that each marker exists. It does not check their order or that each appears once. If the end marker comes before the begin marker, the awk sets `skip = 1` at begin and never clears it. Write mode then quietly deletes every README line after the begin marker. A duplicated begin marker makes the index appear twice. Both need a hand edit to trigger, so the risk is low. Counting markers and comparing their line numbers (`grep -nxF`) would close it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "45-58",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `canonical` helper and the `x` sentinel are used differently in the two modes, and that is harder to read than it needs to be. `canonical` appends `\\nx`, check mode appends `x` to `cat`, and write mode strips it with `${out%x}`. The rendered output is first captured with `out=$(render)`, which strips newlines, then re-padded with `\\n`. The reader has to hold three sentinel conventions in mind. The same intent can be written without the sentinel. Make `render` emit the final file and compare byte-wise with `cmp -s <(render) \"$README\"`. That needs process substitution, which fits the existing environment-passing design (no temp files), and write mode becomes `render > \"$README.new\"`. If the sandbox forbids even that, keep the dance but give it a single `render_exact` function used by both branches. Check mode would then be `[ \"$(render_exact)\" != \"$(cat \"$README\"; echo x)\" ]`, which still duplicates the sentinel knowledge in two places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "9",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ADR_DIR` is an env override added only so the tests can point the script elsewhere. The script still does `cd \"$(git rev-parse --show-toplevel)\"` first, so a relative `ADR_DIR` would resolve against the repo root. The tests happen to pass absolute paths. This coupling is undocumented in the header comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "8",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment `# fixture: a docs/adr directory with one valid decision and a README holding both markers` only narrates what the next four lines do. `general.md` §Comments says \"Inline `//` comments explain WHY, not WHAT. If deleting the comment wouldn't confuse a reader, delete it.\" The `fixture()` body (lines 8-11) already shows this, so the comment can go. Line 1-2's run instruction and the `# expect <name> <0|1> <dir>` usage line are signature or usage notes, not WHY. They are borderline and arguably fine for a bash helper with no types.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1515751,
+  "duration_ms": 171529,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8059,
+    "cache_read": 236117,
+    "cache_creation": 37616,
+    "total": 281804
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 30,
+      "output": 19486,
+      "cache_read": 371289,
+      "cache_creation": 82823,
+      "cost_usd": 0.9910608
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 5118,
+      "cache_read": 106193,
+      "cache_creation": 39470,
+      "cost_usd": 0.16051429999999997
+    }
+  ],
+  "permission_denials": []
+}
