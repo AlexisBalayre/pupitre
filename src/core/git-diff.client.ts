@@ -133,7 +133,7 @@ function shellWord(word: string): string {
 }
 
 /** What turned per-worktree config on: the file, the extension, or a value git cannot read. */
-export type WorktreeConfigCause = 'file' | 'on' | 'unreadable';
+type WorktreeConfigCause = 'file' | 'on' | 'unreadable';
 
 export class WorktreeConfigError extends Error {
   constructor(repoPath: string, cause: WorktreeConfigCause) {
