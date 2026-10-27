@@ -60,3 +60,11 @@
     awaiting-review one, and returns both for `recordOverlaps`. In `land.test.ts`, a land steers
     the running peer and not the awaiting-review, rejected or blocked ones, and steers a running
     peer sharing only the log with a notice that names it.
+    *Amended 2026-10-27 (task t-mvqhkm3t, after decision 109):* the log is now one file per
+    decision under `docs/adr/`, and every write there is an append: a landed decision takes an
+    amendment at its end, and each new decision adds a line at the end of the index in
+    `docs/adr/README.md`. So `filesWorthANotice` drops every file under `docs/adr/` instead of
+    `docs/09-decisions.md`, and the main-landed notice still keeps them. A new decision's own
+    file is its branch's alone and overlaps no one; the index is the file two decision-adding
+    branches always share. The tests above now use `docs/adr/README.md` for the log, and
+    `overlap.test.ts` pins the prefix: `docs/adr/` files are dropped, `docs/adrift.md` is kept.
