@@ -238,6 +238,43 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
   });
+
+  // Merged, the two hunks would report every line between them as added, lines
+  // tests already cover, and lift an untested change over the bar (decision 113).
+  it('keeps the hunks exact when diff.interHunkContext is set', () => {
+    const lines = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`);
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `top\n${lines.join('\n')}\nend\n`);
+    commitAll(repo, 'change');
+    sh(repo, 'git', 'config', 'diff.interHunkContext', '1000');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
+  });
+});
+
+// Under `diff.renames=copies` a new file copied from one the branch changes is
+// scored as its edits from that file's old content, so a 300-line file counted
+// as a few lines and slipped under the oversize flag (decision 113).
+describe('gitDiffNumstat under a session-written diff.renames=copies', () => {
+  it('counts every line of a new file copied from a changed one', () => {
+    const lines = Array.from({ length: 300 }, (_, index) => `line ${index + 1}`);
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\nend\n`);
+    writeFileSync(join(repo, 'b.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'copy');
+    sh(repo, 'git', 'config', 'diff.renames', 'copies');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: 1, deleted: 0 },
+      { path: 'b.ts', added: 300, deleted: 0 },
+    ]);
+  });
 });
 
 // `--text` restores the `-U0` patch above but not `--numstat`: under the same

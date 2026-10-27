@@ -498,7 +498,10 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
  * need de-quoting. The path is a literal pathspec, or a file named
- * `:(top)foo` would be read as magic and return no hunks (decision 113).
+ * `:(top)foo` would be read as magic and return no hunks, and the inter-hunk
+ * context is pinned to 0, or a session-written `diff.interHunkContext` would
+ * merge the hunks and report the unchanged lines between them as added
+ * (decision 113).
  */
 function diffHunks(
   repoPath: string,
@@ -511,6 +514,7 @@ function diffHunks(
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-U0',
+    '--inter-hunk-context=0',
     `${target}...${branch}`,
     '--',
     path,
@@ -554,7 +558,12 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
   // paths as two separate NUL fields. An inline path is never quoted, so a tab
   // in it is the path's own and everything after the second tab is the path.
+  // Renames are pinned to plain detection: a session-written
+  // `diff.renames=copies` would score a new file copied from a changed one as
+  // that copy's edits alone, under the oversize flag (decision 113).
   const fields = runGit(repoPath, [
+    '-c',
+    'diff.renames=true',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-z',
