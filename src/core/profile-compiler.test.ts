@@ -1523,6 +1523,18 @@ describe('compileConductorProfile', () => {
     expect(compiled.contextMarkdown).not.toContain('Never run `pup merge`.');
   });
 
+  // Decision 88: the gate waits for the lock and the load itself, so the
+  // conductor's own wait loops and lock hand-offs with the operator go.
+  it('has the conductor leave the lock and load waits to pup merge and pup land', () => {
+    const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
+
+    expect(context).toContain('Never loop on the load average before running them');
+    expect(context).toContain('never ask the operator to release the merge lock');
+    expect(context).toContain(
+      'report that refusal to the operator as it stands, and never delete the lock.',
+    );
+  });
+
   it('launches on the default model when no worker model is set', () => {
     const compiled = ProfileCompiler.compileConductorProfile({
       ...conductorInput,
