@@ -1,0 +1,115 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T12:56:27.309Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40507469324",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40507469324",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6a67df7e4cf5a695e9bf628a97f8481175e44f5d",
+  "source": "pr",
+  "pr_number": 187,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "154-161",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test \"is not the lockfile when only its root directory starts with the lockfile name\" never runs `countChangedLines` (merge-gate.service.ts), where lockfiles are actually skipped. Its second assertion, filtering `paths` against `LOCKFILE_NAMES`, adds nothing once the first `toEqual` passes. Asserting `countChangedLines(repo, 'main', 'feature').lines === 2` would test what the name promises: the old parse returns 0 there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "126-177",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`tabbedRepo(files)` repeats the setup of the sibling `spacedRepo()` (L100-108): make a repo, commit `b.ts` as base, check out `feature`, write files, commit. This is the second use, so leave it for now. If a third path-quirk describe arrives, hoist a shared `featureRepoWith(files)` helper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6498-6499",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 111 cites \"the diff-size decision (110, t-mvphibsy's branch)\", but no decision 110 exists in this tree; the last one before 111 is 107. The branch name is a pointer that rots once the branch merges or is deleted. Describe what was owed instead, and add the number once 110 lands.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6487-6504",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 111 is long. It retells the security review's repro counts, and its `*Tests.*` paragraph restates test names that the test file's header comment already ties to decision 111. Cut the repro detail, and rewrap L6498, which runs past the file's line width.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The maintainability reviewer's `git diff` call failed in the sandbox with a bwrap error on `.git/config.worktree.lock`. It switched to `gh pr diff 187`, so its coverage was not affected."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8470180999999999,
+  "duration_ms": 87461,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 4967,
+    "cache_read": 179991,
+    "cache_creation": 32433,
+    "total": 217401
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 26,
+      "output": 11390,
+      "cache_read": 322951,
+      "cache_creation": 61388,
+      "cost_usd": 0.6967331999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 4727,
+      "cache_read": 142954,
+      "cache_creation": 35467,
+      "cost_usd": 0.1502849
+    }
+  ],
+  "permission_denials": []
+}
