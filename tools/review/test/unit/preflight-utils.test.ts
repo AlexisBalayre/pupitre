@@ -162,7 +162,7 @@ describe("isProseMarkdown", () => {
     ".github/pull_request_template.md",
     "tools/review/README.md",
     "docs/page.mdx",
-    "docs/09-decisions.md",
+    "docs/adr/",
     "docs/08-roadmap.md",
     "docs/03-profiles.md",
     "CLAUDE.local.md",

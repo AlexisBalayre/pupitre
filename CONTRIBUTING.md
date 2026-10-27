@@ -4,7 +4,7 @@ Thanks for looking. Pupitre is small, opinionated, and built by the tool it is: 
 
 ## Before you start
 
-- Open an issue for anything bigger than a fix, or for a fix whose cause is not obvious. The design is deliberate, and [`docs/09-decisions.md`](docs/09-decisions.md) records why things are the way they are. It wins over `docs/00` to `08` where they disagree, so read the entries that touch your area before proposing a change to it.
+- Open an issue for anything bigger than a fix, or for a fix whose cause is not obvious. The design is deliberate, and [`docs/adr/`](docs/adr/README.md) records why things are the way they are. It wins over `docs/00` to `08` where they disagree, so read the entries that touch your area before proposing a change to it.
 - Small fixes, doc corrections and test additions do not need an issue.
 
 ## Setup
@@ -60,7 +60,7 @@ The rules live in [`docs/conventions/`](docs/conventions/): `general.md` and `na
 
 ## Decisions
 
-A change that alters a rule, a boundary, a gate stage, a persisted noun, or anything hard to reverse gets a numbered entry in [`docs/09-decisions.md`](docs/09-decisions.md): what was decided, what it replaces, the alternatives rejected, and the ceilings it knowingly leaves. Number it as the next free entry at the time it lands, and expect a trivial rebase if another PR lands an entry first. Bug fixes and doc corrections do not need one.
+A change that alters a rule, a boundary, a gate stage, a persisted noun, or anything hard to reverse gets a numbered file in [`docs/adr/`](docs/adr/README.md): what was decided, what it replaces, the alternatives rejected, and the ceilings it knowingly leaves. Number it as the next free number at the time it lands; `scripts/adr-index.sh` regenerates the index. Bug fixes and doc corrections do not need one.
 
 ## Pull requests
 
