@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { endSandboxRun, runGateChild, sandboxLabel } from '../core/sandbox.utils.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { localContext } from './capability.utils.js';
 import type { DeadExport, DuplicationReport } from './types/adapter.types.js';
@@ -164,6 +165,54 @@ describe('typescriptAdapter.coveredTest', () => {
     });
     run?.dispose();
     expect(existsSync(outDir)).toBe(false);
+  });
+
+  // Asserts pup's own profile, so only where pup applied it rather than
+  // running inside an outer one, as under its own gate.
+  describe.runIf(sandboxLabel() === 'sandbox-exec (macOS)')('under the gate sandbox', () => {
+    // A test worker never emits the `exit` that ends the run its children started.
+    afterEach(() => {
+      endSandboxRun();
+    });
+    /** A folded run's report directory, as vitest is handed it, and a child run with its grants. */
+    const foldedRun = () => {
+      const repo = installedRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+      const run = typescriptAdapter.coveredTest?.(localContext(repo));
+      if (!run) throw new Error('expected a folded run');
+      onTestFinished(() => run.dispose());
+      const flag = '--coverage.reportsDirectory=';
+      const reports = run.args.find((arg) => arg.startsWith(flag))?.slice(flag.length) ?? '';
+      const child = (script: string) =>
+        runGateChild('sh', ['-c', script, 'sh', reports], {
+          cwd: repo,
+          repoPath: repo,
+          writablePaths: run.writablePaths,
+        });
+      return { reports, child };
+    };
+
+    // A failing first run removes its empty report directory (vitest's
+    // `cleanAfterRun`), and the re-run's `clean` makes it again: that mkdir
+    // was the gate's EPERM.
+    it('lets the re-run of a failed test stage make its report directory again', async () => {
+      const { reports, child } = foldedRun();
+
+      await child('rm -r -f "$1"');
+      expect(existsSync(reports)).toBe(false);
+      await child('mkdir -p "$1/.tmp" && printf ok > "$1/coverage-final.json"');
+
+      expect(readFileSync(join(reports, 'coverage-final.json'), 'utf8')).toBe('ok');
+    });
+
+    it("cannot remove the directory holding the report, so its name stays the gate's", async () => {
+      const { reports, child } = foldedRun();
+      expect(basename(dirname(reports))).toMatch(/^pup-coverage-/);
+
+      await expect(child('rm -r -f "$1" && rmdir "$(dirname "$1")"')).rejects.toThrow(
+        /Operation not permitted/,
+      );
+      expect(existsSync(dirname(reports))).toBe(true);
+    });
   });
 });
 

@@ -6444,6 +6444,38 @@ changes back into those docs is pending.
     `pup fix`, `pup respawn` and `pup kill --respawn` refuse a relative value in one scrubbed
     line. None of them plans, steers, kills or opens anything.
 
+107. **The folded coverage run's report directory is granted resolved, inside a directory of the
+    gate's own that no child is granted (2026-10-27).**
+    On 2026-10-23 the gate's test stage for t-mvb3b6zo (#170) failed on vitest's
+    `V8CoverageProvider.clean`, a `mkdir` of `/var/folders/.../T/pup-coverage-5bebhi` refused with
+    EPERM, and t-mvcgnwul's gate had hit the same failure on its re-run earlier. The cause was the gate's own
+    sequence, not another run. Vitest defaults `reportOnFailure` to false, so a run with a failing
+    test calls `cleanAfterRun`, which removes `.tmp` and then the reports directory it left empty.
+    Decision 94's re-run then spawns a second child, whose profile `writeProfile` writes afresh.
+    `resolvePath` resolves a path that exists and uses a missing one as given, so the grant read
+    `/var/folders/...`, from `os.tmpdir()`. The kernel checks the resolved
+    `/private/var/folders/...`, which that rule never matches. The re-run's `clean` could not make
+    the directory again, and a flaky first run that the re-run would have passed failed the stage
+    with EPERM. Load, such as the `pup audit` running beside #170's gate, only made the first
+    failure likelier. Nothing removes another run's directory: an audit's coverage run makes its
+    own, decision 100's `tempDir` removes only what its test made, and `endSandboxRun` removes only
+    its run's scratch and profile directories. The child's TMPDIR plays no part either: the report
+    directory sits outside it, and it is resolved already.
+    `instrumentedRun` now makes `pup-coverage-*` with `mkdtemp`, resolves it, and makes `report`
+    inside it. That `report` directory is vitest's `reportsDirectory` and the only grant. Named
+    resolved, the grant matches whether the directory exists when the profile is written or not.
+    The holder is never granted, so no child can remove it and free the name, and `dispose`
+    removes the holder. The grant is still one directory the gate made, now one level deeper, and
+    the profile code is unchanged. `resolvePath` itself still uses a missing path as given, the
+    direction that denies. Resolving a missing path's nearest ancestor would have fixed every
+    caller, but it would change what the seam grants, and this one caller can name its grant
+    resolved. The Python adapter's `coverage` makes its directory the same way, but it runs once
+    and never behind a re-run.
+    Tests, in `typescript-adapter.test.ts` under pup's own applied profile: a child given the
+    folded run's grants removes its report directory, as a failing run does, and a second child
+    then makes it again and writes the report (`Operation not permitted` before the change), and
+    a child cannot remove the holder.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.
