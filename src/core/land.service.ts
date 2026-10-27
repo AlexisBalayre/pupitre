@@ -11,15 +11,15 @@ import {
   runGit,
 } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
-import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
+import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
   assertTargetName,
-  COMMIT_SHA,
   deleteBranchAt,
   fastForward,
   isAncestor,
+  MERGE_LOCK_WAIT_MS,
   newestMerge,
   type OriginUse,
   pushTarget,
@@ -40,6 +40,8 @@ interface LandRequest {
   sessionId: string;
   adapters: Adapter[];
   gateEnv?: string[];
+  /** Wait for a merge lock a live run holds, as `pup land` does, rather than refuse (decision 88). */
+  wait?: boolean;
 }
 
 /**
@@ -48,9 +50,13 @@ interface LandRequest {
  * that GitHub says is MERGED, and the target fetched from the recorded origin
  * must hold the sha the gate pinned. Then, under the merge lock, the local
  * target is fast-forwarded with the gate's plumbing, the session's worktree
- * and branch go, the audit re-stamps the baseline the PR mode left alone
- * (decision 26), and a `landed` event drops the PR from the inbox. A re-run
- * after a failure part-way is safe: each step skips what is already done.
+ * and branch go, a `landed` event drops the PR from the inbox, and the audit
+ * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
+ * failure under the lock is safe: each step skips what is already done. The
+ * event is the lock's last write, so a second land that waited on the first
+ * refuses under the lock (decision 88). The steer of overlapping sessions runs
+ * before the audit, and an audit that fails after both is `pup audit`'s to
+ * re-run.
  */
 export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
   const session = getSession(db, req.sessionId);
@@ -130,79 +136,94 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   const mergeCommit = pr.mergeCommit;
 
-  const landed = await withMergeLock(req.repoPath, () => {
-    // `pup fix` takes the session out of merged under this lock, maybe while
-    // GitHub was being read above; landing then would tear down its live round.
-    const now = getSession(db, session.id)?.state;
-    if (now !== 'merged') {
-      throw new Error(
-        (now === undefined
-          ? `Session ${id} was removed from the store`
-          : `Session ${id} became ${now}`) +
-          ' while `pup land` waited for the merge lock. Nothing was landed.',
-      );
-    }
-    const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
-    const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
-    // A squash or rebase merge lands other commits than the ones the gate
-    // measured; the PR vouched for the pinned sha only (decision 82).
-    if (!isAncestor(req.repoPath, sha, originTip)) {
-      throw new Error(
-        `origin's ${target} at ${originTip} does not contain ${sha}, the commit the gate ` +
-          'pinned; a squash or rebase merge lands commits the gate never measured. Nothing ' +
-          'was landed.',
-      );
-    }
-    // The event will say this commit landed the pinned sha on the target: true
-    // by construction only, so both containments are checked.
-    if (!isAncestor(req.repoPath, mergeCommit, originTip)) {
-      throw new Error(
-        `origin's ${target} at ${originTip} does not contain ${mergeCommit}, the commit GitHub ` +
-          `says merged ${prUrl}; the PR landed elsewhere. Nothing was landed.`,
-      );
-    }
-    if (!isAncestor(req.repoPath, sha, mergeCommit)) {
-      throw new Error(
-        `${mergeCommit}, the commit GitHub says merged ${prUrl}, does not contain ${sha}, the ` +
-          'commit the gate pinned; the pinned commit reached the target some other way. ' +
-          'Nothing was landed.',
-      );
-    }
-    // What the gate checks under its lock before the same checkout (decisions
-    // 79, 80), and the audit measures whatever that checkout holds, so it is
-    // checked on both paths.
-    const checkedOut = currentBranch(req.repoPath);
-    if (checkedOut !== target) {
-      throw new Error(
-        `The main checkout is on ${checkedOut ? sanitizeReason(checkedOut) : 'no branch'}, ` +
-          `not ${target}; check out ${target} there and re-run \`pup land\`.`,
-      );
-    }
-    let fastForwarded = false;
-    if (!isAncestor(req.repoPath, originTip, localSha)) {
-      if (!isAncestor(req.repoPath, localSha, originTip)) {
+  const landed = await withMergeLock(
+    req.repoPath,
+    () => {
+      // `pup fix` takes the session out of merged under this lock, maybe while
+      // GitHub was being read above; landing then would tear down its live round.
+      const now = getSession(db, session.id)?.state;
+      if (now !== 'merged') {
         throw new Error(
-          `Local ${target} at ${localSha} has commits origin's ${target} at ${originTip} ` +
-            'lacks, so it cannot fast-forward. Reconcile them from the trusted checkout, then ' +
-            're-run `pup land`.',
+          (now === undefined
+            ? `Session ${id} was removed from the store`
+            : `Session ${id} became ${now}`) +
+            ' while `pup land` waited for the merge lock. Nothing was landed.',
         );
       }
-      assertNoArmedGitDrivers(req.repoPath);
-      fastForward(req.repoPath, target, localSha, originTip);
-      fastForwarded = true;
-    }
-    // Last under the lock: every refusal above leaves the repo's refs as they were.
-    runGit(req.repoPath, ['update-ref', '--no-deref', `refs/remotes/origin/${target}`, originTip]);
-    const targetSha = fastForwarded ? originTip : localSha;
-    return { targetSha, fastForwarded, ...tearDown(req.repoPath, session, targetSha) };
-  });
+      if (newestMerge(db, session.id) === 'landed') {
+        throw new Error(`Session ${id} has already landed.`);
+      }
+      const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
+      const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
+      // A squash or rebase merge lands other commits than the ones the gate
+      // measured; the PR vouched for the pinned sha only (decision 82).
+      if (!isAncestor(req.repoPath, sha, originTip)) {
+        throw new Error(
+          `origin's ${target} at ${originTip} does not contain ${sha}, the commit the gate ` +
+            'pinned; a squash or rebase merge lands commits the gate never measured. Nothing ' +
+            'was landed.',
+        );
+      }
+      // The event will say this commit landed the pinned sha on the target: true
+      // by construction only, so both containments are checked.
+      if (!isAncestor(req.repoPath, mergeCommit, originTip)) {
+        throw new Error(
+          `origin's ${target} at ${originTip} does not contain ${mergeCommit}, the commit GitHub ` +
+            `says merged ${prUrl}; the PR landed elsewhere. Nothing was landed.`,
+        );
+      }
+      if (!isAncestor(req.repoPath, sha, mergeCommit)) {
+        throw new Error(
+          `${mergeCommit}, the commit GitHub says merged ${prUrl}, does not contain ${sha}, the ` +
+            'commit the gate pinned; the pinned commit reached the target some other way. ' +
+            'Nothing was landed.',
+        );
+      }
+      // What the gate checks under its lock before the same checkout (decisions
+      // 79, 80), and the audit measures whatever that checkout holds, so it is
+      // checked on both paths.
+      const checkedOut = currentBranch(req.repoPath);
+      if (checkedOut !== target) {
+        throw new Error(
+          `The main checkout is on ${checkedOut ? sanitizeReason(checkedOut) : 'no branch'}, ` +
+            `not ${target}; check out ${target} there and re-run \`pup land\`.`,
+        );
+      }
+      let fastForwarded = false;
+      if (!isAncestor(req.repoPath, originTip, localSha)) {
+        if (!isAncestor(req.repoPath, localSha, originTip)) {
+          throw new Error(
+            `Local ${target} at ${localSha} has commits origin's ${target} at ${originTip} ` +
+              'lacks, so it cannot fast-forward. Reconcile them from the trusted checkout, then ' +
+              're-run `pup land`.',
+          );
+        }
+        assertNoArmedGitDrivers(req.repoPath);
+        fastForward(req.repoPath, target, localSha, originTip);
+        fastForwarded = true;
+      }
+      // Last under the lock: every refusal above leaves the repo's refs as they were.
+      runGit(req.repoPath, [
+        'update-ref',
+        '--no-deref',
+        `refs/remotes/origin/${target}`,
+        originTip,
+      ]);
+      const targetSha = fastForwarded ? originTip : localSha;
+      const tornDown = tearDown(req.repoPath, session, targetSha);
+      appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
+      return { targetSha, fastForwarded, ...tornDown };
+    },
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
+  );
 
+  // Before the audit, which can throw: once the event is written a re-run
+  // refuses, and nothing else steers (decision 88).
+  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
   // The conductor may run this, so no human stands between an observed
   // regression and the bar: a regressed measurement is reported and left for
   // `pup audit`, which the operator runs (decision 84).
   const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-  appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
-  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
   return { prUrl, mergeCommit, target, ...landed, audit };
 }
 

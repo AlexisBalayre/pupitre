@@ -54,6 +54,12 @@ export interface MergeRequest {
   openPr?: boolean;
   /** Env names `--gate-env` lets through to gate children (decision 36). */
   gateEnv?: string[];
+  /**
+   * Wait, bounded, for a merge lock a live run holds and for the machine's load
+   * to fall before the tests, rather than refuse at once (decision 88). Only
+   * the CLI opts in.
+   */
+  wait?: boolean;
 }
 
 /**
@@ -90,4 +96,9 @@ export interface MergeOutcome {
   debtCandidates?: { id: number; description: string }[];
   /** On merge: the drafted decision record, for one-keystroke human approval. */
   decisionRecordId?: number;
+  /**
+   * On merge: the session worktree git could not remove (a lock, most likely),
+   * kept with its branch; the ratchet and the draft ran all the same.
+   */
+  keptWorktree?: string;
 }
