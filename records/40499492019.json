@@ -1,0 +1,112 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T11:55:44.114Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40499492019",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40499492019",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1d5a61e50b3cab1e43ace933e851723d15e81e89",
+  "source": "pr",
+  "pr_number": 185,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6466",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 107 says the conductor \"keeps every tool\", but the same decision gives it SLIM_CONTEXT_ENV, which turns off the Artifact and Workflow tools; say it keeps decision 74's list and the three tools workers lose instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "833",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The inline comment \"A profile that names a skill keeps the Skill tool, and with it the whole listing\" mostly repeats the SKILL_TOOL JSDoc and the condition below it; drop it, or keep only the all-or-nothing WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile.constants.ts",
+      "line": "25-29",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "SLIM_CONTEXT_ENV is a mutable object, and the worker and conductor settings share the same reference; it is only serialized today, but `as const` (or spreading it at each use) would stop a later mutation from leaking across profiles.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "152",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The unanswerable-tools test now checks only `deny.slice(0, 3)`, and the full ordered worker deny list is hand-copied in WORKER_DENY and the startup-context tests, so adding a new worker deny means editing the order in several places. Coverage is unchanged: the new tests pin the full list.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3150254000000003,
+  "duration_ms": 101713,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 8407,
+    "cache_read": 187887,
+    "cache_creation": 40385,
+    "total": 236689
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 17119,
+      "cache_read": 570880,
+      "cache_creation": 96256,
+      "cost_usd": 1.059175
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 7837,
+      "cache_read": 196189,
+      "cache_creation": 63119,
+      "cost_usd": 0.2558504
+    }
+  ],
+  "permission_denials": []
+}
