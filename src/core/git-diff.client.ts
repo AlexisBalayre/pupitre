@@ -127,19 +127,41 @@ export class WorktreeRepointedError extends Error {
   }
 }
 
+/** One shell word, for a command the operator is asked to paste. */
+function shellWord(word: string): string {
+  return `'${word.replaceAll("'", `'\\''`)}'`;
+}
+
+/** What turned per-worktree config on: the file, the extension, or a value git cannot read. */
+export type WorktreeConfigCause = 'file' | 'on' | 'unreadable';
+
 export class WorktreeConfigError extends Error {
-  constructor(repoPath: string, problem: string) {
+  constructor(repoPath: string, cause: WorktreeConfigCause) {
+    const dotGit = join(repoPath, '.git');
+    const config = sanitizeReason(join(dotGit, 'config'));
+    const problem =
+      cause === 'file'
+        ? `${sanitizeReason(join(dotGit, 'config.worktree'))} exists`
+        : cause === 'on'
+          ? `extensions.worktreeConfig is on in ${config}`
+          : `extensions.worktreeConfig is on, or holds a value git cannot read, in ${config}`;
+    const unset = `\`git -C / config --file ${shellWord(config)} --unset extensions.worktreeConfig\``;
+    // `disable` turns the extension back on, so the unset comes after it, and
+    // again after it when git needed the unset first to open the repo at all.
+    const steps =
+      cause === 'unreadable'
+        ? `${unset} first (\`-C /\`: git opens the repo for nothing else while the value is ` +
+          'unreadable), then `git sparse-checkout disable` if the checkout is sparse and, as ' +
+          'that turns the extension back on, the unset again'
+        : `\`git sparse-checkout disable\` if the checkout is sparse, then ${unset}`;
     super(
       `Refusing to launch a session in ${sanitizeReason(repoPath)}: ${problem}. Usually ` +
         '`git sparse-checkout` or `git clone --sparse` turned per-worktree config on, and with ' +
         "it on a session's git would read a config.worktree the session can write (decision " +
         '101). If no sparse checkout ran here, a session may have written it: inspect ' +
         '.git/config and .git/config.worktree before removing anything, and treat a session ' +
-        'that wrote them as compromised. Otherwise run `git sparse-checkout disable` if the ' +
-        'checkout is sparse, then `git -C / config --file ' +
-        `${sanitizeReason(join(repoPath, '.git', 'config'))} --unset extensions.worktreeConfig\` ` +
-        '(`-C /`: git will not open the repo while the value is unreadable) and ' +
-        'remove .git/config.worktree, and retry.',
+        `that wrote them as compromised. Otherwise run ${steps}, remove .git/config.worktree, ` +
+        'and retry.',
     );
     this.name = 'WorktreeConfigError';
   }
@@ -180,7 +202,7 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
   }
   if (
     lstatSync(join(env.GIT_DIR, 'config.worktree'), { throwIfNoEntry: false }) ||
-    worktreeConfigOn(worktreePath, env.GIT_COMMON_DIR, env)
+    worktreeConfigState(worktreePath, env.GIT_COMMON_DIR, env) !== 'off'
   ) {
     throw new WorktreeRepointedError(
       worktreePath,
@@ -241,26 +263,25 @@ export function assertNoWorktreeConfig(repoPath: string): void {
         '`--separate-git-dir` clone, whose .git is a gitfile. Run it from the main checkout.',
     );
   }
+  // The extension first: `git sparse-checkout` writes the file too, and while
+  // the value is unreadable only the hint that leads with the unset works.
+  const extension = worktreeConfigState(repoPath, dotGit);
+  if (extension !== 'off') throw new WorktreeConfigError(repoPath, extension);
   if (lstatSync(join(dotGit, 'config.worktree'), { throwIfNoEntry: false })) {
-    throw new WorktreeConfigError(
-      repoPath,
-      `${sanitizeReason(join(dotGit, 'config.worktree'))} exists`,
-    );
-  }
-  if (worktreeConfigOn(repoPath, dotGit)) {
-    throw new WorktreeConfigError(
-      repoPath,
-      `extensions.worktreeConfig is on in ${sanitizeReason(join(dotGit, 'config'))}`,
-    );
+    throw new WorktreeConfigError(repoPath, 'file');
   }
 }
 
 /**
  * Whether the common dir's own config turns `extensions.worktreeConfig` on, as
  * git reads it for the repository format: that file alone, no includes. A
- * value git cannot read as a boolean counts as on.
+ * value git cannot read as a boolean is `unreadable`, which counts as on.
  */
-function worktreeConfigOn(gitPath: string, commonDir: string, env?: WorktreeGitEnv): boolean {
+function worktreeConfigState(
+  gitPath: string,
+  commonDir: string,
+  env?: WorktreeGitEnv,
+): 'off' | 'on' | 'unreadable' {
   try {
     const value = runGit(
       gitPath,
@@ -275,16 +296,13 @@ function worktreeConfigOn(gitPath: string, commonDir: string, env?: WorktreeGitE
       ],
       { env: env ? { ...env } : undefined, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return value.trim() !== 'false';
+    return value.trim() === 'false' ? 'off' : 'on';
   } catch (error) {
     rethrowIfKilled(error);
     // Exit 1 is git's "no such key"; anything else is a config it could not read.
-    return !(
-      typeof error === 'object' &&
-      error !== null &&
-      'status' in error &&
-      error.status === 1
-    );
+    return typeof error === 'object' && error !== null && 'status' in error && error.status === 1
+      ? 'off'
+      : 'unreadable';
   }
 }
 
