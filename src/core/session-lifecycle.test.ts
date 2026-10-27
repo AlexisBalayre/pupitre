@@ -443,9 +443,9 @@ describe('launchTask scope overlap (decision 99)', () => {
     ).toEqual(['s-open', 's-review', 's-run']);
   });
 
-  it('sends no introduction and lists no peer for an overlap on the append-only decisions log alone', () => {
-    commitIn(repo, 'docs/09-decisions.md', '# Decisions\n');
-    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['docs/09-decisions.md'] }) });
+  it('sends no introduction and lists no peer for an overlap on the append-only decisions index alone', () => {
+    commitIn(repo, 'docs/adr/README.md', '# Decisions\n');
+    planTask(db, { repoPath: repo, task: spec({ scopeIn: ['docs/adr/README.md'] }) });
     seedHolder('s-docs', ['docs/**'], '%3');
 
     const sessionId = launch();
@@ -455,11 +455,11 @@ describe('launchTask scope overlap (decision 99)', () => {
     expect(kickoffText()).not.toContain('## Peers');
   });
 
-  it('leaves the decisions log out of an introduction that names other files too', () => {
-    commitIn(repo, 'docs/09-decisions.md', '# Decisions\n');
+  it('leaves the decisions index out of an introduction that names other files too', () => {
+    commitIn(repo, 'docs/adr/README.md', '# Decisions\n');
     planTask(db, {
       repoPath: repo,
-      task: spec({ scopeIn: ['docs/09-decisions.md', 'src/core/github.client.ts'] }),
+      task: spec({ scopeIn: ['docs/adr/README.md', 'src/core/github.client.ts'] }),
     });
     seedHolder('s-both', ['docs/**', 'src/core/**'], '%3');
 
