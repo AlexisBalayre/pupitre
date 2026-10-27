@@ -544,7 +544,8 @@ export function gitDiffAddedLines(
 /** Per-file add/delete counts for the branch diff (merge-base diff), rename-aware. */
 export function gitDiffNumstat(repoPath: string, target: string, branch: string): DiffFileStat[] {
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
-  // paths as two separate NUL fields.
+  // paths as two separate NUL fields. An inline path is never quoted, so a tab
+  // in it is the path's own and everything after the second tab is the path.
   const fields = runGit(repoPath, [
     'diff',
     ...DIFF_SAFE_FLAGS,
@@ -556,7 +557,8 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];
     if (!field) continue;
-    const [added, deleted, inlinePath] = field.split('\t');
+    const [added, deleted, ...rest] = field.split('\t');
+    const inlinePath = rest.join('\t');
     const path = inlinePath || fields[i + 2];
     if (!inlinePath) i += 2;
     if (!path) continue;

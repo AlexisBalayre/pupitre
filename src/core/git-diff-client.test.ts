@@ -29,6 +29,7 @@ import {
   WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
+import { LOCKFILE_NAMES } from './merge-gate.constants.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
 // surrounding hook's GIT_DIR away from the temp repos.
@@ -119,6 +120,59 @@ describe('a changed path that starts with a space', () => {
     const repo = spacedRepo();
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ' a.ts': [1, 2] });
+  });
+});
+
+// `-z` never quotes a path, so a tab in one reaches the numstat line as is. Cut
+// at its first tab, a file under a directory named `a.test.ts<TAB>z` read as a
+// test, and one under `pnpm-lock.yaml<TAB>x` as the root lockfile. A path that
+// starts with a tab left the third field empty and read as a rename, swallowing
+// the two records after it (decision 111).
+describe('a changed path with a tab in it', () => {
+  function tabbedRepo(files: string[]): string {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    for (const file of files) {
+      mkdirSync(dirname(join(repo, file)), { recursive: true });
+      writeFileSync(join(repo, file), 'one\ntwo\n');
+    }
+    commitAll(repo, 'tabbed');
+    return repo;
+  }
+
+  it('is counted under its full path, so a source file never reads as a test', () => {
+    const repo = tabbedRepo(['src/a.test.ts\tz/impl.ts', 'src/c.ts']);
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'src/a.test.ts\tz/impl.ts', added: 2, deleted: 0 },
+      { path: 'src/c.ts', added: 2, deleted: 0 },
+    ]);
+  });
+
+  it('is not the lockfile when only its root directory starts with the lockfile name', () => {
+    const repo = tabbedRepo(['pnpm-lock.yaml\tx/big.ts']);
+
+    const paths = gitDiffNumstat(repo, 'main', 'feature').map((stat) => stat.path);
+
+    expect(paths).toEqual(['pnpm-lock.yaml\tx/big.ts']);
+    expect(paths.filter((path) => LOCKFILE_NAMES.includes(path))).toEqual([]);
+  });
+
+  it('starting the path is no rename, so the records after it parse whole', () => {
+    const repo = tabbedRepo(['\tlead.ts']);
+    writeFileSync(join(repo, 'a.bin'), 'x\0y\n');
+    writeFileSync(join(repo, 'c.bin'), 'q\0z\n');
+    writeFileSync(join(repo, 'd.ts'), 'one\n');
+    commitAll(repo, 'after');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: '\tlead.ts', added: 2, deleted: 0 },
+      { path: 'a.bin', added: null, deleted: null },
+      { path: 'c.bin', added: null, deleted: null },
+      { path: 'd.ts', added: 1, deleted: 0 },
+    ]);
   });
 });
 
