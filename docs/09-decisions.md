@@ -6484,6 +6484,20 @@ changes back into those docs is pending.
     three unused tools and `Skill`, in that order; one whose role or base names a skill
     denies all but `Skill`; layer denials follow them. The conductor's list is unchanged.
 
+111. **`gitDiffNumstat` reads a path with a tab in it whole (2026-10-27).** It took a `-z`
+    numstat entry's path as the third tab-separated field and dropped the rest, so a path was
+    cut at its first tab. `-z` never quotes a path, so a tab in one reaches the entry as is:
+    a file under a directory named `src/a.test.ts<TAB>z` was counted as
+    `src/a.test.ts`, a test, and one under a root directory named `pnpm-lock.yaml<TAB>x` as
+    the root lockfile, which the diff-size stage leaves out of its count. Everything after
+    the second tab is now the path. A renamed entry, whose old and new paths come as NUL
+    fields of their own, is read as before. This closes the tab-in-path item the diff-size
+    decision (110, t-mvphibsy's branch) lists as owed. The review queue's per-file counts read
+    the same numstat and now name such a file whole too.
+    *Tests.* In `git-diff-client.test.ts`, `src/a.test.ts<TAB>z/impl.ts` is listed under its
+    full path beside a plain file, and `pnpm-lock.yaml<TAB>x/big.ts` is listed whole and
+    matches no `LOCKFILE_NAMES` entry. Both fail with the path cut at its first tab.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.
