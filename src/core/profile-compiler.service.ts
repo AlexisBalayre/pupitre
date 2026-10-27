@@ -596,10 +596,12 @@ exit 0
  * or nl there reads, one a line; `sed -i` edits rather than reads and is left
  * out. A word refuses the call when it names a regular file git tracks in this
  * worktree, asked of `safe_git` under the shared pins, so an untracked or
- * ignored file, coverage output say, is read as before. Best effort and fails
- * open: a quoted name holding a space, a glob or a read inside `$(...)` goes
- * through, and so does every call while the worktree's git pointers are not
- * pup's.
+ * ignored file, coverage output say, is read as before. git is asked from the
+ * worktree with the full path, which it normalizes, so a file outside the
+ * worktree is outside the repository to it, whatever its name. Best effort and
+ * fails open: a quoted name holding a space, a glob or a read inside `$(...)`
+ * goes through, and so does every call while the worktree's git pointers are
+ * not pup's.
  */
 function buildReadGuardScript(input: CompileInput, git: WorktreeGitEnv): string {
   return `#!/bin/sh
@@ -627,8 +629,7 @@ pinned_worktree 2>/dev/null || exit 0
 while IFS= read -r WORD; do
   case "$WORD" in /*) FILE=$WORD ;; *) FILE=$CWD/$WORD ;; esac
   [ -f "$FILE" ] || continue
-  if safe_git -C "$(dirname -- "$FILE")" --literal-pathspecs ls-files --error-unmatch \\
-    -- "$(basename -- "$FILE")" >/dev/null 2>&1; then
+  if safe_git -C "$WORKTREE" --literal-pathspecs ls-files --error-unmatch -- "$FILE" >/dev/null 2>&1; then
     printf 'BLOCKED: read %s with the Read tool, using offset and limit for a range, not cat, sed, head, tail or nl: a Bash read loads none of the .claude/rules a Read does. Piping a command into tail or head stays allowed.\\n' "$WORD" >&2
     exit 2
   fi

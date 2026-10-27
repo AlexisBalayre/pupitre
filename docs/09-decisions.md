@@ -6517,7 +6517,11 @@ changes back into those docs is pending.
     telling the worker to use Read with offset and limit and that piping a command into tail
     or head stays allowed. Relative words resolve from the payload's `cwd`. The tracked check
     is `safe_git ls-files --error-unmatch` under the shared pins (decision 101) after
-    `pinned_worktree`, so no session-written config runs.
+    `pinned_worktree`, so no session-written config runs. It runs from the worktree with
+    the word's full path, which git normalizes, `..` and a symlinked prefix included; a path
+    outside the worktree is outside the repository to git, so a file there goes through
+    even when the worktree tracks one of the same name. Asked from the file's own directory
+    with its bare name, git outside the work tree matched that name from the worktree root.
     *What goes through.* A filter of another command's output (`pnpm test 2>&1 | tail -40`,
     `git log | head`), since only a pipeline's first command is looked at. An untracked or
     ignored file, coverage output and scratch notes say. `sed -i`, which edits. A
@@ -6533,8 +6537,10 @@ changes back into those docs is pending.
     `||` and a line break, behind `VAR=value` and through `/bin/cat` are refused, naming
     Read. Piped filters, a coverage report, an untracked file, a missing file, a directory,
     `sed -i`, `cat >` and `grep` go through. A relative name resolves from the call's `cwd`
-    and an absolute one is refused. Every worker Bash entry runs the guard and the
-    conductor's compiled files hold none.
+    and an absolute one is refused. A `README.md` outside the worktree, by absolute path or
+    as the main checkout's `../../README.md`, goes through, while `../../README.md` from
+    `src/core` is refused. Every worker Bash entry runs the guard and the conductor's
+    compiled files hold none.
 
 ## Implementation notes
 

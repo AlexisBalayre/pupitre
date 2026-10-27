@@ -1989,6 +1989,15 @@ describe('source reads go through Read (decision 112)', () => {
     expect(guard(`cat ${join(worktree, 'README.md')}`).status).toBe(2);
   });
 
+  it('lets a file outside the worktree through, even one named like a tracked file', () => {
+    mkdirSync(join(root, 'pkg'));
+    writeFileSync(join(root, 'pkg/README.md'), '# unpacked\n');
+
+    expect(guard(`cat ${join(root, 'pkg/README.md')}`).status).toBe(0);
+    expect(guard('head ../../README.md').status).toBe(0);
+    expect(guard('cat ../../README.md', join(worktree, 'src/core')).status).toBe(2);
+  });
+
   it('runs on every worker Bash call, and the conductor never gets it', () => {
     const bash = ProfileCompiler.compileProfile(makeInput()).settings.hooks.PreToolUse?.find(
       (entry) => entry.matcher === 'Bash',
