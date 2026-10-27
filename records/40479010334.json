@@ -1,0 +1,188 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T09:16:58.281Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40479010334",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40479010334",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2c2c17704c43eeb924f0273487889485406db2a5",
+  "source": "pr",
+  "pr_number": 179,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "406-414",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`namedConfigDir` runs `mkdirSync(named, { recursive: true, mode: 0o700 })` before `changeableOnPath` walks the path. A recursive mkdir can therefore follow a link that another user planted and owns, and create empty operator-owned 0700 dirs wherever it points, before pup refuses. Linux's `protected_symlinks` blocks the /tmp case; macOS has no such protection. Walking the existing prefix first, then making only the missing part, would leave a refused path with no side effects.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "338-421",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`changeableOnPath` is a generic path-safety walk with nothing Claude-specific in it, but it sits in the tmux/window service. The final dir check at :416 (`!dir?.isDirectory() || dir.uid !== uid || (dir.mode & 0o022) !== 0`) repeats `ensurePrivateDir` in `src/core/sandbox.utils.ts:639`, and `safeDir` is a third, looser copy. Consider one shared helper in src/core.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "300-305",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`readSessionEnv` checks a single name by wrapping it in an array for `refusedSessionEnv([name]) === undefined`. `SESSION_ENV_ALLOWED.includes(name)` says the same thing directly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "468-472",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `--session-env` help text (`SESSION_ENV_DESCRIPTION`) restates the allowlist by hand, while `SESSION_ENV_ALLOWED` owns it and `sessionEnvAllowed()` already formats it for the refusal. Adding a name now takes two edits, and the help text can drift. Its \"among …\" wording also never says that other names are refused (the SKILL.md row has the same gap).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "898-906",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The allowlist is checked twice with two different messages: `pup init` calls `refusedSessionEnv` + `sessionEnvAllowed` itself, then `saveSessionEnv` re-checks and throws `… cannot be passed to session windows.`. A `SessionEnvRefusedError`, like `ConfigDirRefusedError`, would give the rule one message and let the CLI drop both helper exports.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.test.ts",
+      "line": "805-811, 843-847",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Both new `launchSession` tests copy the loop that scans every tmux client env for `^CLAUDE|^ANTHROPIC_` (with its cast) from the strip test at :767-771, making three copies. A `tmuxClientEnvs()` helper next to `launchedWindowEnv()` would remove them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "656-662",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`configDirOrRefuse`'s JSDoc says the refused dirs are \"relative, or one others can write\". Since the per-component walk, it also refuses a changeable path component, a dir the operator doesn't own, a non-directory, and a dir that can't be made. Say \"a dir a window may not run on (decision 106)\" instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6344",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 106 says \"A name with no value is not set at all, empty included\". The code skips a name only when it is unset; an empty value is still passed as `NAME=`, which the `CLAUDE_CONFIG_DIR=\"\"` refusal test relies on. Suggested wording: \"A name the shell does not have at all is not set, not even to empty.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6395",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 106 cites \"(#179's CI review)\" for the trailing-`/` and `..` cases. That points at the PR introducing the decision, so the reference is circular and goes stale after merge; drop the parenthetical.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6415-6416",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 106's Ceilings say `ps` shows the `-e` values \"to the operator's own user\". On default Linux (no `hidepid`) and on macOS, every local user can read the tmux client's argv while it runs. That is harmless for today's config-only list, but the wording should not be the recorded reason a credential-bearing name could later travel in argv.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "235",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is in `SESSION_ENV_ALLOWED`, but nothing in the repo cites a source for it, and the reviewer did not recognise it as a Claude Code env var (the other four names are real). Confirm it against the pinned Claude Code version, or drop it, so the refusal message and decision 106 don't advertise a knob that does nothing.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.8098947999999995,
+  "duration_ms": 231686,
+  "num_turns": 16,
+  "tokens": {
+    "input": 10,
+    "output": 14440,
+    "cache_read": 215921,
+    "cache_creation": 79211,
+    "total": 309582
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 182,
+      "output": 89721,
+      "cache_read": 2786587,
+      "cache_creation": 353635,
+      "cost_usd": 4.3582734
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 11640,
+      "cache_read": 388734,
+      "cache_creation": 118512,
+      "cost_usd": 0.4516214
+    }
+  ],
+  "permission_denials": []
+}
