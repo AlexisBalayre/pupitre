@@ -6484,6 +6484,34 @@ changes back into those docs is pending.
     three unused tools and `Skill`, in that order; one whose role or base names a skill
     denies all but `Skill`; layer denials follow them. The conductor's list is unchanged.
 
+113. **Pup's git pins `core.bigFileThreshold`, and a diff's path argument is a literal
+    pathspec (2026-10-27).** Found by the security review of t-mvqfsrhg. Two config and
+    naming tricks a session can use bent the gate's diff reads, and no diff shows either.
+    *The threshold.* `core.bigFileThreshold` sits in the shared `$GIT_COMMON_DIR/config` a
+    session can write (decision 50). Set to 1, git calls every file binary: `--numstat`
+    reads `-\t-` for every text file (reproduced on git 2.39). `--text` still restores the
+    `-U0` patch there, so decision 53's recount finds the lines, but each file then lands in
+    `forged` when nothing about it is forged, and the review reported the patch losing its
+    hunks too, which leaves the recount and `gitDiffAddedLines` at 0 lines. The patch
+    coverage and diff-size stages would then be starved. `GIT_SAFE_CONFIG` pins
+    `core.bigFileThreshold=512m`, git's default, far above `GIT_MAX_BUFFER`'s 64 MiB, so
+    any file pup can read is under it. The pin is in the shared list rather than a
+    diff-only argv because `-c` is top-level and the list already reaches every git pup
+    runs, codegraph's and the session's `safe_git` included. It only changes how big blobs
+    are packed and diffed, which no pup git call relies on.
+    *The pathspec.* `diffHunks` runs one diff per changed file, passing its path after
+    `--`. Git still parses a path there as a pathspec, so a file named `:(top)foo` was read
+    as `foo` with the `top` magic and returned no hunks. `diffHunks` passes
+    `--literal-pathspecs`, a top-level flag, which turns off magic and globbing for that
+    call. It is the file's only pathspec: `blobIsBinary`'s `<rev>:<path>` is an object
+    name, not a pathspec. The flag is not in `GIT_SAFE_CONFIG`: the list holds `-c` pairs
+    only, which codegraph's git reads as key and value, and the session hooks' `safe_git`
+    passes magic on purpose (`status -- ':(icase).claude'`).
+    *Tests.* In `git-diff-client.test.ts`, with `core.bigFileThreshold` set to 1 in the
+    repo config, `gitDiffNumstat` counts both text files and `gitDiffAddedLines` lists
+    their lines. A changed file named `:(top)foo` gets its hunks from `gitDiffAddedLines`
+    and the recount. Each test fails with its fix removed.
+
 ## Implementation notes
 
 - Shared SQLite store in WAL mode so concurrent hook writes from multiple worktrees don't contend.

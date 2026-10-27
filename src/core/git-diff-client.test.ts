@@ -90,6 +90,25 @@ describe('gitDiffAddedLines', () => {
   });
 });
 
+// Each file's hunks are read with its path as a pathspec, which git would
+// parse as magic unless told it is literal (decision 113).
+describe('a changed path that reads as pathspec magic', () => {
+  it('has its hunks read, so patch coverage and the recount count its lines', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, ':(top)foo'), 'one\ntwo\n');
+    commitAll(repo, 'magic');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ':(top)foo': [1, 2] });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', ':(top)foo')).toEqual({
+      added: 2,
+      deleted: 0,
+    });
+  });
+});
+
 // A session can write `diff.external` or a textconv driver into the shared,
 // untracked `$GIT_COMMON_DIR/config` and `info/attributes`. Without the
 // per-call disarm git runs the command and emits no hunks, and an empty
@@ -191,7 +210,7 @@ describe('gitDiffBinaryRecount', () => {
     expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 3, deleted: 2 });
   });
 
-  it('recounts a new text file under core.attributesFile and core.bigFileThreshold', () => {
+  it('recounts a new text file under core.attributesFile', () => {
     const repo = repoWith({ 'a.ts': 'one\n' }, { 'fresh.ts': 'one\ntwo\n' });
     const attributes = join(repo, '.git', 'forged-attributes');
     writeFileSync(attributes, '* binary\n');
@@ -201,14 +220,21 @@ describe('gitDiffBinaryRecount', () => {
       added: 2,
       deleted: 0,
     });
+  });
 
-    sh(repo, 'git', 'config', '--unset', 'core.attributesFile');
+  // Below the threshold git calls every file binary; pinned, a text file is
+  // counted plainly and never needs the recount (decision 113).
+  it('counts a text file plainly under a session-written core.bigFileThreshold of 1', () => {
+    const repo = repoWith({ 'a.ts': 'one\n' }, { 'a.ts': 'one\ntwo\n', 'fresh.ts': 'one\ntwo\n' });
     sh(repo, 'git', 'config', 'core.bigFileThreshold', '1');
 
-    expect(gitDiffNumstat(repo, 'main', 'feature')[0]?.added).toBeNull();
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts')).toEqual({
-      added: 2,
-      deleted: 0,
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: 1, deleted: 0 },
+      { path: 'fresh.ts', added: 2, deleted: 0 },
+    ]);
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({
+      'a.ts': [2],
+      'fresh.ts': [1, 2],
     });
   });
 

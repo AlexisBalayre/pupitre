@@ -350,6 +350,10 @@ function worktreeConfigState(
  * in the shared ref store: a replacement for the target's tip would hand
  * every diff, and the scope audit reading it, a tree the session chose in
  * place of the one the sha names (decision 99).
+ * `core.bigFileThreshold` is pinned to git's default, far above
+ * `GIT_MAX_BUFFER`: a session-written low value makes git call every file
+ * binary, so `--numstat` reads `-\t-` for a text file, which then lands in the
+ * gate's `forged` list when it should count plainly (decision 113).
  * The `lfs` filter is emptied and made optional, so no pup git call runs
  * git-lfs: with the operator's global `git lfs install`, a tracked
  * `.gitattributes` naming `filter=lfs` makes it the smudge driver of every
@@ -386,6 +390,8 @@ export const GIT_SAFE_CONFIG = [
   'core.useReplaceRefs=false',
   '-c',
   'worktree.useRelativePaths=false',
+  '-c',
+  'core.bigFileThreshold=512m',
   '-c',
   'filter.lfs.required=false',
   '-c',
@@ -491,7 +497,8 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
  * The `-U0` hunk headers of one file's branch diff (merge-base diff): where
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
- * need de-quoting.
+ * need de-quoting. The path is a literal pathspec, or a file named
+ * `:(top)foo` would be read as magic and return no hunks (decision 113).
  */
 function diffHunks(
   repoPath: string,
@@ -500,6 +507,7 @@ function diffHunks(
   path: string,
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
+    '--literal-pathspecs',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-U0',
@@ -596,9 +604,9 @@ function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
  * `-\t-`, or null when the file really is binary. `--text` does not restore a
  * numstat the way it restores a patch, and what git calls binary is not only
  * content: a `-diff` or `binary` attribute from `info/attributes` or a
- * `core.attributesFile`, or a `core.bigFileThreshold` below the file's size,
- * all written where no diff shows them, make every text file `-\t-` — and a
- * skipped null would then let a 5 000-line diff count as zero (decision 53).
+ * `core.attributesFile`, both written where no diff shows them, make every
+ * text file `-\t-` — and a skipped null would then let a 5 000-line diff
+ * count as zero (decision 53).
  *
  * Content is the question, asked of both sides of the merge-base diff, because
  * the patch cannot answer it: `--text` parses hunks out of a real binary too,
