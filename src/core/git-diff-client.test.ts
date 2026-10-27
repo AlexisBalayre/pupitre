@@ -1020,7 +1020,9 @@ describe('assertNoWorktreeConfig', () => {
     sh(repo, 'git', 'sparse-checkout', 'set', 'src');
     setExtension(repo, 'maybe');
     const [unset, disable] = hintCommands(repo);
-    expect(unset).toMatch(/^git -C \/ config --file .* --unset extensions\.worktreeConfig$/);
+    expect(unset).toBe(
+      `git -C / config --file '${join(repo, '.git/config')}' --unset-all extensions.worktreeConfig`,
+    );
     expect(disable).toBe('git sparse-checkout disable');
     expect(() => paste(repo, disable as string)).toThrow(/bad boolean config value/);
 
@@ -1030,6 +1032,47 @@ describe('assertNoWorktreeConfig', () => {
     paste(repo, unset as string);
     unlinkSync(join(repo, '.git/config.worktree'));
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // `--unset` refuses a key set twice ("multiple values"), so the hint's would fail here.
+  it('unsets every copy of a key set twice', () => {
+    writeFileSync(
+      join(repo, '.git/config'),
+      `${readFileSync(join(repo, '.git/config'), 'utf8')}[extensions]\n` +
+        '\tworktreeConfig = maybe\n\tworktreeConfig = maybe\n',
+    );
+    const [unset] = hintCommands(repo);
+
+    paste(repo, unset as string);
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // sanitizeReason folds whitespace, blanks control chars and truncates, so a
+  // command built from its output would unset some other file.
+  it.each([
+    ['two spaces', 'My  Project'],
+    ['a tab', 'My\tProject'],
+    ['a newline', 'My\nProject'],
+    ['ESC and CSI', 'My\u001b[31m\u009bProject'],
+    ['a path past the truncation', 'p'.repeat(250)],
+  ])('prints no paste-ready unset for a path with %s, and no control char', (_, name) => {
+    const odd = join(tempDir('pup-diff-'), name);
+    mkdirSync(odd);
+    sh(odd, 'git', 'init', '-q', '-b', 'main');
+    setExtension(odd, 'maybe');
+    let message = '';
+    try {
+      assertNoWorktreeConfig(odd);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is the point
+    expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(hintCommands(odd)[0]).toBe(
+      'git -C / config --file <repo>/.git/config --unset-all extensions.worktreeConfig',
+    );
+    expect(message).toContain('with <repo> typed by hand');
   });
 
   it.each(['true', 'maybe'])(

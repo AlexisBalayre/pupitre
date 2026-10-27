@@ -145,7 +145,16 @@ export class WorktreeConfigError extends Error {
         : cause === 'on'
           ? `extensions.worktreeConfig is on in ${config}`
           : `extensions.worktreeConfig is on, or holds a value git cannot read, in ${config}`;
-    const unset = `\`git -C / config --file ${shellWord(config)} --unset extensions.worktreeConfig\``;
+    // Pasted, the line must name the very file: sanitizeReason folds runs of
+    // whitespace, blanks control chars and truncates, so a path it changes is
+    // left for the operator to type rather than printed as another file.
+    const raw = join(dotGit, 'config');
+    const unset =
+      config === raw
+        ? `\`git -C / config --file ${shellWord(raw)} --unset-all extensions.worktreeConfig\``
+        : '`git -C / config --file <repo>/.git/config --unset-all extensions.worktreeConfig` ' +
+          "with <repo> typed by hand, as the repo's path holds characters this message cannot " +
+          'show as they are';
     // `disable` turns the extension back on, so the unset comes after it, and
     // again after it when git needed the unset first to open the repo at all.
     const steps =
