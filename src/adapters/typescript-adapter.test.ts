@@ -207,7 +207,7 @@ describe('typescriptAdapter.coveredTest', () => {
     // The session's own test fails on purpose and its exit handler swaps the
     // report directory for a link; the re-run must not be granted the target.
     it('grants the re-run the report directory, not where a link left there points', async () => {
-      const { reports, child } = foldedRun();
+      const { child } = foldedRun();
       const target = tempDir('pup-link-target-');
 
       await child('rm -r -f "$1" && ln -s "$2" "$1"', target);
