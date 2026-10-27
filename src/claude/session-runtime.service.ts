@@ -1,10 +1,26 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  type Stats,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
+import { projectPaths } from '../core/paths.utils.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
@@ -177,7 +193,10 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
  * - `NODE_OPTIONS` is code execution: `--require` in a server's environment runs
  *   in every node process a window later starts.
  *
- * What a window is, its own `-e` says. Everything else the caller has — `PATH`,
+ * What a window is, its own `-e` says, and so does a variable the operator
+ * named with `pup init --session-env` (decision 106): stripped here like any
+ * other, it reaches the window it was named for and no server's global
+ * environment. Everything else the caller has — `PATH`,
  * `HOME`, `TERM`, `SHELL`, `LANG`, `TMUX_TMPDIR` — is passed through untouched
  * (decision 47).
  */
@@ -196,6 +215,221 @@ function tmuxEnv(): NodeJS.ProcessEnv {
       ([key]) => !NOT_INHERITED.some((pattern) => pattern.test(key)),
     ),
   );
+}
+
+/**
+ * The only names `pup init --session-env` may record (decision 106): the
+ * config a run pins for its workers, none of it a credential. A closed list,
+ * not a denylist over the namespace `NOT_INHERITED` strips: `CLAUDE*` and
+ * `ANTHROPIC_*` are open-ended and hold the peer channel, the nested-session
+ * marker and every credential Claude Code adds, and the rest of the namespace
+ * holds the loaders and git's redirects, as `SETTABLE_VARS` says of gate
+ * children. The file the names live in is writable by any session, so the
+ * list is what bounds a session's choice, and it is checked on the way in and
+ * on the way out.
+ */
+const SESSION_ENV_ALLOWED = [
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+  'CLAUDE_CODE_ENABLE_TELEMETRY',
+];
+
+/** Far past any list of `SESSION_ENV_ALLOWED`'s names; anything bigger is not one. */
+const SESSION_ENV_FILE_MAX_BYTES = 4096;
+
+/** The first of `names` `--session-env` refuses, or undefined when it takes them all. */
+export function refusedSessionEnv(names: string[]): string | undefined {
+  return names.find((name) => !SESSION_ENV_ALLOWED.includes(name));
+}
+
+/** The names `--session-env` takes, for a refusal to list. */
+export function sessionEnvAllowed(): string {
+  return SESSION_ENV_ALLOWED.join(', ');
+}
+
+/** Where `pup init --session-env` keeps the names, beside the project's store. */
+function sessionEnvFile(repoPath: string): string {
+  return join(projectPaths(repoPath).root, 'session-env.json');
+}
+
+/**
+ * Record the names every session and conductor window is handed from the
+ * launching shell (decision 106). Refused names throw: the CLI checks them
+ * first, and a caller that did not has a bug to surface, not a list to trim.
+ * Written beside and renamed over, so a launch never reads half a list.
+ */
+export function saveSessionEnv(repoPath: string, names: string[]): void {
+  const refused = refusedSessionEnv(names);
+  if (refused !== undefined) throw new Error(`${refused} cannot be passed to session windows.`);
+  const file = sessionEnvFile(repoPath);
+  mkdirSync(dirname(file), { recursive: true });
+  const staged = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(staged, `${JSON.stringify(names)}\n`);
+  renameSync(staged, file);
+}
+
+/**
+ * The names `pup init --session-env` recorded, none when it never ran. Any
+ * session can write the file, so it is read like a pointer a session wrote:
+ * no symlink followed, no fifo blocked on, a regular file of bounded size, and
+ * whatever does not parse as a list reads as none. Every name is checked
+ * against the allowlist again, and one off it is dropped, never handed on.
+ */
+export function readSessionEnv(repoPath: string): string[] {
+  let fd: number;
+  try {
+    fd = openSync(
+      sessionEnvFile(repoPath),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch {
+    return [];
+  }
+  let stored: unknown;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > SESSION_ENV_FILE_MAX_BYTES) return [];
+    stored = JSON.parse(readFileSync(fd, 'utf8'));
+  } catch {
+    return [];
+  } finally {
+    closeSync(fd);
+  }
+  return Array.isArray(stored)
+    ? stored.filter(
+        (name): name is string =>
+          typeof name === 'string' && refusedSessionEnv([name]) === undefined,
+      )
+    : [];
+}
+
+/**
+ * The recorded names the launching shell has a value for, as the window's own
+ * `-e`. Never the client's environment, which `tmuxEnv` keeps stripping them
+ * from: a client that starts the server makes its environment the server's
+ * global one, readable by every window with `show-environment -g`.
+ */
+function sessionEnv(repoPath: string): Record<string, string> {
+  return Object.fromEntries(
+    readSessionEnv(repoPath).flatMap((name) => {
+      const value = Object.hasOwn(process.env, name) ? process.env[name] : undefined;
+      return value === undefined ? [] : [[name, value]];
+    }),
+  );
+}
+
+/**
+ * The launching shell's `CLAUDE_CONFIG_DIR` is not a dir a window may run on:
+ * the operator's to fix, so a launch refuses on it rather than crashing. The
+ * message quotes the shell's value.
+ */
+export class ConfigDirRefusedError extends Error {
+  constructor(value: string, reason: string) {
+    super(
+      `CLAUDE_CONFIG_DIR is ${JSON.stringify(value)}, which --session-env passes to every ` +
+        `window: ${reason}.`,
+    );
+    this.name = 'ConfigDirRefusedError';
+  }
+}
+
+/** Links one path may pass through before pup takes it for a loop: Linux's own limit. */
+const MAX_PATH_LINKS = 40;
+
+/**
+ * The first dir or link on the way to `path` that someone other than the
+ * operator and root could rename, swap or repoint, or undefined when there is
+ * none. Resolved a component at a time, as the kernel does, so a link anywhere
+ * on the path, every hop of a link's target and a trailing `/` are each checked
+ * rather than followed. A dir counts as safe when the operator or root owns it
+ * and neither its group nor others can write it, or it is sticky, as `/tmp` is,
+ * where no one else can move an entry they do not own. A link counts as safe
+ * when the operator or root owns it, since its dir was checked before it.
+ */
+function changeableOnPath(path: string, uid: number | undefined): string | undefined {
+  const ownedBySafe = (stat: Stats): boolean => stat.uid === uid || stat.uid === 0;
+  const safeDir = (stat: Stats): boolean =>
+    ownedBySafe(stat) && ((stat.mode & 0o022) === 0 || (stat.mode & 0o1000) !== 0);
+  if (!safeDir(lstatSync('/'))) return '/';
+  let at = '/';
+  const pending = path.split('/');
+  let links = 0;
+  while (pending.length > 0) {
+    const part = pending.shift() as string;
+    if (part === '' || part === '.') continue;
+    // `at` holds no link, so its parent is the one the kernel takes.
+    if (part === '..') {
+      at = dirname(at);
+      continue;
+    }
+    const next = join(at, part);
+    const stat = lstatSync(next, { throwIfNoEntry: false });
+    if (stat === undefined) return next;
+    if (stat.isSymbolicLink()) {
+      if (!ownedBySafe(stat) || ++links > MAX_PATH_LINKS) return next;
+      const target = readlinkSync(next);
+      pending.unshift(...target.split('/'));
+      if (isAbsolute(target)) at = '/';
+      continue;
+    }
+    if (!safeDir(stat)) return next;
+    at = next;
+  }
+  return undefined;
+}
+
+/**
+ * The config dir the variables a window is handed put it on, or undefined for
+ * Claude Code's own. Refused unless absolute: tmux expands no `~`, and a
+ * relative one would resolve against each window's own cwd. Refused too unless
+ * it is a dir the operator owns that no one else can write, reached only
+ * through dirs and links no one else can change, since every window loads the
+ * hooks a `settings.json` there names: one another local user made first, or
+ * could swap in later, under `/tmp` say, would run that user's commands in
+ * each. Made private when missing, so the trust seeded in it skips the dialog.
+ */
+function namedConfigDir(vars: Record<string, string>): string | undefined {
+  const named = vars.CLAUDE_CONFIG_DIR;
+  if (named === undefined) return undefined;
+  if (!isAbsolute(named)) throw new ConfigDirRefusedError(named, 'it must be an absolute path');
+  try {
+    mkdirSync(named, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new ConfigDirRefusedError(
+      named,
+      `pup could not make it a directory (${(error as NodeJS.ErrnoException).code})`,
+    );
+  }
+  const uid = process.getuid?.();
+  const changeable = changeableOnPath(named, uid);
+  if (changeable !== undefined) {
+    throw new ConfigDirRefusedError(
+      named,
+      `${JSON.stringify(changeable)}, on its way, is one another user could rename, swap or ` +
+        'repoint: every dir and link on it must be owned by you or root, and no dir writable ' +
+        'by its group or others unless sticky',
+    );
+  }
+  const dir = statSync(named, { throwIfNoEntry: false });
+  if (!dir?.isDirectory() || dir.uid !== uid || (dir.mode & 0o022) !== 0) {
+    throw new ConfigDirRefusedError(
+      named,
+      'it must be a directory you own that neither its group nor others can write',
+    );
+  }
+  return named;
+}
+
+/**
+ * The Claude Code config dir a window of this project runs on: the launching
+ * shell's `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude`
+ * otherwise. What the launch hashes for decision 9's drift check, and where
+ * the window's `.claude.json` and transcripts live.
+ */
+export function claudeUserDir(repoPath: string): string {
+  return namedConfigDir(sessionEnv(repoPath)) ?? join(homedir(), '.claude');
 }
 
 function tmux(socket: string | undefined, args: string[]): string {
@@ -355,7 +589,10 @@ function spawnDetachedSession(
     ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
     '-c',
     opts.cwd,
-    ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
+    ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => [
+      '-e',
+      tmuxWord(`${key}=${value}`),
+    ]),
     ...opts.command,
   ]).trim();
   // Checked where it is minted: this id is what every later command trusts,
@@ -364,6 +601,16 @@ function spawnDetachedSession(
     throw new Error(`tmux new-session printed ${JSON.stringify(printed)}, not a pane id.`);
   }
   return printed;
+}
+
+/**
+ * An argument tmux reads as itself. tmux takes an argument ending in ';' as
+ * the end of a command, so a value ending in one would cut the launch's argv
+ * there; `\;` is its escape for a literal one, and it drops only that
+ * backslash, so a value already ending in `\;` keeps its own.
+ */
+function tmuxWord(arg: string): string {
+  return arg.endsWith(';') ? `${arg.slice(0, -1)}\\;` : arg;
 }
 
 /**
@@ -451,6 +698,8 @@ interface ClaudeWindowOptions {
   sessionId: string;
   /** Where the window opens: a session's worktree, the conductor's main checkout. */
   cwd: string;
+  /** The project's main checkout, whose recorded `--session-env` names the window gets. */
+  repoPath: string;
   settingsPath: string;
   route: ModelRoute;
   mcpConfigPath?: string;
@@ -511,12 +760,20 @@ const SESSION_NICENESS = '10';
  * and hand the process the same bypass-permissions, user-setting-sources argv.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
-  preseedTrust(opts.cwd, CLAUDE_JSON, opts.git);
+  // One read of the list, so the trust and the window agree on the config dir.
+  const handed = sessionEnv(opts.repoPath);
+  const configDir = namedConfigDir(handed);
+  preseedTrust(
+    opts.cwd,
+    configDir === undefined ? CLAUDE_JSON : join(configDir, '.claude.json'),
+    opts.git,
+  );
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
   const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
+      ...handed,
       ...opts.caller,
       ...(opts.git ? WINDOW_GIT_CONFIG : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
@@ -542,6 +799,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
   return spawnClaudeWindow({
     sessionId: opts.sessionId,
     cwd: opts.worktreePath,
+    repoPath: opts.repoPath,
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
@@ -672,6 +930,7 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
   return spawnClaudeWindow({
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
+    repoPath: opts.repoPath,
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
@@ -1050,15 +1309,20 @@ function killTarget(target: string, socket?: string): void {
  * Transcript directory Claude Code uses for a given worktree (munged real
  * path). The munge is a closed allowlist — every character outside
  * `[a-zA-Z0-9]` becomes `-` — so the result is always one segment directly
- * under `~/.claude/projects`, whatever the path held. `pup` stamps a session's
+ * under `projects` in the config dir, whatever the path held. `claudeDir` is
+ * the window's (`claudeUserDir`), `~/.claude` unless `--session-env` names
+ * another (decision 106). `pup` stamps a session's
  * `transcript_path` with this at launch, and the dashboard checks the stored
  * column against this derivation before reading it (decision 67), so the
  * guarantee is load-bearing: a munge that let a separator or a `..` through
  * would let a store row aim the operator's reader anywhere on disk.
  */
-export function transcriptDir(worktreePath: string): string {
+export function transcriptDir(
+  worktreePath: string,
+  claudeDir = join(homedir(), '.claude'),
+): string {
   const munged = worktreePath.replace(/[^a-zA-Z0-9]/g, '-');
-  return join(homedir(), '.claude', 'projects', munged);
+  return join(claudeDir, 'projects', munged);
 }
 
 function watcherTarget(repoProjectId: string): string {

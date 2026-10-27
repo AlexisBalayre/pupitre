@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir, constants as osConstants, tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
@@ -14,12 +14,17 @@ import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capa
 import {
   attachCommand,
   attachWindow,
+  ConfigDirRefusedError,
+  claudeUserDir,
   conductorName,
   hasSessionWindow,
   killWatcher,
   launchWatcher,
+  refusedSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  saveSessionEnv,
+  sessionEnvAllowed,
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
@@ -460,6 +465,12 @@ function describeDebtBaseline(debt: DebtBaseline | undefined): string {
 const GATE_ENV_DESCRIPTION =
   'extra env var names to pass through to gate children, comma-separated';
 
+// Decision 106.
+const SESSION_ENV_DESCRIPTION =
+  'env var names every session and conductor window gets from the launching shell, ' +
+  'comma-separated, among CLAUDE_CONFIG_DIR and the effort, subagent-model and telemetry ' +
+  'ones; kept until the next --session-env, "" clears them';
+
 // Decision 99.
 const ALLOW_OVERLAP_DESCRIPTION = 'no effect: overlap is always allowed (removed next release)';
 
@@ -643,6 +654,23 @@ function launchOrRefuse(
 }
 
 /**
+ * The config dir a launch hashes and runs its window on, or a refusal printed
+ * before anything is planned, killed or opened: a `CLAUDE_CONFIG_DIR` that
+ * `--session-env` passes and a window may not run on — relative, or one others
+ * can write — is the operator's to fix, not a crash (decision 106). Scrubbed,
+ * since the message quotes the launching shell's value.
+ */
+function configDirOrRefuse(repoPath: string): string | undefined {
+  try {
+    return claudeUserDir(repoPath);
+  } catch (error) {
+    if (!(error instanceof ConfigDirRefusedError)) throw error;
+    refuseScrubbed(error);
+    return undefined;
+  }
+}
+
+/**
  * Plan and launch a task this command just minted — `pup new` and `pup audit
  * --sweep`. The task is new, so nothing can claim it first; what is left for
  * the operator to answer is the compile, which validates the spec AND reads
@@ -657,12 +685,14 @@ function createOrRefuse(
     overCap?: boolean;
   },
 ): string | undefined {
+  const userDir = configDirOrRefuse(repoPath);
+  if (userDir === undefined) return undefined;
   return launchOrRefuse(task.id, [InvalidProfileError, ...NO_ROOM_ERRORS], () =>
     createSession(db, {
       repoPath,
       base: DEFAULT_BASE_PROFILE,
       task,
-      claudeUserDir: join(homedir(), '.claude'),
+      claudeUserDir: userDir,
       ...fields,
     }),
   );
@@ -852,8 +882,9 @@ export function buildProgram(): Command {
     .command('init')
     .description('Onboard a repo: detect stack, baseline, conventions')
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
+    .option('--session-env <names>', SESSION_ENV_DESCRIPTION)
     .option('--origin-moved', ORIGIN_MOVED_DESCRIPTION)
-    .action(async (opts: { gateEnv?: string; originMoved?: boolean }) => {
+    .action(async (opts: { gateEnv?: string; sessionEnv?: string; originMoved?: boolean }) => {
       const { repoPath, db } = project();
       // `pup init` stamps the debt baseline through the same `initProject` the
       // audit does, and records the push target the gate holds a session's
@@ -863,6 +894,15 @@ export function buildProgram(): Command {
       // its own.
       if (callingSession(db)) {
         return refuse('`pup init` is operator-only; sessions cannot move the baseline.');
+      }
+      // The same list as `--gate-env`, refused whole before anything measures.
+      const sessionEnv = opts.sessionEnv === undefined ? undefined : parseGateEnv(opts.sessionEnv);
+      const refusedName = sessionEnv && refusedSessionEnv(sessionEnv);
+      if (refusedName !== undefined) {
+        return refuse(
+          `--session-env cannot pass ${sanitizeReason(refusedName)}: it takes only ` +
+            `${sessionEnvAllowed()}.`,
+        );
       }
       if (refusedUnsandboxed()) return;
       const recording = opts.originMoved ? 're-record' : 'record';
@@ -879,6 +919,14 @@ export function buildProgram(): Command {
       );
       if (!report) return;
       printInitReport(db, report, repoPath);
+      if (sessionEnv) {
+        saveSessionEnv(repoPath, sessionEnv);
+        console.log(
+          sessionEnv.length
+            ? `Session windows get ${sessionEnv.join(', ')} from the launching shell.`
+            : 'Session windows get no extra variables.',
+        );
+      }
       console.log(
         'Baseline stored. Review the resolved commands above (package.json scripts win), then launch sessions with `pup new`.',
       );
@@ -1050,6 +1098,8 @@ export function buildProgram(): Command {
           return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
         }
         if (refusedOverCap(opts.overCap, 'launch')) return;
+        const userDir = configDirOrRefuse(repoPath);
+        if (userDir === undefined) return;
         noteAllowOverlap(opts.allowOverlap);
         const planned = getTask(db, taskId);
         if (planned) {
@@ -1071,7 +1121,7 @@ export function buildProgram(): Command {
               repoPath,
               base: DEFAULT_BASE_PROFILE,
               taskId,
-              claudeUserDir: join(homedir(), '.claude'),
+              claudeUserDir: userDir,
               model: opts.model,
               effort: opts.effort,
               overlapVia: conductorAttribution().overlapVia,
@@ -1126,13 +1176,15 @@ export function buildProgram(): Command {
       if (!Number.isInteger(maxSessions) || maxSessions < 1) {
         return refuse('--max-sessions takes a whole number of at least 1.');
       }
+      const userDir = configDirOrRefuse(repoPath);
+      if (userDir === undefined) return;
       let handle: ConductorHandle;
       try {
         handle = startConductor({
           db,
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: join(homedir(), '.claude'),
+          claudeUserDir: userDir,
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,
@@ -1739,13 +1791,15 @@ export function buildProgram(): Command {
         );
       }
       if (opts.respawn) {
+        // Before the kill: a refused config dir would leave the session no window.
+        if (configDirOrRefuse(repoPath) === undefined) return;
         try {
           hardRespawnSession(db, repoPath, session, undefined, {
             model: opts.model,
             effort: opts.effort,
           });
         } catch (error) {
-          return refuse((error as Error).message);
+          return refuseScrubbed(error);
         }
         console.log(
           `Hard-respawned session ${session} (tmux: ${sanitizeReason(windowLabel({ sessionId: session }))}).`,
@@ -1835,6 +1889,9 @@ export function buildProgram(): Command {
           '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
         );
       }
+      // Before the handoff is asked for and the window killed: a refused config
+      // dir would leave the session no window.
+      if (configDirOrRefuse(repoPath) === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
       try {
@@ -2176,7 +2233,7 @@ export function buildProgram(): Command {
         outcome = await startFixRound(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: join(homedir(), '.claude'),
+          claudeUserDir: claudeUserDir(repoPath),
           sessionId: session,
           override: { model: opts.model, effort: opts.effort },
           overrideVia: callingConductor() ? 'conductor' : 'operator',
