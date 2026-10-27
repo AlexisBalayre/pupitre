@@ -202,7 +202,7 @@ function instrumentedRun(ctx: CapabilityContext): CoveredTestRun | CapabilityUna
   // The grant is the report directory, inside one of the gate's own that is
   // never granted. A child can remove the report directory, as a failing run
   // does, or put a symlink there, and the re-run's profile resolves the grant's
-  // parent: one no child can remove keeps the name the gate's (decision 107).
+  // parent: one no child can remove keeps the name the gate's (decision 108).
   const holder = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
   const outDir = join(holder, 'report');
   try {

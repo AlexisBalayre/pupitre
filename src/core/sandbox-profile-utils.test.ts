@@ -146,7 +146,7 @@ describe('writeProfile', () => {
   });
 
   // A child can put a link at its own grant, and the next child's profile is
-  // written afresh: followed, it granted the link's target (decision 107).
+  // written afresh: followed, it granted the link's target (decision 108).
   it('grants a link left at a grant as the link, never its target', () => {
     const holder = tempDir('pup-grant-holder-');
     const target = tempDir('pup-grant-target-');
