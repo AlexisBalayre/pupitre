@@ -61,6 +61,22 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // it (decision 67), so a fake rule here would only agree with itself.
   transcriptDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .transcriptDir,
+  // The real rule and the real file, under the throwaway HOME: which names
+  // `pup init --session-env` refuses and keeps, and the config dir a launch
+  // hashes from them, are the contract (decision 106).
+  claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .claudeUserDir,
+  ConfigDirRefusedError: (
+    await importOriginal<typeof import('../claude/session-runtime.service.js')>()
+  ).ConfigDirRefusedError,
+  sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .sessionEnvAllowed,
+  readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .readSessionEnv,
+  refusedSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .refusedSessionEnv,
+  saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .saveSessionEnv,
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -155,8 +171,10 @@ import {
   deadTurnError,
   hasSessionWindow,
   launchWatcher,
+  readSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
+  saveSessionEnv,
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
@@ -1946,6 +1964,61 @@ describe('CLI commands', () => {
 
     // The conductor is the operator's delegate for setup, as it is for the
     // audit (decision 48): the guard asks for a session and nothing else.
+    // What a window may be handed is the operator's to widen, and never with
+    // the peer channel, the credentials or what says what a window is: refused
+    // whole, naming the variable, before anything measures (decision 106).
+    it.each([
+      'CLAUDE_CODE_MESSAGING_TOKEN',
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
+      'PUP_SESSION_ID',
+      'TMUX',
+      'NODE_OPTIONS',
+      'CLAUDECODE',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'LD_PRELOAD',
+      'GIT_DIR',
+    ])('refuses `init --session-env` naming %s, and stores nothing', async (name) => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+
+      await buildProgram().parseAsync(['init', '--session-env', `CLAUDE_CONFIG_DIR,${name}`], {
+        from: 'user',
+      });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([
+        `--session-env cannot pass ${name}: it takes only CLAUDE_CONFIG_DIR, ` +
+          'CLAUDE_CODE_EFFORT_LEVEL, CLAUDE_CODE_SUBAGENT_MODEL, CLAUDE_CODE_SUBAGENT_MODEL_FORCE, ' +
+          'CLAUDE_CODE_ENABLE_TELEMETRY.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(readSessionEnv(repo)).toEqual([]);
+      expect(recordedOrigin(repo)).toBeNull();
+    });
+
+    it('records the --session-env names, keeps them over a plain `init`, and clears them on ""', async () => {
+      const repo = initRepoWithOrigin();
+      useCwd(repo);
+
+      await buildProgram().parseAsync(
+        ['init', '--session-env', 'CLAUDE_CONFIG_DIR, CLAUDE_CODE_ENABLE_TELEMETRY'],
+        { from: 'user' },
+      );
+      expect(errors).toEqual([]);
+      expect(readSessionEnv(repo)).toEqual(['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY']);
+      expect(logs).toContain(
+        'Session windows get CLAUDE_CONFIG_DIR, CLAUDE_CODE_ENABLE_TELEMETRY from the launching shell.',
+      );
+
+      await buildProgram().parseAsync(['init'], { from: 'user' });
+      expect(readSessionEnv(repo)).toEqual(['CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENABLE_TELEMETRY']);
+
+      await buildProgram().parseAsync(['init', '--session-env', ''], { from: 'user' });
+      expect(readSessionEnv(repo)).toEqual([]);
+      expect(logs).toContain('Session windows get no extra variables.');
+    });
+
     it('lets the conductor run `init`', async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
@@ -4002,6 +4075,40 @@ describe('CLI commands', () => {
       expect(() =>
         buildProgram().parse(['new', 'goal', '--scope', 'src/**'], { from: 'user' }),
       ).toThrow();
+    });
+  });
+
+  // A config dir `--session-env` passes is the launching shell's, and a quoted
+  // `~` reaches pup unexpanded: every command that opens a window refuses it in
+  // one scrubbed line, before anything is planned, killed or launched — a
+  // respawn before its handoff steer and its kill (decision 106).
+  describe('a relative CLAUDE_CONFIG_DIR', () => {
+    it.each([
+      {
+        command: 'new',
+        args: ['new', 'do the thing', '--scope', 'src/**'],
+        opens: [createSession],
+      },
+      { command: 'launch', args: ['launch', 't-abc'], opens: [launchTask] },
+      { command: 'conductor start', args: ['conductor', 'start'], opens: [startConductor] },
+      { command: 'fix', args: ['fix', 's1'], opens: [startFixRound] },
+      { command: 'respawn', args: ['respawn', 's1'], opens: [requestHandoff, respawnSession] },
+      { command: 'kill --respawn', args: ['kill', 's1', '--respawn'], opens: [hardRespawnSession] },
+    ])('refuses `pup $command`, opening nothing', async ({ args, opens }) => {
+      const repo = initRepo();
+      useCwd(repo);
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', '~/w4b\u009b');
+
+      await buildProgram().parseAsync(args, { from: 'user' });
+
+      expect(errors).toEqual([
+        'CLAUDE_CONFIG_DIR is "~/w4b ", which --session-env passes to every window: ' +
+          'it must be an absolute path.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+      for (const open of opens) expect(open).not.toHaveBeenCalled();
     });
   });
 
