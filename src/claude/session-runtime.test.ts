@@ -466,6 +466,49 @@ describe('claudeUserDir', () => {
     expect(() => claudeUserDir('/tmp/repo')).toThrow(ConfigDirRefusedError);
   });
 
+  // Whoever can rename, swap or repoint a dir or link on the way to the dir can
+  // put their own there once the check is done, so every hop is checked, not
+  // the last. A dir others can write stands in for one another user owns.
+  it.each([
+    ['inside a dir others can write', (open: string) => join(open, 'claude')],
+    [
+      'through a link in such a dir',
+      (open: string) => join(linkTo(tempDir('pup-w4b-config-'), open), 'claude'),
+    ],
+    [
+      'a link in such a dir, with a trailing slash',
+      (open: string) => `${linkTo(tempDir('pup-w4b-config-'), open)}/`,
+    ],
+    [
+      "through a link whose target's own link is in such a dir",
+      (open: string) => join(linkTo(linkTo(tempDir('pup-w4b-config-'), open)), 'claude'),
+    ],
+    // `..` leaves the link's target, not the link: the kernel's parent, not the text's.
+    [
+      "out of a link's target with `..` into such a dir",
+      (open: string) => `${linkTo(tempDir('pup-w4b-config-'))}/../${basename(open)}/claude`,
+    ],
+  ])('refuses a CLAUDE_CONFIG_DIR reached %s, naming that dir', (_, configDir) => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const open = chmodded(tempDir('pup-w4b-open-'), 0o777);
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir(open));
+
+    expect(() => claudeUserDir('/tmp/repo')).toThrow(ConfigDirRefusedError);
+    expect(() => claudeUserDir('/tmp/repo')).toThrow(JSON.stringify(open));
+  });
+
+  it('takes a dir reached through a sticky dir, a link the operator owns and a trailing slash', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const sticky = chmodded(tempDir('pup-w4b-sticky-'), 0o1777);
+    const configDir = `${join(linkTo(sticky), 'claude')}/`;
+    saveSessionEnv('/tmp/repo', ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+
+    expect(claudeUserDir('/tmp/repo')).toBe(configDir);
+    expect(statSync(join(sticky, 'claude')).mode & 0o777).toBe(0o700);
+  });
+
   it('makes a missing CLAUDE_CONFIG_DIR, private to the operator', () => {
     vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
     const configDir = join(tempDir('pup-w4b-config-'), 'fresh', 'nested');
@@ -482,8 +525,8 @@ describe('claudeUserDir', () => {
     return dir;
   }
 
-  function linkTo(target: string): string {
-    const link = join(tempDir('pup-w4b-config-'), 'link');
+  function linkTo(target: string, dir = tempDir('pup-w4b-config-')): string {
+    const link = join(dir, 'link');
     symlinkSync(target, link);
     return link;
   }

@@ -9,8 +9,10 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
+  type Stats,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -333,14 +335,60 @@ export class ConfigDirRefusedError extends Error {
   }
 }
 
+/** Links one path may pass through before pup takes it for a loop: Linux's own limit. */
+const MAX_PATH_LINKS = 40;
+
+/**
+ * The first dir or link on the way to `path` that someone other than the
+ * operator and root could rename, swap or repoint, or undefined when there is
+ * none. Resolved a component at a time, as the kernel does, so a link anywhere
+ * on the path, every hop of a link's target and a trailing `/` are each checked
+ * rather than followed. A dir counts as safe when the operator or root owns it
+ * and neither its group nor others can write it, or it is sticky, as `/tmp` is,
+ * where no one else can move an entry they do not own. A link counts as safe
+ * when the operator or root owns it, since its dir was checked before it.
+ */
+function changeableOnPath(path: string, uid: number | undefined): string | undefined {
+  const ownedBySafe = (stat: Stats): boolean => stat.uid === uid || stat.uid === 0;
+  const safeDir = (stat: Stats): boolean =>
+    ownedBySafe(stat) && ((stat.mode & 0o022) === 0 || (stat.mode & 0o1000) !== 0);
+  if (!safeDir(lstatSync('/'))) return '/';
+  let at = '/';
+  const pending = path.split('/');
+  let links = 0;
+  while (pending.length > 0) {
+    const part = pending.shift() as string;
+    if (part === '' || part === '.') continue;
+    // `at` holds no link, so its parent is the one the kernel takes.
+    if (part === '..') {
+      at = dirname(at);
+      continue;
+    }
+    const next = join(at, part);
+    const stat = lstatSync(next, { throwIfNoEntry: false });
+    if (stat === undefined) return next;
+    if (stat.isSymbolicLink()) {
+      if (!ownedBySafe(stat) || ++links > MAX_PATH_LINKS) return next;
+      const target = readlinkSync(next);
+      pending.unshift(...target.split('/'));
+      if (isAbsolute(target)) at = '/';
+      continue;
+    }
+    if (!safeDir(stat)) return next;
+    at = next;
+  }
+  return undefined;
+}
+
 /**
  * The config dir the variables a window is handed put it on, or undefined for
  * Claude Code's own. Refused unless absolute: tmux expands no `~`, and a
  * relative one would resolve against each window's own cwd. Refused too unless
- * it is a dir the operator owns that no one else can write, since every window
- * loads the hooks a `settings.json` there names: one another local user made
- * first, under `/tmp` say, would run that user's commands in each. Made
- * private when missing, so the trust seeded in it skips the dialog.
+ * it is a dir the operator owns that no one else can write, reached only
+ * through dirs and links no one else can change, since every window loads the
+ * hooks a `settings.json` there names: one another local user made first, or
+ * could swap in later, under `/tmp` say, would run that user's commands in
+ * each. Made private when missing, so the trust seeded in it skips the dialog.
  */
 function namedConfigDir(vars: Record<string, string>): string | undefined {
   const named = vars.CLAUDE_CONFIG_DIR;
@@ -354,11 +402,18 @@ function namedConfigDir(vars: Record<string, string>): string | undefined {
       `pup could not make it a directory (${(error as NodeJS.ErrnoException).code})`,
     );
   }
-  // The link's owner too: one another user owns can be repointed after this check.
-  const link = lstatSync(named, { throwIfNoEntry: false });
-  const dir = statSync(named, { throwIfNoEntry: false });
   const uid = process.getuid?.();
-  if (!dir?.isDirectory() || link?.uid !== uid || dir.uid !== uid || (dir.mode & 0o022) !== 0) {
+  const changeable = changeableOnPath(named, uid);
+  if (changeable !== undefined) {
+    throw new ConfigDirRefusedError(
+      named,
+      `${JSON.stringify(changeable)}, on its way, is one another user could rename, swap or ` +
+        'repoint: every dir and link on it must be owned by you or root, and no dir writable ' +
+        'by its group or others unless sticky',
+    );
+  }
+  const dir = statSync(named, { throwIfNoEntry: false });
+  if (!dir?.isDirectory() || dir.uid !== uid || (dir.mode & 0o022) !== 0) {
     throw new ConfigDirRefusedError(
       named,
       'it must be a directory you own that neither its group nor others can write',
