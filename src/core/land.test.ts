@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { endSandboxRun } from './sandbox.utils.js';
+import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -14,10 +14,16 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
   return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
 });
+// The real audit, so a test can make the one after a land throw.
+vi.mock('./audit.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./audit.service.js')>();
+  return { ...actual, auditProject: vi.fn(actual.auditProject) };
+});
 
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
+import { auditProject } from './audit.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
@@ -202,6 +208,80 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(getProject(db, pid)?.baseline).toBeNull();
   }
 
+  // Decision 88: `pup land` waits for a merge lock a live run holds rather
+  // than hand the retry to the operator.
+  it('waits, when asked, for a merge lock a live run holds, then lands', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setTimeout(() => rmSync(lock, { recursive: true }), 200);
+
+    try {
+      const outcome = await landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        wait: true,
+      });
+
+      expect(outcome).toMatchObject({ targetSha: merge, fastForwarded: true });
+      expect(errors.mock.calls.flat()).toContainEqual(
+        expect.stringMatching(/^Waiting for the merge lock, held by pid \d+, for up to /),
+      );
+      expect(existsSync(lock)).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  // The first's `landed` event is written under the lock the second then
+  // takes: the second must not land, audit and steer again (decision 88).
+  it('refuses a second land that waited on the first, under the lock', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    // Both wait on a third run's lock, so both pass the checks before it.
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+    setTimeout(() => rmSync(lock, { recursive: true }), 200);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const landWaiting = () =>
+      landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        wait: true,
+      });
+
+    try {
+      const [first, second] = await Promise.allSettled([landWaiting(), landWaiting()]);
+
+      expect(first.status).toBe('fulfilled');
+      expect(second).toMatchObject({
+        status: 'rejected',
+        reason: expect.objectContaining({ message: `Session ${SESSION_ID} has already landed.` }),
+      });
+      expect(landedEvents()).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it('fast-forwards main, removes the worktree and branch, audits and records the land', async () => {
     seedPrMerge();
     const merge = mergeOnGitHub();
@@ -375,6 +455,19 @@ describe('landSession', { timeout: 20_000 }, () => {
 
       await expect(landMerged()).rejects.toThrow('tmux interrupted');
       expect(landedEvents()).toHaveLength(1);
+    });
+
+    // Once the event is written a re-run refuses, so a steer left for after a
+    // failed audit would never be sent (decision 88).
+    it('steers before an audit that throws, which a re-run then refuses', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(auditProject).mockRejectedValueOnce(new GateInterruptedError('SIGINT'));
+
+      await expect(landMerged()).rejects.toThrow(GateInterruptedError);
+
+      expect(landedEvents()).toHaveLength(1);
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      await expect(land()).rejects.toThrow('has already landed');
     });
 
     it('steers a live session sharing a landed file once, and one sharing none not at all', async () => {
@@ -555,7 +648,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(existsSync(ghLog)).toBe(false);
   });
 
-  // The audit is the land's last step; with nothing to measure it must not start.
+  // The audit runs after the land; with nothing to measure the land must not start.
   it('refuses with no adapter, changing nothing', async () => {
     seedPrMerge();
     mergeOnGitHub();

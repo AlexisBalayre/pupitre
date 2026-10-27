@@ -5,12 +5,13 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { loadavg, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -34,10 +35,22 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
 
-// The real rmSync, wrapped so a test can make the gate checkout's removal fail.
+// The real rmSync, wrapped so a test can make the gate checkout's removal fail,
+// and the real writeFileSync, so one can fail the merge lock's pid write.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
+  };
+});
+
+// The real loadavg, wrapped so a gate asked to wait never waits on this
+// machine's load (decision 88).
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, loadavg: vi.fn(actual.loadavg) };
 });
 
 // Shortened by the one test that runs a stage out of its timeout.
@@ -85,6 +98,7 @@ vi.mock('./test-slot.service.js', async (importOriginal) => {
   };
 });
 
+import { formatDuration } from '../adapters/capability.utils.js';
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import {
@@ -101,7 +115,7 @@ import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
-import { runMergeGate as runGate, withMergeLock } from './merge-gate.service.js';
+import { runMergeGate as runGate, waitForLoad, withMergeLock } from './merge-gate.service.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
@@ -118,7 +132,7 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
-import { HELD_SLOT_ENV, withTestSlot } from './test-slot.service.js';
+import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV, withTestSlot } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
@@ -2013,9 +2027,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         writeFileSync(gitfile, trusted);
       });
 
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+
       // Merged under the pins; only the teardown, which validates the gitfile
-      // itself, refuses the swapped one, and loudly.
-      await expect(merge()).rejects.toThrow(/worktree remove/);
+      // itself, refuses the swapped one, and loudly: the worktree is kept and
+      // git's refusal printed (decision 88).
+      const outcome = await merge();
+      expect(outcome).toMatchObject({ status: 'merged', keptWorktree: worktree });
+      expect(errors.mock.calls.flat().join('\n')).toContain(
+        `git worktree remove refused ${worktree}:`,
+      );
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
       expect(checks).toBeGreaterThanOrEqual(2);
       expect(existsSync(marker)).toBe(false);
@@ -2452,6 +2474,198 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     await expect(merge()).rejects.toThrow(MergeLockHeldError);
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  describe('a merge lock that records its holder (decision 88)', () => {
+    const lock = () => join(repo, '.git', 'pup-merge.lock');
+    const holdLock = (pid: string) => {
+      mkdirSync(lock());
+      writeFileSync(join(lock(), 'pid'), pid);
+    };
+    /** A pid that was alive a moment ago and is not now. */
+    const deadPid = () => execFileSync('sh', ['-c', 'echo $$'], { encoding: 'utf8' }).trim();
+
+    it('reclaims a lock whose holder died and merges, leaving no lock', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      holdLock(`${deadPid()}\n`);
+
+      expect((await merge()).status).toBe('merged');
+      expect(existsSync(lock())).toBe(false);
+      expect(readdirSync(join(repo, '.git')).filter((n) => n.startsWith('pup-merge'))).toEqual([]);
+    });
+
+    it.each([
+      ['held by a live pid', () => `${process.pid}\n`],
+      ['whose pid file is not a pid', () => 'not a pid\n'],
+      ['whose pid file is empty', () => ''],
+    ])('refuses a lock %s, leaving it as it was', async (_, pid) => {
+      seedSession(db, repo);
+      holdLock(pid());
+
+      await expect(merge()).rejects.toThrow(MergeLockHeldError);
+      expect(readFileSync(join(lock(), 'pid'), 'utf8')).toBe(pid());
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    // Removing a lock a live run holds would let two merges run at once.
+    it('tells the operator not to remove a lock a live pid holds', async () => {
+      seedSession(db, repo);
+      holdLock(`${process.pid}\n`);
+
+      await expect(merge()).rejects.toThrow(
+        `Another merge is in progress: pid ${process.pid} holds the lock at ${lock()}. Do not ` +
+          'remove it; retry once that run ends.',
+      );
+    });
+
+    it('waits, when asked, for a live holder to release it, then merges', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      holdLock(`${process.pid}\n`);
+      const realLoad = vi.mocked(loadavg).getMockImplementation();
+      vi.mocked(loadavg).mockImplementation(() => [0, 0, 0]);
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => {
+        errors.mockRestore();
+        vi.mocked(loadavg).mockImplementation(realLoad as never);
+      });
+      setTimeout(() => rmSync(lock(), { recursive: true }), 200);
+
+      const outcome = await runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        wait: true,
+      });
+
+      expect(outcome.status).toBe('merged');
+      const waits = errors.mock.calls.flat().filter((line) => String(line).includes('merge lock'));
+      expect(waits).toEqual([
+        expect.stringMatching(
+          new RegExp(`^Waiting for the merge lock, held by pid ${process.pid}, for up to `),
+        ),
+      ]);
+    });
+
+    // What the run before the wait read is stale once the holder has run: the
+    // gate plans again under the lock, as a run started then would.
+    describe('plans again once a wait ends', () => {
+      /** A merge asked to wait, with the holder's run `meanwhile` done as it releases the lock. */
+      const mergeAfter = (meanwhile: () => void) => {
+        holdLock(`${process.pid}\n`);
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        onTestFinished(() => errors.mockRestore());
+        setTimeout(() => {
+          meanwhile();
+          rmSync(lock(), { recursive: true });
+        }, 200);
+        return runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          wait: true,
+        });
+      };
+
+      it('refuses a session the holder rejected and re-steered, leaving main where it was', async () => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+        await expect(
+          mergeAfter(() => {
+            transitionSession(db, SESSION_ID, 'rejected');
+            transitionSession(db, SESSION_ID, 'running');
+          }),
+        ).rejects.toThrow(SessionNotReviewableError);
+
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+        expect(getSession(db, SESSION_ID)?.state).toBe('running');
+        expect(getSession(db, SESSION_ID)?.reject_count).toBe(0);
+        expect(listEvents(db, SESSION_ID).filter((event) => event.type === 'merge')).toEqual([]);
+      });
+
+      // No wait at all: the holder released while this run read GitHub, or
+      // died and was reclaimed, after changing the session.
+      it('plans again when the session changed between the plan and the take', async () => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        // The pid write is the take's, after the plan read the session.
+        const pidFile = join(repo, '.git', 'pup-merge.lock', 'pid');
+        const real = vi.mocked(writeFileSync).getMockImplementation();
+        let rejected = false;
+        vi.mocked(writeFileSync).mockImplementation(((
+          ...args: Parameters<typeof writeFileSync>
+        ) => {
+          if (!rejected && args[0] === pidFile) {
+            rejected = true;
+            transitionSession(db, SESSION_ID, 'rejected');
+            transitionSession(db, SESSION_ID, 'running');
+          }
+          return real?.(...args);
+        }) as never);
+        onTestFinished(() => {
+          vi.mocked(writeFileSync).mockImplementation(real as never);
+        });
+
+        await expect(merge()).rejects.toThrow(SessionNotReviewableError);
+        expect(rejected).toBe(true);
+        expect(listEvents(db, SESSION_ID).filter((event) => event.type === 'merge')).toEqual([]);
+      });
+
+      // The plan's own gh calls, before it has settled anything: the mark
+      // must predate them, or the change is in the plan's mark too.
+      it('plans again when the session changed while the plan read GitHub', async () => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        seedDebtBaseline({});
+        addOrigin();
+        const real = vi.mocked(execFileSync).getMockImplementation();
+        let rejected = false;
+        vi.mocked(execFileSync).mockImplementation(((
+          file: string,
+          args: string[],
+          opts: object,
+        ) => {
+          const output = real?.(file, args, opts as never);
+          if (!rejected && file === 'gh' && args[1] === 'list') {
+            rejected = true;
+            transitionSession(db, SESSION_ID, 'rejected');
+            transitionSession(db, SESSION_ID, 'running');
+          }
+          return output;
+        }) as never);
+        onTestFinished(() => {
+          vi.mocked(execFileSync).mockImplementation(real as never);
+        });
+
+        await expect(
+          withFakeGh(fakeGh([]), () =>
+            runMergeGate(db, {
+              repoPath: repo,
+              sessionId: SESSION_ID,
+              adapters: [passingAdapter],
+              openPr: true,
+            }),
+          ),
+        ).rejects.toThrow(SessionNotReviewableError);
+        expect(rejected).toBe(true);
+        expect(ghCalls().some((call) => call.includes('pr create'))).toBe(false);
+        expect(listEvents(db, SESSION_ID).filter((event) => event.type === 'merge')).toEqual([]);
+      });
+
+      it('refuses a session the holder merged, recording no second merge', async () => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+        await expect(mergeAfter(() => transitionSession(db, SESSION_ID, 'merged'))).rejects.toThrow(
+          SessionNotReviewableError,
+        );
+
+        expect(listEvents(db, SESSION_ID).filter((event) => event.type === 'merge')).toEqual([]);
+      });
+    });
   });
 
   it('throws for a session that is not awaiting review', async () => {
@@ -3028,6 +3242,45 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       duplicatedLines: 5,
       duplicationRule: DUPLICATION_RULE_ID,
     });
+  });
+
+  // Decision 88: the merge has landed by the teardown, so a worktree git will
+  // not remove is kept and named rather than thrown past the ratchet.
+  it('still ratchets when the post-merge worktree remove fails, and names the kept worktree', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 9 });
+    const adapter = debtAdapter({
+      deadCode: () => [],
+      duplication: () => ({ duplicatedLines: 5, blocks: [] }),
+    });
+    const real = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+      if (file === 'git' && args.includes('worktree') && args.includes('remove')) {
+        throw Object.assign(new Error('git worktree remove failed'), {
+          stderr: 'fatal: cannot remove a locked working tree',
+        });
+      }
+      return real?.(file, args, opts as never);
+    }) as never);
+    onTestFinished(() => {
+      vi.mocked(execFileSync).mockImplementation(real as never);
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+
+    const outcome = await merge(adapter);
+
+    expect(outcome).toMatchObject({ status: 'merged', keptWorktree: worktree });
+    const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.duplicatedLines).toBe(5);
+    expect(existsSync(worktree)).toBe(true);
+    // The branch stays with the worktree that has it checked out.
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).not.toBe('');
+    expect(errors.mock.calls.flat().join('\n')).toContain(
+      `git worktree remove refused ${worktree}: fatal: cannot remove a locked working tree`,
+    );
+    expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(true);
   });
 
   it('passes a fully covered patch and ratchets the stored coverage ratio', async () => {
@@ -4676,25 +4929,356 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 });
 
 describe('withMergeLock', () => {
-  it('keeps node listening for SIGINT and SIGTERM while the lock is held, and only then', async () => {
+  const lockedRepo = () => {
     const repo = tempDir('pup-lock-');
     mkdirSync(join(repo, '.git'));
-    const before = { int: process.listeners('SIGINT'), term: process.listeners('SIGTERM') };
-    let during: { int: number; term: number } | undefined;
+    return repo;
+  };
+
+  // SIGHUP too: closing the terminal sends it, and node's default would die
+  // mid-lock and strand it (decision 88).
+  it('keeps node listening for SIGINT, SIGTERM and SIGHUP while the lock is held, and only then', async () => {
+    const repo = lockedRepo();
+    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+    const before = signals.map((signal) => process.listeners(signal));
+    let during: number[] | undefined;
 
     await expect(
       withMergeLock(repo, () => {
-        during = {
-          int: process.listeners('SIGINT').length,
-          term: process.listeners('SIGTERM').length,
-        };
+        during = signals.map((signal) => process.listeners(signal).length);
         throw new Error('interrupted');
       }),
     ).rejects.toThrow('interrupted');
 
-    expect(during).toEqual({ int: before.int.length + 1, term: before.term.length + 1 });
-    expect(process.listeners('SIGINT')).toEqual(before.int);
-    expect(process.listeners('SIGTERM')).toEqual(before.term);
+    expect(during).toEqual(before.map((listeners) => listeners.length + 1));
+    expect(signals.map((signal) => process.listeners(signal))).toEqual(before);
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+  });
+
+  it('records its pid in the lock while held', async () => {
+    const repo = lockedRepo();
+
+    const pid = await withMergeLock(repo, () =>
+      readFileSync(join(repo, '.git', 'pup-merge.lock', 'pid'), 'utf8'),
+    );
+
+    expect(pid).toBe(`${process.pid}\n`);
+  });
+
+  /** A pid that was alive a moment ago and is not now. */
+  const deadPid = () => execFileSync('sh', ['-c', 'echo $$'], { encoding: 'utf8' }).trim();
+
+  it('refuses a lock path that is a link, without reading or reclaiming what it points at', async () => {
+    const repo = lockedRepo();
+    const elsewhere = tempDir('pup-lock-elsewhere-');
+    writeFileSync(join(elsewhere, 'pid'), `${deadPid()}\n`);
+    symlinkSync(elsewhere, join(repo, '.git', 'pup-merge.lock'));
+    const fn = vi.fn();
+
+    await expect(withMergeLock(repo, fn)).rejects.toThrow(MergeLockHeldError);
+    expect(fn).not.toHaveBeenCalled();
+    expect(existsSync(join(elsewhere, 'pid'))).toBe(true);
+  });
+
+  // A run killed mid-reclaim strands the reclaim lock; a fresh one is another
+  // run reclaiming right now.
+  it.each([
+    ['replaces a stranded reclaim lock and reclaims', 60_000, true],
+    ['replaces a reclaim lock dated in the future and reclaims', -60_000, true],
+    ['leaves a fresh reclaim lock to the run holding it', 0, false],
+  ])('%s', async (_, ageMs, reclaims) => {
+    const repo = lockedRepo();
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${deadPid()}\n`);
+    const reclaiming = `${lock}.reclaim`;
+    mkdirSync(reclaiming);
+    const then = new Date(Date.now() - ageMs);
+    utimesSync(reclaiming, then, then);
+    const fn = vi.fn(() => 'ran');
+
+    const locked = withMergeLock(repo, fn);
+
+    if (reclaims) {
+      await expect(locked).resolves.toBe('ran');
+      expect(readdirSync(join(repo, '.git'))).toEqual([]);
+    } else {
+      // Not the live holder's "do not remove it, retry once that run ends".
+      await expect(locked).rejects.toThrow(
+        /, is gone, and another run is reclaiming it \(.+\.reclaim\)\. Do not remove either/,
+      );
+      expect(existsSync(reclaiming)).toBe(true);
+    }
+  });
+
+  it('treats a stale reclaim lock it cannot remove as held', async () => {
+    const repo = lockedRepo();
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${deadPid()}\n`);
+    const reclaiming = `${lock}.reclaim`;
+    mkdirSync(reclaiming);
+    writeFileSync(join(reclaiming, 'planted'), 'x');
+    const then = new Date(Date.now() - 60_000);
+    utimesSync(reclaiming, then, then);
+    const fn = vi.fn();
+
+    await expect(withMergeLock(repo, fn)).rejects.toThrow(MergeLockHeldError);
+    expect(fn).not.toHaveBeenCalled();
+    expect(readdirSync(reclaiming)).toEqual(['planted']);
+    expect(existsSync(join(lock, 'pid'))).toBe(true);
+  });
+
+  // A lock with no pid refuses every later run, so a take that cannot record
+  // its pid is undone.
+  it('undoes a take whose pid cannot be written, leaving no lock', async () => {
+    const repo = lockedRepo();
+    const pidFile = join(repo, '.git', 'pup-merge.lock', 'pid');
+    const real = vi.mocked(writeFileSync).getMockImplementation();
+    vi.mocked(writeFileSync).mockImplementation(((...args: Parameters<typeof writeFileSync>) => {
+      if (args[0] === pidFile) throw new Error('disk full');
+      return real?.(...args);
+    }) as never);
+    onTestFinished(() => {
+      vi.mocked(writeFileSync).mockImplementation(real as never);
+    });
+    const fn = vi.fn();
+
+    await expect(withMergeLock(repo, fn)).rejects.toThrow('disk full');
+    expect(fn).not.toHaveBeenCalled();
+    expect(readdirSync(join(repo, '.git'))).toEqual([]);
+  });
+
+  // A session that can write `.git` can swap the lock directory for a link to
+  // another (another project's lock, say): nothing is then removed through it.
+  describe('a lock directory swapped for a link (decision 88)', () => {
+    let repo: string;
+    let lock: string;
+    /** Another lock's directory, whose pid a removal through the link would delete. */
+    let elsewhere: string;
+    let errors: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      repo = lockedRepo();
+      lock = join(repo, '.git', 'pup-merge.lock');
+      elsewhere = tempDir('pup-lock-elsewhere-');
+      writeFileSync(join(elsewhere, 'pid'), '123\n');
+      errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => errors.mockRestore());
+    const swap = () => {
+      renameSync(lock, `${lock}.moved`);
+      symlinkSync(elsewhere, lock);
+    };
+    /**
+     * The lock swapped right before its pid write, which then fails, or lands
+     * in the link's target as it would in a directory with no pid yet.
+     */
+    const aroundPidWrite = (then: 'write' | 'throw') => {
+      const real = vi.mocked(writeFileSync).getMockImplementation();
+      vi.mocked(writeFileSync).mockImplementation(((...args: Parameters<typeof writeFileSync>) => {
+        if (args[0] !== join(lock, 'pid')) return real?.(...args);
+        swap();
+        if (then === 'throw') throw new Error('disk full');
+        return real?.(join(elsewhere, 'fresh-pid'), args[1], args[2]);
+      }) as never);
+      onTestFinished(() => {
+        vi.mocked(writeFileSync).mockImplementation(real as never);
+      });
+    };
+
+    it('leaves the link and what it points at on release, and names it', async () => {
+      await withMergeLock(repo, swap);
+
+      expect(readFileSync(join(elsewhere, 'pid'), 'utf8')).toBe('123\n');
+      expect(errors.mock.calls.flat().join('\n')).toMatch(
+        /pup-merge\.lock\.released-[0-9a-f]{16} is no longer the lock directory pup made/,
+      );
+    });
+
+    it('takes nothing when the swap lands between the mkdir and the pid write', async () => {
+      aroundPidWrite('write');
+      const fn = vi.fn();
+
+      await expect(withMergeLock(repo, fn)).rejects.toThrow(MergeLockHeldError);
+      expect(fn).not.toHaveBeenCalled();
+      expect(readFileSync(join(elsewhere, 'pid'), 'utf8')).toBe('123\n');
+      expect(errors.mock.calls.flat().join('\n')).toContain(
+        `${lock} was replaced while pup took it`,
+      );
+    });
+
+    it('undoes nothing through the link when the pid write fails after the swap', async () => {
+      aroundPidWrite('throw');
+
+      await expect(withMergeLock(repo, vi.fn())).rejects.toThrow('disk full');
+      expect(readFileSync(join(elsewhere, 'pid'), 'utf8')).toBe('123\n');
+      expect(errors.mock.calls.flat().join('\n')).toContain(
+        `${lock} is no longer the lock directory pup made`,
+      );
+    });
+  });
+
+  // The lock sits in a `.git` the session can write: only the pid pup wrote
+  // goes with it.
+  it('removes only its pid on release, leaving and naming anything else put there', async () => {
+    const repo = lockedRepo();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+
+    await withMergeLock(repo, () =>
+      writeFileSync(join(repo, '.git', 'pup-merge.lock', 'planted'), 'x'),
+    );
+
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    const [aside] = readdirSync(join(repo, '.git'));
+    expect(aside).toMatch(/^pup-merge\.lock\.released-[0-9a-f]{16}$/);
+    expect(readdirSync(join(repo, '.git', aside as string))).toEqual(['planted']);
+    expect(errors.mock.calls.flat().join('\n')).toContain(
+      `Could not remove ${join(repo, '.git', aside as string)}:`,
+    );
+  });
+
+  describe('waiting for a live holder (decision 88)', () => {
+    let repo: string;
+    let errors: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      vi.useFakeTimers();
+      repo = lockedRepo();
+      mkdirSync(join(repo, '.git', 'pup-merge.lock'));
+      writeFileSync(join(repo, '.git', 'pup-merge.lock', 'pid'), `${process.pid}\n`);
+      errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      errors.mockRestore();
+    });
+
+    it('takes the lock once it is released, saying once that it waits', async () => {
+      const fn = vi.fn(() => 'ran');
+      const locked = withMergeLock(repo, fn, 60_000);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fn).not.toHaveBeenCalled();
+      rmSync(join(repo, '.git', 'pup-merge.lock'), { recursive: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(locked).resolves.toBe('ran');
+      expect(errors.mock.calls).toEqual([
+        [`Waiting for the merge lock, held by pid ${process.pid}, for up to 60.0s.`],
+      ]);
+      expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    });
+
+    // A taker writes its pid in the tick of its mkdir: a lock found without one
+    // is looked at again briefly before it is refused as one with no holder.
+    it('waits for a pid the taker has not written yet', async () => {
+      rmSync(join(repo, '.git', 'pup-merge.lock', 'pid'));
+      const fn = vi.fn(() => 'ran');
+      const locked = withMergeLock(repo, fn, 60_000);
+
+      await vi.advanceTimersByTimeAsync(100);
+      writeFileSync(join(repo, '.git', 'pup-merge.lock', 'pid'), `${process.pid}\n`);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fn).not.toHaveBeenCalled();
+      rmSync(join(repo, '.git', 'pup-merge.lock'), { recursive: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(locked).resolves.toBe('ran');
+    });
+
+    it('refuses a lock that still has no pid after a second, though the wait is longer', async () => {
+      rmSync(join(repo, '.git', 'pup-merge.lock', 'pid'));
+      const fn = vi.fn();
+      const locked = withMergeLock(repo, fn, 60_000);
+      const refused = expect(locked).rejects.toThrow(MergeLockHeldError);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await refused;
+      expect(fn).not.toHaveBeenCalled();
+      expect(errors).not.toHaveBeenCalled();
+    });
+
+    it('refuses once the wait runs out, leaving the holder its lock', async () => {
+      const fn = vi.fn();
+      const locked = withMergeLock(repo, fn, 60_000);
+      const refused = expect(locked).rejects.toThrow(MergeLockHeldError);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await refused;
+      expect(fn).not.toHaveBeenCalled();
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(repo, '.git', 'pup-merge.lock', 'pid'), 'utf8')).toBe(
+        `${process.pid}\n`,
+      );
+    });
+  });
+});
+
+describe('waitForLoad (decision 88)', () => {
+  let errors: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    errors.mockRestore();
+  });
+
+  it('returns at once, saying nothing, under the ceiling', async () => {
+    await waitForLoad(() => 3.9, 4);
+
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it('waits for the load to fall under the ceiling, saying so in one line', async () => {
+    const loads = [6, 5, 4, 2];
+    const readLoad = vi.fn(() => loads.shift() ?? 0);
+    let done = false;
+    const waited = waitForLoad(readLoad, 4).then(() => {
+      done = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await waited;
+    expect(readLoad).toHaveBeenCalledTimes(4);
+    expect(errors.mock.calls).toEqual([
+      [
+        'The 1-minute load average is 6.0, not under 4; the gate waits up to ' +
+          `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
+      ],
+    ]);
+  });
+
+  // The lock keeps node alive through the signal, so the wait has to end on
+  // it itself, as a stage child's forwarded interrupt would.
+  it('ends on an interrupt with GateInterruptedError, and stops listening', async () => {
+    const before = process.listeners('SIGHUP');
+    const waited = waitForLoad(() => 9, 4);
+    const interrupted = expect(waited).rejects.toThrow(GateInterruptedError);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    process.emit('SIGHUP', 'SIGHUP');
+
+    await interrupted;
+    expect(process.listeners('SIGHUP')).toEqual(before);
+  });
+
+  it('runs the tests anyway once the wait runs out, with a one-line note', async () => {
+    const waited = waitForLoad(() => 9, 4);
+
+    await vi.advanceTimersByTimeAsync(GATE_SLOT_WAIT_MS);
+
+    await waited;
+    expect(errors).toHaveBeenCalledTimes(2);
+    expect(errors.mock.calls[1]).toEqual([
+      `The load average is still 9.0 after ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate ` +
+        'runs its tests anyway.',
+    ]);
   });
 });

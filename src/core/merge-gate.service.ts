@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -6,16 +7,20 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmdirSync,
+  rmSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, loadavg, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
   formatDuration,
   localContext,
+  readPlainFile,
   sanitizeReason,
 } from '../adapters/capability.utils.js';
 import type {
@@ -119,9 +124,6 @@ import type {
   MergeRequest,
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
-
-// land.service.ts still imports COMMIT_SHA from here; a later task switches that import and drops this line.
-export { COMMIT_SHA } from './merge-gate.constants.js';
 
 export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
@@ -236,41 +238,305 @@ export function countChangedLines(
   return { ...counts, forged };
 }
 
+/** Inside the merge lock's directory: the holder's pid, which a later run reads (decision 88). */
+const MERGE_LOCK_PID_FILE = 'pid';
+
+const MERGE_LOCK_POLL_MS = 1000;
+
+/**
+ * How long a lock with no pid is looked at again before it is refused. A taker
+ * writes its pid in the same tick as its `mkdir`, so a lock still without one
+ * after this never gets one (decision 88).
+ */
+const MERGE_LOCK_PID_GRACE_MS = 1000;
+
+const MERGE_LOCK_PID_POLL_MS = 100;
+
+/** A reclaim is a few syscalls: a reclaim lock older than this was stranded mid-way. */
+const RECLAIM_STALE_MS = 10_000;
+
+/** What node outlives while it holds the merge lock: the interrupts `runGateChild` forwards. */
+const LOCK_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+
+const LOAD_POLL_MS = 5000;
+
+/**
+ * The longest `pup merge` and `pup land` wait for a merge lock a live process
+ * holds before refusing (decision 88): what a gate with one suite can hold it
+ * for, its build, its test run and that run's one re-run each bounded by a
+ * stage's timeout, plus its slot wait and its load wait. Each nested package's
+ * suite adds a stage of its own, so a gate over a repo with them can outlast
+ * this, and the waiter then refuses rather than wait on.
+ */
+export const MERGE_LOCK_WAIT_MS = 3 * GATE_COMMAND_TIMEOUT_MS + 2 * GATE_SLOT_WAIT_MS;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Whether `pid` is a live process. EPERM is one another user runs, alive all
+ * the same: a lock it holds is not stale, and reclaiming it would let two
+ * merges run at once.
+ */
+function isLiveProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * The pid a held merge lock records; undefined when there is none to read: a
+ * lock an earlier pup took, one made by hand, a lock path that is not a real
+ * directory, or a pid file that is not a regular file holding a positive whole
+ * number. A fifo is never opened to block on, nor a link followed.
+ */
+function mergeLockHolder(lockPath: string): number | undefined {
+  if (!lstatSync(lockPath, { throwIfNoEntry: false })?.isDirectory()) return undefined;
+  let text: string;
+  try {
+    text = readPlainFile(join(lockPath, MERGE_LOCK_PID_FILE), { followLinks: false });
+  } catch {
+    return undefined;
+  }
+  if (!/^[1-9]\d*\n?$/.test(text)) return undefined;
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) ? pid : undefined;
+}
+
+/** Which directory a lock is, so a later step can tell it from one swapped in for it. */
+interface LockIdentity {
+  dev: number;
+  ino: number;
+}
+
+/** `path`'s identity when it is a real directory, never a link to one; undefined otherwise. */
+function directoryIdentity(path: string): LockIdentity | undefined {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  return stat?.isDirectory() ? { dev: stat.dev, ino: stat.ino } : undefined;
+}
+
+/**
+ * Remove a lock directory and the pid in it, and nothing else: it sits in the
+ * `.git` a session can write, so anything else found there is left and named
+ * rather than removed with it, and so is a directory that is no longer
+ * `identity`, a link or another directory a session swapped in, whose pid
+ * could be another lock's (decision 88).
+ */
+function removeLockDir(dir: string, identity: LockIdentity): void {
+  const now = directoryIdentity(dir);
+  if (now?.dev !== identity.dev || now.ino !== identity.ino) {
+    console.error(
+      `${dir} is no longer the lock directory pup made, so it was left as it is. Treat a ` +
+        'session that replaced it as compromised.',
+    );
+    return;
+  }
+  try {
+    rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
+    rmdirSync(dir);
+  } catch (error) {
+    console.error(
+      `Could not remove ${dir}: ${failureSummary(error)}. No run reads it; remove it from the ` +
+        'trusted checkout.',
+    );
+  }
+}
+
+/**
+ * Move the lock directory aside under a fresh name, then remove it there, so
+ * no reader ever finds the lock without its pid. A removal that fails leaves
+ * only the aside directory, which no reader looks at.
+ */
+function dropMergeLock(
+  lockPath: string,
+  why: 'released' | 'reclaimed',
+  identity: LockIdentity,
+): void {
+  const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
+  renameSync(lockPath, aside);
+  removeLockDir(aside, identity);
+}
+
+/** Make `dir`; false when it already exists or cannot be made. */
+function makeDir(dir: string): boolean {
+  try {
+    mkdirSync(dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove a lock whose holder `dead` died without releasing it: a SIGKILL, a
+ * crash, a power cut. Under a second lock of its own, so two runs that both
+ * read the dead pid cannot both reclaim, the second removing the lock the
+ * first took in between; under it the pid is read again. A reclaim lock older
+ * than `RECLAIM_STALE_MS`, or dated in the future, was stranded by a run
+ * killed mid-reclaim or planted, and is replaced. Answers false when another run is reclaiming, and the caller
+ * treats the lock as held; a lock that cannot be moved aside throws.
+ */
+function reclaimMergeLock(lockPath: string, dead: number): boolean {
+  const reclaiming = `${lockPath}.reclaim`;
+  if (!makeDir(reclaiming)) {
+    const stat = lstatSync(reclaiming, { throwIfNoEntry: false });
+    const age = stat ? Date.now() - stat.mtimeMs : 0;
+    if (!stat?.isDirectory() || (age >= 0 && age < RECLAIM_STALE_MS)) return false;
+    try {
+      rmdirSync(reclaiming);
+    } catch {
+      return false;
+    }
+    if (!makeDir(reclaiming)) return false;
+  }
+  try {
+    const identity = directoryIdentity(lockPath);
+    if (identity && mergeLockHolder(lockPath) === dead) {
+      dropMergeLock(lockPath, 'reclaimed', identity);
+    }
+    return true;
+  } finally {
+    try {
+      rmdirSync(reclaiming);
+    } catch {
+      // Left for the next reclaim, which replaces it once it is stale.
+    }
+  }
+}
+
+/**
+ * Try the merge lock once: a directory, which only one `mkdir` can make,
+ * holding the taker's pid. Answers the directory's identity once it is taken,
+ * the pid holding it, or null for a lock with no pid to read; a lock whose pid
+ * is dead is reclaimed and tried again, and a dead pid is answered only while
+ * another run is reclaiming it (decision 88).
+ */
+function tryMergeLock(lockPath: string): LockIdentity | number | null {
+  for (;;) {
+    let failed: string | undefined;
+    try {
+      mkdirSync(lockPath);
+    } catch (error) {
+      failed = (error as NodeJS.ErrnoException).code ?? 'unknown';
+    }
+    if (failed === undefined) {
+      // Made by this `mkdir`, but the path is in a `.git` a session can write:
+      // every later step checks it is still this directory.
+      const identity = directoryIdentity(lockPath);
+      if (!identity) return null;
+      try {
+        writeFileSync(join(lockPath, MERGE_LOCK_PID_FILE), `${process.pid}\n`, { flag: 'wx' });
+      } catch (error) {
+        // Taken but not recorded: undone, since a lock with no pid refuses every later run.
+        removeLockDir(lockPath, identity);
+        throw error;
+      }
+      const now = directoryIdentity(lockPath);
+      if (now?.dev === identity.dev && now.ino === identity.ino) return identity;
+      console.error(
+        `${lockPath} was replaced while pup took it, so its pid may have been written through ` +
+          'what replaced it; nothing was taken. Treat a session that replaced it as compromised.',
+      );
+      return null;
+    }
+    if (failed !== 'EEXIST') throw new MergeLockHeldError(lockPath);
+    const holder = mergeLockHolder(lockPath);
+    if (holder === undefined) {
+      // Released between the mkdir and the read.
+      if (!lstatSync(lockPath, { throwIfNoEntry: false })) continue;
+      return null;
+    }
+    if (isLiveProcess(holder) || !reclaimMergeLock(lockPath, holder)) return holder;
+  }
+}
+
+/**
+ * The refusal for a lock with a pid, which must not tell the operator to
+ * remove it: held by a live run, or by a dead one another run is reclaiming.
+ */
+function heldBy(lockPath: string, holder: number): MergeLockHeldError {
+  const error = new MergeLockHeldError(lockPath);
+  error.message = isLiveProcess(holder)
+    ? `Another merge is in progress: pid ${holder} holds the lock at ${lockPath}. Do not ` +
+      'remove it; retry once that run ends.'
+    : `pid ${holder}, which held the lock at ${lockPath}, is gone, and another run is ` +
+      `reclaiming it (${lockPath}.reclaim). Do not remove either; retry in a moment.`;
+  return error;
+}
+
 /**
  * Run `fn` holding the merge lock, with node kept alive through a signal while
- * it does. A terminal Ctrl-C reaches node and a child git alike: with no
- * listener node's default disposition dies mid-call and the `finally` never
- * removes the lock; with one, only the child dies, its failure unwinds the
- * stack and the lock goes. A gate stage's child is in a process group of its
- * own, out of the terminal's reach: `runGateChild` forwards the signal to it
- * and rejects once it has exited, which unwinds the same way (decision 95). A
- * signal that arrives while neither runs, during pup's own synchronous work,
- * is discarded by this listener, and the locked section runs on. Outside the
- * lock node's default applies again.
+ * it does. A terminal Ctrl-C reaches node and a child git alike, and closing
+ * the terminal sends both a SIGHUP: with no listener node's default
+ * disposition dies mid-call and the `finally` never removes the lock; with
+ * one, only the child dies, its failure unwinds the stack and the lock goes. A
+ * gate stage's child is in a process group of its own, out of the terminal's
+ * reach: `runGateChild` forwards the signal to it and rejects once it has
+ * exited, which unwinds the same way (decision 95). A signal that arrives while
+ * neither runs, during pup's own synchronous work, is discarded by this
+ * listener, and the locked section runs on. Outside the lock node's default
+ * applies again. A lock a SIGKILL or a crash strands is reclaimed by the next
+ * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
+ * line when the wait starts, and by default not at all (decision 88). `fn` is
+ * told whether the take waited: anything read before the wait may have changed
+ * under the run that held the lock meanwhile.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
-  fn: () => TResult | Promise<TResult>,
+  fn: (waited: boolean) => TResult | Promise<TResult>,
+  maxWaitMs = 0,
 ): Promise<TResult> {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
-  try {
-    mkdirSync(lockPath);
-  } catch {
-    throw new MergeLockHeldError(lockPath);
+  const deadline = Date.now() + maxWaitMs;
+  let waited = false;
+  let announced = false;
+  /** When the lock was first found with no pid to read. */
+  let pidless: number | undefined;
+  // Waited for with node's default disposition, so a Ctrl-C ends the wait;
+  // the listeners go on in the same tick as the take, leaving no turn of the
+  // event loop between them.
+  let identity: LockIdentity | undefined;
+  for (;;) {
+    const holder = tryMergeLock(lockPath);
+    if (holder !== null && typeof holder === 'object') {
+      identity = holder;
+      break;
+    }
+    const now = Date.now();
+    const left = deadline - now;
+    if (holder === null) {
+      pidless ??= now;
+      if (left <= 0 || now - pidless >= MERGE_LOCK_PID_GRACE_MS) {
+        throw new MergeLockHeldError(lockPath);
+      }
+      waited = true;
+      await sleep(Math.min(MERGE_LOCK_PID_POLL_MS, left));
+      continue;
+    }
+    pidless = undefined;
+    if (left <= 0) throw heldBy(lockPath, holder);
+    if (!announced) {
+      announced = true;
+      console.error(
+        `Waiting for the merge lock, held by pid ${holder}, for up to ${formatDuration(left)}.`,
+      );
+    }
+    waited = true;
+    await sleep(Math.min(MERGE_LOCK_POLL_MS, left));
   }
   const stayAlive = (): void => undefined;
-  process.on('SIGINT', stayAlive);
-  process.on('SIGTERM', stayAlive);
+  for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
   try {
-    return await fn();
+    return await fn(waited);
   } finally {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
-      rmdirSync(lockPath);
+      dropMergeLock(lockPath, 'released', identity);
     } finally {
-      process.off('SIGINT', stayAlive);
-      process.off('SIGTERM', stayAlive);
+      for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }
   }
 }
@@ -317,6 +583,69 @@ function formatGateReport(report: GateReport): string {
  * again on that head with `--pr` (decision 86).
  */
 export async function runMergeGate(db: Database, req: MergeRequest): Promise<MergeOutcome> {
+  const planned = planMerge(db, req);
+  // The operator's and the conductor's runs wait for a live holder (decision 88).
+  return withMergeLock(
+    req.repoPath,
+    async (waited) => {
+      // A run that held the lock before this one, a live one waited for or a
+      // dead one reclaimed or one released during the gh calls, may have
+      // merged, rejected or re-gated this session, or opened its fix round, and
+      // a driver may have been armed during a wait: planned again under the
+      // lock, as a run started now would be (decision 88).
+      const { session, sandbox, target, pullRequest, regate } =
+        waited || sessionMark(db, req.sessionId) !== planned.mark ? planMerge(db, req) : planned;
+      // Not under the project's state dir beside the conductor's checkout: the
+      // sandbox denies every gate child reads and writes under `~/.pupitre`,
+      // which holds the store (decision 36). `mkdtemp` is private and unguessable;
+      // resolved, because the sandbox matches resolved paths.
+      const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
+      try {
+        // Named after its root, so the admin dir `worktree add` names after it is
+        // this gate's alone: as `checkout` it took `checkout1` whenever the
+        // conductor's checkout held `checkout`, a name the pins cannot predict.
+        const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
+        return await (regate
+          ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
+          : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
+      } finally {
+        // Still under the lock, on a pass, a failed stage and a throw alike, and
+        // before this process goes on to anything else (decision 100).
+        endSandboxRun();
+        // Swallowed: a cleanup failure must not replace the gate's outcome or
+        // its error, and the registration goes with the next gate's prune once
+        // the directory is gone.
+        try {
+          dropGateCheckout(req.repoPath, checkoutRoot);
+        } catch {
+          // see above
+        }
+      }
+    },
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
+  );
+}
+
+/** What `planMerge` settled before the lock, for the run under it. */
+interface MergePlan {
+  session: SessionRow;
+  /** `sessionMark` before the plan read anything. */
+  mark: string;
+  sandbox: string;
+  target: string;
+  pullRequest?: PullRequestPlan;
+  regate?: RegatePlan;
+}
+
+/**
+ * Every refusal `runMergeGate` makes before it takes the lock, and what they
+ * settle: the session's state, the sandbox, the drivers, the target, and with
+ * `--pr` everything GitHub can refuse.
+ */
+function planMerge(db: Database, req: MergeRequest): MergePlan {
+  // First, so a change another run makes while the plan reads git and GitHub
+  // differs from it under the lock.
+  const mark = sessionMark(db, req.sessionId);
   const session = getSession(db, req.sessionId);
   if (!session) throw new Error(`No session ${req.sessionId}.`);
   const merged =
@@ -389,34 +718,20 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
     else pullRequest = { ...ref, originUrl, adoptedUrl: findOpenPullRequest(req.repoPath, ref) };
   }
-  return withMergeLock(req.repoPath, async () => {
-    // Not under the project's state dir beside the conductor's checkout: the
-    // sandbox denies every gate child reads and writes under `~/.pupitre`,
-    // which holds the store (decision 36). `mkdtemp` is private and unguessable;
-    // resolved, because the sandbox matches resolved paths.
-    const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
-    try {
-      // Named after its root, so the admin dir `worktree add` names after it is
-      // this gate's alone: as `checkout` it took `checkout1` whenever the
-      // conductor's checkout held `checkout`, a name the pins cannot predict.
-      const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
-      return await (regate
-        ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
-        : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
-    } finally {
-      // Still under the lock, on a pass, a failed stage and a throw alike, and
-      // before this process goes on to anything else (decision 100).
-      endSandboxRun();
-      // Swallowed: a cleanup failure must not replace the gate's outcome or
-      // its error, and the registration goes with the next gate's prune once
-      // the directory is gone.
-      try {
-        dropGateCheckout(req.repoPath, checkoutRoot);
-      } catch {
-        // see above
-      }
-    }
-  });
+  return { session, mark, sandbox, target, pullRequest, regate };
+}
+
+/**
+ * What another run's gate, fix round or land changes about a session: its
+ * state, its rejections and its newest event (decision 88).
+ */
+function sessionMark(db: Database, sessionId: string): string {
+  const session = getSession(db, sessionId);
+  return JSON.stringify([
+    session?.state,
+    session?.reject_count,
+    listEvents(db, sessionId).at(-1)?.id,
+  ]);
 }
 
 /**
@@ -1266,16 +1581,30 @@ async function gateAndMerge(
   // throw, and the draft runs `claude -p` for up to two minutes, while the
   // target already holds the sha and `pup status` already reads merged.
   let isDeleted = false;
+  let keptWorktree: string | undefined;
   try {
     // By pane as well as name: a rename from inside the session would leave
     // the name pointing at nothing while the window ran on (decision 46).
     killTmux(session.id, session.tmux_target);
-    runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    try {
+      runGit(req.repoPath, ['worktree', 'remove', '--force', worktree]);
+    } catch (error) {
+      // A worktree the session locked, which one `--force` refuses, a gitfile
+      // it rewrote, or an interrupt after the merge landed: kept and named in
+      // the outcome rather than skip the ratchet and the draft (decision 88),
+      // with git's own words, since only they tell a lock from a tampered
+      // pointer. Its branch stays with it, since `update-ref -d` would pull the
+      // checkout away.
+      keptWorktree = worktree;
+      console.error(
+        `git worktree remove refused ${sanitizeReason(worktree)}: ${failureSummary(error)}`,
+      );
+    }
     // Deleted only while it still names the gated commit, in both modes: a
     // commit the session added after the pin was never measured, so it is left
     // on the branch for the operator rather than merged or thrown away.
     try {
-      isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
+      if (keptWorktree === undefined) isDeleted = deleteBranchAt(req.repoPath, branchRef, sha);
     } catch {
       // Interrupted after the merge landed: keep the branch, which the
       // `finally` still checks for commits past the pin, rather than skip the
@@ -1323,6 +1652,7 @@ async function gateAndMerge(
     debtCandidates,
     decisionRecordId,
     ...(prUrl !== undefined ? { prUrl, prWasAdopted } : {}),
+    ...(keptWorktree !== undefined ? { keptWorktree } : {}),
   };
 }
 
@@ -1400,6 +1730,61 @@ function isRerunnable(error: unknown): boolean {
     code?: string;
   };
   return status === 1 && !signal && code === undefined;
+}
+
+/**
+ * Before the gate's tests, wait until the machine's 1-minute load average is
+ * under its available parallelism (decision 88): a suite started on a machine
+ * its workers already saturate runs into its stage timeout, and the gate fails
+ * on the machine rather than the branch. Bounded as the slot wait is, since it
+ * holds the merge lock, and once that runs out the tests run anyway. One line
+ * says the wait started and one that it ran out. An interrupt ends it as a
+ * stage child's would: no child runs to forward one to, and the lock keeps
+ * node alive through it. A platform with no load average reads zeros and never
+ * waits. `readLoad` and `ceiling` are the machine's unless a test passes its own.
+ */
+export async function waitForLoad(
+  readLoad: () => number = () => loadavg()[0] ?? 0,
+  ceiling = availableParallelism(),
+): Promise<void> {
+  let load = readLoad();
+  if (load < ceiling) return;
+  console.error(
+    `The 1-minute load average is ${load.toFixed(1)}, not under ${ceiling}; the gate waits up to ` +
+      `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
+  );
+  const deadline = Date.now() + GATE_SLOT_WAIT_MS;
+  let interrupted: (typeof LOCK_SIGNALS)[number] | undefined;
+  let wake: () => void = () => undefined;
+  const onSignal = (signal: (typeof LOCK_SIGNALS)[number]): void => {
+    interrupted = signal;
+    wake();
+  };
+  for (const signal of LOCK_SIGNALS) process.on(signal, onSignal);
+  try {
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        console.error(
+          `The load average is still ${load.toFixed(1)} after ` +
+            `${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its tests anyway.`,
+        );
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, Math.min(LOAD_POLL_MS, left));
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      if (interrupted) throw new GateInterruptedError(interrupted);
+      load = readLoad();
+      if (load < ceiling) return;
+    }
+  } finally {
+    for (const signal of LOCK_SIGNALS) process.off(signal, onSignal);
+  }
 }
 
 /**
@@ -1532,6 +1917,12 @@ export async function measureBranch(
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
   const test = commandFor('test');
+  const hasSuite =
+    test !== undefined ||
+    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
+  // Before the slot and before the stages that run alongside the suites, so
+  // the load measured is the machine's and not this gate's own children.
+  if (hasSuite && req.wait) await waitForLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;
@@ -1565,9 +1956,6 @@ export async function measureBranch(
   // All of them in one of the machine's test slots, which the gate is served
   // before any worker (decision 96); the wait is not the stage's time. No
   // suite to run takes no slot.
-  const hasSuite =
-    test !== undefined ||
-    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
   const suites = hasSuite
     ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
         onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
