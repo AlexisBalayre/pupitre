@@ -383,7 +383,7 @@ changes back into those docs is pending.
     semantics from 04-gates-and-debt: a flagged oversize diff refuses to merge unless
     `--accept-debt "<reason>" --review-by "<condition>"` is passed, which writes a ledger
     entry. Threshold is a tunable constant; lockfiles are excluded from the count.
-    *Amended by decision 107:* test files and `docs/` are left out of the count too, which now
+    *Amended by decision 110:* test files and `docs/` are left out of the count too, which now
     counts source lines only.
 
 ## Config & profiles
@@ -6331,7 +6331,7 @@ changes back into those docs is pending.
     Debt sheet cannot render, a baseline of `1e999` shows as unmeasured with no
     NaN, every chart draws no NaN for infinite values or ±1e308, and the bounded history lists
     the newest captures oldest first.
-107. **The diff-size flag counts source lines only (2026-10-26).**
+110. **The diff-size flag counts source lines only (2026-10-26).**
     Amends decision 17. The stage summed every changed line but lockfiles and binaries, so a
     session that wrote the tests its acceptance criteria asked for, or the decision record and
     doc fix its task named, was flagged as oversize for doing so: a 227-line change with 360

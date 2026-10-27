@@ -26,7 +26,7 @@ Ordered stages; first hard failure stops the pipeline.
      binary files, `*.test.ts` files (not one renamed in from a non-test name, nor one non-test
      code reaches) and prose under `docs/` (`.md`, `.rst`, `.adoc`) are left out of the count;
      the stage detail names the split (`227 source + 360 test + 85 docs changed lines`). Tests
-     and docs still go through the scope audit and review (decisions 17, 107).
+     and docs still go through the scope audit and review (decisions 17, 110).
 5. Reviewer subagent: mechanical review pass; findings attached to the review queue entry.
 6. Knowledge transaction: regenerate code map for touched modules, write decision record, create or close ledger entries. A merge without this transaction is invalid.
 

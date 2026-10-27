@@ -2280,7 +2280,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  // Decision 107: only source lines count toward the flag, and the detail
+  // Decision 110: only source lines count toward the flag, and the detail
   // names the split.
   it('counts test files and docs/ apart from source and passes on source alone', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });

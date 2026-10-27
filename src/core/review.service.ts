@@ -62,7 +62,7 @@ function buildEntry(
   // a same-named tag first, and the review must show what the gate will merge.
   const paths = gitDiffPaths(repoPath, `refs/heads/${target}`, `refs/heads/${session.branch}`);
   // Every changed line, tests and docs included: what a reviewer reads, not
-  // the gate's source-only size (decision 107).
+  // the gate's source-only size (decision 110).
   const { source, test, docs } = countChangedLines(
     repoPath,
     `refs/heads/${target}`,

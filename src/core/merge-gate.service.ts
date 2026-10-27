@@ -253,7 +253,7 @@ function rawDiffEntries(
 
 /**
  * Which part of the diff-size split a changed path counts toward (decision
- * 107). A symlink is source wherever it sits, as it can point anywhere; a test
+ * 110). A symlink is source wherever it sits, as it can point anywhere; a test
  * is only the trusted suffix, and never a file renamed onto it from a name
  * that was not one, which would carry production code in under the test count.
  */
@@ -305,7 +305,7 @@ function tokensHolding(text: string, name: string): string[] {
  * `#` suffix (`?raw`) is cut first. Only files mentioning a name are read,
  * found by `git grep` with colour pinned off: `color.grep=always` in the
  * shared config would wrap each path in escapes, and a listing entry that does
- * not start with the branch refuses rather than skips (decision 107).
+ * not start with the branch refuses rather than skips (decision 110).
  */
 function filesNaming(
   repoPath: string,
@@ -370,7 +370,7 @@ function filesNaming(
 /**
  * The `tests` non-test code on `branch` reaches: production code can import a
  * `*.test.ts` that also holds one test, which vitest collects and passes, or
- * reach it through another test file that re-exports it (decision 107). Each
+ * reach it through another test file that re-exports it (decision 110). Each
  * round asks which files name the tests found so far; a test file naming one
  * is followed in turn, until no new test file turns up.
  */
@@ -411,7 +411,7 @@ function reachableTestFiles(repoPath: string, branch: string, tests: string[]): 
 
 /**
  * Adds + deletes across the branch diff, excluding lockfiles and binary files,
- * split into source, test files and prose under `docs/` (decision 107). A null numstat is
+ * split into source, test files and prose under `docs/` (decision 110). A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
  * to call it binary by something no diff shows (decision 53).
@@ -2355,7 +2355,7 @@ export async function measureBranch(
   const sizeFindings: string[] = [];
   if (changed.source > DIFF_SIZE_FLAG_LINES) {
     // The figure is the source count; the wording is kept so a re-gate still
-    // reads an entry filed before decision 107 as the same kind.
+    // reads an entry filed before decision 110 as the same kind.
     flaggedDebt.push({
       description: `Oversize diff (${changed.source} lines) merged from session ${session.id}`,
       files: changedPaths,

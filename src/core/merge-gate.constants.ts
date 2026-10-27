@@ -1,6 +1,6 @@
 /**
  * Changed source lines (adds + deletes; lockfiles, test files and `docs/`
- * excluded) above which the diff-size stage flags (decision 107).
+ * excluded) above which the diff-size stage flags (decision 110).
  */
 export const DIFF_SIZE_FLAG_LINES = 600;
 
@@ -8,7 +8,7 @@ export const DIFF_SIZE_FLAG_LINES = 600;
  * The one test spelling the diff-size stage trusts: what a vitest `include`
  * conventionally collects, where parking production code fails the test stage
  * (decision 39). `*.spec.*`, `.test.mts`, `.test.tsx` and Python names are
- * collected by nothing pup can confirm, so they count as source (decision 107).
+ * collected by nothing pup can confirm, so they count as source (decision 110).
  */
 export const DIFF_SIZE_TEST_SUFFIX = '.test.ts';
 
@@ -18,7 +18,7 @@ export const DIFF_SIZE_DOCS_DIR = 'docs/';
 /**
  * Prose under `DIFF_SIZE_DOCS_DIR`. `.mdx` is left out because it compiles to
  * a component, `.txt` because `requirements.txt` and `CMakeLists.txt` are
- * build input, and anything else under `docs/` may be running code (decision 107).
+ * build input, and anything else under `docs/` may be running code (decision 110).
  */
 export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.adoc'];
 
