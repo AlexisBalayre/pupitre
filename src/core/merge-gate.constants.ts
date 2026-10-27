@@ -17,9 +17,10 @@ export const DIFF_SIZE_DOCS_DIR = 'docs/';
 
 /**
  * Prose under `DIFF_SIZE_DOCS_DIR`. `.mdx` is left out because it compiles to
- * a component, and anything else under `docs/` may be running code (decision 107).
+ * a component, `.txt` because `requirements.txt` and `CMakeLists.txt` are
+ * build input, and anything else under `docs/` may be running code (decision 107).
  */
-export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.txt', '.adoc'];
+export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.adoc'];
 
 /** Excluded from the diff-size count — machine-generated churn, not review surface. */
 export const LOCKFILE_NAMES = [

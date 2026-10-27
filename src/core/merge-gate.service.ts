@@ -31,6 +31,7 @@ import type {
   GateStage,
   NestedPackage,
 } from '../adapters/types/adapter.types.js';
+import { isSourceFile, resolveImport } from '../adapters/typescript-source.utils.js';
 import {
   killSession as killTmux,
   SteerNotDeliveredError,
@@ -271,6 +272,108 @@ function diffSizeKind(path: string, entry: RawDiffEntry | undefined): 'source' |
   return 'source';
 }
 
+const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
+
+/**
+ * Per code file on `branch` that names one of `targets`, the targets it names.
+ * A relative specifier that resolves names that file alone; any other token
+ * ending in a target's name (an alias, a `#` import, a `?raw` suffix, a
+ * comment) names every target of that name, as over-counting source is the
+ * safe direction. Only files mentioning a name are read, found by `git grep`.
+ */
+function filesNaming(
+  repoPath: string,
+  branch: string,
+  files: Set<string>,
+  targets: string[],
+): Map<string, Set<string>> {
+  const named = new Map<string, Set<string>>();
+  const stems = [...new Set(targets.map(testStem))];
+  let listing = '';
+  try {
+    listing = runGit(repoPath, [
+      'grep',
+      '-l',
+      '-z',
+      '-F',
+      '--no-textconv',
+      ...stems.flatMap((stem) => ['-e', stem]),
+      branch,
+      '--',
+    ]);
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is "nothing matched"; anything else is git failing to answer.
+    if ((error as { status?: number }).status !== 1) throw error;
+  }
+  const tokens = new RegExp(
+    stems
+      .map((stem) => `[^'"\`\\s]*${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^'"\`\\s]*`)
+      .join('|'),
+    'g',
+  );
+  for (const entry of listing.split('\0')) {
+    const importer = entry.slice(`${branch}:`.length);
+    if (!isSourceFile(importer)) continue;
+    const text = runGit(repoPath, ['cat-file', 'blob', `${branch}:${importer}`]);
+    const hits = new Set<string>();
+    for (const [token] of text.matchAll(tokens)) {
+      const resolved = token.startsWith('.') ? resolveImport(importer, token, files) : undefined;
+      if (resolved) {
+        if (targets.includes(resolved)) hits.add(resolved);
+        continue;
+      }
+      const name = basename(token).replace(/\.[cm]?[jt]sx?$/, '');
+      for (const target of targets) if (testStem(target) === name) hits.add(target);
+    }
+    hits.delete(importer);
+    if (hits.size > 0) named.set(importer, hits);
+  }
+  return named;
+}
+
+/**
+ * The `tests` non-test code on `branch` reaches: production code can import a
+ * `*.test.ts` that also holds one test, which vitest collects and passes, or
+ * reach it through another test file that re-exports it (decision 107). Each
+ * round asks which files name the tests found so far; a test file naming one
+ * is followed in turn, until no new test file turns up.
+ */
+function reachableTestFiles(repoPath: string, branch: string, tests: string[]): Set<string> {
+  if (tests.length === 0) return new Set();
+  const files = new Set(
+    runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0'),
+  );
+  const reached = new Set<string>();
+  const importsOf = new Map<string, Set<string>>();
+  const seen = new Set(tests);
+  let round = tests;
+  while (round.length > 0) {
+    const next: string[] = [];
+    for (const [importer, named] of filesNaming(repoPath, branch, files, round)) {
+      if (!importer.endsWith(DIFF_SIZE_TEST_SUFFIX)) {
+        for (const test of named) reached.add(test);
+        continue;
+      }
+      importsOf.set(importer, new Set([...(importsOf.get(importer) ?? []), ...named]));
+      if (!seen.has(importer)) {
+        seen.add(importer);
+        next.push(importer);
+      }
+    }
+    round = next;
+  }
+  const queue = [...reached];
+  for (let test = queue.pop(); test !== undefined; test = queue.pop()) {
+    for (const imported of importsOf.get(test) ?? []) {
+      if (reached.has(imported)) continue;
+      reached.add(imported);
+      queue.push(imported);
+    }
+  }
+  return new Set(tests.filter((test) => reached.has(test)));
+}
+
 /**
  * Adds + deletes across the branch diff, excluding lockfiles and binary files,
  * split into source, test files and prose under `docs/` (decision 107). A null numstat is
@@ -286,9 +389,16 @@ export function countChangedLines(
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
   const raw = rawDiffEntries(repoPath, target, branch);
-  for (const stat of gitDiffNumstat(repoPath, target, branch)) {
-    if (LOCKFILE_NAMES.includes(stat.path)) continue;
-    const kind = diffSizeKind(stat.path, raw.get(stat.path));
+  const stats = gitDiffNumstat(repoPath, target, branch).filter(
+    (stat) => !LOCKFILE_NAMES.includes(stat.path),
+  );
+  const kinds = new Map(
+    stats.map((stat) => [stat.path, diffSizeKind(stat.path, raw.get(stat.path))]),
+  );
+  const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
+  for (const path of reachableTestFiles(repoPath, branch, tests)) kinds.set(path, 'source');
+  for (const stat of stats) {
+    const kind = kinds.get(stat.path) ?? 'source';
     if (stat.added !== null && stat.deleted !== null) {
       counts[kind] += stat.added + stat.deleted;
       continue;

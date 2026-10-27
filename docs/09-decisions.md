@@ -6336,43 +6336,55 @@ changes back into those docs is pending.
     session that wrote the tests its acceptance criteria asked for, or the decision record and
     doc fix its task named, was flagged as oversize for doing so: a 227-line change with 360
     lines of tests and 85 of docs read as 672 and refused to merge without `--accept-debt`. The
-    flag is a proxy for how much production code one review has to hold, and tests and prose
-    are not that. Now `countChangedLines` splits the count into source, test and docs, the
-    600-line flag (`DIFF_SIZE_FLAG_LINES`) applies to source alone, and the stage detail names
-    the split, `227 source + 360 test + 85 docs changed lines`, on a pass and a flag alike.
-    Lockfiles stay excluded and a forged binary is still recounted and flagged at any size
-    (decision 53), into whichever part its path names. A test file is only a `*.test.ts`,
-    the one spelling decision 39 trusts: what a vitest `include` conventionally collects, so
-    production code parked there fails the test stage. `*.spec.*`, `.test.mts`, `.test.tsx`,
-    `.test.js` and pytest's `test_*.py` and `*_test.py` import as ordinary modules and fail
-    nothing when they hold no tests, so they count as source. A file renamed onto a test name
-    from a name that was not one counts as source too, or `git mv big.ts big.test.ts` plus a
-    rewrite would carry production code in under the test count. The rename is read from the
-    branch's `--raw` diff with `-M`, never left to `diff.renames`, which sits in the shared
-    config a session can write. Docs are prose under `docs/` at the repo root: `.md`, `.rst`,
-    `.txt` and `.adoc`. Projects keep running code under `docs/` (Docusaurus, Sphinx's
-    `conf.py`, swag's `docs/docs.go`), and `.mdx` compiles to a component, so those count as
-    source. A symlink counts as source wherever it sits, since it can point anywhere (all
-    three found on security review of the first cut, which took every JS/TS, Python and Go
-    test spelling and every path under `docs/`). Leaving them out of the size is not leaving them
-    out of the gate: the scope audit and review still see every changed path, and the oversize
-    ledger entry still names every changed file. The entry keeps its `Oversize diff (N lines)`
-    wording, now with the source count, so a re-gate still reads an entry filed before this as
-    the same kind (decision 86). The review queue's `changedLines` and risk keep counting every
-    changed line: they estimate what a reviewer reads, tests and docs included.
-    `docs/04-gates-and-debt.md` described the stage as "diff size vs task size", which the code
-    never had; it now says what is counted. Owed, each its own task: a `*.test.ts` outside the
-    runner's `include` (here anything outside `src/**`) still counts as test, and closing that
-    needs the trusted checkout's runner config from the adapters (vitest's `include`, pytest's
-    `python_files` from both checkouts, decision 31's pattern); and `gitDiffNumstat` keeps only
-    the part of a path before its first tab, so `src/a.test.ts<TAB>z/impl.ts` counts as test.
-    Tests: a 227/360/85 split passes with that detail, a 700-line test-only diff passes, 601
-    source lines flag whatever the tests add, every test spelling but `.test.ts` counts as
-    source, code, `.mdx`, a symlink and a `src/docs/` file count as source while `.md` and
-    `.rst` under `docs/` count as docs, a source file renamed onto a test name counts as source
-    with rename detection on and off in the shared config while a test renamed onto a test
-    stays a test, a root lockfile counts nothing and a lockfile-named file elsewhere still
-    counts.
+    flag is a proxy for how much production code one review has to hold, and tests and prose are
+    not that. Now `countChangedLines` splits the count into source, test and docs, the 600-line
+    flag (`DIFF_SIZE_FLAG_LINES`) applies to source alone, and the stage detail names the split,
+    `227 source + 360 test + 85 docs changed lines`, on a pass and a flag alike. Lockfiles stay
+    excluded and a forged binary is still recounted and flagged at any size (decision 53), into
+    whichever part its path names. A test file is only a `*.test.ts`, the one spelling decision
+    39 trusts: what a vitest `include` conventionally collects, so production code parked there
+    fails the test stage. `*.spec.*`, `.test.mts`, `.test.tsx`, `.test.js` and pytest's
+    `test_*.py` and `*_test.py` import as ordinary modules and fail nothing when they hold no
+    tests, so they count as source. A file renamed onto a test name from a name that was not one
+    counts as source too, or `git mv big.ts big.test.ts` plus a rewrite would carry production
+    code in under the test count. The rename is read from the branch's `--raw` diff with `-M`,
+    never left to `diff.renames`, which sits in the shared config a session can write. A
+    `*.test.ts` that non-test code reaches counts as source as well: one test behind `if
+    (process.env.VITEST)` passes vitest, so 2000 lines of exports beside it, imported from
+    production as `./big.test.js`, read as "0 source + 2000 test" (found on the second security
+    review). A `git grep` on the branch finds the code files naming a changed test; a relative
+    specifier is resolved with the adapters' `resolveImport`, and any other token ending in the
+    test's name (an alias, a `#` import, a comment) claims every test of that name, the safe
+    direction. A test file naming one is followed in turn, so a re-export chain through other
+    test files reaches it too. Docs are prose under `docs/` at the repo root: `.md`, `.rst` and
+    `.adoc`. Projects keep running code under `docs/` (Docusaurus, Sphinx's `conf.py`, swag's
+    `docs/docs.go`), `.mdx` compiles to a component, and `.txt` takes in `requirements.txt` and
+    `CMakeLists.txt`, so those count as source. A symlink counts as source wherever it sits,
+    since it can point anywhere (the name, rename, docs and link rules came from the security
+    review of the first cut, which took every JS/TS, Python and Go test spelling and every path
+    under `docs/`). Leaving them out of the size is not leaving them out of the gate: the scope
+    audit and review still see every changed path, and the oversize ledger entry still names
+    every changed file. The entry keeps its `Oversize diff (N lines)` wording, now with the
+    source count, so a re-gate still reads an entry filed before this as the same kind (decision
+    86). The review queue's `changedLines` and risk keep counting every changed line: they
+    estimate what a reviewer reads, tests and docs included. `docs/04-gates-and-debt.md`
+    described the stage as "diff size vs task size", which the code never had; it now says what
+    is counted. Owed, each its own task: a `*.test.ts` outside the runner's `include` (here
+    anything outside `src/**`) still counts as test, and closing that needs the trusted
+    checkout's runner config from the adapters (vitest's `include`, pytest's `python_files` from
+    both checkouts, decision 31's pattern); `gitDiffNumstat` keeps only the part of a path
+    before its first tab, so `src/a.test.ts<TAB>z/impl.ts` counts as test (t-mvqfsrhg); and a
+    specifier that never spells the test's name, such as `import('./big' + '.test.js')`, escapes
+    the name search, so production code reaching a test file that way still counts as test until
+    the gate reads the module graph rather than names. Tests: a 227/360/85 split passes with
+    that detail, a 700-line test-only diff passes, 601 source lines flag whatever the tests add,
+    every test spelling but `.test.ts` counts as source, a test file production code names by a
+    relative re-export or a `#` dynamic import counts as source and so does one reached through
+    two other test files while one only tests import stays a test, code, `.mdx`,
+    `requirements.txt`, a symlink and a `src/docs/` file count as source while `.md` and `.rst`
+    under `docs/` count as docs, a source file renamed onto a test name counts as source with
+    rename detection on and off in the shared config while a test renamed onto a test stays a
+    test, a root lockfile counts nothing and a lockfile-named file elsewhere still counts.
 
 ## Implementation notes
 

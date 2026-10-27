@@ -2329,6 +2329,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(5));
     commitIn(worktree, 'docs/impl.ts', 'export const impl = 1;\n'.repeat(2));
     commitIn(worktree, 'docs/page.mdx', '# page\n'.repeat(4));
+    commitIn(worktree, 'docs/requirements.txt', 'sphinx\n');
     commitIn(worktree, 'src/docs/h.md', 'prose\n');
     symlinkSync('guide.md', join(worktree, 'docs/link.md'));
     sh(worktree, 'git', 'add', '.');
@@ -2339,7 +2340,55 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
       status: 'pass',
-      detail: '8 source + 0 test + 8 docs changed lines',
+      detail: '9 source + 0 test + 8 docs changed lines',
+    });
+  });
+
+  // A `*.test.ts` that holds one test passes vitest, so production code could
+  // live in it and import it; whatever code reaches counts as source.
+  it('counts a test file production code imports as source, by any specifier', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'src/use.ts', "export { v } from './big.test.js';\n");
+    commitIn(worktree, 'src/dyn.test.ts', 'export const d = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/dyn.ts', "export const m = await import('#lib/dyn.test.js');\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '9 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  it('follows test files re-exporting one another to production code', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/helper.test.ts', 'export const h = 1;\n'.repeat(3));
+    commitIn(worktree, 'src/b.test.ts', "export * from './helper.test.js';\n");
+    commitIn(worktree, 'src/a.test.ts', "export * from './b.test.js';\n");
+    commitIn(worktree, 'src/use.ts', "export * from './a.test.js';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  it('keeps a test file only other tests import as test', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/helper.test.ts', 'export const h = 1;\n'.repeat(3));
+    commitIn(worktree, 'src/a.test.ts', "import { h } from './helper.test.js';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '0 source + 4 test + 0 docs changed lines',
     });
   });
 
