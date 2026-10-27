@@ -383,6 +383,8 @@ changes back into those docs is pending.
     semantics from 04-gates-and-debt: a flagged oversize diff refuses to merge unless
     `--accept-debt "<reason>" --review-by "<condition>"` is passed, which writes a ledger
     entry. Threshold is a tunable constant; lockfiles are excluded from the count.
+    *Amended by decision 107:* test files and `docs/` are left out of the count too, which now
+    counts source lines only.
 
 ## Config & profiles
 
@@ -6206,6 +6208,31 @@ changes back into those docs is pending.
     Debt sheet cannot render, a baseline of `1e999` shows as unmeasured with no
     NaN, every chart draws no NaN for infinite values or ±1e308, and the bounded history lists
     the newest captures oldest first.
+107. **The diff-size flag counts source lines only (2026-10-26).**
+    Amends decision 17. The stage summed every changed line but lockfiles and binaries, so a
+    session that wrote the tests its acceptance criteria asked for, or the decision record and
+    doc fix its task named, was flagged as oversize for doing so: a 227-line change with 360
+    lines of tests and 85 of docs read as 672 and refused to merge without `--accept-debt`. The
+    flag is a proxy for how much production code one review has to hold, and tests and prose
+    are not that. Now `countChangedLines` splits the count into source, test and docs, the
+    600-line flag (`DIFF_SIZE_FLAG_LINES`) applies to source alone, and the stage detail names
+    the split, `227 source + 360 test + 85 docs changed lines`, on a pass and a flag alike.
+    Lockfiles stay excluded and a forged binary is still recounted and flagged at any size
+    (decision 53), into whichever part its path names. A test file is one by name across the
+    languages the adapters ship (`*.test.*` and `*.spec.*` for JS/TS, `test_*.py` and
+    `*_test.py`, `*_test.go`); a helper under a test directory with no test name counts as
+    source, the safe direction to be wrong in, as with decision 39's duplication rule. Docs
+    are paths under `docs/` at the repo root. Leaving them out of the size is not leaving them
+    out of the gate: the scope audit and review still see every changed path, and the oversize
+    ledger entry still names every changed file. The entry keeps its `Oversize diff (N lines)`
+    wording, now with the source count, so a re-gate still reads an entry filed before this as
+    the same kind (decision 86). The review queue's `changedLines` and risk keep counting every
+    changed line: they estimate what a reviewer reads, tests and docs included.
+    `docs/04-gates-and-debt.md` described the stage as "diff size vs task size", which the code
+    never had; it now says what is counted. Tests: a 227/360/85 split passes with that detail,
+    a 700-line test-only diff passes, 601 source lines flag whatever the tests add, every test
+    spelling counts as test while a `src/docs/` file and an unnamed helper count as source, a
+    root lockfile counts nothing and a lockfile-named file elsewhere still counts.
 
 ## Implementation notes
 

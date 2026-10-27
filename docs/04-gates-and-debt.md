@@ -22,7 +22,10 @@ Ordered stages; first hard failure stops the pipeline.
    - Dead code, duplication and coverage each say how many changed files a nested package kept
      from them, and which packages: "not measured here" is never read as "nothing to measure"
      (decision 59).
-   - Diff size vs task size (small task, large diff is flagged).
+   - Diff size: more than 600 changed source lines (adds + deletes) is flagged. Lockfiles,
+     binary files, test files and `docs/` are left out of the count; the stage detail names the
+     split (`227 source + 360 test + 85 docs changed lines`). Tests and docs still go through
+     the scope audit and review (decisions 17, 107).
 5. Reviewer subagent: mechanical review pass; findings attached to the review queue entry.
 6. Knowledge transaction: regenerate code map for touched modules, write decision record, create or close ledger entries. A merge without this transaction is invalid.
 

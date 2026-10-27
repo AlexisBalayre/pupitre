@@ -66,7 +66,9 @@ import {
 } from './ledger.repository.js';
 import {
   DEBT_DETAIL_SAMPLES,
+  DIFF_SIZE_DOCS_DIR,
   DIFF_SIZE_FLAG_LINES,
+  DIFF_SIZE_TEST_FILE_PATTERNS,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_ENVIRONMENT_DIR,
   GATE_OUTPUT_TAIL_CHARS,
@@ -199,32 +201,39 @@ function failingTestNames(error: unknown): string {
   return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
+/** Which part of the diff-size split a changed path counts toward (decision 107). */
+function diffSizeKind(path: string): 'source' | 'test' | 'docs' {
+  if (path.startsWith(DIFF_SIZE_DOCS_DIR)) return 'docs';
+  if (DIFF_SIZE_TEST_FILE_PATTERNS.some((pattern) => pattern.test(path))) return 'test';
+  return 'source';
+}
+
 /**
- * Adds + deletes across the branch diff, excluding lockfiles and binary files.
- * A null numstat is a measurement, not a skip: a file git reports as binary
- * whose content is text is recounted from its patch and named in `forged`,
- * because git was told to call it binary by something no diff shows
- * (decision 53).
+ * Adds + deletes across the branch diff, excluding lockfiles and binary files,
+ * split into source, test files and `docs/` (decision 107). A null numstat is
+ * a measurement, not a skip: a file git reports as binary whose content is
+ * text is recounted from its patch and named in `forged`, because git was told
+ * to call it binary by something no diff shows (decision 53).
  */
 export function countChangedLines(
   repoPath: string,
   target: string,
   branch: string,
-): { lines: number; forged: string[] } {
-  let lines = 0;
+): { source: number; test: number; docs: number; forged: string[] } {
+  const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
   for (const stat of gitDiffNumstat(repoPath, target, branch)) {
     if (LOCKFILE_NAMES.includes(stat.path)) continue;
     if (stat.added !== null && stat.deleted !== null) {
-      lines += stat.added + stat.deleted;
+      counts[diffSizeKind(stat.path)] += stat.added + stat.deleted;
       continue;
     }
     const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
     if (!recount) continue;
-    lines += recount.added + recount.deleted;
+    counts[diffSizeKind(stat.path)] += recount.added + recount.deleted;
     forged.push(stat.path);
   }
-  return { lines, forged };
+  return { ...counts, forged };
 }
 
 /**
@@ -1746,13 +1755,16 @@ export async function measureBranch(
 
   started = Date.now();
   const changed = countChangedLines(req.repoPath, targetSha, sha);
+  const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
-  if (changed.lines > DIFF_SIZE_FLAG_LINES) {
+  if (changed.source > DIFF_SIZE_FLAG_LINES) {
+    // The figure is the source count; the wording is kept so a re-gate still
+    // reads an entry filed before decision 107 as the same kind.
     flaggedDebt.push({
-      description: `Oversize diff (${changed.lines} lines) merged from session ${session.id}`,
+      description: `Oversize diff (${changed.source} lines) merged from session ${session.id}`,
       files: changedPaths,
     });
-    sizeFindings.push(`exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
+    sizeFindings.push(`source exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
   }
   // Flagged at any size: the count is honest again once recounted, but a text
   // file git was told to call binary is a write nobody reviewed (decision 53).
@@ -1776,9 +1788,9 @@ export async function measureBranch(
         ? {
             stage: 'diff-size',
             status: 'flagged',
-            detail: flagDetail(`${changed.lines} changed lines ${sizeFindings.join('; ')}`),
+            detail: flagDetail(`${split}: ${sizeFindings.join('; ')}`),
           }
-        : { stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` },
+        : { stage: 'diff-size', status: 'pass', detail: split },
     ),
   );
 

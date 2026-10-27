@@ -1,5 +1,23 @@
-/** Changed-line count (adds + deletes, lockfiles excluded) above which the diff-size stage flags. */
+/**
+ * Changed source lines (adds + deletes; lockfiles, test files and `docs/`
+ * excluded) above which the diff-size stage flags (decision 107).
+ */
 export const DIFF_SIZE_FLAG_LINES = 600;
+
+/**
+ * Test files by name, across the languages the adapters ship: JS/TS
+ * `*.test.*` and `*.spec.*`, pytest's `test_*.py` and `*_test.py`, Go's
+ * `*_test.go`. Spelling only, so a helper under a test directory with no test
+ * name counts as source, the safe direction to be wrong in (decision 107).
+ */
+export const DIFF_SIZE_TEST_FILE_PATTERNS = [
+  /\.(?:test|spec)\.[cm]?[jt]sx?$/,
+  /(?:^|\/)test_[^/]*\.py$/,
+  /_test\.(?:py|go)$/,
+];
+
+/** Counted apart from source in the diff-size stage: prose, not code to review for size. */
+export const DIFF_SIZE_DOCS_DIR = 'docs/';
 
 /** Excluded from the diff-size count — machine-generated churn, not review surface. */
 export const LOCKFILE_NAMES = [

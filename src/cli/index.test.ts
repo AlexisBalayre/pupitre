@@ -91,7 +91,7 @@ vi.mock('../core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
   // are rows in a store and not real branches, so there is nothing to count.
-  countChangedLines: vi.fn(() => ({ lines: 0, forged: [] })),
+  countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));

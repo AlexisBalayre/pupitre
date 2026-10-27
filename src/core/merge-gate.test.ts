@@ -2244,6 +2244,86 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  it('leaves a root lockfile out of the diff size', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'pnpm-lock.yaml'] });
+    commitIn(worktree, 'pnpm-lock.yaml', 'generated: line\n'.repeat(700));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '0 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Decision 107: only source lines count toward the flag, and the detail
+  // names the split.
+  it('counts test files and docs/ apart from source and passes on source alone', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'tests/**', 'docs/**'] });
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n'.repeat(227));
+    commitIn(worktree, 'src/feature.test.ts', 'const line = 1;\n'.repeat(300));
+    commitIn(worktree, 'tests/test_feature.py', 'line = 1\n'.repeat(60));
+    commitIn(worktree, 'docs/feature.md', 'A line of prose.\n'.repeat(85));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '227 source + 360 test + 85 docs changed lines',
+    });
+  });
+
+  it('names every test spelling the adapters ship as a test file', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'pkg/**'] });
+    commitIn(worktree, 'src/a.spec.tsx', 'x\n');
+    commitIn(worktree, 'src/b.test.mjs', 'x\n');
+    commitIn(worktree, 'src/c_test.py', 'x\n');
+    commitIn(worktree, 'pkg/d_test.go', 'x\n');
+    commitIn(worktree, 'src/test_helpers/e.ts', 'x\n');
+    commitIn(worktree, 'src/docs/f.md', 'x\n');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '2 source + 4 test + 0 docs changed lines',
+    });
+  });
+
+  it('flags a source diff over the line flag whatever its tests add', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(601));
+    commitIn(worktree, 'src/big.test.ts', 'const line = 1;\n'.repeat(50));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('refused');
+    const stage = outcome.report.stages.find((s) => s.stage === 'diff-size');
+    expect(stage?.status).toBe('flagged');
+    expect(stage?.detail).toContain(
+      '601 source + 50 test + 0 docs changed lines: source exceeds the 600-line flag',
+    );
+  });
+
+  it('passes a large test-only diff that the old count flagged', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'const line = 1;\n'.repeat(700));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '0 source + 700 test + 0 docs changed lines',
+    });
+  });
+
   // `info/attributes` is refused outright (decision 50), but `core.attributesFile`
   // in the shared config forges the same `-\t-` numstat and is no driver, so the
   // count has to survive it rather than the gate refuse it (decision 53).
@@ -2264,7 +2344,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.status).toBe('refused');
       const stage = outcome.report.stages.find((s) => s.stage === 'diff-size');
       expect(stage?.status).toBe('flagged');
-      expect(stage?.detail).toContain('700 changed lines exceeds the 600-line flag');
+      expect(stage?.detail).toContain(
+        '700 source + 0 test + 0 docs changed lines: source exceeds the 600-line flag',
+      );
       expect(stage?.detail).toContain('src/big.ts');
     });
 
@@ -2292,7 +2374,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'diff-size',
         status: 'pass',
-        detail: '0 changed lines',
+        detail: '0 source + 0 test + 0 docs changed lines',
       });
     });
   });
