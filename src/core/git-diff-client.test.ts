@@ -253,6 +253,22 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
   });
+
+  // Patience and histogram anchor only on lines unique to each file, so they
+  // read the block a swap moves past as deleted and re-added: 101 covered
+  // lines that would lift an untested change over the bar (decision 113).
+  it('keeps the hunks to the swapped lines when diff.algorithm is set', () => {
+    const repeated = Array.from({ length: 100 }, () => 'x++;').join('\n');
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `first\n${repeated}\nlast\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `last\n${repeated}\nfirst\n`);
+    commitAll(repo, 'swap');
+    sh(repo, 'git', 'config', 'diff.algorithm', 'patience');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
+  });
 });
 
 // Under `diff.renames=copies` a new file copied from one the branch changes is

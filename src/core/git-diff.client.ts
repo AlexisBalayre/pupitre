@@ -498,10 +498,11 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
  * need de-quoting. The path is a literal pathspec, or a file named
- * `:(top)foo` would be read as magic and return no hunks, and the inter-hunk
- * context is pinned to 0, or a session-written `diff.interHunkContext` would
- * merge the hunks and report the unchanged lines between them as added
- * (decision 113).
+ * `:(top)foo` would be read as magic and return no hunks. The inter-hunk
+ * context is pinned to 0 and the algorithm to myers, or a session-written
+ * `diff.interHunkContext` would merge the hunks and a `diff.algorithm` of
+ * patience or histogram could read an unchanged block as deleted and
+ * re-added, both reporting unchanged lines as added (decision 113).
  */
 function diffHunks(
   repoPath: string,
@@ -515,6 +516,7 @@ function diffHunks(
     ...DIFF_SAFE_FLAGS,
     '-U0',
     '--inter-hunk-context=0',
+    '--diff-algorithm=myers',
     `${target}...${branch}`,
     '--',
     path,
