@@ -131,6 +131,7 @@ for the cross-references the text states, then the decision itself.
 - [0106. `pup init --session-env A,B` names the variables every session and conductor window gets from the launching shell, through the window's own `-e`, from a closed list (2026-10-26).](0106-pup-init-session-env-a-b-names-the.md) (accepted)
 - [0107. Every compiled settings file turns off the Artifact and Workflow tools and prompt suggestions, and a worker's denies the tools and the skill listing it never uses (2026-10-27).](0107-every-compiled-settings-file-turns-off-the-artifact.md) (accepted)
 - [0109. One file per decision under docs/adr/, numbered as before, with a generated index (2026-10-27)](0109-one-file-per-decision-under-docs-adr-numbered.md) (accepted)
+- [0111. `gitDiffNumstat` reads a path with a tab in it whole (2026-10-27).](0111-gitdiffnumstat-reads-a-path-with-a-tab-in.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes
