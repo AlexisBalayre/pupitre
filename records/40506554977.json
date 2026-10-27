@@ -1,0 +1,265 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T12:58:16.697Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40506554977",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40506554977",
+  "actor": "AlexisBalayre",
+  "commit_sha": "30d635dbf889a60abedfe3a3748c7330794cecc5",
+  "source": "pr",
+  "pr_number": 186,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "346-347",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The reach check only counts JS/TS-extension files as importers, so a .vue/.svelte/.astro/.mdx/index.html/package.json file that names a changed `*.test.ts` is dropped and the test stays in the test count.",
+      "body": "**Non-JS importers never count as reaching a test file.**\n\n```ts\nconst importer = entry.slice(prefix.length);\nif (!isSourceFile(importer)) continue;\n```\n\n`isSourceFile` (`src/adapters/typescript-source.utils.ts`) accepts only `.ts .tsx .mts .cts .js .mjs .cjs .jsx`. `git grep -l` does list every other file that spells the test's name, but this line drops it before reading it. That includes files that load modules as production code:\n- Vue/Svelte/Astro components: `<script lang=\"ts\">import { api } from './big.test.js';</script>`\n- a Vite `index.html` entry: `<script type=\"module\" src=\"/src/main.test.ts\">`\n- `.mdx`, which decision 110 itself counts as source because it \"compiles to a component\"\n- `package.json` `main`/`bin`/`exports` naming the emitted `dist/*.test.js`\n\nThe attack decision 110 closes still works through this route: 2000 lines of exports in `src/big.test.ts` plus one test behind `if (process.env.VITEST)`, imported from `src/App.vue`, read as \"0 source + 2000 test\". Pupitre gates any repo (docs/07-onboarding.md), so a Vue or Svelte app under the TypeScript adapter is a normal target. This is not one of decision 110's owed gaps: the specifier is static and spells the name, and the file is dropped only because of its extension.\n\nFix: widen the importer set to the non-JS module formats a bundler loads (`.vue`, `.svelte`, `.astro`, `.mdx`, `.html`, `package.json`), or scan every non-docs path that grep lists, which only over-counts (the safe direction). If the set stays as it is, list this in decision 110 as an owed gap.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/30d635dbf889a60abedfe3a3748c7330794cecc5/src/core/merge-gate.service.ts#L346-L347",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "351-362",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A relative specifier that resolves to any existing file stops the search with `continue`, so a decoy `src/big.test.js` next to `src/big.test.ts` makes the gate resolve `./big.test.js` to the decoy while tsc (NodeNext) compiles the real test file.",
+      "body": "**A decoy file at the literal path hides an import of the real test file.**\n\n```ts\nconst resolved = specifier.startsWith('.')\n  ? resolveImport(importer, specifier, files)\n  : undefined;\nif (resolved) {\n  if (targets.includes(resolved)) hits.add(resolved);\n  continue;\n}\n```\n\n`resolveImport` (`src/adapters/typescript-source.utils.ts:83-92`) tries the literal path before the `.js`→`.ts` swap. Under `moduleResolution: NodeNext` without `allowJs`, TypeScript does the reverse.\n\nThe attack:\n1. Put 2000 lines of exports in `src/big.test.ts`, plus one test.\n2. Import it from production code as `./big.test.js`.\n3. Commit a decoy `src/big.test.js` containing `export {}`.\n\nThe gate resolves the specifier to the decoy. The decoy is not a target, so `continue` skips the name match and `big.test.ts` counts as test. Meanwhile `tsc` builds `dist/` from `big.test.ts`. Vitest's include never collects the decoy. The specifier is static and spells the name, so this is none of decision 110's owed gaps.\n\nFix: `continue` only when the resolution hits a target, and otherwise fall through to the name match. That only over-counts, which is the direction the code already treats as safe. The JSDoc at L302 (\"A relative specifier that resolves names that file alone\") then needs updating.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/30d635dbf889a60abedfe3a3748c7330794cecc5/src/core/merge-gate.service.ts#L351-L362",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "286-363",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The reach check costs (tokens in an importer) × (changed targets), with no dedupe and no timeout on the synchronous loop, so a session can stall the shared merge lock and `pup review` for minutes.",
+      "body": "**The quadratic regex is gone, but the cost now multiplies across tokens and targets.**\n\n```ts\nfor (const stem of stems) {\n  for (const token of tokensHolding(text, stem)) {\n    ...\n    const name = basename(specifier).replace(/\\.[cm]?[jt]sx?$/, '');\n    for (const target of targets) if (testStem(target) === name) hits.add(target);\n```\n\n`tokensHolding` does not dedupe. A token that does not start with `.` always reaches the per-target loop, and every iteration of that loop calls `testStem` (`basename` + `slice`).\n\nExample shape: T trivial `x.test.ts` files in different folders, plus one importer holding a single line `x.test x.test …` just under the 64 MiB `GIT_MAX_BUFFER`. That line is about 9.5M tokens. With T = 200 it makes about 1.9B `basename` calls, roughly 1–2.5 minutes of synchronous JS. Cost grows linearly in T, and each extra test file adds to the test count, not the source count. `GATE_COMMAND_TIMEOUT_MS` bounds only child processes, so nothing stops the loop. It runs under the per-repo `pup-merge.lock`, which blocks every other session's merge, and `review.service.ts` runs it again for each queued session. Decision 110 removed the regex to fix this same class of stall.\n\nFix: handle each distinct name only once per importer, for example a `Set` of names already matched, or dedupe tokens before the loop. Then look targets up in a precomputed `Map<stem, target[]>`. A stem map alone is not enough: when all T targets share one stem, the lookup still returns all T for every token.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/30d635dbf889a60abedfe3a3748c7330794cecc5/src/core/merge-gate.service.ts#L286-L363",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "260-273",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The rename guard only covers source→test: lines landed as test (or docs) in one merge and later moved to source by `git mv` or a one-line `export * from './big.test.js'` never count as source in full.",
+      "body": "**Lines can enter as test or docs, then become source without ever being counted as source.**\n\n```ts\nconst isTest = (candidate: string): boolean => candidate.endsWith(DIFF_SIZE_TEST_SUFFIX);\nif (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {\n  return 'test';\n}\nreturn 'source';\n```\n\nThe guard fires only when the *new* path is a test name.\n\n- **Merge 1** lands 2000 lines of production code plus one test in an unimported `src/big.test.ts`. They count as test and pass. Before this PR, this merge flagged.\n- **Merge 2** runs `git mv src/big.test.ts src/big.ts`. Numstat pairs the rename, so `countChangedLines` (L433-439) adds only the edited delta to `counts.source`. The same works from `docs/x.md`.\n- **Simpler merge 2:** add one line, `export * from './big.test.js'`. The reach check only looks at `*.test.ts` files changed in *this* diff (L433), so a test landed earlier is never checked.\n- **Copy variant:** shared-config `diff.renames=copies` pairs a test→source copy in `gitDiffNumstat`, which does not pin rename detection.\n\nDecision 110 closes the opposite direction (`git mv big.ts big.test.ts`) but does not list cross-merge accumulation as owed.\n\nFix, in two parts:\n1. Count a file renamed or copied from a test/docs name onto a source name at full size, or pin `--no-renames` on the count's numstat.\n2. Run the reach check on every `*.test.ts` on the branch that changed non-test code names, not just tests changed in this diff.\n\nOtherwise, record this as an owed gap in decision 110.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/30d635dbf889a60abedfe3a3748c7330794cecc5/src/core/merge-gate.service.ts#L260-L273",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "261",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A symlink counts as 1 source line, but the docs file it points to keeps its docs classification: `src/pkg/impl.py -> ../../docs/impl.md` with 2000 lines of code reads as \"1 source + 0 test + 2000 docs\".",
+      "body": "**The symlink rule counts the pointer, not what it points at.**\n\n```ts\nif (entry?.mode === '120000') return 'source';\nif (\n  path.startsWith(DIFF_SIZE_DOCS_DIR) &&\n  DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension))\n) {\n  return 'docs';\n}\n```\n\nDecision 110 says a symlink counts as source \"since it can point anywhere\", but only the link's 1-line blob is counted.\n\nExample: a session commits `docs/impl.md` holding 2000 lines of Python, plus `src/pkg/impl.py -> ../../docs/impl.md`. The count reads \"1 source + 0 test + 2000 docs\" and passes, while `import pkg.impl` runs the `.md` content. The tree-symlink check only refuses links that leave the checkout, so this link is allowed.\n\nThe same applies without a symlink through textual includes (`#include \"../docs/impl.md\"`, Rust `include!`). Docs get no reach check the way tests now do. Decision 17 makes the flag a block unless the change is accepted as debt, and decision 53 treats a deflated count as a forged measurement.\n\nFix: resolve each symlink on the branch (from its blob, against the branch tree) and count a docs-classified target as source. List textual includes in decision 110 as owed if they stay open.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/30d635dbf889a60abedfe3a3748c7330794cecc5/src/core/merge-gate.service.ts#L260-L267",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.constants.ts",
+      "line": "23",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Docusaurus (v2/v3, default `markdown.format: 'mdx'`, content folder `docs/`) compiles `docs/*.md` as MDX, so JS/JSX in a `.md` file importable from `src/` counts as docs; decision 110's reason for counting `.mdx` as source applies to `.md` in those repos.",
+      "body": "**In a Docusaurus repo, `.md` under `docs/` is code.**\n\n```ts\nexport const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.adoc'];\n```\n\nDecision 110 names Docusaurus as a project that keeps running code under `docs/`, and counts `.mdx` as source because it \"compiles to a component\". Docusaurus v3 defaults `markdown.format` to `'mdx'` (v2 also ran `.md` through the MDX loader), and its docs plugin reads root `docs/` by default. So a `docs/*.md` file can export JS/JSX, and `src/` can import it via `@site/docs/x.md`.\n\nIn such a repo, 2000 lines of exported code in `docs/big.md`, imported from `src/`, read as \"0 source + 2000 docs\" and pass the flag. This is the same pattern the PR closed for `*.test.ts`. The owed list in decision 110 does not cover it. Knowledge of Docusaurus defaults is pinned, not read in-tree, hence medium confidence.\n\nFix options:\n- count `docs/**/*.md` as source when the branch has a root `docusaurus.config.*`;\n- run the reach check over changed docs paths too;\n- at minimum, record this as an owed gap in decision 110.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/30d635dbf889a60abedfe3a3748c7330794cecc5/src/core/merge-gate.constants.ts#L23",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/review.service.ts",
+      "line": "66-71",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The review queue only uses `source + test + docs`, which the reach check never changes, yet `countChangedLines` now runs a raw diff, a full `ls-tree`, a tree-wide `git grep` and per-file `cat-file` for every queued session. Its new throw paths (grep exit ≠ 0/1, unexpected listing entry) can abort the whole review listing. Give the queue a plain total, or let the caller skip classification.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/review.test.ts",
+      "line": "94-120",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No review-queue test commits a `*.test.ts` or `docs/*.md` file, so changing `changedLines = source + test + docs` to `source` would pass every test, even though decision 110 says the queue keeps counting every changed line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2415-2429",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'follows test files re-exporting one another to production code' changes all three chained tests on the branch, so they are all first-round targets and the multi-round `git grep` loop in `reachableTestFiles` never runs. Commit `a.test.ts` and `b.test.ts` on the base first so the test proves the chain is followed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "275-410",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "About 135 lines of TypeScript import-graph analysis (`testStem`, `tokensHolding`, `filesNaming`, `reachableTestFiles`) land in the 2,600-line gate service. They import a language-specific adapter util (`typescript-source.utils`) that no other `src/core/` module uses, and they caused the +44 complexity flag. Consider a dedicated module next to the TypeScript adapter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "219-252",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`rawDiffEntries` is a branch-diff parser outside `git-diff.client.ts`, and it retypes the `DIFF_SAFE_FLAGS` hardening flags inline. A flag later added to `DIFF_SAFE_FLAGS` would silently miss this call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "275",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`testStem` hardcodes `'.ts'.length` instead of deriving it from `DIFF_SIZE_TEST_SUFFIX`, and the test-suffix rule is spelled separately at L268, L275 and L389. If the constant widens, `testStem` cuts the wrong stem and `git grep` searches for the wrong names.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "320-348",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `git grep`, `ls-tree` and per-file `cat-file` calls run inside the merge lock without `timeout: GATE_COMMAND_TIMEOUT_MS`, unlike the existing gate-time tree read in `git-tree.client.ts`, whose comment says every child pup runs is timed out.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "261",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The git symlink mode `'120000'` is an inline literal, against docs/conventions/general.md §No hardcoded values. The function's other tunables live in `merge-gate.constants.ts`. Add a named constant there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6334",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 110 is inserted between 105 and 106, so the file reads 105, 110, 106, 107 while decisions are otherwise in order. Move it to the end of the file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "101",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The §No hardcoded values example still quotes the old `DIFF_SIZE_FLAG_LINES` JSDoc ('adds + deletes, lockfiles excluded'), which this PR rewrote. The example now misquotes the file it cites.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "290",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The risk-score description still says 'diff size vs task size'. Decision 110 says the code never had a task-size comparison and only fixed the phrase in docs/04. It should say changed lines, tests and docs included.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/04-gates-and-debt.md",
+      "line": "25-29",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/04 says binary files are left out of the count, but a text file git was told to call binary is recounted and flagged (decision 53, restated in decision 110). Say 'genuinely binary files'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "441-442",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "A `.ts`/`.js` file with a NUL byte in a leading comment (first 8000 bytes) is a 'real binary' to git, so its lines count zero toward diff size, yet JS/TS still compiles and runs it. Unchanged by this PR; decision 53 doesn't consider source that tolerates a NUL.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 6,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.3941347,
+  "duration_ms": 576945,
+  "num_turns": 21,
+  "tokens": {
+    "input": 14,
+    "output": 23379,
+    "cache_read": 358187,
+    "cache_creation": 70770,
+    "total": 452350
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 194,
+      "output": 150735,
+      "cache_read": 2683716,
+      "cache_creation": 477383,
+      "cost_usd": 6.1514441999999985
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 6641,
+      "cache_read": 264745,
+      "cache_creation": 59900,
+      "cost_usd": 0.2426905
+    }
+  ],
+  "permission_denials": []
+}
