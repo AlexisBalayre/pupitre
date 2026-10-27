@@ -1054,10 +1054,11 @@ describe('assertNoWorktreeConfig', () => {
     ['a tab', 'My\tProject'],
     ['a newline', 'My\nProject'],
     ['ESC and CSI', 'My\u001b[31m\u009bProject'],
-    ['a path past the truncation', 'p'.repeat(250)],
+    // Two components: under Linux's short /tmp one name of NAME_MAX stays under the cap.
+    ['a path past the truncation', `${'p'.repeat(200)}/${'p'.repeat(200)}`],
   ])('prints no paste-ready unset for a path with %s, and no control char', (_, name) => {
     const odd = join(tempDir('pup-diff-'), name);
-    mkdirSync(odd);
+    mkdirSync(odd, { recursive: true });
     sh(odd, 'git', 'init', '-q', '-b', 'main');
     setExtension(odd, 'maybe');
     let message = '';
