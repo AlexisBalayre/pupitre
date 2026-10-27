@@ -125,7 +125,9 @@ describe('a changed path that starts with a space', () => {
 
 // `-z` never quotes a path, so a tab in one reaches the numstat line as is. Cut
 // at its first tab, a file under a directory named `a.test.ts<TAB>z` read as a
-// test, and one under `pnpm-lock.yaml<TAB>x` as the root lockfile (decision 107).
+// test, and one under `pnpm-lock.yaml<TAB>x` as the root lockfile. A path that
+// starts with a tab left the third field empty and read as a rename, swallowing
+// the two records after it (decision 111).
 describe('a changed path with a tab in it', () => {
   function tabbedRepo(files: string[]): string {
     const repo = makeRepo();
@@ -156,6 +158,21 @@ describe('a changed path with a tab in it', () => {
 
     expect(paths).toEqual(['pnpm-lock.yaml\tx/big.ts']);
     expect(paths.filter((path) => LOCKFILE_NAMES.includes(path))).toEqual([]);
+  });
+
+  it('starting the path is no rename, so the records after it parse whole', () => {
+    const repo = tabbedRepo(['\tlead.ts']);
+    writeFileSync(join(repo, 'a.bin'), 'x\0y\n');
+    writeFileSync(join(repo, 'c.bin'), 'q\0z\n');
+    writeFileSync(join(repo, 'd.ts'), 'one\n');
+    commitAll(repo, 'after');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: '\tlead.ts', added: 2, deleted: 0 },
+      { path: 'a.bin', added: null, deleted: null },
+      { path: 'c.bin', added: null, deleted: null },
+      { path: 'd.ts', added: 1, deleted: 0 },
+    ]);
   });
 });
 
