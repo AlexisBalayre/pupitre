@@ -1,6 +1,7 @@
 # 0053. A null numstat is a measurement, not a free skip (2026-09-17)
 
 - Status: accepted
+- Amended by: [0113](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md)
 
 53. **A null numstat is a measurement, not a free skip (2026-09-17).** Decision 41 stated the
     ceiling: a `* -diff` line makes `git diff --numstat` emit `-\t-` for every file, `--text`

@@ -1,6 +1,7 @@
-# 0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27)
+# 0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27).
 
 - Status: accepted
+- Amends: [0053](0053-a-null-numstat-is-a-measurement-not-a.md)
 
 113. **Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal
     pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff
