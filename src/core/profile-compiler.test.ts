@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadCustomAdapter } from '../adapters/custom.adapter.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
+import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 import type { CompileInput, SessionId, TaskId, TaskSpec } from './types/profile.types.js';
@@ -148,7 +149,11 @@ describe('compileProfile', () => {
     const compiled = ProfileCompiler.compileProfile(makeInput());
 
     const settings = JSON.parse(compiled.files['settings.json'] as string);
-    expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+    expect(settings.permissions.deny.slice(0, 3)).toEqual([
+      'AskUserQuestion',
+      'EnterPlanMode',
+      'ExitPlanMode',
+    ]);
     expect(compiled.contextMarkdown).toContain(
       '- If you are blocked on something only a human can decide, run ' +
         '`pup session ask "<question>"` and end your turn; a steer answers it. ' +
@@ -246,21 +251,72 @@ describe('compileProfile', () => {
     });
   });
 
+  // Decision 107: what a worker never uses is kept out of its first request.
+  describe('startup context', () => {
+    const settingsOf = (input: CompileInput) =>
+      JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string);
+
+    it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
+      expect(settingsOf(makeInput()).env).toEqual({
+        CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+        CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+        CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+      });
+    });
+
+    it('denies by bare name the tools a worker never calls, and the Skill tool', () => {
+      const input = makeInput({ base: DEFAULT_BASE_PROFILE, role: undefined });
+
+      expect(settingsOf(input).permissions.deny).toEqual([
+        'AskUserQuestion',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'SendFeedback',
+        'ScheduleWakeup',
+        'ReportFindings',
+        'Skill',
+      ]);
+    });
+
+    it('keeps the Skill tool, and so its listing, when a layer names a skill', () => {
+      const roleNames = makeInput({ role: { name: 'backend', skills: ['api-testing'] } });
+      const baseNames = makeInput({
+        base: { name: 'base', skills: ['api-testing'] },
+        role: undefined,
+      });
+
+      for (const input of [roleNames, baseNames]) {
+        expect(settingsOf(input).permissions.deny).toEqual([
+          'AskUserQuestion',
+          'EnterPlanMode',
+          'ExitPlanMode',
+          'SendFeedback',
+          'ScheduleWakeup',
+          'ReportFindings',
+        ]);
+      }
+    });
+  });
+
   // Decision 77: a layer adds denials after decision 74's and never removes one.
   describe('layer denials', () => {
     const denyOf = (input: CompileInput) =>
       JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string).permissions
         .deny;
+    const WORKER_DENY = [
+      'AskUserQuestion',
+      'EnterPlanMode',
+      'ExitPlanMode',
+      'SendFeedback',
+      'ScheduleWakeup',
+      'ReportFindings',
+      'Skill',
+    ];
 
     it('appends a parsed layer deny after the unanswerable tools', () => {
       const role = ProfileCompiler.parseProfileLayer('name: copiste\ndeny: [Agent]\n');
 
-      expect(denyOf(makeInput({ role }))).toEqual([
-        'AskUserQuestion',
-        'EnterPlanMode',
-        'ExitPlanMode',
-        'Agent',
-      ]);
+      expect(denyOf(makeInput({ role }))).toEqual([...WORKER_DENY, 'Agent']);
     });
 
     it("unions a child layer's deny with its parent's", () => {
@@ -269,25 +325,19 @@ describe('compileProfile', () => {
         role: { name: 'copiste', deny: ['WebFetch', 'Agent'] },
       });
 
-      expect(denyOf(input)).toEqual([
-        'AskUserQuestion',
-        'EnterPlanMode',
-        'ExitPlanMode',
-        'Agent',
-        'WebFetch',
-      ]);
+      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent', 'WebFetch']);
     });
 
     it('keeps a base-only deny when no role is given', () => {
       const input = makeInput({ base: { name: 'base', deny: ['Agent'] }, role: undefined });
 
-      expect(denyOf(input)).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Agent']);
+      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent']);
     });
 
     it('does not duplicate a denial the layer repeats', () => {
       const input = makeInput({ role: { name: 'copiste', deny: ['AskUserQuestion', 'Agent'] } });
 
-      expect(denyOf(input)).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Agent']);
+      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent']);
     });
   });
 });
@@ -1605,6 +1655,17 @@ describe('compileConductorProfile', () => {
 
     const settings = JSON.parse(compiled.files['settings.json'] as string);
     expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+  });
+
+  // Decision 107: the conductor gets a worker's env block and keeps its tools.
+  it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
+    const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    expect(JSON.parse(compiled.files['settings.json'] as string).env).toEqual({
+      CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+      CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+      CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+    });
   });
 
   // The conductor's graph is main's, pinned the way a session's is pinned to
