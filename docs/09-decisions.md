@@ -6352,51 +6352,82 @@ changes back into those docs is pending.
     `*.test.ts` that non-test code reaches counts as source as well: one test behind `if
     (process.env.VITEST)` passes vitest, so 2000 lines of exports beside it, imported from
     production as `./big.test.js`, read as "0 source + 2000 test" (found on the second security
-    review). A `git grep` on the branch finds the code files naming a changed test; a relative
-    specifier is resolved with the adapters' `resolveImport`, and any other token ending in the
-    test's name (an alias, a `#` import, a comment) claims every test of that name, the safe
-    direction; a `?` or `#` suffix (`./big.test.js?raw`) is cut first. A test file naming one is
-    followed in turn, so a re-export chain through other test files reaches it too. The grep
-    runs with colour pinned off (`--no-color`, `-c color.ui=never -c color.grep=never`):
-    `color.grep=always` in the shared config wrapped each `-l` path in escapes, every importer
-    then failed the source-file check and the reach check passed everything as test, and a
-    listing entry that does not start with the branch now refuses the gate rather than being
-    skipped. Tokens are grown outward from each `indexOf` hit of a test's name rather than
-    matched by a regex with an unanchored leading class, which backtracked quadratically on one
-    long unspaced line and held the merge lock for minutes on a 1 MB file (both found on the
-    third security review). Docs are prose under `docs/` at the repo root: `.md`, `.rst` and
-    `.adoc`. Projects keep running code under `docs/` (Docusaurus, Sphinx's `conf.py`, swag's
+    review). A `git grep` on the branch lists the files naming a changed test, and every one is
+    read but prose under `docs/`, whatever its extension: a Vue or Svelte component, a Vite
+    `index.html` or a `package.json` loads a module as well as code does. Each token whose last
+    segment, less a `?` or `#` suffix (`./big.test.js?raw`) and a JS or TS extension, spells a
+    test's name claims every test of that name, the safe direction. A relative specifier is not
+    resolved: `resolveImport` tried the literal path first, so a decoy `big.test.js` holding
+    `export {}` took `./big.test.js` and hid `big.test.ts` behind it, and resolving only ever
+    narrowed what the name already claims. A test file naming one is followed in turn, so a
+    re-export chain through other test files reaches it too. The grep runs with colour pinned
+    off (`--no-color`, `-c color.ui=never -c color.grep=never`): `color.grep=always` in the
+    shared config wrapped each `-l` path in escapes, every importer then failed what was a
+    source-file check, the reach check passed everything as test, and a listing entry that does
+    not start with the branch now refuses the gate rather than being skipped. A token is a run
+    between quotes or whitespace, matched in one pass by a single class with nothing after it to
+    backtrack into, and each name a file spells is looked up once. A regex with an unanchored
+    leading class backtracked quadratically on one long unspaced line and held the merge lock
+    for minutes on a 1 MB file (both found on the third security review), and weighing every
+    token against every target made a million-token line naming 200 same-named tests cost 200
+    million lookups. A `*.test.ts` whose name holds whitespace, a quote, `?` or `#` counts as
+    source, since no token spells it whole. Docs are prose under `docs/` at the repo root: `.md`,
+    `.rst` and `.adoc`. Projects keep running code under `docs/` (Sphinx's `conf.py`, swag's
     `docs/docs.go`), `.mdx` compiles to a component, and `.txt` takes in `requirements.txt` and
-    `CMakeLists.txt`, so those count as source. A symlink counts as source wherever it sits,
-    since it can point anywhere (the name, rename, docs and link rules came from the security
-    review of the first cut, which took every JS/TS, Python and Go test spelling and every path
-    under `docs/`). Leaving them out of the size is not leaving them out of the gate: the scope
-    audit and review still see every changed path, and the oversize ledger entry still names
-    every changed file. The entry keeps its `Oversize diff (N lines)` wording, now with the
-    source count, so a re-gate still reads an entry filed before this as the same kind (decision
-    86). The review queue's `changedLines` and risk keep counting every changed line: they
-    estimate what a reviewer reads, tests and docs included. `docs/04-gates-and-debt.md`
-    described the stage as "diff size vs task size", which the code never had; it now says what
-    is counted. Owed, each its own task: a `*.test.ts` outside the runner's `include` (here
-    anything outside `src/**`) still counts as test, and closing that needs the trusted
-    checkout's runner config from the adapters (vitest's `include`, pytest's `python_files` from
-    both checkouts, decision 31's pattern); `gitDiffNumstat` keeps only the part of a path
-    before its first tab, so `src/a.test.ts<TAB>z/impl.ts` counts as test (t-mvqfsrhg); and
-    three specifiers escape the name search, so production code reaching a test file through
-    them still counts as test until the gate reads the module graph rather than names: one built
-    at run time (`import('./big' + '.test.js')`), an alias mapped in package.json `imports` or
-    tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), and a string escape
-    in a static specifier (`from './big\u002etest.js'`). Tests: a 227/360/85 split passes with
-    that detail, a 700-line test-only diff passes, 601 source lines flag whatever the tests add,
-    every test spelling but `.test.ts` counts as source, a test file production code names by a
-    relative re-export, a `#` dynamic import or a `?raw` or `#x` suffix counts as source, as
-    does one reached through two other test files and one named with grep colour forced on in
-    the shared config, while one only tests import stays a test, a 1 MB unspaced line in an
-    importer reads without stalling, code, `.mdx`, `requirements.txt`, a symlink and a
-    `src/docs/` file count as source while `.md` and `.rst` under `docs/` count as docs, a
-    source file renamed onto a test name counts as source with rename detection on and off in
-    the shared config while a test renamed onto a test stays a test, a root lockfile counts
-    nothing and a lockfile-named file elsewhere still counts.
+    `CMakeLists.txt`, so those count as source. So does `.md` there when a
+    `docusaurus.config.*` sits anywhere on the branch: Docusaurus reads root `docs/` by default
+    and compiles `.md` as MDX, so `docs/big.md` can export code `src/` imports from
+    `@site/docs/big.md`. A symlink counts as source wherever it sits, and so does any changed
+    doc or test a symlink on the branch reaches: `src/pkg/impl.py -> ../../docs/impl.md` ran
+    2000 lines of Python counted as docs, and `src/impl.ts -> big.test.ts` imported a test file
+    no token names, as `git grep` never reads a link's blob. Each link's target is read from the
+    branch tree and resolved lexically from the link's directory; it reaches the path it lands
+    on and everything under it. One whose target is absolute, lands outside the repo, or has a
+    `..` after a named segment may land anywhere and reaches every path: `l/../impl.md` lands
+    on a decoy `src/impl.md` read lexically, which is how Node's `realpath`, and so the gate's
+    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the Vue, decoy,
+    lookup, name, Docusaurus and reached-link rules came from the fourth security review; the
+    test name, rename, docs and link rules from the review of the first cut, which took every
+    JS/TS, Python and Go test spelling and every path under `docs/`). Leaving them out of the
+    size is not leaving them out of the gate: the scope audit and review still see every
+    changed path, and the oversize ledger entry still names every changed file. The entry keeps
+    its `Oversize diff (N lines)` wording, now with the source count, so a re-gate still reads
+    an entry filed before this as the same kind (decision 86). The review queue's
+    `changedLines` and risk keep counting every changed line: they estimate what a reviewer
+    reads, tests and docs included. `docs/04-gates-and-debt.md` described the stage as "diff
+    size vs task size", which the code never had; it now says what is counted. Owed, each its
+    own task. A `*.test.ts` outside the runner's `include` (here anything outside `src/**`)
+    still counts as test, and closing that needs the trusted checkout's runner config from the
+    adapters (vitest's `include`, pytest's `python_files` from both checkouts, decision 31's
+    pattern). Production code reaching a test file through a specifier that does not spell its
+    name still counts it as test until the gate reads the module graph rather than names: one
+    built at run time (`import('./big' + '.test.js')`), an alias mapped in package.json
+    `imports` or tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), and a
+    string or URL escape in a static one (`from './big\u002etest.js'`, `'./big%2Etest.js'`).
+    Prose loaded as code without a link still counts as docs: a textual include
+    (`#include "../docs/impl.md"`, Rust's `include!`) and a Markdown compiler other than
+    Docusaurus (VitePress and VuePress run a page's `<script setup>`). The flag is per merge, so
+    a test or doc landed in one merge and made source in a later one, by a rename, a copy or one
+    new import, counts only that later merge's delta; closing it means counting an unchanged
+    file a merge newly reaches at full size. And `gitDiffNumstat` leaves copy detection to
+    `diff.renames` in the shared config, where `copies` pairs a new file with the one it was
+    copied from and counts only the delta; pinning `-M` there is `git-diff.client.ts`'s change.
+    The tab-in-path item this listed is closed by decision 111. Tests: a 227/360/85 split
+    passes with that detail, a 700-line test-only diff passes, 601 source lines flag whatever
+    the tests add, every test spelling but `.test.ts` counts as source and so does a
+    `.test.ts` named with a space or `#`, a test file production code names by a relative
+    re-export, a `#` dynamic import, a `?raw` or `#x` suffix, a Vue component or a Vite
+    `index.html` counts as source, as does one reached through two other test files, one named
+    with grep colour forced on in the shared config and one behind a decoy at the literal path,
+    while one only tests or `docs/` prose name stays a test, a 1 MB unspaced line and a
+    million-token line naming 200 same-named tests read without stalling, code, `.mdx`,
+    `requirements.txt`, a symlink and a `src/docs/` file count as source while `.md` and `.rst`
+    under `docs/` count as docs, `.md` there counts as source beside a Docusaurus config, the
+    doc, test and directory a link reaches count as source and a link climbing past a named
+    segment makes every path source, a source file renamed onto a test name counts as source
+    with rename detection on and off in the shared config while a test renamed onto a test
+    stays a test, a root lockfile counts nothing and a lockfile-named file elsewhere still
+    counts.
 
 106. **`pup init --session-env A,B` names the variables every session and conductor window gets
     from the launching shell, through the window's own `-e`, from a closed list (2026-10-26).**
