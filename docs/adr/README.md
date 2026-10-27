@@ -133,7 +133,7 @@ for the cross-references the text states, then the decision itself.
 - [0109. One file per decision under docs/adr/, numbered as before, with a generated index (2026-10-27)](0109-one-file-per-decision-under-docs-adr-numbered.md) (accepted)
 - [0110. The diff-size flag counts source lines only (2026-10-26)](0110-the-diff-size-flag-counts-source-lines-only.md) (accepted)
 - [0111. `gitDiffNumstat` reads a path with a tab in it whole (2026-10-27).](0111-gitdiffnumstat-reads-a-path-with-a-tab-in.md) (accepted)
-- [0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27)](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md) (accepted)
+- [0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27).](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes
