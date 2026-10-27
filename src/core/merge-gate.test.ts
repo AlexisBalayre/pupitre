@@ -2599,7 +2599,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
 
     // `diff.renames` is shared config a session can write; with it off the
-    // numstat shows a delete and an add, and the add must not read as a test.
+    // rename must still be seen, so the new name does not read as a test. The
+    // numstat pins rename detection on too (decision 113), hence the same 800.
     it('counts it as source with rename detection switched off in the shared config', async () => {
       commitIn(repo, 'src/big.ts', numbered(1000));
       const worktree = seedSession(db, repo);
@@ -2609,7 +2610,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const outcome = await merge();
 
       expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
-        '2000 source + 0 test + 0 docs changed lines',
+        '800 source + 0 test + 0 docs changed lines',
       );
     });
 

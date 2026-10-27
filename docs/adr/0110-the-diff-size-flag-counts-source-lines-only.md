@@ -81,10 +81,8 @@
     Docusaurus (VitePress and VuePress run a page's `<script setup>`). The flag is per merge, so
     a test or doc landed in one merge and made source in a later one, by a rename, a copy or one
     new import, counts only that later merge's delta; closing it means counting an unchanged
-    file a merge newly reaches at full size. And `gitDiffNumstat` leaves copy detection to
-    `diff.renames` in the shared config, where `copies` pairs a new file with the one it was
-    copied from and counts only the delta; pinning `-M` there is `git-diff.client.ts`'s change.
-    The tab-in-path item this listed is closed by decision 111. Tests: a 227/360/85 split
+    file a merge newly reaches at full size. The tab-in-path and `gitDiffNumstat` copy-pairing
+    items this listed are closed by decisions 111 and 113. Tests: a 227/360/85 split
     passes with that detail, a 700-line test-only diff passes, 601 source lines flag whatever
     the tests add, every test spelling but `.test.ts` counts as source and so does a
     `.test.ts` named with a space or `#`, a test file production code names by a relative
