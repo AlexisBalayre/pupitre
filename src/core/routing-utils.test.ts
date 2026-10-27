@@ -30,7 +30,7 @@ describe('tierForScope', () => {
     '.claude/hooks/git-safety.sh',
     '.github/workflows/ci.yml',
   ])('makes a scope naming %s critical', (path) => {
-    expect(tierForScope(['docs/09-decisions.md', path])).toBe('critical');
+    expect(tierForScope(['docs/adr/', path])).toBe('critical');
   });
 
   // A glob is critical when it CAN name a critical file, whether or not the
