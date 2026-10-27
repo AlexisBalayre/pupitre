@@ -274,12 +274,38 @@ function diffSizeKind(path: string, entry: RawDiffEntry | undefined): 'source' |
 
 const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
 
+/** Ends a specifier token: a quote or whitespace. */
+const SPECIFIER_DELIMITER = /[\s'"`]/;
+
+/**
+ * Each token of `text` holding `name`, grown outward from every `indexOf` hit
+ * to the nearest quote or whitespace. Linear: a regex with an unanchored
+ * leading class backtracks quadratically on one long unspaced line, which held
+ * the merge lock for minutes on a 1 MB file.
+ */
+function tokensHolding(text: string, name: string): string[] {
+  const tokens: string[] = [];
+  let floor = 0;
+  for (let hit = text.indexOf(name); hit !== -1; hit = text.indexOf(name, floor)) {
+    let start = hit;
+    while (start > floor && !SPECIFIER_DELIMITER.test(text.charAt(start - 1))) start -= 1;
+    let end = hit + name.length;
+    while (end < text.length && !SPECIFIER_DELIMITER.test(text.charAt(end))) end += 1;
+    tokens.push(text.slice(start, end));
+    floor = end;
+  }
+  return tokens;
+}
+
 /**
  * Per code file on `branch` that names one of `targets`, the targets it names.
  * A relative specifier that resolves names that file alone; any other token
- * ending in a target's name (an alias, a `#` import, a `?raw` suffix, a
- * comment) names every target of that name, as over-counting source is the
- * safe direction. Only files mentioning a name are read, found by `git grep`.
+ * ending in a target's name (an alias, a `#` import, a comment) names every
+ * target of that name, as over-counting source is the safe direction. A `?` or
+ * `#` suffix (`?raw`) is cut first. Only files mentioning a name are read,
+ * found by `git grep` with colour pinned off: `color.grep=always` in the
+ * shared config would wrap each path in escapes, and a listing entry that does
+ * not start with the branch refuses rather than skips (decision 107).
  */
 function filesNaming(
   repoPath: string,
@@ -292,7 +318,12 @@ function filesNaming(
   let listing = '';
   try {
     listing = runGit(repoPath, [
+      '-c',
+      'color.ui=never',
+      '-c',
+      'color.grep=never',
       'grep',
+      '--no-color',
       '-l',
       '-z',
       '-F',
@@ -306,25 +337,29 @@ function filesNaming(
     // Exit 1 is "nothing matched"; anything else is git failing to answer.
     if ((error as { status?: number }).status !== 1) throw error;
   }
-  const tokens = new RegExp(
-    stems
-      .map((stem) => `[^'"\`\\s]*${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^'"\`\\s]*`)
-      .join('|'),
-    'g',
-  );
+  const prefix = `${branch}:`;
   for (const entry of listing.split('\0')) {
-    const importer = entry.slice(`${branch}:`.length);
+    if (!entry) continue;
+    if (!entry.startsWith(prefix)) {
+      throw new Error(`git grep listed ${JSON.stringify(entry)}, not a path under ${prefix}`);
+    }
+    const importer = entry.slice(prefix.length);
     if (!isSourceFile(importer)) continue;
     const text = runGit(repoPath, ['cat-file', 'blob', `${branch}:${importer}`]);
     const hits = new Set<string>();
-    for (const [token] of text.matchAll(tokens)) {
-      const resolved = token.startsWith('.') ? resolveImport(importer, token, files) : undefined;
-      if (resolved) {
-        if (targets.includes(resolved)) hits.add(resolved);
-        continue;
+    for (const stem of stems) {
+      for (const token of tokensHolding(text, stem)) {
+        const specifier = token.replace(/(?<=.)[?#].*$/s, '');
+        const resolved = specifier.startsWith('.')
+          ? resolveImport(importer, specifier, files)
+          : undefined;
+        if (resolved) {
+          if (targets.includes(resolved)) hits.add(resolved);
+          continue;
+        }
+        const name = basename(specifier).replace(/\.[cm]?[jt]sx?$/, '');
+        for (const target of targets) if (testStem(target) === name) hits.add(target);
       }
-      const name = basename(token).replace(/\.[cm]?[jt]sx?$/, '');
-      for (const target of targets) if (testStem(target) === name) hits.add(target);
     }
     hits.delete(importer);
     if (hits.size > 0) named.set(importer, hits);

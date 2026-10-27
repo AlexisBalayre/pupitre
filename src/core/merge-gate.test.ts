@@ -2362,6 +2362,56 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
+  it('reads a ?raw or #fragment specifier as naming the test file', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/raw.test.ts', 'export const r = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/use.ts', "import text from './raw.test.js?raw';\n");
+    commitIn(worktree, 'src/frag.test.ts', 'export const f = 1;\n');
+    commitIn(worktree, 'src/other.ts', "export * from './frag.test.js#x';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '5 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Shared config a session can write: coloured `git grep -l` output would
+  // shift every path, and every importer would go unread.
+  it('finds the importer with grep colour forced on in the shared config', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'src/use.ts', "export { v } from './big.test.js';\n");
+    sh(repo, 'git', 'config', 'color.ui', 'always');
+    sh(repo, 'git', 'config', 'color.grep', 'always');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Quadratic matching here would hold the merge lock for minutes; the test
+  // timeout is the bound.
+  it('reads a 1 MB unspaced line in an importer without stalling', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n');
+    commitIn(worktree, 'src/use.ts', `${'x'.repeat(1_000_000)}\nexport * from './big.test.js';\n`);
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '3 source + 0 test + 0 docs changed lines',
+    });
+  });
+
   it('follows test files re-exporting one another to production code', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/helper.test.ts', 'export const h = 1;\n'.repeat(3));

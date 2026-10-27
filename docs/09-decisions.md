@@ -6355,8 +6355,16 @@ changes back into those docs is pending.
     review). A `git grep` on the branch finds the code files naming a changed test; a relative
     specifier is resolved with the adapters' `resolveImport`, and any other token ending in the
     test's name (an alias, a `#` import, a comment) claims every test of that name, the safe
-    direction. A test file naming one is followed in turn, so a re-export chain through other
-    test files reaches it too. Docs are prose under `docs/` at the repo root: `.md`, `.rst` and
+    direction; a `?` or `#` suffix (`./big.test.js?raw`) is cut first. A test file naming one is
+    followed in turn, so a re-export chain through other test files reaches it too. The grep
+    runs with colour pinned off (`--no-color`, `-c color.ui=never -c color.grep=never`):
+    `color.grep=always` in the shared config wrapped each `-l` path in escapes, every importer
+    then failed the source-file check and the reach check passed everything as test, and a
+    listing entry that does not start with the branch now refuses the gate rather than being
+    skipped. Tokens are grown outward from each `indexOf` hit of a test's name rather than
+    matched by a regex with an unanchored leading class, which backtracked quadratically on one
+    long unspaced line and held the merge lock for minutes on a 1 MB file (both found on the
+    third security review). Docs are prose under `docs/` at the repo root: `.md`, `.rst` and
     `.adoc`. Projects keep running code under `docs/` (Docusaurus, Sphinx's `conf.py`, swag's
     `docs/docs.go`), `.mdx` compiles to a component, and `.txt` takes in `requirements.txt` and
     `CMakeLists.txt`, so those count as source. A symlink counts as source wherever it sits,
@@ -6373,18 +6381,22 @@ changes back into those docs is pending.
     anything outside `src/**`) still counts as test, and closing that needs the trusted
     checkout's runner config from the adapters (vitest's `include`, pytest's `python_files` from
     both checkouts, decision 31's pattern); `gitDiffNumstat` keeps only the part of a path
-    before its first tab, so `src/a.test.ts<TAB>z/impl.ts` counts as test (t-mvqfsrhg); and a
-    specifier that never spells the test's name, such as `import('./big' + '.test.js')`, escapes
-    the name search, so production code reaching a test file that way still counts as test until
-    the gate reads the module graph rather than names. Tests: a 227/360/85 split passes with
+    before its first tab, so `src/a.test.ts<TAB>z/impl.ts` counts as test (t-mvqfsrhg); and
+    three specifiers escape the name search, so production code reaching a test file through
+    them still counts as test until the gate reads the module graph rather than names: one built
+    at run time (`import('./big' + '.test.js')`), an alias mapped in package.json `imports` or
+    tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), and a string escape
+    in a static specifier (`from './big\u002etest.js'`). Tests: a 227/360/85 split passes with
     that detail, a 700-line test-only diff passes, 601 source lines flag whatever the tests add,
     every test spelling but `.test.ts` counts as source, a test file production code names by a
-    relative re-export or a `#` dynamic import counts as source and so does one reached through
-    two other test files while one only tests import stays a test, code, `.mdx`,
-    `requirements.txt`, a symlink and a `src/docs/` file count as source while `.md` and `.rst`
-    under `docs/` count as docs, a source file renamed onto a test name counts as source with
-    rename detection on and off in the shared config while a test renamed onto a test stays a
-    test, a root lockfile counts nothing and a lockfile-named file elsewhere still counts.
+    relative re-export, a `#` dynamic import or a `?raw` or `#x` suffix counts as source, as
+    does one reached through two other test files and one named with grep colour forced on in
+    the shared config, while one only tests import stays a test, a 1 MB unspaced line in an
+    importer reads without stalling, code, `.mdx`, `requirements.txt`, a symlink and a
+    `src/docs/` file count as source while `.md` and `.rst` under `docs/` count as docs, a
+    source file renamed onto a test name counts as source with rename detection on and off in
+    the shared config while a test renamed onto a test stays a test, a root lockfile counts
+    nothing and a lockfile-named file elsewhere still counts.
 
 106. **`pup init --session-env A,B` names the variables every session and conductor window gets
     from the launching shell, through the window's own `-e`, from a closed list (2026-10-26).**
