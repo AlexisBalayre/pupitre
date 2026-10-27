@@ -1,0 +1,122 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T17:17:01.105Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40548241606",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40548241606",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cda6a51c2dc7876a1236ac1625156ff48d496162",
+  "source": "pr",
+  "pr_number": 189,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "613-614",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The split on `;` and `|` ignores quotes, so a sed script that contains either character lets a tracked-file read through. Examples: `sed -n '1,40p;90,120p' src/core/x.ts` splits into `sed -n '1,40p` and `90,120p' src/core/x.ts`, and the second segment's first word is not a reader. The same happens with `sed -n '/a\\|b/p' src/core/x.ts`. A reader after `then`, `do`, `{` or `!` is also missed (`if [ -f README.md ]; then cat README.md; fi`). Multi-range `sed -n` dumps are the pattern ADR 0112 is meant to stop, and none of these cases are among its listed ceilings. Either add them to the ceilings or handle them in the split and skip list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1974-1975",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The redirection-target test ('cat > scratch.txt') points at an untracked file, so it would still pass if the redirection-stripping `gsub` were removed. Use a tracked target, such as `'cat > README.md'` or `\"cat <<'EOF' >> src/core/x.ts\"`, so the test guards the ADR's claim that `cat > file` writes as before.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1956-1957",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No refused case goes through the env, exec, command, time or nice wrappers. Only `LC_ALL=C cat` and `/bin/cat` are tested, so dropping the wrapper alternation from READS's `until` regex would pass every test. Add a case such as `'env LC_ALL=C cat README.md'` or `'time head docs/09-decisions.md'`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0112-a-worker-reads-a-tracked-file-with-the.md",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR title ends `(2026-10-27)` with no final period, while the sibling titles 0111 and 0113 end with `(2026-10-27).` (commit bea5e1b added 0113's period). The index line in docs/adr/README.md is generated from this title, so fix the heading and regenerate the index.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0112-a-worker-reads-a-tracked-file-with-the.md",
+      "line": "22-23",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The sentence 'Asked from the file's own directory with its bare name, git outside the work tree matched that name from the worktree root.' has no clear subject and does not say it is the rejected alternative. Either state plainly why the guard passes the full path (a file outside the worktree used to match a same-named tracked file at the root), or drop it, since the previous sentence already describes the behaviour.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7929011000000001,
+  "duration_ms": 269466,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 8814,
+    "cache_read": 193572,
+    "cache_creation": 41308,
+    "total": 243704
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 36859,
+      "cache_read": 547313,
+      "cache_creation": 114903,
+      "cost_usd": 1.5452496000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6784,
+      "cache_read": 177140,
+      "cache_creation": 64815,
+      "cost_usd": 0.24765150000000005
+    }
+  ],
+  "permission_denials": []
+}
