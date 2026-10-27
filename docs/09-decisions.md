@@ -6380,9 +6380,17 @@ changes back into those docs is pending.
     against each window's own cwd. It must also be a directory the operator owns, through any
     link, that neither its group nor others can write. Every window, the conductor's included,
     loads the hooks a `settings.json` there names, so a dir another local user made first,
-    under `/tmp` say, would run that user's commands in each. A missing dir is made, `0700`
-    whatever the umask, so the one pup makes passes the same check. A dir that fails either
-    check throws `ConfigDirRefusedError`. `pup new`, `pup audit --sweep`, `pup launch`,
+    under `/tmp` say, would run that user's commands in each. Nor may anyone else be able to
+    swap it once checked: `/tmp/w4b/claude` in a `/tmp/w4b` another user made is the
+    operator's own, but that user can rename it away and put theirs in its place while the
+    window starts. So the path is resolved a component at a time, as the kernel does, and
+    every dir and link on the way, each hop of a link's target included, must be owned by the
+    operator or root, with no dir on it writable by its group or others unless sticky, as
+    `/tmp` is, where no one can move an entry they do not own. A trailing `/` cannot hide a
+    final link, and `..` leaves a link's target, not the link (#179's CI review). The check
+    reads mode bits, not ACLs. A missing dir is made, `0700` whatever the umask, so the one
+    pup makes passes the same check. A dir that fails any check throws
+    `ConfigDirRefusedError`. `pup new`, `pup audit --sweep`, `pup launch`,
     `pup conductor start`, `pup respawn` and `pup kill --respawn` resolve the dir before
     anything is planned, steered, killed or opened, and refuse in one scrubbed line. `pup fix`
     refuses through its own scrubbed catch, before its round starts. A window reads the list
