@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+
+// The real mkdirSync, wrapped so one test can make the report directory's
+// creation fail.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync) };
+});
+
 import { endSandboxRun, runGateChild, sandboxLabel } from '../core/sandbox.utils.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { localContext } from './capability.utils.js';
@@ -147,6 +155,19 @@ describe('typescriptAdapter.coveredTest', () => {
     execFileSync('mkfifo', [join(measurePath, 'package.json')]);
 
     expect(typescriptAdapter.coveredTest?.({ configPath, measurePath })).toBeUndefined();
+  });
+
+  it('removes its own directory and throws when the report directory cannot be made', () => {
+    const repo = installedRepo({ 'package.json': manifest({ test: 'vitest run' }) });
+    let holder = '';
+    vi.mocked(mkdirSync).mockImplementationOnce((path) => {
+      holder = dirname(String(path));
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    });
+
+    expect(() => typescriptAdapter.coveredTest?.(localContext(repo))).toThrow('EACCES');
+    expect(basename(holder)).toMatch(/^pup-coverage-/);
+    expect(existsSync(holder)).toBe(false);
   });
 
   it('writes its report outside the checkout, in a directory dispose removes', () => {
