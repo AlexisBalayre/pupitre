@@ -1,6 +1,6 @@
-import { readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { sandboxProfile, writeProfile } from './sandbox-profile.utils.js';
@@ -143,5 +143,33 @@ describe('writeProfile', () => {
         '',
       ].join('\n'),
     );
+  });
+
+  // A child can put a link at its own grant, and the next child's profile is
+  // written afresh: followed, it granted the link's target (decision 107).
+  it('grants a link left at a grant as the link, never its target', () => {
+    const holder = tempDir('pup-grant-holder-');
+    const target = tempDir('pup-grant-target-');
+    symlinkSync(target, join(holder, 'report'));
+
+    const generated = readFileSync(
+      writeProfile(tempDir('pup-profile-'), [join(holder, 'report')]),
+      'utf8',
+    );
+
+    expect(generated).toContain(`(subpath "${join(holder, 'report')}")`);
+    expect(generated).not.toContain(target);
+  });
+
+  // A failing vitest run removes its report directory before the re-run's
+  // profile is written; named as given, `/var/...` never matched the kernel's
+  // `/private/var/...`.
+  it('grants a path that is gone under its resolved parent', () => {
+    const holder = tempDir('pup-grant-holder-');
+    const unresolved = join(tmpdir(), basename(holder), 'report');
+
+    const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [unresolved]), 'utf8');
+
+    expect(generated).toContain(`(subpath "${join(holder, 'report')}")`);
   });
 });

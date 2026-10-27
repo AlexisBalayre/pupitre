@@ -1,6 +1,6 @@
-import { existsSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 /**
  * The SBPL policy pup generates for gate children — what may be read, what may
@@ -158,8 +158,8 @@ export function writeProfile(
   scratchPaths: string[] = [],
 ): string {
   const profilePath = join(policyDir, 'gate-child.sb');
-  const checkouts = [...new Set(writablePaths.map(resolvePath))];
-  const scratch = [...new Set(scratchPaths.map(resolvePath))].filter(
+  const checkouts = [...new Set(writablePaths.map(grantPath))];
+  const scratch = [...new Set(scratchPaths.map(grantPath))].filter(
     (path) => !checkouts.includes(path),
   );
   writeFileSync(
@@ -173,6 +173,24 @@ export function writeProfile(
     }),
   );
   return profilePath;
+}
+
+/**
+ * A grant resolved up to its own name and never through it. A grant covers
+ * its own name, so a child can remove it and put anything there, and the
+ * profile of every later child is written afresh. Followed, a symlink a child
+ * left at its grant granted the next child the target, `HOME` or
+ * `/opt/homebrew/bin` included. Named unfollowed, writes through the link
+ * resolve to a target no rule matches. A grant a child removed, as a failing
+ * vitest run removes its report directory, keeps the resolved name too: given
+ * as `/var/...`, it never matched the kernel's `/private/var/...` and the
+ * re-run could not make it again (decision 107). Its parent is resolved, so a
+ * grant's parent must be one no child is granted.
+ */
+function grantPath(path: string): string {
+  const own = lstatSync(path, { throwIfNoEntry: false });
+  if (own && !own.isSymbolicLink()) return realpathSync(path);
+  return join(resolvePath(dirname(path)), basename(path));
 }
 
 /**

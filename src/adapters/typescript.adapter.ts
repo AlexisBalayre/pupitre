@@ -1,11 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
@@ -206,15 +199,18 @@ function instrumentedRun(ctx: CapabilityContext): CoveredTestRun | CapabilityUna
   // hand the gate a forged report — 100% covered, every file present — which
   // then ratchets the stored baseline to the forged number (decision 30).
   const provider = deps['@vitest/coverage-v8'] ? 'v8' : 'istanbul';
-  // The grant is the report directory under one of the gate's own, both named
-  // resolved. A failing run removes its empty report directory (vitest's
-  // `cleanAfterRun`), and a grant of a path that is gone is written as given:
-  // `/var/...`, which the kernel's `/private/var/...` never matches, so the
-  // re-run's mkdir of it was EPERM. The holder is never granted, so no child
-  // can remove it and free the name.
-  const holder = realpathSync(mkdtempSync(join(tmpdir(), 'pup-coverage-')));
+  // The grant is the report directory, inside one of the gate's own that is
+  // never granted. A child can remove the report directory, as a failing run
+  // does, or put a symlink there, and the re-run's profile resolves the grant's
+  // parent: one no child can remove keeps the name the gate's (decision 107).
+  const holder = mkdtempSync(join(tmpdir(), 'pup-coverage-'));
   const outDir = join(holder, 'report');
-  mkdirSync(outDir);
+  try {
+    mkdirSync(outDir);
+  } catch (error) {
+    removeGateDir(holder);
+    throw error;
+  }
   return {
     command: 'npx',
     args: [

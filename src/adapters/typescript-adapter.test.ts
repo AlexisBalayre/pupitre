@@ -182,8 +182,8 @@ describe('typescriptAdapter.coveredTest', () => {
       onTestFinished(() => run.dispose());
       const flag = '--coverage.reportsDirectory=';
       const reports = run.args.find((arg) => arg.startsWith(flag))?.slice(flag.length) ?? '';
-      const child = (script: string) =>
-        runGateChild('sh', ['-c', script, 'sh', reports], {
+      const child = (script: string, ...rest: string[]) =>
+        runGateChild('sh', ['-c', script, 'sh', reports, ...rest], {
           cwd: repo,
           repoPath: repo,
           writablePaths: run.writablePaths,
@@ -202,6 +202,18 @@ describe('typescriptAdapter.coveredTest', () => {
       await child('mkdir -p "$1/.tmp" && printf ok > "$1/coverage-final.json"');
 
       expect(readFileSync(join(reports, 'coverage-final.json'), 'utf8')).toBe('ok');
+    });
+
+    // The session's own test fails on purpose and its exit handler swaps the
+    // report directory for a link; the re-run must not be granted the target.
+    it('grants the re-run the report directory, not where a link left there points', async () => {
+      const { reports, child } = foldedRun();
+      const target = tempDir('pup-link-target-');
+
+      await child('rm -r -f "$1" && ln -s "$2" "$1"', target);
+      await expect(child('printf x > "$1/escaped"')).rejects.toThrow(/Operation not permitted/);
+
+      expect(existsSync(join(target, 'escaped'))).toBe(false);
     });
 
     it("cannot remove the directory holding the report, so its name stays the gate's", async () => {
