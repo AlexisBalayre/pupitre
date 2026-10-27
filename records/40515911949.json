@@ -1,0 +1,171 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T13:58:43.987Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40515911949",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40515911949",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cdd7853f86f7bd7b01fcb3e76ded10d642d787e4",
+  "source": "pr",
+  "pr_number": 189,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "630-631",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The check runs `git -C \"$(dirname \"$FILE\")\" ... -- \"$(basename \"$FILE\")\"` with `GIT_DIR`/`GIT_WORK_TREE` pinned. When the file's directory is outside the worktree, git sets no prefix, so the bare basename is matched against the whole index from the root. The call is refused when the basename matches a tracked file at the worktree root.",
+      "body": "The guard is meant to refuse only a regular file that git tracks **in this worktree**. The check asks git with `-C \"$(dirname \"$FILE\")\"` and passes only the bare basename, while `safe_git` pins `GIT_DIR` and `GIT_WORK_TREE`:\n\n```sh\n  if safe_git -C \"$(dirname -- \"$FILE\")\" --literal-pathspecs ls-files --error-unmatch \\\\\n    -- \"$(basename -- \"$FILE\")\" >/dev/null 2>&1; then\n```\n\nWhen the current directory is outside `GIT_WORK_TREE`, git's explicit-git-dir setup uses no prefix, so a pathspec like `package.json` is matched from the worktree root. Nothing earlier in the script checks that `$FILE` is under `$WORKTREE`: `[ -f ]` passes for any existing file.\n\nCommands this wrongly refuses:\n- `cat /tmp/pkg/package.json` (an unpacked tarball)\n- `head /other/repo/README.md`\n- `cat ../../README.md` from a worktree under `.worktrees/<name>`, which reads the main checkout's copy\n\nEach is refused whenever the worktree tracks a root file of the same name. The worker is then told to use Read for a file the guard has no claim to. This fails closed, against decision 112's \"fails open\". The only absolute-path test reads a file inside the worktree, so no test covers this case.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cdd7853f86f7bd7b01fcb3e76ded10d642d787e4/src/core/profile-compiler.service.ts#L628-L631\n\nA fix is to run git from the worktree and pass the absolute path as the pathspec:\n- A path inside the worktree is normalized (including `..` and a symlinked worktree prefix) and matched as before.\n- A path outside fails with \"outside repository\" (exit 128), so the call goes through.\n\nIt is also worth adding a test for an absolute path outside the worktree.\n\n(The validator confirmed this by reading git's `setup.c` behaviour from memory; it was not run, because the CI review is static.)",
+      "suggestion": "  if safe_git -C \"$WORKTREE\" --literal-pathspecs ls-files --error-unmatch -- \"$FILE\" >/dev/null 2>&1; then"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "624-628",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Relative words always resolve from the payload's `cwd`. A `cd` earlier in the same command is ignored, and decision 112's ceilings don't list this. It fails open for `cd src/core && cat x.ts`. It fails closed for `cd node_modules/vitest && cat package.json`: the root `package.json` is tracked, so the read is refused. Either list `cd` as a ceiling or skip the words in segments that follow a `cd`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "613",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A reader whose stdout is redirected to a file is still refused, though nothing reaches context, and the 'use Read with offset and limit' message doesn't fit a transform or copy. Examples: `sed 's/a/b/' src/x.ts > /tmp/x.ts`, `cat a.md b.md > out.md`. Either document this in decision 112's 'What goes through', or skip a segment whose stdout goes to a file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "615",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The wrapper list `env|exec|command|time|nice` and the `VAR=value` pattern now exist twice: in `COMMAND_START` (lines 519-521) for the test guard, and as a jq regex in the read guard. Decision 112 says the two skip the same wrappers, but nothing keeps the lists in sync. Since this is only the second use, a cross-referencing comment would be enough.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1896-1904",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new describe block defines a third copy of `GIT_ENV` (the others are at lines 442 and 880) and another copy of the `git` helper (line 890). That meets the project's third-use threshold for hoisting them to module level.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1906-1938",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`beforeEach` rebuilds a real repo, a linked worktree and the compiled profile for each of about 23 read-only `it.each` cases. A `beforeAll` would build that fixture once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "607-622",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The embedded jq program sits inside a shell single-quoted string inside a template literal, so it has doubled backslashes and `\\\\u0027` for quotes, with nothing explaining the escaping. That makes it easy to break when edited.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6526",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 112's 'What goes through' sentence 'An untracked or ignored file, coverage output and scratch notes say.' is unclear because of the dangling 'say'. The same 'coverage output say' wording is in the `buildReadGuardScript` JSDoc. Suggested rewrite: 'An untracked or ignored file, such as coverage output or scratch notes.'",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "590-603",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `buildReadGuardScript` JSDoc mostly restates decision 112's 'The guard' and 'Ceilings' paragraphs, including jq mechanics that will drift from the code. Its long verb-list sentence ('keeps each pipeline's first command, so … goes through, drops its redirections, and prints …') is also hard to parse. Trim it to the WHY and the fail-open contract, and point to decision 112 for the rest.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "632",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The BLOCKED message packs the instruction and its reason into one colon-joined sentence. It would read more clearly as two sentences: the instruction to use Read with offset and limit, then the reason (.claude/rules injection).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0089698,
+  "duration_ms": 328724,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 9614,
+    "cache_read": 249463,
+    "cache_creation": 43605,
+    "total": 302694
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 64,
+      "output": 43232,
+      "cache_read": 815599,
+      "cache_creation": 131796,
+      "cost_usd": 1.8178107999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 5917,
+      "cache_read": 123025,
+      "cache_creation": 47857,
+      "cost_usd": 0.19115900000000002
+    }
+  ],
+  "permission_denials": []
+}
