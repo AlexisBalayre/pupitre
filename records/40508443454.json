@@ -1,0 +1,141 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T13:05:35.936Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40508443454",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40508443454",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9d8907b2be89e87608b41323fd4e6fff9eb0ed60",
+  "source": "pr",
+  "pr_number": 188,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/sandbox-profile-utils.test.ts",
+      "line": "164-178",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"is gone\" grant test only differs from the old behavior where `tmpdir()` is unresolved (macOS outside the gate). Under pup's gate the child's TMPDIR is already the resolved scratch dir, and on Linux `/tmp` is not a link, so the test still passes with `resolvePath` restored. That contradicts decision 108's claim that this test fails when `grantPath` is taken out.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-adapter.test.ts",
+      "line": "6-11",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A file-wide `vi.mock('node:fs', …)` added for one mkdir-failure test goes against docs/conventions/testing.md §\"When `vi.mock` is right\". That section limits mocks to tmux and `claude -p` and calls that \"the whole current list\". Force the failure with a real filesystem condition instead, or document why this is an exception.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6520",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In decision 108, the line \"The parent is still followed, so a grant's parent must be one no child is granted. `resolvePath` is unchanged for its other readers…\" is about 160 characters on one line. Rewrap it to the roughly 100-column hanging indent its neighbours use.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6527",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 108 says \"which the seam rule now covers\", but \"the seam rule\" is never defined. Name `grantPath` (applied in `writeProfile`) so readers know what covers the Python adapter's `mkdtemp` grant.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile.utils.ts",
+      "line": "178-194",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 13-line `grantPath` JSDoc retells the incident (the HOME and /opt/homebrew/bin targets, vitest removing the report directory), which decision 108 already records. Keep only the contract: resolve the parent, append the name unread, and the parent must never be granted to a child. Also keep the WHY that reading the name races a child that outlived its run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/09-decisions.md",
+      "line": "6534",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 108's Tests paragraph leaves out the new `typescript-adapter.test.ts` case, where a failed report mkdir removes the holder and throws. The decision states that behavior in its report-directory paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1940",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "A nested package with a multi-segment `pkg.dir` still has its grant resolved through outer segments. A child already granted `checkoutDir` (build, or the concurrent root test run) can swap one of those segments for a link before a later nested stage's profile is written. That stage is then granted the link's target. Decision 108's Ceiling paragraph records this and says it is filed. `grantPath` closes only the single-segment case.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0590238999999997,
+  "duration_ms": 203851,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 8822,
+    "cache_read": 255861,
+    "cache_creation": 41129,
+    "total": 305824
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 84,
+      "output": 36002,
+      "cache_read": 1561010,
+      "cache_creation": 143548,
+      "cost_usd": 1.8737049999999993
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 4529,
+      "cache_read": 103054,
+      "cache_creation": 51875,
+      "cost_usd": 0.1853189
+    }
+  ],
+  "permission_denials": []
+}
