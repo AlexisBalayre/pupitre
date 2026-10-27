@@ -6468,12 +6468,16 @@ changes back into those docs is pending.
     vitest's cleanup, and the re-run's profile then followed the link and granted its target,
     `HOME` or `/opt/homebrew/bin` included. Main had the same hole with its unresolved
     directory.
-    *The grant.* `writeProfile` now names each grant through `grantPath`. A grant that exists and
-    is not a symlink is resolved as before. A missing grant, or a symlink, keeps its own name,
-    unfollowed, under its resolved parent. Writes through a link resolve to a target no rule
+    *The grant.* `writeProfile` now names each grant through `grantPath`: its parent resolved,
+    its own name appended unread. A real directory comes out as before. A missing grant or a
+    symlink keeps its own name, unfollowed, so writes through a link resolve to a target no rule
     matches, and a removed grant still matches what the kernel checks. So the grant can only ever
-    be the path the caller named. The parent is still followed, so a grant's parent must be one
-    no child is granted. `resolvePath` is unchanged for its other readers, the toolchain cache key
+    be the path the caller named. The name is never read, not even to tell a directory from a
+    link. A first version checked it with `lstat` and then resolved it with `realpath`. A
+    descendant that called `setsid()` escapes the group SIGKILL (decision 100's ceiling), so it
+    can outlive its run and keep swapping the name between a directory and a link. Against such a
+    loop, the reviewer's copy of that version returned the target 257 times in 117,496 calls.
+    The parent is still followed, so a grant's parent must be one no child is granted. `resolvePath` is unchanged for its other readers, the toolchain cache key
     and the TMPDIR base.
     *The report directory.* `instrumentedRun` makes `pup-coverage-*` with `mkdtemp` and `report`
     inside it. `report` is vitest's `reportsDirectory` and the only grant. The holder is never
@@ -6486,15 +6490,17 @@ changes back into those docs is pending.
     through that parent. A nested package's stage `cwd`, `join(checkoutDir, pkg.dir)`, may be
     one when `pkg.dir` has more than one segment and the session's commit made an outer segment a
     link. That path resolved fully before this change as well. It is not verified here and is
-    left to a task of its own.
-    Tests: in `sandbox-profile-utils.test.ts`, a symlink at a grant is granted as the link and not
-    its target, and a grant that is gone is granted under its resolved parent. In
+    left to a task of its own, which the conductor has filed.
+    Tests: in `sandbox-profile-utils.test.ts`, a symlink at a grant when the profile is written
+    is granted as the link and not its target. A grant that is gone and one that is a directory,
+    each named through the unresolved TMPDIR, are both granted under the resolved parent. In
     `typescript-adapter.test.ts`, under pup's own applied profile: a child given the folded run's
     grants removes its report directory, as a failing run does, and a second child makes it again
     and writes the report. A child that swaps the directory for a link to another directory
     leaves the next child refused a write through it. A child cannot remove the holder. With
-    `grantPath` taken out, all four new tests fail: the re-run on `Operation not permitted`, and
-    the link test on a write that landed in the link's target.
+    `grantPath` taken out, the two link tests, the gone-grant test and the re-run test fail: the
+    re-run on `Operation not permitted`, the adapter's link test on a write that landed in the
+    link's target. The directory case is the control and passes either way.
 
 ## Implementation notes
 

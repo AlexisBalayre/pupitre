@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -163,10 +163,14 @@ describe('writeProfile', () => {
 
   // A failing vitest run removes its report directory before the re-run's
   // profile is written; named as given, `/var/...` never matched the kernel's
-  // `/private/var/...`.
-  it('grants a path that is gone under its resolved parent', () => {
+  // `/private/var/...`. A directory that is there resolves the same way.
+  it.each([
+    ['is gone', () => {}],
+    ['is a directory', (path: string) => mkdirSync(path)],
+  ])('grants a path that %s under its resolved parent', (_, make) => {
     const holder = tempDir('pup-grant-holder-');
     const unresolved = join(tmpdir(), basename(holder), 'report');
+    make(unresolved);
 
     const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [unresolved]), 'utf8');
 

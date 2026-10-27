@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -184,12 +184,12 @@ export function writeProfile(
  * resolve to a target no rule matches. A grant a child removed, as a failing
  * vitest run removes its report directory, keeps the resolved name too: given
  * as `/var/...`, it never matched the kernel's `/private/var/...` and the
- * re-run could not make it again (decision 107). Its parent is resolved, so a
+ * re-run could not make it again (decision 107). The name is never read, not
+ * even to tell a directory from a link: a child that outlived its run can
+ * swap the two between a check and the resolve. Its parent is resolved, so a
  * grant's parent must be one no child is granted.
  */
 function grantPath(path: string): string {
-  const own = lstatSync(path, { throwIfNoEntry: false });
-  if (own && !own.isSymbolicLink()) return realpathSync(path);
   return join(resolvePath(dirname(path)), basename(path));
 }
 
