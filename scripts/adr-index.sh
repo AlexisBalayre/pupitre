@@ -18,23 +18,22 @@ index() {
   done
 }
 
+# The sandboxed merge gate allows no temp files, so the index travels through the environment
+# and the check compares strings.
 render() {
-  local idx
-  idx=$(mktemp)
-  index > "$idx"
-  awk -v begin="$BEGIN" -v end="$END" -v idx="$idx" '
-    $0 == begin { print; while ((getline line < idx) > 0) print line; skip = 1; next }
+  IDX=$(index) awk -v begin="$BEGIN" -v end="$END" '
+    $0 == begin { print; print ENVIRON["IDX"]; skip = 1; next }
     $0 == end { skip = 0 }
     !skip { print }
   ' "$README"
-  rm -f "$idx"
 }
 
 if [ "${1:-}" = "--check" ]; then
-  if ! render | diff -q - "$README" >/dev/null; then
+  if [ "$(render)" != "$(cat "$README")" ]; then
     echo "docs/adr/README.md index is stale: run 'bash scripts/adr-index.sh'." >&2
     exit 1
   fi
 else
-  render > "$README.tmp" && mv "$README.tmp" "$README"
+  out=$(render)
+  printf '%s\n' "$out" > "$README"
 fi
