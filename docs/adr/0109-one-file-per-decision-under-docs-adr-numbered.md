@@ -1,9 +1,8 @@
-# 0107. One file per decision under docs/adr/, numbered as before, with a generated index (2026-10-27)
+# 0109. One file per decision under docs/adr/, numbered as before, with a generated index (2026-10-27)
 
 - Status: accepted
-- Amends: [0001](0001-sessions-are-interactive-claude-in-tmux-panes.md)
 
-107. **One file per decision under `docs/adr/`, numbered as before, with a generated index
+109. **One file per decision under `docs/adr/`, numbered as before, with a generated index
     (2026-10-27).**
     `docs/09-decisions.md` reached 6,300 lines (~110k tokens). 86 of 111 planned tasks scoped it,
     so parallel workers conflicted on one file, and every reader loaded all of it. Each numbered
