@@ -1,0 +1,141 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-27T10:27:07.750Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40487955909",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40487955909",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b96809e1a29ab2b273e9530de426120352f7f09d",
+  "source": "pr",
+  "pr_number": 183,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "1057",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The \"path past the truncation\" case only gets truncated when the temp dir is long. On Linux with the default `/tmp` it is not truncated, so the hint is printed paste-ready and the `<repo>` assertion fails. This happens under the Linux gate too.",
+      "body": "**This test case only passes on macOS.** The \"a path past the truncation\" case expects the `<repo>` fallback. On Linux the path stays under the truncation cap, so `WorktreeConfigError` prints the paste-ready form instead.\n\nHow the fallback is chosen:\n- `sanitizeReason` caps its output at `FAILURE_SUMMARY_CHARS = 300` code points (`src/adapters/capability.utils.ts:63`) and adds no ellipsis.\n- `WorktreeConfigError` uses the `<repo>` form only when `sanitizeReason(raw) !== raw`.\n\nThe path lengths:\n- **Linux, default `/tmp`:** `tempDir('pup-diff-')` gives `/tmp/pup-diff-XXXXXX` (20 chars). The full path is 20 + 1 + 250 + `/.git/config` (12) = **283**, which is ≤ 300. Nothing is truncated, `config === raw`, and the assertions at L1072 and L1075 (`<repo>/.git/config …` and `with <repo> typed by hand`) fail.\n- **pup's gate on Linux:** `sandboxRun` sets `TMPDIR` to `/tmp/pup-gate-XXXXXX` (`src/core/sandbox.utils.ts:513-517`). The path comes to **299**, still ≤ 300.\n- **macOS:** the test passes only because `realpathSync(tmpdir())` is a long `/private/var/folders/…` path.\n\nOne path component can't fix this, because `NAME_MAX` is 255 and a 255-char name under `/tmp` still comes to only 288 characters. Use two components so the path is long on any platform:\n\n```ts\n['a path past the truncation', `${'p'.repeat(200)}/${'p'.repeat(200)}`],\n// …\nmkdirSync(odd, { recursive: true });\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/b96809e1a29ab2b273e9530de426120352f7f09d/src/core/git-diff-client.test.ts#L1052-L1075",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "155-162",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the path can't be printed as-is and the value is unreadable, the hint reads \"…holds characters this message cannot show as they are first (`-C /`: …)\". \"first\" seems to attach to \"show as they are\" rather than to the unset, in the one case where the order matters. Put the typed-by-hand clause in parentheses or end it with a delimiter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "130-133",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new private `shellWord` is a verbatim copy of the private one in `src/core/merge-gate.service.ts:976-979`, doc comment included, and a third variant next to the exported `shellWord` in `src/claude/session-runtime.service.ts:907`. That is a third use (general.md: \"no abstraction until third use\"). Consider one shared always-quote helper in core.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "154",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A repo path containing a backtick passes the `config === raw` guard and is quoted correctly for the shell. But the hint wraps the command in backticks, so copying the text between them gives a cut-off command. Consider sending backtick paths to the `<repo>` form too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "135-136",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`WorktreeConfigCause` ('file' | 'on' | 'unreadable') spells out 'on' and 'unreadable' again from `worktreeConfigState`'s return type, with nothing linking the two. Consider `type WorktreeConfigState = 'off' | 'on' | 'unreadable'` and `WorktreeConfigCause = Exclude<WorktreeConfigState, 'off'> | 'file'`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "142-173",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `WorktreeConfigError` constructor computes `join(dotGit, 'config')` twice (as `config` and as `raw`) and builds `problem`, `unset` and `steps` through nested conditionals. Writing `const raw = join(...)` first and then `const config = sanitizeReason(raw)` would remove the duplicate join.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "160-166",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "For `cause === 'file'` the extension is already off, because the extension is now checked first. The hint still tells the operator to run the `--unset-all`, which exits 5 on an absent key when no sparse checkout ran. Consider \"then, if the extension is on, …\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8284203,
+  "duration_ms": 215663,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 9690,
+    "cache_read": 173939,
+    "cache_creation": 57931,
+    "total": 241570
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 76,
+      "output": 29327,
+      "cache_read": 937822,
+      "cache_creation": 139994,
+      "cost_usd": 1.6481714
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 6078,
+      "cache_read": 103489,
+      "cache_creation": 43632,
+      "cost_usd": 0.18024890000000002
+    }
+  ],
+  "permission_denials": []
+}
