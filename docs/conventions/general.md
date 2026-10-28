@@ -72,8 +72,8 @@ files unreliable. The `convention-spot-check` Stop hook flags any `export defaul
 
 ## Type separation
 
-Types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`,
-`src/adapters/types/`. **Never inline a `type`/`interface` in a `*.service.ts` or
+Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`,
+`src/adapters/types/`. **Never inline an exported or reused `type`/`interface` in a `*.service.ts` or
 `*.routes.ts` file** — the spot-check hook warns on this. Re-export from the consumer if you
 want a stable call-site path.
 
