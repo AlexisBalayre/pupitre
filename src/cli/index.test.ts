@@ -2147,6 +2147,42 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('usage', () => {
+    it('refuses a session running it from its worktree', () => {
+      const own = initRepo();
+      const worktree = join(own, '.worktrees', 's1');
+      mkdirSync(worktree, { recursive: true });
+      seedSession(own, 's1', worktree);
+      useCwd(worktree);
+
+      buildProgram().parse(['usage'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('operator-only')]);
+      expect(logs).toEqual([]);
+    });
+
+    it('refuses the conductor', () => {
+      useCwd(initRepo());
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(['usage'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('operator-only')]);
+      expect(logs).toEqual([]);
+    });
+
+    it('refuses a date it cannot read', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['usage', '--since', 'last tuesday-ish'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('--since needs a date')]);
+    });
+  });
+
   describe('audit', () => {
     it('reports the NoAdapterError and exits 1 when no adapter detects the repo', async () => {
       useCwd(initRepo());
