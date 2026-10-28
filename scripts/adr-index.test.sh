@@ -13,11 +13,13 @@ fixture() {
   ADR_DIR=$dir bash "$SCRIPT" || return 1
 }
 
-expect() { # expect <name> <0|1> <dir>
-  ADR_DIR=$3 bash "$SCRIPT" --check 2>/dev/null
+expect() { # expect <name> <0|1> <dir> [args...]; the args default to --check
+  name=$1 want=$2 adr=$3
+  shift 3
+  ADR_DIR=$adr bash "$SCRIPT" "${@:---check}" 2>/dev/null
   code=$?
-  if [ "$code" -ne "$2" ]; then
-    echo "FAIL: $1 (exit $code, wanted $2)"
+  if [ "$code" -ne "$want" ]; then
+    echo "FAIL: $name (exit $code, wanted $want)"
     fail=1
   fi
 }
@@ -34,8 +36,9 @@ expect "missing begin marker fails" 1 "$dir"
 fixture; grep -v 'adr-index:end' "$dir/README.md" > "$dir/x"; mv "$dir/x" "$dir/README.md"
 expect "missing end marker fails" 1 "$dir"
 
-fixture; printf 'no title\n\n- Status: accepted\n' > "$dir/0002-second.md"; expect "missing title fails" 1 "$dir"
+# Write mode: without the validation it would succeed, so only the validation can make it fail.
+fixture; printf 'no title\n\n- Status: accepted\n' > "$dir/0002-second.md"; expect "missing title fails" 1 "$dir" ""
 
-fixture; printf '# 0002. Second\n\nbody\n' > "$dir/0002-second.md"; expect "missing status fails" 1 "$dir"
+fixture; printf '# 0002. Second\n\nbody\n' > "$dir/0002-second.md"; expect "missing status fails" 1 "$dir" ""
 
 exit $fail
