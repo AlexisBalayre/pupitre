@@ -170,16 +170,12 @@ const ACTIVITY_TAIL_BYTES = 256 * 1024;
  */
 function takesTurns(paths: ProjectPaths, sessionId: string): boolean {
   if (!SESSION_ID_PATTERN.test(sessionId)) return true;
-  let fd: number;
+  let fd: number | undefined;
   try {
     fd = openSync(
       paths.eventsFile(sessionId),
       constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
     );
-  } catch {
-    return true;
-  }
-  try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return true;
     const start = Math.max(0, stat.size - ACTIVITY_TAIL_BYTES);
@@ -191,7 +187,7 @@ function takesTurns(paths: ProjectPaths, sessionId: string): boolean {
   } catch {
     return true;
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
