@@ -110,6 +110,51 @@ describe('a changed path that reads as pathspec magic', () => {
   });
 });
 
+// On macOS `core.precomposeUnicode`, which `git init` turns on and a session
+// can write into the shared config, rewrites an NFD path argument to NFC, so
+// the gate read the hunks and blob of an NFC sibling instead (decision 114).
+// Elsewhere git ignores the key and these pass either way.
+describe('a changed NFD path with an NFC sibling under core.precomposeUnicode', () => {
+  const nfd = 'e\u0301.ts';
+  const nfc = '\u00e9.ts';
+
+  // A working tree on APFS cannot hold both spellings, so they go straight to the index.
+  function siblingRepo(nfcContent: string): string {
+    const repo = makeRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    for (const [path, content] of [
+      [nfd, 'one\ntwo\nthree\n'],
+      [nfc, nfcContent],
+    ] as const) {
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: content,
+        encoding: 'utf8',
+      }).trim();
+      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `100644,${blob},${path}`);
+    }
+    sh(repo, 'git', 'commit', '-m', 'siblings');
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'true');
+    return repo;
+  }
+
+  it('reads the NFD file its own hunks', () => {
+    const repo = siblingRepo('x\n');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ [nfd]: [1, 2, 3], [nfc]: [1] });
+  });
+
+  it('recounts the NFD file when its NFC sibling is binary', () => {
+    const repo = siblingRepo('x\0y\n');
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', nfd)).toEqual({ added: 3, deleted: 0 });
+  });
+});
+
 // A session can write `diff.external` or a textconv driver into the shared,
 // untracked `$GIT_COMMON_DIR/config` and `info/attributes`. Without the
 // per-call disarm git runs the command and emits no hunks, and an empty
