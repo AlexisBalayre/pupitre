@@ -1,0 +1,143 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T09:48:53.332Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40666880010",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40666880010",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1148eda339d09c6957924920ca3b332af3ed4e57",
+  "source": "pr",
+  "pr_number": 197,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/conventions/general.md",
+      "line": "75-76",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The 'no inline types' rule is stated with different scopes: §Type separation now bans every inline type/interface, while §Code layout, naming.md and ADR 0116 ban only exported or reused ones.",
+      "body": "**The scope of \"no inline types\" now differs between docs.**\n\nThis PR dropped \"exported\" from §Type separation, which now reads:\n\n> Types live in `*.types.ts` … **Never inline a `type`/`interface` in a `*.service.ts` or `*.routes.ts` file**\n\nEvery other statement of the rule is scoped:\n\n- general.md §Code layout (line 35): \"An exported or reused `type` / `interface` is never declared in a behavioural file; see §Type separation\"\n- ADR 0116: \"No exported or reused type, interface or `Error` subclass is declared inline in a behavioural file\"\n- naming.md: \"Every exported type or interface is in a `*.types.ts` / `*.interface.ts` file\"\n\n§Code layout points the reader to §Type separation, which then bans even a private single-use local alias. An agent that follows one section breaks the other. ADR 0116 wins where the docs conflict, so restore the qualifier here.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1148eda339d09c6957924920ca3b332af3ed4e57/docs/conventions/general.md#L75-L77",
+      "suggestion": "Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`,\n`src/adapters/types/`. **Never inline an exported or reused `type`/`interface` in a `*.service.ts` or"
+    },
+    {
+      "file": "docs/conventions/testing.md",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "testing.md, naming.md and general.md state the @src/@test aliases, test/unit/ and test/helpers/ as present-tense rules, but the root tsconfig/vitest config doesn't define the aliases yet, and the testing.md mock example imports through them. Only ADR 0116 §Ceilings says the layout is a target, so add a one-line pointer to it in testing.md.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "24-25",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "general.md says validate-file-naming.sh blocks `bar.service.test.ts`, but naming.md's Enforcement section only checks paths under `/src/`. Under the new layout a test in `test/unit/` isn't checked at all.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/naming.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The old exception for a whole-subject test (`overlap.test.ts` covering a service plus its repository) was removed without saying it is gone. Nothing says where a test goes for a source file with no role suffix (e.g. `index.ts`), and ADR 0104 still cites `overlap.test.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/naming.md",
+      "line": "69",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `integration.test` row in the role table still says 'needing a real server + DB'. The new §Test files uses `<scenario>.integration.test.ts` for any scenario spanning several subjects, so the two definitions disagree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "99",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The added 'in a `*.errors.ts` file under `errors/`' repeats what §Code layout already says and reads awkwardly. Revert it or write 'in an `errors/*.errors.ts` file'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/README.md",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR index jumps from 0114 to 0116 and no 0115 file exists. If 115 is reserved by an in-flight PR that's fine; otherwise the numbering has a gap.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "`git show --stat 12a9459` failed in the reviewer's sandbox with a bwrap error on `.git/config.worktree.lock`, so it couldn't inspect that commit on its own. The PR diff covered the same content, so coverage was not lost."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6395918,
+  "duration_ms": 96161,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 6257,
+    "cache_read": 229142,
+    "cache_creation": 32755,
+    "total": 268166
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 6257,
+      "cache_read": 229142,
+      "cache_creation": 32755,
+      "cost_usd": 0.43305639999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 7788,
+      "cache_read": 152684,
+      "cache_creation": 45334,
+      "cost_usd": 0.2065354
+    }
+  ],
+  "permission_denials": []
+}
