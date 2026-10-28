@@ -1,14 +1,41 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
   isCutOffByNode,
   originRepoSlug,
   readPullRequestReview,
   replyToReviewThread,
 } from './github.client.js';
+
+// The file's temp dirs, its children's included, go to a TMPDIR of its own,
+// which must hold no pup-* entry once every test has removed its own
+// (decision 100).
+let sharedTmp: string | undefined;
+let fileTmp: string;
+beforeAll(() => {
+  sharedTmp = process.env.TMPDIR;
+  fileTmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-github-client-tmp-')));
+  process.env.TMPDIR = fileTmp;
+});
+afterAll(() => {
+  const left = readdirSync(fileTmp).filter((name) => name.startsWith('pup-'));
+  if (sharedTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = sharedTmp;
+  rmSync(fileTmp, { recursive: true, force: true, maxRetries: 3 });
+  expect(left).toEqual([]);
+});
 
 describe('originRepoSlug', () => {
   it('parses scp-style ssh remotes', () => {
@@ -45,7 +72,7 @@ describe('readPullRequestReview', () => {
   const NEWEST = 'PRR_newest';
 
   beforeEach(() => {
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-review-gh-')));
+    ghDir = tempDir('pup-review-gh-');
     originalPath = process.env.PATH;
     process.env.PATH = `${ghDir}:${originalPath}`;
   });
