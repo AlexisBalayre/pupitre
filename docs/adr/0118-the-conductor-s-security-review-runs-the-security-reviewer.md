@@ -1,9 +1,9 @@
-# 0115. The conductor's security review runs the `security-reviewer` agent at high over the diff it is given, within ten turns (2026-10-28, amends 92)
+# 0118. The conductor's security review runs the `security-reviewer` agent at high over the diff it is given, within ten turns (2026-10-28, amends 92)
 
 - Status: accepted
 - Amends: [0092](0092-pup-routes-every-window-s-model-and-effort.md)
 
-115. **The conductor's security review runs the `security-reviewer` agent at high over the diff
+118. **The conductor's security review runs the `security-reviewer` agent at high over the diff
     it is given, within ten turns (2026-10-28, amends 92).**
     Amends decision 92. The kickoff told the conductor to spawn a general-purpose subagent at
     `effort: "xhigh"` to review a critical session's diff. In five days 55 of those runs cost about

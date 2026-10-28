@@ -1600,7 +1600,7 @@ describe('compileConductorProfile', () => {
 
   // Decision 92: the conductor launches into the routing rather than around
   // it, and owes a critical branch a security review before it gates it, run
-  // by the security-reviewer agent at high over the diff it is given (decision 115).
+  // by the security-reviewer agent at high over the diff it is given (decision 118).
   it('names the tier rule, both ladders and the security-reviewer agent at high', () => {
     const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
 
