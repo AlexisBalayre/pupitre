@@ -1,0 +1,161 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T11:40:09.891Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40680958565",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40680958565",
+  "actor": "AlexisBalayre",
+  "commit_sha": "645af1f36dfde17ecd5a17c54515d35441bdf66e",
+  "source": "pr",
+  "pr_number": 199,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "964-978",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The kickoff now hard-codes `subagent_type: \"security-reviewer\"`, an agent that exists only in pupitre's own `.claude/agents/`; nothing in `src/` installs it, so in an adopted repo the conductor's pre-gate security review spawns an unknown (or unrelated) agent, where the previous general-purpose subagent worked everywhere.",
+      "body": "**The conductor's security review now depends on an agent that exists only in pupitre's own checkout**\n\n[`profile-compiler.service.ts#L964-L978`](https://github.com/AlexisBalayre/pupitre/blob/645af1f36dfde17ecd5a17c54515d35441bdf66e/src/core/profile-compiler.service.ts#L964-L978) has the conductor call the Agent tool with `subagent_type: \"security-reviewer\"`. That agent is defined only in `.claude/agents/security-reviewer.md` in this repo. Nothing in `src/` installs it: the only `.claude/agents` reference is the comment at L995. The package ships only `bin`, and the conductor launch passes `--setting-sources user` with no `--agents` or plugin dir (`src/claude/session-runtime.service.ts:692-693`).\n\nThe conductor runs in whatever repo was registered with `pup init` (`launchConductor` uses `cwd: opts.repoPath`, `src/claude/session-runtime.service.ts:922-939`), and the README says adopting Pupitre commits nothing to that repo. The bullet has no repo-specific condition. It fires on any session diff touching a `CRITICAL_AREAS` entry, including the generic `.github/**` (`src/core/routing.utils.ts:21`), or on a task set to `--tier critical`. So in an adopted repo:\n\n- **No `security-reviewer` agent:** the spawn fails, and the pre-gate review is skipped or improvised.\n- **An unrelated `security-reviewer` agent:** the prompt goes to an agent that may lack Bash or this protocol. The pupitre manifest itself is written for pupitre's internals (`gateChildEnv`, decision 29, `docs/adr/`).\n\nBefore this PR, a general-purpose subagent worked in every repo. ADR 0118 doesn't address non-pupitre repos.\n\nSuggested fix (pick one):\n- Have pup supply the agent itself, for example as `--agents` JSON or as an agent file written into the conductor's compiled profile.\n- Make the bullet conditional: use `security-reviewer` when it exists in the main checkout, and otherwise fall back to a general-purpose subagent carrying the same rules.\n\nThen record the chosen scope in ADR 0118.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "969-976",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Claude Code cuts long Bash output (about 30k characters), and the \"no other git\" rule leaves the reviewer no allowed way to page past the cut (no pathspec, no `--stat`). A session can push its critical hunk past it by padding the diff with earlier-sorting files or by setting the unpinned `diff.orderFile`. A coverage loss, not a gate bypass: consider allowing the pinned command with `-c diff.orderFile=` and an optional `-- ':(literal)<path>'`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "974-976",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The diff is pinned to `refs/heads/pup/<session-id>` because the session can move its worktree HEAD (decision 80), but context reads are told to use Read under `.worktrees/<session-id>/`. Those files can come from a different commit than the one under review, so a session can shape what the reviewer sees around its hunks.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "966-967",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`model: \"opus\"` is inlined as a literal while the effort comes from `SECURITY_REVIEW_EFFORT`, so only half of the model/effort pair is a constant (docs/conventions/general.md §No hardcoded values). A `SECURITY_REVIEW_MODEL` next to the effort constant would keep the pair together.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "995-998",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SECURITY_REVIEW_TURNS` (a threshold) and `SECURITY_REVIEWER_AGENT` (an agent name) are module-private consts with `//` comments, not named exports with JSDoc in a `*.constants.ts` (docs/conventions/general.md §No hardcoded values). They are also split from `SECURITY_REVIEW_EFFORT` in `src/claude/model-ladder.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "995",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment on `SECURITY_REVIEWER_AGENT` (\"The project agent in `.claude/agents/`, which carries the review protocol and its own effort\") mostly narrates what the name refers to, which ADR 0118 already explains. Delete it or cut it to the one non-obvious fact.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "966-978",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Security review bullet is one long semicolon-chained sentence. It never numbers the \"four rules\" the ADR names, \"Its prompt hands it\" has an ambiguous antecedent, and \"report within 10 turns, reading only the files around a hunk it needs\" mixes the turn cap with the read rule.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1645-1661",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new test pins long verbatim prompt fragments, including a 3-line clause-spanning literal ending in incidental wording (\"runs the diff drivers\"), so any rewording breaks it even when the rules are unchanged. Assert only the load-bearing rule phrases.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1090-1092",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Protocol step 2 still has the conductor run `git -C .worktrees/<session-id> log --oneline main..HEAD` with bare `main`/`HEAD` and without `--no-replace-objects` or `GIT_NO_LAZY_FETCH=1`. That is exactly the pattern the rewritten security bullet warns against (decisions 41 and 80), so the two now contradict each other in the same prompt.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.5150244000000006,
+  "duration_ms": 313823,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 11186,
+    "cache_read": 190993,
+    "cache_creation": 44755,
+    "total": 246944
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 44303,
+      "cache_read": 1733446,
+      "cache_creation": 177826,
+      "cost_usd": 2.2565762
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 7608,
+      "cache_read": 135807,
+      "cache_creation": 67499,
+      "cost_usd": 0.2584482
+    }
+  ],
+  "permission_denials": []
+}
