@@ -320,31 +320,42 @@ export function updateTaskSpec(db: Database, id: string, spec: string, tier?: Ti
 }
 
 /**
- * States in which a session is at work on its task: about to launch, editing,
- * or steered back by the gate that rejected it. Its hooks were compiled from
- * the spec it holds, so a rescope waits for it to stop (decision 115).
+ * The claimed states in which `pup plan edit --rescope` may widen a task's
+ * spec (decision 115): a worker that said it was done, a gate that merged, a
+ * reject cap that parked it. Listed rather than excluded, so a state added
+ * later is refused until it is named here. A live window in any of them is
+ * still refused, by the caller that can probe tmux.
  */
-const WORKING_STATES: SessionState[] = ['queued', 'running', 'rejected'];
+const RESCOPABLE_STATES: readonly SessionState[] = ['awaiting-review', 'blocked', 'merged'];
+
+/**
+ * States in which a session is at work on its task, its hooks compiled from
+ * the spec it holds: every claimed state a rescope is not allowed in.
+ */
+function workingStates(): SessionState[] {
+  return claimedStates().filter((state) => !RESCOPABLE_STATES.includes(state));
+}
 
 /** The session, if any, at work on this task right now. */
 export function workingSession(db: Database, taskId: string): string | undefined {
+  const working = workingStates();
   const row = db
     .prepare(
       `SELECT id FROM sessions
-        WHERE task_id = ? AND state IN (${WORKING_STATES.map(() => '?').join(', ')})
+        WHERE task_id = ? AND state IN (${working.map(() => '?').join(', ')})
         ORDER BY created_at DESC LIMIT 1`,
     )
-    .get(taskId, ...WORKING_STATES) as { id: string } | undefined;
+    .get(taskId, ...working) as { id: string } | undefined;
   return row?.id;
 }
 
 /**
  * Rewrite a claimed task's spec for `pup plan edit --rescope`. Refused, with
  * nothing written, while a session is at work on the task: the guard is in the
- * statement, so a launch or fix round that starts after the caller checked
- * still wins (decision 115).
+ * statement, so no caller can write past it (decision 115).
  */
 export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean {
+  const working = workingStates();
   return (
     db
       .prepare(
@@ -353,10 +364,10 @@ export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean
             AND NOT EXISTS (
               SELECT 1 FROM sessions s
                WHERE s.task_id = tasks.id
-                 AND s.state IN (${WORKING_STATES.map(() => '?').join(', ')})
+                 AND s.state IN (${working.map(() => '?').join(', ')})
             )`,
       )
-      .run(spec, id, ...WORKING_STATES).changes > 0
+      .run(spec, id, ...working).changes > 0
   );
 }
 

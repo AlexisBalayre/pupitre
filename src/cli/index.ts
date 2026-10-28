@@ -869,6 +869,12 @@ function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void 
         `Session ${sanitizeReason(outcome.sessionId)} is at work on ${target}; rescope once it stops.`,
       );
       return;
+    case 'live':
+      refuse(
+        `Session ${sanitizeReason(outcome.sessionId)}'s window is still open, so its worker could ` +
+          `keep editing ${target}; rescope once the window is closed.`,
+      );
+      return;
     case 'unchanged':
       console.log(`${target}'s scope-in already holds every glob given; nothing changed.`);
       return;

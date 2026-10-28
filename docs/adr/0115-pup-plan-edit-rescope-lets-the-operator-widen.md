@@ -17,11 +17,25 @@
     *Who.* The operator only. A session is refused by `pup plan`'s existing rule (decision
     40), and the conductor here too: the conductor runs the fix rounds that hit the scope
     failure, and a scope the gate-failing side widens for itself is no scope at all.
-    *When.* Refused while a session on the task is `queued`, `running` or `rejected`: its
-    hooks were compiled from the old scope, and a rejected session is being steered back to
-    work. `awaiting-review`, `merged`, `blocked` and `killed` are fine. The guard is in the
-    `UPDATE` statement itself, so a launch or fix round that starts after the check still
-    wins. A task no session claims is refused too: plain `pup plan edit --scope` edits it.
+    *When.* Allowed only while every session on the task is in a state listed as
+    rescopable, `awaiting-review`, `blocked` or `merged`, or `killed`, which claims nothing,
+    and no session on it has a window open. The list names the states that allow a rescope,
+    and the refused ones are every other claimed state, derived from the state table as
+    `claimedStates()` is, so a state added later is refused until someone names it. Today
+    that refuses `queued`, `running` and `rejected`, whose hooks hold the old scope. A
+    window is open when the session's recorded pane answers a capture or a window wears its
+    name; a probe that fails any other way than "no such pane" counts as open. That covers
+    a worker that ran its own `pup session done` and so sits `awaiting-review` with its pane
+    alive: without the probe it could rescope its own task and keep editing, and the
+    re-gate would pass. The gate kills a merged session's window, so a merged session
+    passes. A task no session claims is refused too: plain `pup plan edit --scope` edits it.
+    *The globs.* Stricter than a plan's: a rescope widens a scope the gate already
+    audited, so it names paths. Refused are an empty glob, one made of only star segments
+    (`*`, `**`, `**/*`, `*/**`), an absolute one, one with a `..` segment, and any with a
+    C0 control, DEL or C1 control.
+    *Atomicity.* The read of the spec, the state and window checks, the write and both
+    records run in one `immediate` transaction, so no writer lands between the read and the
+    write. The `UPDATE` also carries the state guard, so no other caller can write past it.
     *What reads it.* The gate's scope-audit, `pup review` and `pup fix`'s recompiled
     profile all read `tasks.spec` through `readTaskSpec`, so the next re-gate and the next
     round's hooks see the widened scope with nothing else changed. Scope-out still wins
@@ -31,7 +45,9 @@
     that session lists the added globs as its files, so `pup log` (and `pup log <module>`)
     shows the rescope beside the merges it changes.
     *Tests.* In `task-rescope.test.ts`, a rescope on a merged, awaiting-review or blocked
-    session's task appends, writes the event and the record; a queued, running or rejected
-    one writes nothing; a re-gate's scope-audit then passes the added path and still fails
-    a scope-out one. `session-repository.test.ts` holds the statement's guard to each
-    state, and `index.test.ts` refuses a session and the conductor.
+    session's task with its window closed appends and writes the event and the record. A
+    queued, running or rejected one writes nothing, nor does an awaiting-review or blocked
+    one whose pane is alive, whose name has a window, or whose probe fails. Each refused
+    glob is refused. A re-gate's scope-audit then passes the added path and still fails a
+    scope-out one. `session-repository.test.ts` holds the statement's guard to each state,
+    and `index.test.ts` refuses a session, the conductor and an open window.

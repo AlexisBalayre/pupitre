@@ -2637,6 +2637,7 @@ describe('CLI commands', () => {
         const repo = initRepo();
         useCwd(repo);
         const db = claimed(repo, 'merged');
+        vi.mocked(hasSessionWindow).mockReturnValueOnce(false);
 
         rescope();
         buildProgram().parse(['log'], { from: 'user' });
@@ -2656,6 +2657,19 @@ describe('CLI commands', () => {
         rescope();
 
         expect(errors).toContain('Session s1 is at work on t-1; rescope once it stops.');
+        expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      // `pup session done` leaves the worker's window up while it awaits review.
+      it('refuses while the session window is still open', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'awaiting-review');
+
+        rescope();
+
+        expect(errors.join('\n')).toContain("Session s1's window is still open");
         expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
         expect(process.exitCode).toBe(1);
       });

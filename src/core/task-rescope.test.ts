@@ -1,5 +1,10 @@
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  hasSessionWindow,
+  readInputBox,
+  SessionPaneMissingError,
+} from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { InvalidProfileError } from './profile.errors.js';
@@ -12,6 +17,14 @@ import {
   readTaskSpec,
 } from './session.repository.js';
 import { rescopeTask } from './task-rescope.service.js';
+
+// The tmux boundary: by default no window wears the session's name and its
+// recorded pane is gone, as the gate leaves a merged session's.
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  hasSessionWindow: vi.fn(),
+  readInputBox: vi.fn(),
+}));
 
 const SPEC = {
   id: 't-1',
@@ -30,11 +43,18 @@ describe('rescopeTask (decision 115)', () => {
       worktreePath: `/repo/.worktrees/${id}`,
       branch: `pup/${id}`,
       profileHash: 'hash',
+      tmuxTarget: '%3',
     });
     db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, id);
   };
 
   beforeEach(() => {
+    vi.mocked(hasSessionWindow).mockReset().mockReturnValue(false);
+    vi.mocked(readInputBox)
+      .mockReset()
+      .mockImplementation((pane) => {
+        throw new SessionPaneMissingError(pane.sessionId, pane.paneId, 'gone');
+      });
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
@@ -111,6 +131,54 @@ describe('rescopeTask (decision 115)', () => {
     launched('s1', 'merged');
 
     expect(() => rescopeTask(db, 't-1', ['src/\n**'])).toThrow(InvalidProfileError);
+  });
+
+  // A worker that ran `pup session done` is awaiting review with its window
+  // still up: rescoping then would let it keep editing into the wider scope.
+  it.each(['awaiting-review', 'blocked'])(
+    'refuses while a %s session still has its pane, writing nothing',
+    (state) => {
+      launched('s1', state);
+      vi.mocked(readInputBox).mockReturnValue('empty');
+
+      expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'live', sessionId: 's1' });
+      expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
+      expect(listEvents(db, 's1')).toEqual([]);
+    },
+  );
+
+  it('refuses while a window wears the session name, whatever its pane', () => {
+    launched('s1', 'awaiting-review');
+    vi.mocked(hasSessionWindow).mockReturnValue(true);
+
+    expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'live', sessionId: 's1' });
+  });
+
+  it('counts a pane probe that fails another way as open', () => {
+    launched('s1', 'awaiting-review');
+    vi.mocked(readInputBox).mockImplementation(() => {
+      throw new Error('tmux: server exited unexpectedly');
+    });
+
+    expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'live', sessionId: 's1' });
+  });
+
+  it.each([
+    ['**', 'matches every path'],
+    ['*', 'matches every path'],
+    ['**/*', 'matches every path'],
+    ['*/**', 'matches every path'],
+    ['/etc/passwd', 'is absolute'],
+    ['src/../../etc/x', 'has a `..` segment'],
+    ['..', 'has a `..` segment'],
+    ['  ', 'is empty'],
+    ['src/\u0007x', 'contains a control character'],
+    ['src/\u007fx', 'contains a control character'],
+    ['src/\u009bx', 'contains a control character'],
+  ])('refuses the glob %j: it %s', (glob, why) => {
+    launched('s1', 'merged');
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**', glob])).toThrow(why);
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
 
