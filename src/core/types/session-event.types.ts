@@ -47,6 +47,11 @@ export interface EventPayloads {
    * which the gate's cap counts the round's rejections from.
    */
   fix_round: { prUrl: string; head: string; threads: string[]; rejectBase: number };
+  /**
+   * `pup plan edit --rescope` widened the session's task (decision 115): the
+   * globs it appended to scope-in, and who approved them.
+   */
+  rescope: { task: string; added: string[]; by: string };
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };

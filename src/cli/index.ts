@@ -129,6 +129,7 @@ import {
   SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -822,6 +823,61 @@ interface PlanOptions {
   accept?: string[];
   goal?: string;
   tier?: string;
+  rescope?: boolean;
+}
+
+/**
+ * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
+ * caller already refused a session; the conductor is refused here, because a
+ * scope a gate-failing agent widens for itself is no scope at all. Only
+ * `--scope` rides along: a rescope appends globs and changes nothing else.
+ */
+function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void {
+  if (callingConductor()) {
+    refuse(
+      '`pup plan edit --rescope` is operator-only; the conductor cannot widen a claimed task.',
+    );
+    return;
+  }
+  if (opts.goal ?? opts.scopeOut ?? opts.accept ?? opts.tier) {
+    refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
+    return;
+  }
+  if (!opts.scope) {
+    refuse('Usage: pup plan edit <task> --rescope --scope <glob...>');
+    return;
+  }
+  let outcome: ReturnType<typeof rescopeTask>;
+  try {
+    outcome = rescopeTask(db, target, opts.scope);
+  } catch (error) {
+    if (!(error instanceof InvalidProfileError)) throw error;
+    refuse(sanitizeLines(error.message));
+    return;
+  }
+  switch (outcome.status) {
+    case 'unknown':
+      refuse(`No task ${target}.`);
+      return;
+    case 'unclaimed':
+      refuse(
+        `No session has claimed ${target}; widen its scope with \`pup plan edit ${target} --scope ...\`.`,
+      );
+      return;
+    case 'working':
+      refuse(
+        `Session ${sanitizeReason(outcome.sessionId)} is at work on ${target}; rescope once it stops.`,
+      );
+      return;
+    case 'unchanged':
+      console.log(`${target}'s scope-in already holds every glob given; nothing changed.`);
+      return;
+    case 'rescoped':
+      console.log(
+        `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
+          `recorded on session ${sanitizeReason(outcome.sessionId)}.`,
+      );
+  }
 }
 
 /**
@@ -978,6 +1034,7 @@ export function buildProgram(): Command {
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--goal <goal>', 'replacement goal (edit)')
     .option('--tier <tier>', 'critical|standard, over the tier the scope-in implies (add, edit)')
+    .option('--rescope', "append --scope globs to a claimed task's scope-in (edit, operator only)")
     .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'list';
@@ -1052,6 +1109,7 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
+          if (opts.rescope) return rescopeOrRefuse(db, target, opts);
           let outcome: ReturnType<typeof editTaskSpec>;
           try {
             outcome = editTaskSpec(db, target, {

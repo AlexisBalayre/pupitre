@@ -25,10 +25,12 @@ import {
   MalformedTaskSpecError,
   readTaskSpec,
   recordSessionRoute,
+  rescopeTaskSpec,
   saveProjectDormantAt,
   taskSpecForDisplay,
   transitionSession,
   updateTaskSpec,
+  workingSession,
 } from './session.repository.js';
 
 function seedSession(db: Database, id: string): void {
@@ -301,6 +303,34 @@ describe('the backlog', () => {
     expect(deleteTask(db, 't-1')).toBe(false);
     expect(updateTaskSpec(db, 't-1', '{}')).toBe(false);
     expect(getTask(db, 't-1')?.spec).toBe(JSON.stringify({ goal: 't-1' }));
+  });
+
+  // Decision 115: a claimed spec moves only once no session is at work on it,
+  // and the guard sits in the statement, so a launch after the check still wins.
+  it.each([
+    ['queued', false],
+    ['running', false],
+    ['rejected', false],
+    ['awaiting-review', true],
+    ['blocked', true],
+    ['merged', true],
+    ['killed', true],
+  ] as const)('rescopes a claimed task whose session is %s: %s', (state, rescoped) => {
+    planned('t-1');
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+
+    expect(workingSession(db, 't-1')).toBe(rescoped ? undefined : 's1');
+    expect(rescopeTaskSpec(db, 't-1', '{"goal":"wider"}')).toBe(rescoped);
+    expect(getTask(db, 't-1')?.spec).toBe(
+      rescoped ? '{"goal":"wider"}' : JSON.stringify({ goal: 't-1' }),
+    );
   });
 });
 

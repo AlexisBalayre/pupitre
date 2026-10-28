@@ -2609,6 +2609,89 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    describe('edit --rescope (decision 115)', () => {
+      const claimed = (repo: string, state: string) => {
+        const { db, repoPath } = resolveProject(repo);
+        ensureProject(db, projectId(repoPath), repoPath);
+        insertTask(db, {
+          id: 't-1',
+          projectId: projectId(repoPath),
+          spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+        });
+        insertSession(db, {
+          id: 's1',
+          taskId: 't-1',
+          worktreePath: join(repoPath, '.worktrees', 's1'),
+          branch: 'pup/s1',
+          profileHash: 'hash',
+        });
+        db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+        return db;
+      };
+      const rescope = (...extra: string[]) =>
+        buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
+          from: 'user',
+        });
+
+      it("appends to a merged task's scope-in, and pup log shows it", () => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'merged');
+
+        rescope();
+        buildProgram().parse(['log'], { from: 'user' });
+
+        expect(logs).toContain("Widened t-1's scope-in with docs/**; recorded on session s1.");
+        expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**', 'docs/**']);
+        expect(listEvents(db, 's1').map((event) => event.type)).toContain('rescope');
+        expect(logs.join('\n')).toContain('session s1');
+        expect(logs.join('\n')).toContain('files: docs/**');
+      });
+
+      it('refuses while the session is running', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'running');
+
+        rescope();
+
+        expect(errors).toContain('Session s1 is at work on t-1; rescope once it stops.');
+        expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it.each([
+        ['a session', 'PUP_SESSION_ID', 's1'],
+        ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+      ])('refuses %s', (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'merged');
+        vi.stubEnv(variable, value);
+
+        rescope();
+
+        expect(errors.join('\n')).toContain('operator-only');
+        expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('takes no field but --scope, and needs one', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        claimed(repo, 'merged');
+
+        rescope('--goal', 'other');
+        expect(errors).toContain(
+          '--rescope takes only --scope: it appends scope-in globs and changes nothing else.',
+        );
+
+        buildProgram().parse(['plan', 'edit', 't-1', '--rescope'], { from: 'user' });
+        expect(errors).toContain('Usage: pup plan edit <task> --rescope --scope <glob...>');
+        expect(process.exitCode).toBe(1);
+      });
+    });
+
     it('still lists the backlog for a session, which reads nothing it wrote', () => {
       const repo = initRepo();
       useCwd(repo);

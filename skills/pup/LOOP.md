@@ -55,6 +55,11 @@ the open and important threads, and the next step after `→`:
   summary. Review its commits, then re-gate with `pup merge <task> --pr`, then `pup ci wait`
   again. The re-gate pins the pushed head, the only sha the PR vouches for and `pup land`
   accepts.
+- A round's re-gate failing scope-audit on a file the review asked for: once the worker is
+  done, `pup plan edit <task> --rescope --scope <glob...>` appends to its scope-in (never
+  removes), recorded on the session and in `pup log`. Then re-gate. Operator only: a
+  session or the conductor is refused, and so is a task whose session is still running.
+  Never edit `tasks.spec` in the store by hand.
 - `ready for the operator's merge click`: read the PR, then merge it on GitHub yourself.
 - Anything else (read the PR, comment `@claude review`, `pup land`) is yours to act on as it
   says.

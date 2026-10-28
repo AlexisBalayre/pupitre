@@ -107,10 +107,11 @@ export interface TaskRow {
 
 /**
  * Every type the store holds: the schema's, `landed`, which `pup land` writes
- * (decision 84), and `fix_round`, which `pup fix` writes (decision 90), the
- * two `EventType` has yet to join.
+ * (decision 84), `fix_round`, which `pup fix` writes (decision 90), and
+ * `rescope`, which `pup plan edit --rescope` writes (decision 115), the three
+ * `EventType` has yet to join.
  */
-type StoredEventType = EventType | 'landed' | 'fix_round';
+type StoredEventType = EventType | 'landed' | 'fix_round' | 'rescope';
 
 export interface EventRow {
   id: number;
@@ -315,6 +316,47 @@ export function updateTaskSpec(db: Database, id: string, spec: string, tier?: Ti
             )`,
       )
       .run(spec, tier ?? null, id, ...claimed).changes > 0
+  );
+}
+
+/**
+ * States in which a session is at work on its task: about to launch, editing,
+ * or steered back by the gate that rejected it. Its hooks were compiled from
+ * the spec it holds, so a rescope waits for it to stop (decision 115).
+ */
+const WORKING_STATES: SessionState[] = ['queued', 'running', 'rejected'];
+
+/** The session, if any, at work on this task right now. */
+export function workingSession(db: Database, taskId: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT id FROM sessions
+        WHERE task_id = ? AND state IN (${WORKING_STATES.map(() => '?').join(', ')})
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(taskId, ...WORKING_STATES) as { id: string } | undefined;
+  return row?.id;
+}
+
+/**
+ * Rewrite a claimed task's spec for `pup plan edit --rescope`. Refused, with
+ * nothing written, while a session is at work on the task: the guard is in the
+ * statement, so a launch or fix round that starts after the caller checked
+ * still wins (decision 115).
+ */
+export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE tasks SET spec = ?
+          WHERE id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM sessions s
+               WHERE s.task_id = tasks.id
+                 AND s.state IN (${WORKING_STATES.map(() => '?').join(', ')})
+            )`,
+      )
+      .run(spec, id, ...WORKING_STATES).changes > 0
   );
 }
 
