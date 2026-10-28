@@ -1,0 +1,94 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T10:55:45.156Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40675740284",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40675740284",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c3e0d98c701b2a63b157b95e3c7b244d1e42d016",
+  "source": "pr",
+  "pr_number": 197,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "1148eda339d09c6957924920ca3b332af3ed4e57",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/conventions/general.md",
+      "line": "75-76",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/conventions/general.md",
+      "line": "75-76",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "§Type separation now opens with \"Exported types live in `*.types.ts`\" while its bold rule (and §Code layout line 35) says \"exported or reused\", so a reused but unexported type has no stated home. Align the opening to \"Exported or reused types live in…\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "76",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edited line 76 is about 103 characters, while the lines around it wrap at about 95. Rewrap lines 75-78 so the paragraph keeps the file's width.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.45362730000000007,
+  "duration_ms": 48961,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 3238,
+    "cache_read": 185263,
+    "cache_creation": 30988,
+    "total": 219499
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3238,
+      "cache_read": 185263,
+      "cache_creation": 30988,
+      "cost_usd": 0.3497566
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 3218,
+      "cache_read": 130677,
+      "cache_creation": 23430,
+      "cost_usd": 0.10387069999999998
+    }
+  ],
+  "permission_denials": []
+}
