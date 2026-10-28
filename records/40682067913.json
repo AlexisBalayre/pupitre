@@ -1,0 +1,160 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T11:45:39.208Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40682067913",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40682067913",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3be295b0bd5e950beba8ee14f85b0e02d714a29d",
+  "source": "pr",
+  "pr_number": 193,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "26-31",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Re-raise: the check only confirms each marker exists, not that begin comes before end or that each appears once. If end comes before begin, write mode deletes everything after begin (the Implementation notes section) with no error.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "10",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Re-raise: every fixture call creates a mktemp -d directory (7 per run) and nothing removes it. There is no trap or rm -rf, against ADR 0100's rule that every temp dir a test makes is removed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "1-45",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Nothing runs adr-index.test.sh: no package.json script, CI workflow or scripts/pre-commit calls it, so its 7 cases only guard the script when someone remembers to run it by hand. Hooking it into pnpm lint or test would make the acceptance checks enforced.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "13",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Re-raise: fixture's return 1 is never checked by the callers (fixture; expect ...). If the seeding run fails, the expect-1 cases can still pass for the wrong reason; only the 'fresh index passes' case would catch it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "package.json",
+      "line": "49",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Because lint:fix chains with &&, an unfixable Biome error stops it before the ADR index is regenerated, so the stale index shows up again on the next pnpm lint.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "45-58",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Re-raise: the sentinel logic is spread over three places: canonical appends \\nx, check mode appends x to cat, and write mode strips it with ${out%x}. It is correct but hard to follow; one comment where the two sides are compared would make it easier.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "53",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Re-raise: the stale hint now names $README but still prints the bare command 'bash scripts/adr-index.sh', which regenerates docs/adr rather than the ADR_DIR that was checked.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "2-5",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The header documents the modes and --check but not the ADR_DIR override defined on line 9, which the test script depends on (and which resolves relative to the repo root after the cd).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "8",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`# fixture: a docs/adr directory with one valid decision and a README holding both markers` only restates what the two printf lines below it do; AGENTS.md §Comments says never narrate WHAT the code does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9650101,
+  "duration_ms": 124089,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 7020,
+    "cache_read": 192754,
+    "cache_creation": 38714,
+    "total": 238498
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 20,
+      "output": 15481,
+      "cache_read": 285918,
+      "cache_creation": 69019,
+      "cost_usd": 0.8281206
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 4168,
+      "cache_read": 67100,
+      "cache_creation": 35387,
+      "cost_usd": 0.1368895
+    }
+  ],
+  "permission_denials": []
+}
