@@ -1,0 +1,220 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T09:19:31.991Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40662203985",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40662203985",
+  "actor": "AlexisBalayre",
+  "commit_sha": "31e739086747a13cb70ff0567ad2ebc4779eeae6",
+  "source": "pr",
+  "pr_number": 186,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "289-300",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`readBranchTree` matches a symlink's landing against changed paths case-sensitively, so on macOS a link to `../../DOCS/impl.md` runs `docs/impl.md` as code while it still counts as docs.",
+      "body": "**The symlink reach check is case-sensitive, but the gate runs on case-insensitive APFS**\n\n`readBranchTree` resolves each link target lexically and compares the result to changed paths exactly:\n\n```ts\nconst lands = join(dirname(path), target).replace(/\\/+$/, '');\n...\nlandings.some((lands) => lands === '.' || path === lands || path.startsWith(`${lands}/`)),\n```\n\nDecision 78 makes macOS the primary gate host, and APFS is case-insensitive by default. Decision 110's own example gets through if one letter changes case. `src/pkg/impl.py -> ../../DOCS/impl.md` lands on `DOCS/impl.md`, which is not `anywhere`. So `linked('docs/impl.md')` is false, and 2000 lines of Python in `docs/impl.md` count as docs while the checkout runs them through the link. In the same way, `src/impl.ts -> Big.test.ts` misses `src/big.test.ts`. `git grep` never reads the link blob, so that file stays \"test\".\n\nNothing else catches this. `refuseEscapingLinks` only refuses links that leave the checkout, and decision 110's Owed list doesn't mention case or Unicode normalization. `src/core/scope-audit.utils.ts:19-20` already matches case-insensitively for exactly this reason (\"can't dodge the backstop on a case-insensitive filesystem (macOS default)\").\n\n**Fix:** in `linked`, compare case-folded, NFC-normalized forms of `lands` and `path`. Over-matching only moves more lines into source, which is the safe direction. Add a test with a link whose target differs from the doc only in case.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/31e739086747a13cb70ff0567ad2ebc4779eeae6/src/core/merge-gate.service.ts#L284-L300",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "350",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "SPECIFIER_TOKEN treats `>` as part of a token, so an unquoted HTML/Vue `src=` attribute right before `>` names a test file without matching its stem, and production code entered that way still counts as test.",
+      "body": "`SPECIFIER_TOKEN` (`/[^\\s'\"`]+/g`) only ends a token at whitespace or a quote. With an unquoted `src` attribute, the token's last segment never spells the test's name. Take `<script type=module src=./page.test.ts></script>` in a Vite `index.html`:\n\n- The token is `src=./page.test.ts></script>` and its basename is `script>`.\n- `src=./page.test.ts>` gives `page.test.ts>`, and the `$`-anchored extension strip fails.\n- `src=page.test.ts` gives `src=page.test`.\n\n`git grep -F` still lists the file, but `filesNaming` finds no name in it, so `page.test.ts` keeps counting as test. Production code loaded this way goes uncounted. Unquoted attribute values are valid HTML5, and Vite reads them through parse5 (dependency knowledge, hence medium confidence). ADR 0110 says a Vite `index.html` is caught. Its Owed list only covers specifiers that don't spell the name, and this one does. The test at `merge-gate.test.ts:2446` only covers `src=\"./page.test.ts\"`.\n\n**Fix:**\n- End tokens at `<`, `>` and `=` too: `/[^\\s'\"`<>=]+/g`. It is still a single class, so it stays linear.\n- Add the same characters to `UNSPELLABLE_NAME` (L310), so a test named with one still counts as source.\n- Add an unquoted `src=./page.test.ts>` case to the Vue/Vite test.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/31e739086747a13cb70ff0567ad2ebc4779eeae6/src/core/merge-gate.service.ts#L305-L350",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "410-413",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The `?`/`#` cut runs before `basename`, so a test in a directory whose name holds `#` or `?` is never claimed by the token that names it, and production code requiring it counts as test.",
+      "body": "The `?`/`#` cut runs before `basename`, so a `#` or `?` in a **directory** hides the test from the token that names it. Take `src/x#y/big.test.ts`, with `src/use.ts` doing `require('./x#y/big.test.js')`. The token is cut to `./x`, and the name `x` claims nothing. CommonJS `require` treats `#` as a literal character and loads the file, so 2000 lines of exports there still count as test.\n\n`UNSPELLABLE_NAME` only checks the basename (L334). Decision 110 says a test whose name holds `?` or `#` counts as source \"since no token spells it whole\", and a `#` in a directory defeats that same rule. The Owed list doesn't cover this case: it is not an escape, an alias or a runtime-built specifier.\n\nThe fix below also tries the token's own basename. The first pass is the current expression unchanged, and the second can only add names, which errs toward counting more as source. Please add a test for the `x#y/` case.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/31e739086747a13cb70ff0567ad2ebc4779eeae6/src/core/merge-gate.service.ts#L410-L413",
+      "suggestion": "    for (const [token] of text.matchAll(SPECIFIER_TOKEN)) {\n      for (const spelt of [token, basename(token)]) {\n        const name = basename(spelt.replace(/(?<=.)[?#].*$/s, '')).replace(/\\.[cm]?[jt]sx?$/, '');\n        if (byName.has(name)) names.add(name);\n      }\n    }"
+    },
+    {
+      "file": "src/core/merge-gate.constants.ts",
+      "line": "31",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`DIFF_SIZE_DOCUSAURUS_CONFIG` only matches the exact lowercase default config name, so `Docusaurus.config.js` (found by Docusaurus on macOS) or a config passed with `--config` leaves `docs/*.md` counted as docs while Docusaurus compiles it as MDX code.",
+      "body": "**Docusaurus detection misses case variants and `--config`**\n\n`DIFF_SIZE_DOCUSAURUS_CONFIG` matches only the exact lowercase file name:\n\n```ts\nexport const DIFF_SIZE_DOCUSAURUS_CONFIG = /(?:^|\\/)docusaurus\\.config\\.[cm]?[jt]s$/;\n```\n\nDocusaurus finds its config by probing `<siteDir>/docusaurus.config.<ext>`. On macOS's default case-insensitive filesystem, where the gate runs (decision 78), that probe also finds `Docusaurus.config.js`. `docusaurus build --config site.config.js` skips the default name altogether. In both cases Docusaurus still compiles root `docs/*.md` as MDX, but `markdownIsCode` stays false.\n\n**Exploit:** rename the config to `Docusaurus.config.js`, or add `--config site.config.js` to the build script. Put 2000 lines of `export function ...` in `docs/big.md` and import it from `src/` as `@site/docs/big.md`. The stage reports `0 source + 0 test + 2000 docs` and passes. Decision 110's Owed list covers only Markdown compilers other than Docusaurus, so this is not an accepted gap.\n\n**Fix:** the `i` flag closes the case gap. `--config` needs a broader signal, such as an `@docusaurus/core` dependency in any `package.json` on the branch. This rests on Docusaurus internals, hence medium confidence.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/31e739086747a13cb70ff0567ad2ebc4779eeae6/src/core/merge-gate.constants.ts#L31",
+      "suggestion": null
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "69",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "CONTRIBUTING says the gate refuses a diff 'over 600 changed lines' and that 'large tests are the usual reason' to pass `--accept-debt`; decision 110 makes tests no longer count, so this tells contributors to accept debt for something that no longer trips the flag.",
+      "body": "CONTRIBUTING.md line 69 is out of date after decision 110. It says the gate refuses a diff \"over 600 changed lines\" and that \"large tests are the usual reason\" to pass `--accept-debt`. `countChangedLines` now leaves out `*.test.ts` files, `docs/` prose and lockfiles, so large tests no longer trip the flag. The suggestion keeps the line's first sentence and replaces the rest.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/31e739086747a13cb70ff0567ad2ebc4779eeae6/CONTRIBUTING.md#L69",
+      "suggestion": "- Keep the diff to what the title says. The gate flags a diff over 600 changed source lines (test files, prose under `docs/` and lockfiles are not counted) and refuses to merge it unless the merge is run with `--accept-debt \"<reason>\" --review-by \"<condition>\"`, which records a ledger entry."
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "310",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`UNSPELLABLE_NAME` leaves out backslash, which no JS or JSON string literal can spell unescaped, so a test named `big\\x.test.ts` and loaded with CommonJS `require('./big\\\\x.test.js')` stays a test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "380-394",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`git grep -F` matches raw blob bytes, so an importer committed as UTF-16 (with a BOM) never matches the ASCII stem; tsc decodes UTF-16 source, so in a tsc-built project with no linter over that file, a test reached only from it stays counted as test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "274-296",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`readBranchTree` re-implements the symlink tree walk and the 'climbs past a named segment' check already in `refuseEscapingLinks` (L1046-1073) in the same file, so the two decision-81/110 link rules can drift apart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "285",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The git symlink mode `'120000'` is inlined twice in new code (`mode !== '120000'` in `readBranchTree` and `entry?.mode === '120000'` in `diffSizeKind`), not named in `merge-gate.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2269-2662",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The diff-size detail format `'<n> source + <n> test + <n> docs changed lines'` is hand-written in about 20 assertions, so any change to the wording means editing every one of them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "101",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The convention's example quotes the old JSDoc \"Changed-line count (adds + deletes, lockfiles excluded) above which the diff-size stage flags.\" The real JSDoc is now \"Changed source lines (adds + deletes; lockfiles, test files and `docs/` excluded)…\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/04-gates-and-debt.md",
+      "line": "26",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "It lists \"binary files\" as left out of the count with no qualifier. A binary that git reports as binary but whose content is text is recounted and flagged (decision 53). The ADR states this; docs/04 does not.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "290",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The risk score is described as \"diff size vs task size\", which the code never had.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.482103699999997,
+  "duration_ms": 488513,
+  "num_turns": 21,
+  "tokens": {
+    "input": 16,
+    "output": 22694,
+    "cache_read": 442155,
+    "cache_creation": 86959,
+    "total": 551824
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 194,
+      "output": 153442,
+      "cache_read": 2927186,
+      "cache_creation": 459972,
+      "cost_usd": 6.215790199999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 7670,
+      "cache_read": 246345,
+      "cache_creation": 65966,
+      "cost_usd": 0.2663135
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre; git diff bfb3c28..HEAD -- docs/adr/README.md src/core/merge-gate.constants.ts src/core/review.service.ts src/cli/index.test.ts; sed -n 1,20p docs/adr/0110*.md | t"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff bfb3c280743d45c18eb81996a8c687146fbf5ae3..HEAD --stat; git -C /home/runner/work/pupitre/pupitre diff bfb3c280743d45c18eb81996a8c687146fbf5ae3..HEAD -- src"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff bfb3c280743d45c18eb81996a8c687146fbf5ae3..HEAD -- src/core/merge-gate.service.ts | grep -n \"matchAll\\|replace(/(?<=\" "
+    }
+  ]
+}
