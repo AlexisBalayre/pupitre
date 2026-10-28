@@ -11,6 +11,8 @@ import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
   ensureProject,
+  getSession,
+  getTask,
   insertSession,
   insertTask,
   listEvents,
@@ -69,6 +71,8 @@ describe('rescopeTask (decision 115)', () => {
         status: 'rescoped',
         sessionId: 's1',
         added: ['src/cli/index.ts'],
+        tier: 'critical',
+        raised: false,
       });
 
       expect(readTaskSpec(db, 't-1')).toEqual({
@@ -80,6 +84,8 @@ describe('rescopeTask (decision 115)', () => {
         task: 't-1',
         added: ['src/cli/index.ts'],
         by: 'operator',
+        tier: 'critical',
+        raised: false,
       });
       const [record] = listDecisionRecords(db);
       expect(record?.session_id).toBe('s1');
@@ -114,6 +120,73 @@ describe('rescopeTask (decision 115)', () => {
     launched('s1', 'killed');
     expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'unclaimed' });
     expect(rescopeTask(db, 't-gone', ['docs/**'])).toEqual({ status: 'unknown' });
+  });
+
+  // The session's next window routes from its own stored tier, so a standard
+  // task widened onto a critical area would climb the standard ladder.
+  describe('the tier', () => {
+    const standard = (taskTierStored: string | null) => {
+      db.prepare('UPDATE tasks SET spec = ?, tier = ? WHERE id = ?').run(
+        JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
+        taskTierStored,
+        't-1',
+      );
+      launched('s1', 'merged');
+      db.prepare(
+        "UPDATE sessions SET tier = 'standard', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?",
+      ).run('s1');
+    };
+
+    it.each(['standard', null])(
+      'raises a task stored %s and its session to critical, from the bottom rung',
+      (stored) => {
+        standard(stored);
+
+        expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'])).toMatchObject({
+          tier: 'critical',
+          raised: true,
+        });
+
+        expect(getTask(db, 't-1')?.tier).toBe(stored === null ? null : 'critical');
+        expect(getSession(db, 's1')).toMatchObject({
+          tier: 'critical',
+          rung: null,
+          rung_reason: null,
+        });
+        const rescope = listEvents(db, 's1').find((event) => event.type === 'rescope');
+        expect(JSON.parse(rescope?.payload ?? '{}')).toMatchObject({
+          tier: 'critical',
+          raised: true,
+        });
+      },
+    );
+
+    it('keeps a standard task standard when the added globs are', () => {
+      standard('standard');
+
+      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'])).toMatchObject({
+        tier: 'standard',
+        raised: false,
+      });
+      expect(getTask(db, 't-1')?.tier).toBe('standard');
+      expect(getSession(db, 's1')).toMatchObject({ tier: 'standard', rung: 2 });
+    });
+
+    it('never lowers a critical tier', () => {
+      db.prepare("UPDATE tasks SET spec = ?, tier = 'critical' WHERE id = ?").run(
+        JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
+        't-1',
+      );
+      launched('s1', 'merged');
+      db.prepare("UPDATE sessions SET tier = 'critical', rung = 1 WHERE id = ?").run('s1');
+
+      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'])).toMatchObject({
+        tier: 'critical',
+        raised: false,
+      });
+      expect(getTask(db, 't-1')?.tier).toBe('critical');
+      expect(getSession(db, 's1')).toMatchObject({ tier: 'critical', rung: 1 });
+    });
   });
 
   it('writes nothing when every glob is already in scope', () => {

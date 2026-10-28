@@ -2642,7 +2642,9 @@ describe('CLI commands', () => {
         rescope();
         buildProgram().parse(['log'], { from: 'user' });
 
-        expect(logs).toContain("Widened t-1's scope-in with docs/**; recorded on session s1.");
+        expect(logs).toContain(
+          "Widened t-1's scope-in with docs/**; recorded on session s1; tier critical.",
+        );
         expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**', 'docs/**']);
         expect(listEvents(db, 's1').map((event) => event.type)).toContain('rescope');
         expect(logs.join('\n')).toContain('session s1');

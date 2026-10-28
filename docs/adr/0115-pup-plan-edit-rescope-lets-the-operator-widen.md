@@ -40,6 +40,17 @@
     profile all read `tasks.spec` through `readTaskSpec`, so the next re-gate and the next
     round's hooks see the widened scope with nothing else changed. Scope-out still wins
     over scope-in at the gate, so a glob added under a scope-out one opens nothing.
+    *The tier.* A fix round's or a respawn's window routes from the session's own stored
+    tier (decision 92), fixed at launch, so a standard task widened onto a critical area
+    would climb the standard ladder while `pup plan` already shows it critical. When the
+    widened scope-in implies critical and the session's tier is standard, the same
+    transaction raises every tier stored as standard, the task's and the claiming
+    session's, to critical, and never the other way. A null tier is left alone: it is
+    derived from the scope-in, which now implies critical. The session's rung and its
+    reason are cleared, so its next window starts the critical ladder from the bottom, as
+    a re-tiered task's does, rather than clamping a standard rung onto it. The tier the
+    session now runs on, and whether the rescope raised it, are in the `rescope` event and
+    the CLI's line.
     *The record.* In the same transaction as the write, a `rescope` event on the claiming
     session names the task, the added globs and `by: 'operator'`, and a decision record on
     that session lists the added globs as its files, so `pup log` (and `pup log <module>`)
@@ -49,5 +60,8 @@
     queued, running or rejected one writes nothing, nor does an awaiting-review or blocked
     one whose pane is alive, whose name has a window, or whose probe fails. Each refused
     glob is refused. A re-gate's scope-audit then passes the added path and still fails a
-    scope-out one. `session-repository.test.ts` holds the statement's guard to each state,
-    and `index.test.ts` refuses a session, the conductor and an open window.
+    scope-out one. A standard task and session widened onto `src/core/merge-gate*` are
+    raised to critical from the bottom rung; a standard glob leaves them standard, and a
+    critical tier is never lowered. `session-repository.test.ts` holds the statement's
+    guard to each state, and `index.test.ts` refuses a session, the conductor and an open
+    window.

@@ -371,6 +371,23 @@ export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean
   );
 }
 
+/**
+ * Raise a rescoped task to critical once its widened scope-in implies it
+ * (decision 115): a tier stored as standard, the task's and its claiming
+ * session's, becomes critical, and never the other way. A null tier is left
+ * alone, since it is derived from the scope-in that now implies critical. The
+ * session's rung is cleared with it, so its next window starts the critical
+ * ladder from the bottom, as a re-tiered task's does, rather than clamping a
+ * standard rung onto it.
+ */
+export function raiseToCritical(db: Database, taskId: string, sessionId: string): void {
+  db.prepare("UPDATE tasks SET tier = 'critical' WHERE id = ? AND tier = 'standard'").run(taskId);
+  db.prepare(
+    `UPDATE sessions SET tier = 'critical', rung = NULL, rung_reason = NULL
+      WHERE id = ? AND tier = 'standard'`,
+  ).run(sessionId);
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }

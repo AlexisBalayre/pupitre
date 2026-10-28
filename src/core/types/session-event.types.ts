@@ -49,9 +49,10 @@ export interface EventPayloads {
   fix_round: { prUrl: string; head: string; threads: string[]; rejectBase: number };
   /**
    * `pup plan edit --rescope` widened the session's task (decision 115): the
-   * globs it appended to scope-in, and who approved them.
+   * globs it appended to scope-in, who approved them, the tier the session's
+   * next window runs on, and whether the rescope raised it to critical.
    */
-  rescope: { task: string; added: string[]; by: string };
+  rescope: { task: string; added: string[]; by: string; tier: string; raised: boolean };
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };

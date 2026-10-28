@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import type { Tier } from '../claude/model-ladder.constants.js';
 import {
   hasSessionWindow,
   readInputBox,
@@ -6,11 +7,14 @@ import {
 } from '../claude/session-runtime.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { InvalidProfileError } from './profile.errors.js';
+import { asTier, taskTier, tierForScope } from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
+  getSession,
   getTask,
   listTaskSessions,
+  raiseToCritical,
   readTaskSpec,
   rescopeTaskSpec,
   type SessionRow,
@@ -20,7 +24,7 @@ import { sessionPane } from './session-lifecycle.service.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 
 export type RescopeOutcome =
-  | { status: 'rescoped'; sessionId: string; added: string[] }
+  | { status: 'rescoped'; sessionId: string; added: string[]; tier: Tier; raised: boolean }
   | { status: 'unchanged'; sessionId: string }
   | { status: 'working'; sessionId: string }
   | { status: 'live'; sessionId: string }
@@ -77,14 +81,18 @@ function windowOpen(row: SessionRow): boolean {
  * `pup review` and the next `pup fix` all read the widened spec. The read, the
  * checks, the write, the `rescope` event on the claiming session and the
  * decision record `pup log` lists are one immediate transaction, so no other
- * writer lands between the read and the write. The caller is the operator: the
- * CLI refuses a session and the conductor before this runs.
+ * writer lands between the read and the write. A widened scope-in that implies
+ * critical raises a standard task and session to critical in the same write,
+ * since the session's next window routes from its own stored tier; a tier is
+ * never lowered. The caller is the operator: the CLI refuses a session and the
+ * conductor before this runs.
  */
 export function rescopeTask(db: Database, taskId: string, globs: string[]): RescopeOutcome {
   for (const glob of globs) assertRescopableGlob(glob);
   return db
     .transaction((): RescopeOutcome => {
-      if (!getTask(db, taskId)) return { status: 'unknown' };
+      const task = getTask(db, taskId);
+      if (!task) return { status: 'unknown' };
       const sessionId = claimingSession(db, taskId);
       if (sessionId === undefined) return { status: 'unclaimed' };
       const working = workingSession(db, taskId);
@@ -99,13 +107,17 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
       if (!rescopeTaskSpec(db, taskId, JSON.stringify(widened))) {
         return { status: 'working', sessionId: workingSession(db, taskId) ?? sessionId };
       }
-      appendEvent(db, sessionId, 'rescope', { task: taskId, added, by: 'operator' });
+      const before = asTier(getSession(db, sessionId)?.tier) ?? taskTier(task.tier, spec.scopeIn);
+      const raised = before === 'standard' && tierForScope(widened.scopeIn) === 'critical';
+      if (raised) raiseToCritical(db, taskId, sessionId);
+      const tier: Tier = raised ? 'critical' : before;
+      appendEvent(db, sessionId, 'rescope', { task: taskId, added, by: 'operator', tier, raised });
       insertDecisionRecord(db, {
         sessionId,
         summary: `The operator widened ${taskId}'s scope-in after launch, adding ${added.join(', ')}.`,
         files: added,
       });
-      return { status: 'rescoped', sessionId, added };
+      return { status: 'rescoped', sessionId, added, tier, raised };
     })
     .immediate();
 }

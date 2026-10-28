@@ -881,7 +881,8 @@ function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void 
     case 'rescoped':
       console.log(
         `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
-          `recorded on session ${sanitizeReason(outcome.sessionId)}.`,
+          `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
+          `${outcome.raised ? ', raised from standard' : ''}.`,
       );
   }
 }
