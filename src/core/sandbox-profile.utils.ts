@@ -119,6 +119,8 @@ export function sandboxProfile(policy: {
   checkoutPaths: string[];
   /** Never unlinked nor renamed, though a grant covers them; matched exactly. */
   pinnedPaths: string[];
+  /** Nothing under these is unlinked or renamed: what a walk could not see into. */
+  sealedPaths: string[];
   /** The operator's home. Only the read denies key off it now. */
   home: string;
   /** Directory holding the generated profile; a writable one is a widened next run. */
@@ -141,9 +143,9 @@ export function sandboxProfile(policy: {
     ])})`,
     ...policy.checkoutPaths.map(gitDenyRule),
     // Bare, the rule would deny every unlink, so no pins means no rule.
-    ...(policy.pinnedPaths.length > 0
+    ...(policy.pinnedPaths.length + policy.sealedPaths.length > 0
       ? [
-          `(deny file-write-unlink${policy.pinnedPaths.map((path) => `\n  (literal "${escapeSbpl(path)}")`).join('')})`,
+          `(deny file-write-unlink${policy.pinnedPaths.map((path) => `\n  (literal "${escapeSbpl(path)}")`).join('')}${subpaths(policy.sealedPaths)})`,
         ]
       : []),
     '',
@@ -179,7 +181,8 @@ function escapeSbpl(value: string): string {
  * ancestors stay pinned, and pup makes each one in a holder of its own.
  * Below a pinned checkout, every directory that leads to a nested `.git` is
  * pinned as well: moved out, `.worktrees/s1` had its pointer file rewritten in
- * scratch and came back aimed at a git dir the child wrote.
+ * scratch and came back aimed at a git dir the child wrote. What the walk
+ * cannot see into is sealed whole.
  */
 export function writeProfile(
   policyDir: string,
@@ -194,6 +197,7 @@ export function writeProfile(
     (path) => !checkouts.includes(path),
   );
   const grants = [...checkouts, ...scratch];
+  const nested = pinnedCheckouts.map(nestedRepoPaths);
   writeFileSync(
     profilePath,
     sandboxProfile({
@@ -204,10 +208,11 @@ export function writeProfile(
         ...new Set([
           ...pinnedCheckouts,
           ...scratch,
-          ...pinnedCheckouts.flatMap(nestedRepoPaths),
+          ...nested.flatMap(({ pinned }) => pinned),
           ...grants.flatMap(ancestors),
         ]),
       ],
+      sealedPaths: [...new Set(nested.flatMap(({ sealed }) => sealed))],
       home: resolvePath(homedir()),
       policyDir,
     }),
@@ -215,35 +220,55 @@ export function writeProfile(
   return profilePath;
 }
 
+/** C0, DEL and C1: an SBPL string carries them raw, and no checkout needs one. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
 /**
- * Every directory below `root` that holds a `.git`, worktree pointer file or
- * directory, or leads to one, deepest first. Read afresh for each child: pup
- * adds worktrees while other runs go on. A child can add a `.git` under a
- * checkout only by moving in a repo it made in scratch, which earns that repo
- * pins and nothing else. Matched without
- * case, as the APFS lookup git makes is. Nothing is followed: a link is not a
- * directory here, and the root is only walked when it is a real directory.
- * What the walk cannot read, it cannot pin, and a pin is only ever a deny.
+ * Below `root`: every directory that holds a `.git`, worktree pointer file or
+ * directory, or leads to one, to pin; and every directory the walk could not
+ * see into, to seal whole. Read afresh for each child: pup adds worktrees while
+ * other runs go on. Matched without case, as the APFS lookup git makes is.
+ * Nothing is followed: a link is not a directory here, and the root is only
+ * walked when it is a real directory.
+ *
+ * Unreadable is not empty. A child runs as the operator and may `chmod 000`
+ * any directory its grant covers, so an earlier child hid `.worktrees` from
+ * this walk and a later one made it readable again and moved `.worktrees/s1`,
+ * which no pin named. Pinning the unreadable directory alone is not enough
+ * for the same reason; sealing it keeps everything under it in place. A
+ * directory whose name holds a control character is not walked into either:
+ * its parent is sealed instead, so no such name reaches the profile.
+ *
+ * A loop rather than recursion, so depth costs no stack. A path past the
+ * system's limit fails to read and is sealed like any other.
  */
-function nestedRepoPaths(root: string): string[] {
-  const found: string[] = [];
-  const walk = (dir: string): boolean => {
+function nestedRepoPaths(root: string): { pinned: string[]; sealed: string[] } {
+  const holders: string[] = [];
+  const sealed: string[] = [];
+  if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) return { pinned: [], sealed };
+  const pending = [root];
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
     let entries: Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
-      return false;
+      sealed.push(dir);
+      continue;
     }
-    let leads = false;
     for (const entry of entries) {
-      if (entry.name.toLowerCase() === GIT_DIRNAME) leads = true;
-      else if (entry.isDirectory() && walk(join(dir, entry.name))) leads = true;
+      if (entry.name.toLowerCase() === GIT_DIRNAME) holders.push(dir);
+      else if (entry.isDirectory()) {
+        if (CONTROL_CHARS.test(entry.name)) sealed.push(dir);
+        else pending.push(join(dir, entry.name));
+      }
     }
-    if (leads && dir !== root) found.push(dir);
-    return leads;
-  };
-  if (lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) walk(root);
-  return found;
+  }
+  // Each one and everything between it and the root: moving any of them moves it.
+  const pinned = [...holders, ...sealed].flatMap((dir) =>
+    [dir, ...ancestors(dir)].filter((path) => path.startsWith(`${root}/`)),
+  );
+  return { pinned, sealed };
 }
 
 /** Every directory above `path`, nearest first, the root included. */

@@ -1,4 +1,11 @@
-import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -20,12 +27,14 @@ function profile(
   protectedPaths: string[] = [],
   checkoutPaths: string[] = [],
   pinnedPaths: string[] = [],
+  sealedPaths: string[] = [],
 ): string {
   return sandboxProfile({
     writablePaths,
     protectedPaths,
     checkoutPaths,
     pinnedPaths,
+    sealedPaths,
     home: HOME,
     policyDir: '/scratch/pup-sandbox-x',
   });
@@ -113,7 +122,16 @@ describe('sandboxProfile', () => {
   });
 
   it('leaves the unlink deny out when nothing is pinned, since bare it denies every unlink', () => {
-    expect(profile(['/repo'], [], [], [])).not.toContain('file-write-unlink');
+    expect(profile(['/repo'], [], [], [], [])).not.toContain('file-write-unlink');
+  });
+
+  it('seals a path whole, under the same unlink deny as the pins', () => {
+    expect(profile(['/repo'], [], [], ['/repo/a'], ['/repo/b'])).toContain(
+      '(deny file-write-unlink\n  (literal "/repo/a")\n  (subpath "/repo/b"))',
+    );
+    expect(profile(['/repo'], [], [], [], ['/repo/b'])).toContain(
+      '(deny file-write-unlink\n  (subpath "/repo/b"))',
+    );
   });
 
   it('escapes a path that would otherwise break out of the SBPL string', () => {
@@ -189,6 +207,44 @@ describe('writeProfile', () => {
     expect(pinned.filter((path) => path.startsWith(`${checkout}/`)).sort()).toEqual(
       ['.worktrees', '.worktrees/s1', 'vendor', 'vendor/lib'].map((path) => join(checkout, path)),
     );
+  });
+
+  // A child runs as the operator, so it can `chmod 000` a directory its grant
+  // covers: read as empty, `.worktrees` hid `s1` from the next profile, and
+  // pinned alone it let the next child make it readable and move `s1`.
+  it('seals a directory the walk cannot read, and pins it and what leads to it', () => {
+    const checkout = tempDir('pup-nested-');
+    const hidden = join(checkout, 'a', '.worktrees');
+    mkdirSync(join(hidden, 's1'), { recursive: true });
+    writeFileSync(join(hidden, 's1', '.git'), 'gitdir: /x\n');
+    chmodSync(hidden, 0o000);
+    let generated: string;
+    try {
+      generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+    } finally {
+      chmodSync(hidden, 0o755);
+    }
+
+    const pinned = [...generated.matchAll(/\(literal "([^"]*)"\)/g)].map(([, path = '']) => path);
+    expect(pinned.filter((path) => path.startsWith(`${checkout}/`)).sort()).toEqual([
+      join(checkout, 'a'),
+      hidden,
+    ]);
+    expect(generated).toContain(`(subpath "${hidden}"))`);
+  });
+
+  // An SBPL string carries a newline raw; such a name never reaches the profile.
+  it('seals the parent of a directory named with a control character, not the name', () => {
+    const checkout = tempDir('pup-nested-');
+    mkdirSync(join(checkout, 'vendor', 'a\nb', '.git'), { recursive: true });
+    mkdirSync(join(checkout, 'vendor', 'c\u009bd', '.git'), { recursive: true });
+
+    const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+
+    expect(generated).toContain(`(subpath "${join(checkout, 'vendor')}"))`);
+    expect(generated).toContain(`(literal "${join(checkout, 'vendor')}")`);
+    expect(generated).not.toContain('a\nb');
+    expect(generated).not.toContain('\u009b');
   });
 
   // A child can put a link at its own grant, and the next child's profile is

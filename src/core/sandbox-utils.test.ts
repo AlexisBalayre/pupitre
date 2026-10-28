@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -741,6 +742,36 @@ describe('runGateChild', () => {
           repoPath: cwd,
         });
         expect(existsSync(join(cwd, '.worktrees', 'moved'))).toBe(true);
+      });
+
+      it('cannot hide a nested worktree from the next profile, then move it', async () => {
+        // One child makes `.worktrees` unreadable, so the walk behind the next
+        // child's profile cannot see `s1`; the next child makes it readable
+        // again and runs the same move. The unreadable directory is sealed.
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, '.worktrees', 's1');
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s1\n');
+        const options = { cwd, repoPath: cwd };
+
+        try {
+          await runGateChild('chmod', ['000', '.worktrees'], options);
+          await expect(
+            runGateChild(
+              'sh',
+              [
+                '-c',
+                'chmod 755 .worktrees && mv .worktrees/s1 "$TMPDIR/s1" && printf "gitdir: /evil" > "$TMPDIR/s1/.git" && mv "$TMPDIR/s1" .worktrees/s1',
+              ],
+              options,
+            ),
+          ).rejects.toThrow(/Operation not permitted/);
+        } finally {
+          chmodSync(join(cwd, '.worktrees'), 0o755);
+        }
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s1\n',
+        );
       });
 
       it('cannot swap its checkout with a directory in its scratch, in either order', async () => {

@@ -1,10 +1,11 @@
-# 0117. A sandbox grant's own name, every directory above it and every directory below a checkout that leads to a nested `.git` cannot be unlinked or renamed, except a caller's output directory, which keeps its name free (2026-10-28).
+# 0117. A sandbox grant's own name, every directory above it and every directory below a checkout that leads to a nested `.git` cannot be unlinked or renamed, and nothing under a directory the walk cannot read can be, except a caller's output directory, which keeps its name free (2026-10-28).
 
 - Status: accepted
 
 117. **A sandbox grant's own name, every directory above it and every directory below a
-    checkout that leads to a nested `.git` cannot be unlinked or renamed, except a caller's
-    output directory, which keeps its name free (2026-10-28).**
+    checkout that leads to a nested `.git` cannot be unlinked or renamed, and nothing under a
+    directory the walk cannot read can be, except a caller's output directory, which keeps its
+    name free (2026-10-28).**
     The t-mvqve712 security review found by reading the profile that a grant covers its own
     name, so a child may rename it. Reproduced under the generated profile on macOS: in
     `pup init` and `pup audit` the child's cwd is the operator's repo. The child ran `mv` on
@@ -38,6 +39,19 @@
     repo, with seven worktrees and their `node_modules`, the walk takes about a second per
     child; a stage takes seconds to minutes, and children are spawned per stage. Each pin is a
     `literal`, so a child still renames and removes any directory that leads to no `.git`.
+    *The seal.* An unreadable directory is not an empty one. A child runs as the operator, and
+    a mode change is not an unlink, so one child ran `chmod 000 .worktrees`. The walk behind the
+    next child's profile then failed on EACCES and pinned nothing below the root. That next
+    child ran `chmod 755`, made the same move and rewrite, and was let through. That was
+    reproduced, and pinning the unreadable directory alone did not stop it: `s1` was never seen,
+    so it was never pinned. So a directory the walk cannot read is sealed: the same rule names
+    it as a `subpath`, and nothing under it can be unlinked or renamed. The directory and the
+    directories between it and the root are pinned as well. A directory whose name holds a C0,
+    DEL or C1 character is not walked into either. Its parent is sealed instead, so no such
+    name reaches an SBPL string, which would carry it raw. The walk is a loop, not recursion,
+    so depth costs no stack. A path past the system's length limit fails to read and is
+    sealed. A child that leaves a directory unreadable or oddly named loses unlink under it
+    for every later child. Those stages may then fail, but no protection is lost.
     Measured on APFS, a rename that spells the root in another case is refused too. With no
     pins at all the rule is left out, because a bare `file-write-unlink` deny refuses every
     unlink.
@@ -52,7 +66,9 @@
     coverage directory. Neither holds a repo pup's git reads. A caller that passes a repo as an
     output would reopen this hole for that repo. The nested set is what the walk saw when the
     profile was written: a worktree pup adds while the child runs is not pinned for that
-    child. A directory the walk cannot read is not walked. A child can still move a repo it
+    child. The walk has no bound on the number of directories, so a child that makes millions
+    of them slows every later child's profile, by minutes at worst. It cannot thereby hide
+    one. A child can still move a repo it
     made in scratch into the checkout, under a name that does not exist yet, since a rename's
     destination is checked only as a new name. pup runs no git in such a directory, and the
     next profile pins it.
@@ -64,10 +80,16 @@
     the worktree move with its pointer rewrite, and the move of `.worktrees` itself. The pointer
     file is unchanged, and a sibling directory with no `.git` still moves. A fourth is refused a
     `renamex_np` swap of a scratch directory with its checkout, in both operand orders, while
-    the same swap of two scratch directories goes through. With the pins emptied, the first two
+    the same swap of two scratch directories goes through. A fifth runs after a child made
+    `.worktrees` unreadable. It restores the mode and tries the worktree move, is refused, and
+    the pointer file is unchanged. With the pins emptied, the first two
     fail because the child's command succeeds. Without the walk's pins, the worktree test
-    fails. Without the root pins, the swap test fails. In `sandbox-profile-utils.test.ts`, the
+    fails. Without the root pins, the swap test fails. With the unreadable directory pinned
+    but not sealed, the fifth fails. In `sandbox-profile-utils.test.ts`, the
     two whole-text goldens carry the rule. An output keeps the `.git` deny, and its holder is
     pinned but its own name is not. No pins means no rule. On a real tree, the walk pins exactly
     `.worktrees`, `.worktrees/s1`, `vendor` and `vendor/lib`. Those lead to a pointer file and to
     a `.GIT` directory; a linked directory holding a repo and a plain directory are not pinned.
+    A `chmod 000` directory is sealed, and it and its parent are pinned. Two directories named
+    with a newline and with `\u009b`, each holding a `.git`, seal their parent, and neither
+    name reaches the profile.
