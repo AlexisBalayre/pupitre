@@ -12,7 +12,7 @@ Your question is "does this change follow the project's written rules". The orch
 ## Rule sources
 
 - `docs/conventions/*`: the primary, authoritative rules. There are exactly three — the universal `general.md` and `naming.md`, plus `testing.md` for test files. They auto-load via `.claude/rules` when you read a matching file. Weight these first, and never cite a per-area doc; none exists.
-- `docs/09-decisions.md`: the numbered, resolved decisions binding this project's architecture. A change that contradicts one (uses a rejected alternative, reintroduces a retired pattern) is a violation; cite the decision number. **It wins over `docs/00`–`08` wherever they conflict.**
+- `docs/adr/`: one file per numbered, resolved decision binding this project's architecture. A change that contradicts one (uses a rejected alternative, reintroduces a retired pattern) is a violation; cite the decision number. **It wins over `docs/00`–`08` wherever they conflict.**
 - `CLAUDE.md`: a smaller complementary set of guidelines. Apply it too.
 
 ## Flag
