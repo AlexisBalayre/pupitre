@@ -49,5 +49,5 @@ export const CONDUCTOR_ROUTE: ModelRoute = opus('high');
 /** Gate-time drafting (`runUtility`): a fixed prompt in, text out. */
 export const UTILITY_ROUTE: ModelRoute = { model: HAIKU_MODEL, effort: 'low' };
 
-/** The effort the conductor runs the security-reviewer agent at, over gate, git, tmux and store diffs. */
+/** The effort the conductor runs its security-review subagent at, over gate, git, tmux and store diffs. */
 export const SECURITY_REVIEW_EFFORT = 'high';

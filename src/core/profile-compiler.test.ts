@@ -1600,8 +1600,9 @@ describe('compileConductorProfile', () => {
 
   // Decision 92: the conductor launches into the routing rather than around
   // it, and owes a critical branch a security review before it gates it, run
-  // by the security-reviewer agent on Opus at high (decision 118).
-  it('names the tier rule, both ladders and the security-reviewer agent at high', () => {
+  // by a general-purpose subagent on Opus at high: no project agent loads under
+  // `--setting-sources user`, so the kickoff names none (decision 118).
+  it('names the tier rule, both ladders and the general-purpose review subagent at high', () => {
     const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
 
     expect(context).toContain('## Models');
@@ -1622,9 +1623,10 @@ describe('compileConductorProfile', () => {
         'tmux or the store',
     );
     expect(context).toContain(
-      'spawn the `security-reviewer` agent with the Agent tool ' +
-        '(`subagent_type: "security-reviewer"`, `model: "opus"`, `effort: "high"`)',
+      'spawn a general-purpose subagent with the Agent tool ' +
+        '(`subagent_type: "general-purpose"`, `model: "opus"`, `effort: "high"`)',
     );
+    expect(context).not.toContain('security-reviewer');
     expect(context).toContain('report within 10 turns');
     expect(context).not.toContain('xhigh"');
     expect(context).toContain(
@@ -1641,13 +1643,16 @@ describe('compileConductorProfile', () => {
   });
 
   // Decision 118: the untrusted hunks stay out of the conductor's context, and the
-  // agent reaches the branch only through the pinned diff and Read on the worktree.
-  it('has the security-reviewer run the pinned diff itself and no other git', () => {
+  // subagent reaches the branch only through the pinned diff and Read on the worktree.
+  it('has the review subagent run the pinned diff itself and no other git', () => {
     const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
 
     expect(context).toContain('never read the diff yourself');
     expect(context).toContain(
-      'Its prompt hands it the session id, the target and these rules: run `GIT_NO_LAZY_FETCH=1 git ',
+      'Its prompt hands it the session id, the target, what to look for (a check the change ' +
+        'lets code skip, a measurement it can forge or empty, untrusted input reaching a ' +
+        'command, a secret or environment it exposes) and these rules: run ' +
+        '`GIT_NO_LAZY_FETCH=1 git ',
     );
     expect(context).toContain(
       'refs/heads/<target>...refs/heads/pup/<session-id>` itself, where `<target>` is the branch ' +
