@@ -1,7 +1,7 @@
 # 0092. pup routes every window's model and effort by its task's tier, climbs an explicit ladder one rung per failure, and never chooses Fable (2026-10-17)
 
 - Status: accepted
-- Amended by: [0090](0090-pup-fix-session-hands-the-ci-review-s.md)
+- Amended by: [0090](0090-pup-fix-session-hands-the-ci-review-s.md), [0115](0115-the-conductor-s-security-review-runs-the-security-reviewer.md)
 
 92. **pup routes every window's model and effort by its task's tier, climbs an explicit ladder one
     rung per failure, and never chooses Fable (2026-10-17).**

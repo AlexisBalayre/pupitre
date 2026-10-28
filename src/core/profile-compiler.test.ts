@@ -1599,8 +1599,9 @@ describe('compileConductorProfile', () => {
   });
 
   // Decision 92: the conductor launches into the routing rather than around
-  // it, and owes a critical branch a security review before it gates it.
-  it('names the tier rule, both ladders and the xhigh security-review subagent', () => {
+  // it, and owes a critical branch a security review before it gates it, run
+  // by the security-reviewer agent at high over the diff it is given (decision 115).
+  it('names the tier rule, both ladders and the security-reviewer agent at high', () => {
     const context = ProfileCompiler.compileConductorProfile(conductorInput).contextMarkdown;
 
     expect(context).toContain('## Models');
@@ -1620,7 +1621,12 @@ describe('compileConductorProfile', () => {
       'before `pup merge <session-id> --pr` on a session whose diff touches the gate, git, ' +
         'tmux or the store',
     );
-    expect(context).toContain('Agent tool at `effort: "xhigh"`');
+    expect(context).toContain(
+      'spawn the `security-reviewer` agent with the Agent tool ' +
+        '(`subagent_type: "security-reviewer"`) at `effort: "high"`, pass the diff in its prompt, ' +
+        'and tell it to report within 10 turns',
+    );
+    expect(context).not.toContain('xhigh"');
     expect(context).toContain(
       '`GIT_NO_LAZY_FETCH=1 git --no-replace-objects -C .worktrees/<session-id> ' +
         '-c core.useReplaceRefs=false -c core.fsmonitor= -c core.hooksPath=/dev/null ' +
