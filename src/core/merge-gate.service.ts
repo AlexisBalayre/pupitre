@@ -1898,10 +1898,13 @@ async function mergeTargetInto(
  * resolved as `mergeTargetInto` resolves one (decision 120): the index entry
  * takes our side for the tree the scratch checkout is cut from, then the
  * regenerated README, which `checkout-index` writes to the file, and the
- * rebase goes on with `:` as its editor, which git reads as none. Every way
- * out aborts what is left of the rebase, which after a finished one is
- * nothing. Returns the failure for the worker, or undefined once the branch is
- * rebased.
+ * rebase goes on with `:` as its editor, which git reads as none, in a call of
+ * its own. Any other way out aborts the rebase, except past an armed driver:
+ * the abort checks out every file the rebase changed, which runs it, so the
+ * rebase is left stopped for the operator. A driver armed in flight is
+ * thrown as it was; one the re-check finds is thrown after a refused stop,
+ * and never over another error in flight. Returns the failure for the worker,
+ * or undefined once the branch is rebased.
  */
 async function rebaseOntoTarget(
   req: MergeRequest,
@@ -1910,55 +1913,62 @@ async function rebaseOntoTarget(
   target: string,
   targetSha: string,
   checkoutDir: string,
+  step = ['rebase', targetSha],
 ): Promise<string | undefined> {
   const pinned = { env: { ...worktreeEnv } };
   const setIndex = (blob: string): void => {
     runGit(worktree, ['update-index', '--cacheinfo', `100644,${blob},${ADR_INDEX}`], pinned);
   };
-  let step = ['rebase', targetSha];
-  try {
-    for (;;) {
-      let failure: unknown;
-      try {
-        runGit(worktree, step, { env: { ...worktreeEnv, GIT_EDITOR: ':' } });
-        return undefined;
-      } catch (error) {
-        failure = error;
-      }
-      const unmerged = runGit(worktree, ['ls-files', '-u', '-z'], pinned).split('\0');
-      const resolved = await regenerateAdrIndex(
-        req,
-        checkoutDir,
-        unmerged.filter(Boolean),
-        (ours) => {
-          setIndex(ours);
-          return runGit(worktree, ['write-tree'], pinned).trim();
-        },
-      );
-      if (typeof resolved === 'string') {
-        const onto = sanitizeReason(target);
-        return (
-          `Auto-rebase onto ${onto} hit conflicts. Run ` +
-          `\`git rebase ${shellWord(`refs/heads/${onto}`)}\`, ` +
-          `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(failure)}${resolved}`
-        );
-      }
-      setIndex(resolved.blob);
-      // `checkout-index` runs a smudge filter on the file it writes.
-      assertNoArmedGitDrivers(worktree, worktreeEnv);
-      runGit(worktree, ['checkout-index', '-f', '--', ADR_INDEX], pinned);
-      step = ['rebase', '--continue'];
-    }
-  } finally {
+  /** Swallowed: a driver armed since leaves the rebase stopped, and the error in flight stands. */
+  const abort = (): void => {
     try {
-      // Not past an armed driver: the abort checks out every file the rebase
-      // changed, which runs it, so the rebase is left stopped for the operator.
       assertNoArmedGitDrivers(worktree, worktreeEnv);
       runGit(worktree, ['rebase', '--abort'], { ...pinned, stdio: 'pipe' });
     } catch {
-      // nothing to abort — the rebase never started, or it finished
+      // nothing to abort — the rebase never started — or a driver is armed
     }
+  };
+  let failure: unknown;
+  try {
+    runGit(worktree, step, { env: { ...worktreeEnv, GIT_EDITOR: ':' } });
+    return undefined;
+  } catch (error) {
+    failure = error;
   }
+  try {
+    const unmerged = runGit(worktree, ['ls-files', '-u', '-z'], pinned).split('\0');
+    const resolved = await regenerateAdrIndex(
+      req,
+      checkoutDir,
+      unmerged.filter(Boolean),
+      (ours) => {
+        setIndex(ours);
+        return runGit(worktree, ['write-tree'], pinned).trim();
+      },
+    );
+    if (typeof resolved === 'string') {
+      // Thrown, not swallowed: nothing else is in flight.
+      assertNoArmedGitDrivers(worktree, worktreeEnv);
+      abort();
+      const onto = sanitizeReason(target);
+      return (
+        `Auto-rebase onto ${onto} hit conflicts. Run ` +
+        `\`git rebase ${shellWord(`refs/heads/${onto}`)}\`, ` +
+        `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(failure)}${resolved}`
+      );
+    }
+    setIndex(resolved.blob);
+    // `checkout-index` runs a smudge filter on the file it writes.
+    assertNoArmedGitDrivers(worktree, worktreeEnv);
+    runGit(worktree, ['checkout-index', '-f', '--', ADR_INDEX], pinned);
+  } catch (error) {
+    if (!(error instanceof ArmedGitDriverError)) abort();
+    throw error;
+  }
+  return rebaseOntoTarget(req, worktree, worktreeEnv, target, targetSha, checkoutDir, [
+    'rebase',
+    '--continue',
+  ]);
 }
 
 async function gateAndMerge(

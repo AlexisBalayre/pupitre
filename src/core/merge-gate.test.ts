@@ -4860,14 +4860,50 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           'filter.pwn.smudge',
           'filter=pwn',
         );
+        // Disarmed before any check after the scratch checkout's, which throws:
+        // an abort tried past the error in flight would then go through.
+        let cut = false;
+        let checks = 0;
+        beforeGit(
+          (args) => {
+            cut ||= args.includes('commit-tree');
+            return cut && args.includes('--git-common-dir') && ++checks === 2;
+          },
+          () => {
+            sh(repo, 'git', 'config', '--unset', 'filter.pwn.smudge');
+            rmSync(join(repo, '.git', 'info', 'attributes'));
+          },
+        );
         const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
         const tip = sh(repo, 'git', 'rev-parse', BRANCH).trim();
+        vi.mocked(execFileSync).mockClear();
 
         await expect(merge()).rejects.toThrow(ArmedGitDriverError);
         // Neither the scratch checkout nor a rebase abort checked a file out.
         expect(existsSync(marker)).toBe(false);
+        expect(ran('--abort')).toBe(false);
+        expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
         expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+      });
+
+      it('throws a driver armed after the stop instead of a plain refusal', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2, (text) => text.replace('Preamble.', 'Branch preamble.'));
+        addDecision(repo, 3, (text) => text.replace('Preamble.', 'Main preamble.'));
+        // The stop's conflict listing; the refusal follows with no check of its own.
+        const marker = armBefore(
+          (args) => args.includes('ls-files') && args.includes('-u'),
+          'filter.pwn.smudge',
+          'filter=pwn',
+        );
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+        await expect(merge()).rejects.toThrow(ArmedGitDriverError);
+        expect(existsSync(marker)).toBe(false);
+        expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
       });
     });
   });

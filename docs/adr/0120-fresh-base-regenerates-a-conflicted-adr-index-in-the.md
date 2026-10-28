@@ -33,9 +33,13 @@
     `.gitattributes` entry, `merge.<name>.driver` or other config is added: decision 41 treats
     those as armed drivers, and the gate still refuses one. The scratch checkout is cut
     through `cutGateCheckout`, which checks the drivers first, and the rebase path checks
-    them again before `checkout-index`. Every way out of the rebase aborts what is left of it,
-    except past an armed driver: the abort checks files out and would run it, so the rebase is
-    left stopped for the operator.
+    them again before `checkout-index` and before a refused stop is reported, so a driver
+    armed after the stop throws `ArmedGitDriverError` rather than reading as a plain conflict.
+    Every way out of the rebase aborts what is left of it, except past an armed driver: the
+    abort checks files out and would run it, so the rebase is left stopped for the operator.
+    An `ArmedGitDriverError` in flight skips the abort outright, and the abort's own re-check
+    and failure are swallowed, so neither replaces the error in flight (a
+    `GateInterruptedError` included).
     *Security review.* The review of this change, and of any later one to it, must cover the
     scratch checkout (what is cut, what is written into it, what is read back and how), and
     the script run. The script is the branch's own code, so it runs as a gate stage runs
@@ -49,4 +53,5 @@
     A preamble both sides changed, a second begin marker, a side over the cap, a tree with no
     script, a script that appends outside the block, and one that leaves a link are each
     refused with the plain detail and the reason. A smudge filter armed before the scratch
-    checkout throws `ArmedGitDriverError` and never runs.
+    checkout throws `ArmedGitDriverError`, never runs, and leaves the rebase stopped with no
+    abort tried even once it is disarmed; one armed after a refused stop throws it too.
