@@ -8,12 +8,7 @@ import { transcriptDir } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject } from './session.repository.js';
-import {
-  buildUsageReport,
-  formatUsageReport,
-  UsageClass,
-  type UsageReport,
-} from './usage-report.service.js';
+import { buildUsageReport, formatUsageReport } from './usage-report.service.js';
 
 const REPO = '/repo';
 const HOUR = 3_600_000;
@@ -82,7 +77,7 @@ describe('buildUsageReport', () => {
     writeFileSync(join(dir, name), `${lines.join('\n')}\n`);
   }
 
-  function report(sinceMs = T0 - HOUR): UsageReport {
+  function report(sinceMs = T0 - HOUR): ReturnType<typeof buildUsageReport> {
     return buildUsageReport(db, REPO, { since: new Date(sinceMs), claudeDir });
   }
 
@@ -124,15 +119,9 @@ describe('buildUsageReport', () => {
     const result = report();
 
     expect(result.byClass.map((c) => c.class).sort()).toEqual(
-      [
-        UsageClass.Worker,
-        UsageClass.Conductor,
-        UsageClass.Console,
-        UsageClass.Utility,
-        UsageClass.Subagent,
-      ].sort(),
+      ['worker', 'conductor', 'console', 'utility', 'subagent'].sort(),
     );
-    const worker = result.rows.find((r) => r.class === UsageClass.Worker);
+    const worker = result.rows.find((r) => r.class === 'worker');
     expect(worker).toMatchObject({
       model: 'claude-sonnet-5-5',
       effort: 'medium',
@@ -198,6 +187,24 @@ describe('buildUsageReport', () => {
       { tool: 'Bash', results: 1, tokens: 100, carriedTokens: 200 },
     ]);
     expect(result.unpricedModels).toEqual(['claude-fable-5-1']);
+  });
+
+  it('prints the carry and the unpriced models, and skips a transcript it cannot read', () => {
+    const dir = transcriptDir(`${REPO}/.worktrees/w1`, claudeDir);
+    write(dir, 'a.jsonl', [
+      assistant('r1', T0, 'claude-fable-5-1', 'high', { input: 1 }, { id: 't1', name: 'Read' }),
+      toolResult('t1', T0 + 1000, 40),
+      'not json',
+      assistant('r2', T0 + 2000, 'claude-fable-5-1', 'high', { input: 1 }),
+    ]);
+    // a directory named like a transcript lists as one and cannot be read as one
+    mkdirSync(join(dir, 'broken.jsonl'));
+
+    const text = formatUsageReport(report());
+
+    expect(text).toContain('Tool output carried');
+    expect(text).toContain('Read: 1 results');
+    expect(text).toContain('Unpriced (counted at $0, add to MODEL_PRICES): claude-fable-5-1');
   });
 
   it('reports an empty project without failing', () => {

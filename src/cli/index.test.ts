@@ -2173,6 +2173,18 @@ describe('CLI commands', () => {
       expect(logs).toEqual([]);
     });
 
+    it('prints the report as text, or as JSON with --json', () => {
+      useCwd(initRepo());
+      vi.stubEnv('HOME', tempDir('pup-cli-usage-home-'));
+
+      buildProgram().parse(['usage', '--since', '2026-10-21'], { from: 'user' });
+      buildProgram().parse(['usage', '--json'], { from: 'user' });
+
+      expect(logs[0]).toContain('Usage since 2026-10-21T00:00:00.000Z: $0.00 over 0 calls');
+      expect(JSON.parse(logs[1] as string)).toMatchObject({ rows: [], totalCost: 0 });
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('refuses a date it cannot read', () => {
       useCwd(initRepo());
 
