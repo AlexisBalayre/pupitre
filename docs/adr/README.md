@@ -135,6 +135,7 @@ for the cross-references the text states, then the decision itself.
 - [0111. `gitDiffNumstat` reads a path with a tab in it whole (2026-10-27).](0111-gitdiffnumstat-reads-a-path-with-a-tab-in.md) (accepted)
 - [0112. A worker reads a tracked file with the Read tool: a Bash call whose cat, sed, head, tail or nl reads one is refused (2026-10-27)](0112-a-worker-reads-a-tracked-file-with-the.md) (accepted)
 - [0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27).](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md) (accepted)
+- [0114. The gate's per-file git reads pin `core.precomposeUnicode` off (2026-10-27).](0114-the-gate-s-per-file-git-reads-pin-core-precomposeunicode.md) (accepted)
 - [0115. `pup plan edit --rescope` lets the operator widen a claimed task's scope-in, appending only, once no session is at work on it (2026-10-28)](0115-pup-plan-edit-rescope-lets-the-operator-widen.md) (accepted)
 <!-- adr-index:end -->
 
