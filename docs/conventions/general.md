@@ -13,20 +13,29 @@ Files follow `kebab-case.role.ts`. The `role` suffix is not decoration — it lo
 calling convention. The full taxonomy, plurality rules, and banned roles live in
 [naming.md](naming.md), enforced by `.claude/hooks/validate-file-naming.sh`.
 
-**Tests flatten the source name.** The kebab-case part may not contain a dot, so a test's
-name is its subject's full filename with dots turned into hyphens:
+**Tests mirror the source under `test/unit/`.** The kebab-case part may not contain a dot, so
+a test's name is its subject's filename with the role's dot turned into a hyphen:
 
 ```
-db.client.ts          → db-client.test.ts
-capability.utils.ts   → capability-utils.test.ts
-session.repository.ts → session-repository.test.ts
+src/core/bar.service.ts → test/unit/core/bar-service.test.ts
 ```
 
-Drop the role when the test covers a whole subject rather than one file — `overlap.test.ts`
-exercises both `overlap.service.ts` and `overlap.repository.ts`.
+`bar.service.test.ts` is **invalid**: `validate-file-naming.sh` blocks it. The layout rules are
+in [testing.md](testing.md).
 
-`merge-gate.service.test.ts` is **invalid**: `validate-file-naming.sh` blocks it, because
-`merge-gate.service` is not kebab-case. Tests sit next to the file they cover.
+## Code layout
+
+`src/` is split into per-area folders (`src/core/`, `src/adapters/`, …). Inside an area, files
+sit by role: behavioural files at the area root, and declarations in `types/`, `enums/` and
+`errors/` subfolders. A new concept goes in the area it belongs to, not in a shared catch-all.
+
+- **String enums for every value set.** A closed set of values (states, kinds, modes) is a
+  `string` `enum` in the area's `enums/` folder, never a literal union, an `as const` object
+  or bare strings compared at the use site.
+- **No inline types.** An exported or reused `type` / `interface` is never declared in a
+  behavioural file; see §Type separation.
+- **No inline error classes.** An `Error` subclass is declared in the area's `errors/` folder,
+  never beside the code that throws it.
 
 ## Exports
 
@@ -63,8 +72,8 @@ files unreliable. The `convention-spot-check` Stop hook flags any `export defaul
 
 ## Type separation
 
-Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`,
-`src/adapters/types/`. **Never inline an exported `type`/`interface` in a `*.service.ts` or
+Types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`,
+`src/adapters/types/`. **Never inline a `type`/`interface` in a `*.service.ts` or
 `*.routes.ts` file** — the spot-check hook warns on this. Re-export from the consumer if you
 want a stable call-site path.
 
@@ -87,7 +96,7 @@ want a stable call-site path.
 - **`override` is required** on every method that overrides a superclass method.
 - **Factories for stateless logic; classes only for stateful resources** with a real
   lifecycle (a connection pool, a session state machine). A bag of pure functions is a
-  module of named exports, not a class. Typed `Error` subclasses in a `*.errors.ts` file are
+  module of named exports, not a class. Typed `Error` subclasses in a `*.errors.ts` file under `errors/` are
   the standing exception — subclassing is how a caller `instanceof`-narrows a failure.
 
 ## No hardcoded values
