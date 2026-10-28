@@ -45,16 +45,20 @@ export function Sessions({
   projects,
   finishedCount,
   selectedIndex,
+  liveCount = sessions.length,
 }: {
+  /** The rows to draw: all the live sessions, or the window of them the terminal has room for. */
   sessions: DashboardSession[];
   /** Each row's project id, in `sessions`' order; absent for a single project. */
   projects?: string[];
   finishedCount: number;
   selectedIndex: number;
+  /** How many live sessions there are in all, so a window past them all is not "no live sessions". */
+  liveCount?: number;
 }) {
   return (
     <Box flexDirection="column">
-      {sessions.length === 0 ? <Text dimColor>no live sessions</Text> : null}
+      {liveCount === 0 ? <Text dimColor>no live sessions</Text> : null}
       {sessions.map((session, index) => {
         const project = projects?.[index];
         return (

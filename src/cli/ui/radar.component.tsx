@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import { clip, moreLine } from './viewport.utils.js';
 
 /**
  * The watcher's conflict radar: live sessions whose diffs touch the same file
@@ -13,16 +14,20 @@ export function Radar({
   overlaps,
   radarStale,
   project,
+  maxLines = Number.POSITIVE_INFINITY,
 }: {
   overlaps: DashboardSnapshot['overlaps'];
   radarStale: boolean;
   project?: string;
+  /** The rows this block may take, the `+N more` line and the stale line included. */
+  maxLines?: number;
 }) {
   if (overlaps.length === 0 && !radarStale) return null;
   const lead = project === undefined ? '' : `${project}  `;
+  const { shown, hidden } = clip(overlaps, Math.max(maxLines - (radarStale ? 1 : 0), 1));
   return (
     <Box flexDirection="column">
-      {overlaps.map((pair) => (
+      {shown.map((pair) => (
         // One template, not JSX text: Ink collapses runs of whitespace between
         // children the way a browser does, and this is a row of columns
         // separated by two spaces — the line `pup status` already prints.
@@ -32,6 +37,7 @@ export function Radar({
             (radarStale ? '  (stale)' : '')}
         </Text>
       ))}
+      {hidden > 0 ? <Text color="yellow">{`${lead}${moreLine(hidden).trim()}`}</Text> : null}
       {radarStale ? (
         <Text dimColor>{`${lead}conflict radar off — start it with \`pup watch --start\``}</Text>
       ) : null}
