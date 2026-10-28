@@ -1,16 +1,30 @@
 import {
   chmodSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  type Stats,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// The real lstatSync, wrapped so one test can report a directory on another
+// device, as a volume mounted over it would be.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
+
 import { tempDir } from '../test/temp-dir.mock.js';
 import { sandboxProfile, writeProfile } from './sandbox-profile.utils.js';
+
+afterEach(() => {
+  vi.mocked(lstatSync).mockReset();
+});
 
 const HOME = '/Users/dev';
 
@@ -212,12 +226,32 @@ describe('writeProfile', () => {
   // A child runs as the operator, so it can `chmod 000` a directory its grant
   // covers: read as empty, `.worktrees` hid `s1` from the next profile, and
   // pinned alone it let the next child make it readable and move `s1`.
-  it('seals a directory the walk cannot read, and pins it and what leads to it', () => {
+  // A volume mounted over a directory reads as whatever the volume holds, and
+  // can be gone before the next child runs: no real mount here, its device is
+  // reported different instead.
+  it.each([
+    ['cannot read', (dir: string) => chmodSync(dir, 0o000)],
+    ['can search but not list', (dir: string) => chmodSync(dir, 0o111)],
+    [
+      'finds on another device',
+      (dir: string) => {
+        const real = vi.mocked(lstatSync).getMockImplementation() as unknown as (
+          path: string,
+          options?: object,
+        ) => Stats | undefined;
+        vi.mocked(lstatSync).mockImplementation(((path: string, options?: object) => {
+          const stat = real(path, options);
+          if (stat && path === dir) stat.dev += 1;
+          return stat;
+        }) as typeof lstatSync);
+      },
+    ],
+  ])('seals a directory the walk %s, and pins it and what leads to it', (_, hide) => {
     const checkout = tempDir('pup-nested-');
-    const hidden = join(checkout, 'a', '.worktrees');
+    const hidden = join(checkout, 'a', 'b', '.worktrees');
     mkdirSync(join(hidden, 's1'), { recursive: true });
     writeFileSync(join(hidden, 's1', '.git'), 'gitdir: /x\n');
-    chmodSync(hidden, 0o000);
+    hide(hidden);
     let generated: string;
     try {
       generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
@@ -228,9 +262,25 @@ describe('writeProfile', () => {
     const pinned = [...generated.matchAll(/\(literal "([^"]*)"\)/g)].map(([, path = '']) => path);
     expect(pinned.filter((path) => path.startsWith(`${checkout}/`)).sort()).toEqual([
       join(checkout, 'a'),
+      join(checkout, 'a', 'b'),
       hidden,
     ]);
     expect(generated).toContain(`(subpath "${hidden}"))`);
+  });
+
+  // The fail-closed cost: a child that hides the checkout itself seals it whole.
+  it('seals the whole checkout when the checkout itself cannot be read', () => {
+    const checkout = tempDir('pup-nested-');
+    mkdirSync(join(checkout, '.worktrees', 's1'), { recursive: true });
+    chmodSync(checkout, 0o000);
+    let generated: string;
+    try {
+      generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+    } finally {
+      chmodSync(checkout, 0o755);
+    }
+
+    expect(generated).toContain(`(subpath "${checkout}"))`);
   });
 
   // An SBPL string carries a newline raw; such a name never reaches the profile.

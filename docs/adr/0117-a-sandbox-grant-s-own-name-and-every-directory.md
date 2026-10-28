@@ -36,8 +36,8 @@
     `writeProfile` walks the checkout each time it writes a child's profile. The walk follows no
     link and matches `.git` without regard to case, as the APFS lookup does. It is not cached
     for the run, because pup adds worktrees to the operator's repo while an audit runs. On this
-    repo, with seven worktrees and their `node_modules`, the walk takes about a second per
-    child; a stage takes seconds to minutes, and children are spawned per stage. Each pin is a
+    repo, with seven worktrees and their `node_modules`, the walk takes about half a second
+    per child warm and a second cold; a stage takes seconds to minutes, and children are spawned per stage. Each pin is a
     `literal`, so a child still renames and removes any directory that leads to no `.git`.
     *The seal.* An unreadable directory is not an empty one. A child runs as the operator, and
     a mode change is not an unlink, so one child ran `chmod 000 .worktrees`. The walk behind the
@@ -50,8 +50,19 @@
     DEL or C1 character is not walked into either. Its parent is sealed instead, so no such
     name reaches an SBPL string, which would carry it raw. The walk is a loop, not recursion,
     so depth costs no stack. A path past the system's length limit fails to read and is
-    sealed. A child that leaves a directory unreadable or oddly named loses unlink under it
-    for every later child. Those stages may then fail, but no protection is lost.
+    sealed. A directory on another device than the checkout's parent is sealed the same way,
+    by its `lstat` device number, which costs the walk nothing measurable. A volume mounted
+    over `.worktrees` or `s1` would read as holding no `.git` and could be detached before
+    the next child runs. Whether a child can mount one from inside the profile was not tried:
+    the conductor's review judged that `hdiutil attach` reaches diskarbitrationd through the
+    `(allow default)` mach lookups, and the seal does not depend on the answer. A checkout
+    that is itself a mount point is sealed whole.
+    The seal fails closed, and its cost lands on later stages. A child that leaves a
+    directory unreadable, oddly named or mounted over loses unlink under it for every later
+    child. A child that runs `chmod 000` on the checkout root seals the whole checkout, so
+    every later child loses unlink everywhere in it. A build that cleans its output then
+    fails, until the operator restores the mode. Those stages may fail, but no protection is
+    lost.
     Measured on APFS, a rename that spells the root in another case is refused too. With no
     pins at all the rule is left out, because a bare `file-write-unlink` deny refuses every
     unlink.
@@ -90,6 +101,9 @@
     pinned but its own name is not. No pins means no rule. On a real tree, the walk pins exactly
     `.worktrees`, `.worktrees/s1`, `vendor` and `vendor/lib`. Those lead to a pointer file and to
     a `.GIT` directory; a linked directory holding a repo and a plain directory are not pinned.
-    A `chmod 000` directory is sealed, and it and its parent are pinned. Two directories named
+    A directory two levels down that is mode 000, mode 111, or reported on another device
+    through a stubbed `lstatSync` is sealed. It and both directories above it are pinned. A
+    mode-000 checkout root is sealed whole. With the device check taken out, the device case
+    fails. Two directories named
     with a newline and with `\u009b`, each holding a `.git`, seal their parent, and neither
     name reaches the profile.

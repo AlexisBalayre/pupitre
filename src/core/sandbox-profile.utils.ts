@@ -238,7 +238,11 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
  * which no pin named. Pinning the unreadable directory alone is not enough
  * for the same reason; sealing it keeps everything under it in place. A
  * directory whose name holds a control character is not walked into either:
- * its parent is sealed instead, so no such name reaches the profile.
+ * its parent is sealed instead, so no such name reaches the profile. Nor is a
+ * directory on another device than the checkout's parent: a volume mounted
+ * over `.worktrees` would read as holding no `.git`, and could be gone again
+ * before the next child runs. A checkout that is itself a mount point is
+ * sealed whole.
  *
  * A loop rather than recursion, so depth costs no stack. A path past the
  * system's limit fails to read and is sealed like any other.
@@ -247,12 +251,16 @@ function nestedRepoPaths(root: string): { pinned: string[]; sealed: string[] } {
   const holders: string[] = [];
   const sealed: string[] = [];
   if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) return { pinned: [], sealed };
+  const device = lstatSync(dirname(root)).dev;
   const pending = [root];
   for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
-    let entries: Dirent[];
+    let entries: Dirent[] | undefined;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      if (lstatSync(dir).dev === device) entries = readdirSync(dir, { withFileTypes: true });
     } catch {
+      // Unreadable: sealed below, as another device is.
+    }
+    if (!entries) {
       sealed.push(dir);
       continue;
     }
