@@ -16,7 +16,8 @@ fixture() {
 expect() { # expect <name> <0|1> <dir> [args...]; the args default to --check
   name=$1 want=$2 adr=$3
   shift 3
-  ADR_DIR=$adr bash "$SCRIPT" "${@:---check}" 2>/dev/null
+  [ $# -gt 0 ] || set -- --check
+  ADR_DIR=$adr bash "$SCRIPT" "$@" 2>/dev/null
   code=$?
   if [ "$code" -ne "$want" ]; then
     echo "FAIL: $name (exit $code, wanted $want)"
