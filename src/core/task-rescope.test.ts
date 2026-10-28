@@ -47,6 +47,7 @@ describe('rescopeTask (decision 115)', () => {
 
   beforeEach(() => {
     vi.mocked(execFileSync).mockReset().mockReturnValue('%1 pup-other\n');
+    vi.stubEnv('TMUX_TMPDIR', '');
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
@@ -181,6 +182,23 @@ describe('rescopeTask (decision 115)', () => {
       expect(getSession(db, 's1')).toMatchObject({ tier: 'critical', rung: 1 });
     });
 
+    // A session launched before routing stored no tier on either row: its next
+    // window derives one from the scope-in, which is now the widened one.
+    it('reports the tier the widened scope-in derives when neither row stored one', () => {
+      db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+        JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
+        't-1',
+      );
+      launched('s1', 'merged');
+
+      expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'])).toMatchObject({
+        tier: 'critical',
+        raised: false,
+      });
+      expect(getTask(db, 't-1')?.tier).toBeNull();
+      expect(getSession(db, 's1')?.tier).toBeNull();
+    });
+
     it('never lowers a critical tier', () => {
       db.prepare("UPDATE tasks SET spec = ?, tier = 'critical' WHERE id = ?").run(
         JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
@@ -250,27 +268,65 @@ describe('rescopeTask (decision 115)', () => {
     },
   );
 
-  // A worker could point TMUX_TMPDIR at an empty server, or PATH at a fake tmux.
-  it("asks the default socket with a pinned PATH, whatever the caller's env says", () => {
+  // A worker could put a fake tmux on PATH; a probe that hangs holds the
+  // store's write lock.
+  it("asks the default socket with a pinned PATH and a timeout, whatever the caller's PATH", () => {
     launched('s1', 'merged');
-    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
     vi.stubEnv('PATH', '/tmp/fake-bin');
 
     rescopeTask(db, 't-1', ['docs/**']);
 
-    const [file, args, options] = vi.mocked(execFileSync).mock.calls[0] ?? [];
-    expect(file).toBe('tmux');
-    expect(args).toEqual([
-      '-S',
-      `/tmp/tmux-${process.getuid?.()}/default`,
-      'list-panes',
-      '-a',
-      '-F',
-      '#{pane_id} #{session_name}',
+    expect(vi.mocked(execFileSync).mock.calls).toEqual([
+      [
+        'tmux',
+        [
+          '-S',
+          `/tmp/tmux-${process.getuid?.()}/default`,
+          'list-panes',
+          '-a',
+          '-F',
+          '#{pane_id} #{session_name}',
+        ],
+        expect.objectContaining({
+          env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' },
+          timeout: 2000,
+        }),
+      ],
     ]);
-    expect((options as { env?: unknown }).env).toEqual({
-      PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
-    });
+  });
+
+  // The launch hands tmux the operator's TMUX_TMPDIR, so the window may be on
+  // either default server; both are asked, and either one decides.
+  const sockets = () => vi.mocked(execFileSync).mock.calls.map(([, args]) => (args as string[])[1]);
+  const elsewhere = `/tmp/elsewhere/tmux-${process.getuid?.()}/default`;
+
+  it('asks the TMUX_TMPDIR server too when it is set, and passes when neither lists it', () => {
+    launched('s1', 'merged');
+    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere/');
+
+    rescopeTask(db, 't-1', ['docs/**']);
+
+    expect(sockets()).toEqual([`/tmp/tmux-${process.getuid?.()}/default`, elsewhere]);
+  });
+
+  it.each([
+    ['lists the window', () => '%9 pup-s1\n'],
+    [
+      'does not answer',
+      () => {
+        throw new Error('spawnSync tmux ETIMEDOUT');
+      },
+    ],
+  ])('refuses when only the TMUX_TMPDIR server %s', (_what, answer) => {
+    launched('s1', 'merged');
+    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
+    vi.mocked(execFileSync).mockImplementation(((_file: string, args: string[]) =>
+      args[1] === elsewhere ? answer() : '%1 pup-other\n') as typeof execFileSync);
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+      "Session s1's window may still be open",
+    );
+    expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
 
   it.each([

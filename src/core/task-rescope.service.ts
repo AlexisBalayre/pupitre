@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
@@ -68,24 +69,43 @@ function assertRescopableGlob(glob: string): void {
 }
 
 /**
- * Where tmux is looked up, in place of the caller's PATH, and the socket of
- * the default server every session's window opens on, at tmux's built-in
- * `TMUX_TMPDIR`, in place of the caller's: a worker cannot hand the probe a
- * fake tmux or an empty server.
+ * Where tmux is looked up, in place of the caller's PATH: a worker cannot hand
+ * the probe a fake tmux.
  */
 const TMUX_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
-const TMUX_SOCKET = `/tmp/tmux-${process.getuid?.()}/default`;
 
 /**
- * Every pane on the default tmux server, one `<pane id> <session name>` line
- * each; undefined when the server did not answer, for any reason.
+ * Past this a probe counts as unanswered. It runs inside the store's write
+ * lock, so a listener at the socket that never replies must not hold it.
  */
-function listPanes(): string | undefined {
+const PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * The sockets a session's window can be on: the default server's at tmux's
+ * built-in `/tmp`, and at the operator's `TMUX_TMPDIR` when set, which the
+ * launch hands tmux (decision 47). An empty one is unset, as tmux reads it.
+ */
+function tmuxSockets(): string[] {
+  const uid = process.getuid?.();
+  const dirs = ['/tmp', process.env.TMUX_TMPDIR || '/tmp'];
+  return [...new Set(dirs.map((dir) => join(dir, `tmux-${uid}`, 'default')))];
+}
+
+/**
+ * Every pane on the server at `socket`, one `<pane id> <session name>` line
+ * each; undefined when it did not answer in time, for any reason.
+ */
+function listPanes(socket: string): string | undefined {
   try {
     return execFileSync(
       'tmux',
-      ['-S', TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_id} #{session_name}'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: TMUX_PATH } },
+      ['-S', socket, 'list-panes', '-a', '-F', '#{pane_id} #{session_name}'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { PATH: TMUX_PATH },
+        timeout: PROBE_TIMEOUT_MS,
+      },
     );
   } catch {
     return undefined;
@@ -103,14 +123,21 @@ function listsWindow(panes: string, row: SessionRow): boolean {
   });
 }
 
+/** The tier the session's next window routes on, as `sessionWindowRoute` reads it. */
+function routedTier(db: Database, taskId: string, sessionId: string, scopeIn: string[]): Tier {
+  return (
+    asTier(getSession(db, sessionId)?.tier) ?? taskTier(getTask(db, taskId)?.tier ?? null, scopeIn)
+  );
+}
+
 /**
  * `pup plan edit <task> --rescope --scope <glob...>`: append globs to the
  * scope-in of a task a session claimed, whose spec `pup plan edit` otherwise
  * keeps frozen (decision 115). Never removes a glob. Refused while a session
  * on the task is in a state that is not listed as rescopable, which the
  * write's own guard decides, or may still have a window open, whose hooks
- * hold the old scope: one the default tmux server lists, or any at all when
- * the server does not answer. Once it has stopped, the gate, `pup review` and the next
+ * hold the old scope: one a default tmux server lists, or any at all when one
+ * does not answer. Once it has stopped, the gate, `pup review` and the next
  * `pup fix` all read the widened spec. The read, the checks, the write, the
  * tier raise, the `rescope` event on the claiming session and the decision
  * record `pup log` lists are one immediate transaction: no other writer lands
@@ -131,9 +158,15 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
         );
       }
       const spec = readTaskSpec(db, taskId);
-      const before = asTier(getSession(db, sessionId)?.tier) ?? taskTier(task.tier, spec.scopeIn);
       const added = [...new Set(globs)].filter((glob) => !spec.scopeIn.includes(glob));
-      if (added.length === 0) return { sessionId, added, tier: before, raised: false };
+      if (added.length === 0) {
+        return {
+          sessionId,
+          added,
+          tier: routedTier(db, taskId, sessionId, spec.scopeIn),
+          raised: false,
+        };
+      }
       const widened = { ...spec, scopeIn: [...spec.scopeIn, ...added] };
       assertPlannableSpec(widened);
       if (!rescopeTaskSpec(db, taskId, JSON.stringify(widened))) {
@@ -141,13 +174,13 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
           `Session ${workingSession(db, taskId)} is at work on ${taskId}; rescope once it stops.`,
         );
       }
-      const panes = listPanes();
-      const open = listTaskSessions(db, taskId).find(
-        (row) => panes === undefined || listsWindow(panes, row),
+      const servers = tmuxSockets().map(listPanes);
+      const open = listTaskSessions(db, taskId).find((row) =>
+        servers.some((panes) => panes === undefined || listsWindow(panes, row)),
       );
       if (open) {
         throw refusal(
-          `Session ${open.id}'s window may still be open (tmux's default server lists it, or ` +
+          `Session ${open.id}'s window may still be open (a default tmux server lists it, or ` +
             `did not answer), so its worker could keep editing ${taskId}; rescope once it is closed.`,
         );
       }
@@ -155,7 +188,7 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
       // relaunch routes from the task's, a fix round from the session's.
       const raised =
         tierForScope(widened.scopeIn) === 'critical' && raiseToCritical(db, taskId, sessionId);
-      const tier: Tier = raised ? 'critical' : before;
+      const tier = routedTier(db, taskId, sessionId, widened.scopeIn);
       appendEvent(db, sessionId, 'rescope', { task: taskId, added, by: 'operator', tier, raised });
       insertDecisionRecord(db, {
         sessionId,
