@@ -115,7 +115,12 @@ import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
-import { runMergeGate as runGate, waitForLoad, withMergeLock } from './merge-gate.service.js';
+import {
+  countChangedLines,
+  runMergeGate as runGate,
+  waitForLoad,
+  withMergeLock,
+} from './merge-gate.service.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
@@ -2266,6 +2271,506 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  it('leaves a root lockfile out of the diff size', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'pnpm-lock.yaml'] });
+    commitIn(worktree, 'pnpm-lock.yaml', 'generated: line\n'.repeat(700));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '0 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Decision 110: only source lines count toward the flag, and the detail
+  // names the split.
+  it('counts test files and docs/ apart from source and passes on source alone', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n'.repeat(227));
+    commitIn(worktree, 'src/feature.test.ts', 'const line = 1;\n'.repeat(300));
+    commitIn(worktree, 'src/other.test.ts', 'const line = 1;\n'.repeat(60));
+    commitIn(worktree, 'docs/feature.md', 'A line of prose.\n'.repeat(85));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '227 source + 360 test + 85 docs changed lines',
+    });
+  });
+
+  // Only `.test.ts` is a spelling a vitest include is trusted to collect
+  // (decision 39); the rest import as production code and nothing fails. A
+  // name holding anything but a letter, a digit or `_ . $ + @ -` is never one
+  // whole token, and one outside ASCII has forms no byte search finds, so no
+  // name search could find what imports it.
+  it('counts every test spelling but .test.ts, and a name no token spells, as source', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/a.spec.ts', 'x\n');
+    commitIn(worktree, 'src/b.test.mts', 'x\n');
+    commitIn(worktree, 'src/c.test.tsx', 'x\n');
+    commitIn(worktree, 'src/d.test.js', 'x\n');
+    commitIn(worktree, 'src/test_e.py', 'x\n');
+    commitIn(worktree, 'src/f_test.py', 'x\n');
+    commitIn(worktree, 'src/test_helpers/g.ts', 'x\n');
+    commitIn(worktree, 'src/h.test.ts', 'x\n');
+    commitIn(worktree, 'src/i j.test.ts', 'x\n');
+    commitIn(worktree, 'src/k#l.test.ts', 'x\n');
+    commitIn(worktree, 'src/m=n.test.ts', 'x\n');
+    commitIn(worktree, 'src/é.test.ts', 'x\n');
+    commitIn(worktree, 'src/[id].test.ts', 'x\n');
+    commitIn(worktree, 'src/+page.test.ts', 'x\n');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '12 source + 2 test + 0 docs changed lines',
+    });
+  });
+
+  // Running code lives under docs/ too (Docusaurus, Sphinx's conf.py), and a
+  // link can point anywhere, so it and the prose it reaches count as source.
+  it('counts only prose under docs/ as docs, and a link there as source', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/guide.md', 'prose\n'.repeat(3));
+    commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(5));
+    commitIn(worktree, 'docs/impl.ts', 'export const impl = 1;\n'.repeat(2));
+    commitIn(worktree, 'docs/page.mdx', '# page\n'.repeat(4));
+    commitIn(worktree, 'docs/requirements.txt', 'sphinx\n');
+    commitIn(worktree, 'src/docs/h.md', 'prose\n');
+    symlinkSync('guide.md', join(worktree, 'docs/link.md'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link docs/link.md');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '12 source + 0 test + 5 docs changed lines',
+    });
+  });
+
+  // A `*.test.ts` that holds one test passes vitest, so production code could
+  // live in it and import it; whatever code reaches counts as source. The
+  // gate's filesystem (APFS) opens a specifier in any case.
+  it('counts a test file production code imports as source, by any specifier', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'src/use.ts', "export { v } from './big.test.js';\n");
+    commitIn(worktree, 'src/dyn.test.ts', 'export const d = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/dyn.ts', "export const m = await import('#lib/dyn.test.js');\n");
+    commitIn(worktree, 'src/caps.test.ts', 'export const c = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/caps.ts', "export * from './CAPS.Test.TS';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '12 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // `require` reads a `#` in a directory literally, so cutting the token at
+  // it would leave only the directory's name.
+  it('reads a ?raw or #fragment specifier, and a # in a directory, as naming the test file', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/raw.test.ts', 'export const r = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/use.ts', "import text from './raw.test.js?raw';\n");
+    commitIn(worktree, 'src/frag.test.ts', 'export const f = 1;\n');
+    commitIn(worktree, 'src/other.ts', "export * from './frag.test.js#x';\n");
+    commitIn(worktree, 'src/x#y/deep.test.ts', 'exports.d = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/req.ts', "module.exports = require('./x#y/deep.test.js');\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '8 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // A script, a YAML list or a serverless handler spells the name between
+  // punctuation no specifier uses, before or after it, or with an export after it.
+  it.each([
+    ['package.json', '{ "scripts": { "start": "tsx src/big.test.ts;" } }\n'],
+    ['run.sh', 'node dist/big.test.js&&true\n'],
+    ['src/start.sh', '(node ./big.test.js)\n'],
+    ['entries.yml', 'entries: [src/big.test.ts]\n'],
+    ['serverless.yml', 'handler: src/big.test.handler\n'],
+    ['lint.sh', 'eslint a.ts,big.test.ts\n'],
+    ['list.yml', 'files: [big.test.ts]\n'],
+  ])('counts a test file %s names as source', async (file, content) => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', file] });
+    commitIn(worktree, 'src/big.test.ts', 'export const handler = 1;\n'.repeat(5));
+    commitIn(worktree, file, content);
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Shared config a session can write: coloured `git grep -l` output would
+  // shift every path, and every importer would go unread.
+  it('finds the importer with grep colour forced on in the shared config', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'src/use.ts', "export { v } from './big.test.js';\n");
+    sh(repo, 'git', 'config', 'color.ui', 'always');
+    sh(repo, 'git', 'config', 'color.grep', 'always');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Quadratic matching here would hold the merge lock for minutes; the test
+  // timeout is the bound.
+  it('reads a 1 MB unspaced line in an importer without stalling', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n');
+    commitIn(worktree, 'src/use.ts', `${'x'.repeat(1_000_000)}\nexport * from './big.test.js';\n`);
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '3 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  it('follows test files re-exporting one another to production code', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/helper.test.ts', 'export const h = 1;\n'.repeat(3));
+    commitIn(worktree, 'src/b.test.ts', "export * from './helper.test.js';\n");
+    commitIn(worktree, 'src/a.test.ts', "export * from './b.test.js';\n");
+    commitIn(worktree, 'src/use.ts', "export * from './a.test.js';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // A Vue component or a Vite entry loads a module as code does, its `src`
+  // quoted or not; prose under docs/ loads nothing.
+  it('reads every file naming a test but prose under docs/', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(
+      worktree,
+      'src/App.vue',
+      '<script setup lang="ts">import { v } from \'./big.test.js\';</script>\n',
+    );
+    commitIn(worktree, 'src/page.test.ts', 'export const p = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/index.html', '<script type="module" src="./page.test.ts"></script>\n');
+    commitIn(worktree, 'src/bare.test.ts', 'export const b = 1;\n'.repeat(2));
+    commitIn(worktree, 'src/bare.html', '<script type=module src=./bare.test.ts></script>\n');
+    commitIn(worktree, 'src/quiet.test.ts', 'const q = 1;\n'.repeat(3));
+    commitIn(worktree, 'docs/guide.md', 'See `./quiet.test.js`.\n');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '12 source + 3 test + 1 docs changed lines',
+    });
+  });
+
+  // Resolved, the specifier would land on the decoy and the test file would
+  // go unnamed.
+  it('names a test file whatever sits at the literal path', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'src/big.test.js', 'export {};\n');
+    commitIn(worktree, 'src/use.ts', "export { v } from './big.test.js';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '7 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // A million tokens times 200 targets of one name held the merge lock for
+  // minutes; the test timeout is the bound.
+  it('weighs a name once per file however many tokens and targets share it', async () => {
+    const worktree = seedSession(db, repo);
+    for (let i = 0; i < 200; i++) {
+      mkdirSync(join(worktree, `src/d${i}`), { recursive: true });
+      writeFileSync(join(worktree, `src/d${i}/x.test.ts`), 'x\n');
+    }
+    commitIn(worktree, 'src/use.ts', `${'x.test '.repeat(1_000_000)}\n`);
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '201 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // `git grep` never reads a link's blob, so a link is read from the tree:
+  // what it reaches is code under another name.
+  it('counts the doc, test or directory a symlink reaches as source', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/impl.md', 'print(1)\n'.repeat(5));
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(3));
+    commitIn(worktree, 'docs/guide/a.md', 'prose\n'.repeat(2));
+    commitIn(worktree, 'docs/other.md', 'prose\n'.repeat(4));
+    commitIn(worktree, 'src/plain.test.ts', 'x\n');
+    mkdirSync(join(worktree, 'src/pkg'));
+    symlinkSync('../../docs/impl.md', join(worktree, 'src/pkg/impl.py'));
+    symlinkSync('big.test.ts', join(worktree, 'src/impl.ts'));
+    symlinkSync('../docs/guide', join(worktree, 'src/guide'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link into docs and a test');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '13 source + 1 test + 4 docs changed lines',
+    });
+  });
+
+  // The gate's filesystem (APFS) opens `DOCS/impl.md` as `docs/impl.md`.
+  it('counts the doc or test a symlink reaches in another case as source', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/impl.md', 'print(1)\n'.repeat(5));
+    commitIn(worktree, 'src/big.test.ts', 'export const v = 1;\n'.repeat(3));
+    commitIn(worktree, 'docs/other.md', 'prose\n'.repeat(4));
+    mkdirSync(join(worktree, 'src/pkg'));
+    symlinkSync('../../DOCS/impl.md', join(worktree, 'src/pkg/impl.py'));
+    symlinkSync('Big.test.ts', join(worktree, 'src/impl.ts'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link into docs and a test in another case');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '10 source + 0 test + 4 docs changed lines',
+    });
+  });
+
+  // Lexically `src/x.py` lands on the decoy `src/impl.md`, which is where the
+  // gate's link check reads it; through `src/l` it lands on `docs/impl.md`. No
+  // lexical reading knows, so the link reaches everything.
+  it('reads a link with a .. after a named segment as reaching every path', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**'] });
+    commitIn(worktree, 'docs/sub/a.md', 'prose\n');
+    commitIn(worktree, 'docs/impl.md', 'print(1)\n'.repeat(5));
+    commitIn(worktree, 'src/impl.md', 'decoy\n');
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(2));
+    symlinkSync('../docs/sub', join(worktree, 'src/l'));
+    symlinkSync('l/../impl.md', join(worktree, 'src/x.py'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link through a link');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '11 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // Docusaurus compiles `.md` under root docs/ as MDX, which can export code.
+  // The gate's filesystem finds its config in any case, and `--config` takes
+  // one under any name, so a manifest naming Docusaurus counts too, and so
+  // does a lockfile, which spells the name plainly however a manifest escapes it.
+  it.each([
+    ['docusaurus.config.ts', 'export default {};\n'],
+    ['Docusaurus.config.js', 'module.exports = {};\n'],
+    ['website/Package.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n'],
+    ['website/package.yaml', "dependencies: { '@docusaurus/core': 3.0.0 }\n"],
+    ['website/package.json5', "{ dependencies: { '@docusaurus/core': '3.0.0' } }\n"],
+    ['website/pnpm-lock.yaml', "  '@docusaurus/core': 3.0.0\n"],
+    ['website/package-lock.json', '{ "packages": { "node_modules/@docusaurus/core": {} } }\n'],
+    ['website/yarn.lock', '"@docusaurus/core@^3.0.0":\n'],
+  ])('counts Markdown under docs/ as source beside %s', async (file, content) => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**', file] });
+    commitIn(worktree, file, content);
+    commitIn(worktree, 'docs/big.md', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(2));
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 2 docs changed lines',
+    });
+  });
+
+  // `git grep` never reads a link's blob, so a manifest that is a link names
+  // Docusaurus whatever it points at.
+  it('counts Markdown under docs/ as source beside a package.json that is a symlink', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**', 'package.json'] });
+    commitIn(worktree, 'src/deps.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n');
+    commitIn(worktree, 'docs/big.md', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(2));
+    symlinkSync('src/deps.json', join(worktree, 'package.json'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link the manifest');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '7 source + 0 test + 2 docs changed lines',
+    });
+  });
+
+  it('keeps a test file only other tests import as test', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/helper.test.ts', 'export const h = 1;\n'.repeat(3));
+    commitIn(worktree, 'src/a.test.ts', "import { h } from './helper.test.js';\n");
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '0 source + 4 test + 0 docs changed lines',
+    });
+  });
+
+  describe('with a source file renamed onto a test name', () => {
+    /** `count` distinct lines from `from`, so git can tell a rename from a rewrite. */
+    function numbered(count: number, from = 0): string {
+      return Array.from({ length: count }, (_, i) => `export const v${from + i} = 1;\n`).join('');
+    }
+
+    function renameOntoTest(worktree: string): void {
+      sh(worktree, 'git', 'mv', 'src/big.ts', 'src/big.test.ts');
+      // 400 of 1000 lines rewritten: still similar enough for git to pair them.
+      writeFileSync(join(worktree, 'src/big.test.ts'), numbered(600) + numbered(400, 5000));
+      sh(worktree, 'git', 'commit', '-qam', 'rename src/big.ts');
+    }
+
+    it('counts the rewrite as source', async () => {
+      commitIn(repo, 'src/big.ts', numbered(1000));
+      const worktree = seedSession(db, repo);
+      renameOntoTest(worktree);
+
+      const outcome = await merge();
+
+      expect(outcome.status).toBe('refused');
+      expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
+        '800 source + 0 test + 0 docs changed lines: source exceeds the 600-line flag',
+      );
+    });
+
+    // `diff.renames` is shared config a session can write; with it off the
+    // rename must still be seen, so the new name does not read as a test. The
+    // numstat pins rename detection on too (decision 113), hence the same 800.
+    it('counts it as source with rename detection switched off in the shared config', async () => {
+      commitIn(repo, 'src/big.ts', numbered(1000));
+      const worktree = seedSession(db, repo);
+      renameOntoTest(worktree);
+      sh(repo, 'git', 'config', 'diff.renames', 'false');
+
+      const outcome = await merge();
+
+      expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
+        '800 source + 0 test + 0 docs changed lines',
+      );
+    });
+
+    // `diff.renameLimit` is shared config too: at 1, a second added file
+    // skipped the inexact pairing. The numstat leaves the limit to that config,
+    // so it lists the rename as a delete and an add, both counted as source.
+    it('counts it as source with the rename limit lowered in the shared config', async () => {
+      commitIn(repo, 'src/big.ts', numbered(1000));
+      const worktree = seedSession(db, repo);
+      renameOntoTest(worktree);
+      commitIn(worktree, 'src/extra.ts', 'x\n');
+      sh(repo, 'git', 'config', 'diff.renameLimit', '1');
+
+      const outcome = await merge();
+
+      expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
+        '2001 source + 0 test + 0 docs changed lines',
+      );
+    });
+
+    it('still counts a test renamed onto another test name as test', async () => {
+      commitIn(repo, 'src/old.test.ts', numbered(100));
+      const worktree = seedSession(db, repo);
+      sh(worktree, 'git', 'mv', 'src/old.test.ts', 'src/new.test.ts');
+      writeFileSync(join(worktree, 'src/new.test.ts'), numbered(90) + numbered(10, 5000));
+      sh(worktree, 'git', 'commit', '-qam', 'rename src/old.test.ts');
+
+      const outcome = await merge();
+
+      expect(untimed(outcome.report.stages)).toContainEqual({
+        stage: 'diff-size',
+        status: 'pass',
+        detail: '0 source + 20 test + 0 docs changed lines',
+      });
+    });
+  });
+
+  it('flags a source diff over the line flag whatever its tests add', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(601));
+    commitIn(worktree, 'src/big.test.ts', 'const line = 1;\n'.repeat(50));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('refused');
+    const stage = outcome.report.stages.find((s) => s.stage === 'diff-size');
+    expect(stage?.status).toBe('flagged');
+    expect(stage?.detail).toContain(
+      '601 source + 50 test + 0 docs changed lines: source exceeds the 600-line flag',
+    );
+  });
+
+  it('passes a large test-only diff that the old count flagged', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/big.test.ts', 'const line = 1;\n'.repeat(700));
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '0 source + 700 test + 0 docs changed lines',
+    });
+  });
+
   // `info/attributes` is refused outright (decision 50), but `core.attributesFile`
   // in the shared config forges the same `-\t-` numstat and is no driver, so the
   // count has to survive it rather than the gate refuse it (decision 53).
@@ -2286,7 +2791,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.status).toBe('refused');
       const stage = outcome.report.stages.find((s) => s.stage === 'diff-size');
       expect(stage?.status).toBe('flagged');
-      expect(stage?.detail).toContain('700 changed lines exceeds the 600-line flag');
+      expect(stage?.detail).toContain(
+        '700 source + 0 test + 0 docs changed lines: source exceeds the 600-line flag',
+      );
       expect(stage?.detail).toContain('src/big.ts');
     });
 
@@ -2314,7 +2821,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'diff-size',
         status: 'pass',
-        detail: '0 changed lines',
+        detail: '0 source + 0 test + 0 docs changed lines',
       });
     });
   });
@@ -4842,6 +5349,191 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(errors.mock.calls.flat().join('\n')).toMatch(
         /The test slots could not be used \(.+\); the gate runs its tests without one\./,
       );
+    });
+  });
+});
+
+describe('countChangedLines', () => {
+  /** Commits `entries` from the index alone, holding what no APFS working tree could. */
+  function commitBlobs(repo: string, entries: [mode: string, path: string, content: string][]) {
+    for (const [mode, path, content] of entries) {
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: content,
+        encoding: 'utf8',
+      }).trim();
+      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `${mode},${blob},${path}`);
+    }
+    sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
+  }
+
+  // On macOS `core.precomposeUnicode`, which `git init` turns on and a session
+  // can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC,
+  // so the importer read returned its NFC sibling's text and the test it names
+  // went unreached (decision 114). Elsewhere git ignores the key and this
+  // passes either way.
+  it('reads an NFD importer, not its NFC sibling', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/cafe\u0301.ts', "export * from './big.test.js';\n"],
+      ['100644', 'src/caf\u00e9.ts', 'export {};\n'],
+    ]);
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'true');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // Checkout writes a link with `symlink()`, which takes its target as a C
+  // string, so a link blob `big.test.ts\0x` lands on `big.test.ts`. The link
+  // blobs themselves are binary for their NUL and count nothing.
+  it('reads a link target up to its first NUL, as checkout writes it', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'docs/impl.md', 'print(1)\n'.repeat(3)],
+      ['120000', 'src/impl.ts', 'big.test.ts\0x'],
+      ['120000', 'src/pkg/impl.py', '../../docs/impl.md\0'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 8,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // APFS folds `\u017f` onto `s` and `\u03c2` onto `\u03c3` by tables no
+  // JavaScript case mapping shares, so a name holding a character outside
+  // ASCII is never compared: a link spelled with one lands anywhere, and a
+  // changed path named with one is source whatever an ASCII link reaches.
+  it.each([
+    ['a target', 'src/pkg/impl.py', '../../doc\u017f/impl.md'],
+    ['a directory', 'doc\u017f/impl.py', 'impl.md'],
+  ])('lets a link with %s outside ASCII reach every path', (_, link, target) => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'docs/impl.md', 'print(1)\n'.repeat(5)],
+      ['100644', 'src/plain.test.ts', 'export const v = 1;\n'],
+      ['120000', link, target],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a doc or test named outside ASCII as source, as an ASCII link may reach it', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'docs/\u017fecret.md', 'print(1)\n'.repeat(5)],
+      ['100644', 'src/\u017fub/big.test.ts', 'export const v = 1;\n'.repeat(3)],
+      ['120000', 'src/pkg/impl.py', '../../docs/secret.md'],
+      ['120000', 'src/impl.ts', 'sub/big.test.ts'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 10,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('takes no final sigma for a sigma', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      [
+        '100644',
+        'src/\u03bb\u03cc\u03b3\u03bf\u03c2/big.test.ts',
+        'export const v = 1;\n'.repeat(3),
+      ],
+      ['120000', 'src/impl.ts', '\u03bb\u03cc\u03b3\u03bf\u03c3/big.test.ts'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 4,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // git's `icase` pathspec and a JavaScript `/i` without `u` fold ASCII only,
+  // so a manifest under the Kelvin sign or a config under a long s went unseen
+  // where APFS opens either as the ASCII name.
+  it.each([
+    ['website/pac\u212aage.json', '{ "dependencies": { "@docusaurus/core": "3" } }\n'],
+    ['docu\u017faurus.config.ts', 'export default {};\n'],
+  ])('compiles docs/ Markdown beside %s', (witness, content) => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', witness, content],
+      ['100644', 'docs/big.md', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'docs/notes.rst', 'Notes\n=====\n'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 6,
+      test: 0,
+      docs: 2,
+      forged: [],
+    });
+  });
+
+  // runGit decodes git's output as UTF-8, so a path whose bytes are not UTF-8
+  // was listed as `src/\ufffd.ts`, and reading that path read a decoy
+  // committed under the replacement character itself.
+  it('names every test from an importer whose path is not UTF-8', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: "export * from './big.test.js';\n",
+      encoding: 'utf8',
+    }).trim();
+    // `src/\u00e9.ts` in Latin-1: no argument carries a byte that is not UTF-8.
+    execFileSync('git', ['update-index', '--index-info'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: Buffer.concat([
+        Buffer.from(`100644 ${blob}\tsrc/`),
+        Buffer.from([0xe9]),
+        Buffer.from('.ts\n'),
+      ]),
+    });
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/\ufffd.ts', 'export {};\n'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
     });
   });
 });

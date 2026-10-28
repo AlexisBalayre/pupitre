@@ -132,6 +132,7 @@ for the cross-references the text states, then the decision itself.
 - [0107. Every compiled settings file turns off the Artifact and Workflow tools and prompt suggestions, and a worker's denies the tools and the skill listing it never uses (2026-10-27).](0107-every-compiled-settings-file-turns-off-the-artifact.md) (accepted)
 - [0108. A sandbox grant is resolved up to its own name and never through it, and the folded coverage run's report directory sits inside a directory of the gate's own that no child is granted (2026-10-27).](0108-a-sandbox-grant-is-resolved-up-to-its.md) (accepted)
 - [0109. One file per decision under docs/adr/, numbered as before, with a generated index (2026-10-27)](0109-one-file-per-decision-under-docs-adr-numbered.md) (accepted)
+- [0110. The diff-size flag counts source lines only (2026-10-26)](0110-the-diff-size-flag-counts-source-lines-only.md) (accepted)
 - [0111. `gitDiffNumstat` reads a path with a tab in it whole (2026-10-27).](0111-gitdiffnumstat-reads-a-path-with-a-tab-in.md) (accepted)
 - [0112. A worker reads a tracked file with the Read tool: a Bash call whose cat, sed, head, tail or nl reads one is refused (2026-10-27)](0112-a-worker-reads-a-tracked-file-with-the.md) (accepted)
 - [0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27).](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md) (accepted)

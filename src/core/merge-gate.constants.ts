@@ -1,5 +1,35 @@
-/** Changed-line count (adds + deletes, lockfiles excluded) above which the diff-size stage flags. */
+/**
+ * Changed source lines (adds + deletes; lockfiles, test files and `docs/`
+ * excluded) above which the diff-size stage flags (decision 110).
+ */
 export const DIFF_SIZE_FLAG_LINES = 600;
+
+/**
+ * The one test spelling the diff-size stage trusts: what a vitest `include`
+ * conventionally collects, where parking production code fails the test stage
+ * (decision 39). `*.spec.*`, `.test.mts`, `.test.tsx` and Python names are
+ * collected by nothing pup can confirm, so they count as source (decision 110).
+ */
+export const DIFF_SIZE_TEST_SUFFIX = '.test.ts';
+
+/** Counted apart from source in the diff-size stage: prose, not code to review for size. */
+export const DIFF_SIZE_DOCS_DIR = 'docs/';
+
+/**
+ * Prose under `DIFF_SIZE_DOCS_DIR`. `.mdx` is left out because it compiles to
+ * a component, `.txt` because `requirements.txt` and `CMakeLists.txt` are
+ * build input, and anything else under `docs/` may be running code (decision 110).
+ */
+export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.adoc'];
+
+/**
+ * A Docusaurus config anywhere on the branch, in any ASCII case, as the gate's
+ * case-insensitive filesystem finds one (decision 78). Its docs plugin reads
+ * root `docs/` by default and compiles `.md` as MDX, so Markdown there can
+ * export code that `src/` imports; with one present, that `.md` counts as
+ * source (decision 110).
+ */
+export const DIFF_SIZE_DOCUSAURUS_CONFIG = /(?:^|\/)docusaurus\.config\.[cm]?[jt]s$/i;
 
 /** Excluded from the diff-size count — machine-generated churn, not review surface. */
 export const LOCKFILE_NAMES = [
@@ -10,6 +40,20 @@ export const LOCKFILE_NAMES = [
   'uv.lock',
   'poetry.lock',
   'Cargo.lock',
+];
+
+/**
+ * Where a project names what it installs: a manifest or a lockfile. One on the
+ * branch naming Docusaurus, at any depth and in any ASCII case, makes `.md`
+ * under `docs/` source as a config does, since `docusaurus build --config
+ * site.config.js` takes a config under any name; so does a symlink under one
+ * of these names, whose blob `git grep` never reads (decision 110).
+ */
+export const DIFF_SIZE_DEPENDENCY_FILES = [
+  'package.json',
+  'package.yaml',
+  'package.json5',
+  ...LOCKFILE_NAMES,
 ];
 
 /** Per-file rise in decision points above which the complexity stage flags (docs/04 stage 4). */

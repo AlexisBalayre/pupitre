@@ -61,11 +61,14 @@ function buildEntry(
   // `refs/heads/`, as the gate names them (decision 80): a bare name resolves
   // a same-named tag first, and the review must show what the gate will merge.
   const paths = gitDiffPaths(repoPath, `refs/heads/${target}`, `refs/heads/${session.branch}`);
-  const changedLines = countChangedLines(
+  // Every changed line, tests and docs included: what a reviewer reads, not
+  // the gate's source-only size (decision 110).
+  const { source, test, docs } = countChangedLines(
     repoPath,
     `refs/heads/${target}`,
     `refs/heads/${session.branch}`,
-  ).lines;
+  );
+  const changedLines = source + test + docs;
   const scopeViolations = scopeViolationCount(db, session.id);
   const overlaps = overlapCount(session, paths, liveDiffs);
   const risk =
