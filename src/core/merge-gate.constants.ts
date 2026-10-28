@@ -23,7 +23,7 @@ export const DIFF_SIZE_DOCS_DIR = 'docs/';
 export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.adoc'];
 
 /**
- * A Docusaurus config anywhere on the branch, in any case, as the gate's
+ * A Docusaurus config anywhere on the branch, in any ASCII case, as the gate's
  * case-insensitive filesystem finds one (decision 78). Its docs plugin reads
  * root `docs/` by default and compiles `.md` as MDX, so Markdown there can
  * export code that `src/` imports; with one present, that `.md` counts as
@@ -43,12 +43,11 @@ export const LOCKFILE_NAMES = [
 ];
 
 /**
- * Where a project names what it installs: a manifest, or a lockfile, which
- * lists `@docusaurus/core` in plain text however the manifest escapes the
- * name. One on the branch naming Docusaurus, at any depth and in any case,
- * makes `.md` under `docs/` source as a config does, since `docusaurus build
- * --config site.config.js` takes a config under any name; so does a symlink
- * under one of these names, whose blob `git grep` never reads (decision 110).
+ * Where a project names what it installs: a manifest or a lockfile. One on the
+ * branch naming Docusaurus, at any depth and in any ASCII case, makes `.md`
+ * under `docs/` source as a config does, since `docusaurus build --config
+ * site.config.js` takes a config under any name; so does a symlink under one
+ * of these names, whose blob `git grep` never reads (decision 110).
  */
 export const DIFF_SIZE_DEPENDENCY_FILES = [
   'package.json',

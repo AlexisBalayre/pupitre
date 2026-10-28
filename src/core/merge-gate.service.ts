@@ -268,15 +268,26 @@ interface BranchTree {
 }
 
 /**
- * A path as the gate's filesystem looks it up: APFS, the macOS default
- * (decision 78), opens a path in any case or Unicode form alike, so a link or
- * specifier spelling one in another form still reaches it.
+ * A character outside ASCII. APFS, the macOS default and so the gate's
+ * filesystem (decision 78), folds some onto ASCII (`ſ` onto `s`, the Kelvin
+ * sign onto `k`) and others onto each other (`ς` onto `σ`) by its own tables,
+ * which no JavaScript case mapping or normalization reproduces. So a name
+ * holding one is never compared: a link holding one reaches every path, a
+ * changed path holding one is source, and a file named with one may be a
+ * Docusaurus witness (decision 110).
  */
-const folded = (path: string): string => path.normalize('NFC').toLowerCase();
+const NON_ASCII = /[\u0080-\uffff]/;
+
+/**
+ * An ASCII path as the gate's filesystem looks it up: APFS opens a path in any
+ * case alike, so a link or specifier spelling one in another case still
+ * reaches it. Anything outside ASCII is settled by `NON_ASCII` first.
+ */
+const folded = (path: string): string => path.toLowerCase();
 
 /**
  * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
- * any case, names Docusaurus: its `@docusaurus/core` dependency or a
+ * any ASCII case, names Docusaurus: its `@docusaurus/core` dependency or a
  * `docusaurus` script.
  */
 function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
@@ -310,8 +321,10 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * checkout writes the link with `symlink()`, which takes a C string. One whose
  * target is absolute, lands outside the repo, or has a `..` after a named
  * segment, which climbs from wherever that segment resolves and no lexical
- * reading knows, may land anywhere and reaches every path. A link named as a
- * dependency file may name Docusaurus where no grep reads it.
+ * reading knows, may land anywhere and reaches every path, as does one whose
+ * path or target holds a character outside ASCII. A link named as a dependency
+ * file may name Docusaurus where no grep reads it, and a file named outside
+ * ASCII may be a config or dependency file no case-insensitive match finds.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
@@ -323,7 +336,7 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     const tab = entry.indexOf('\t');
     const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
     const path = entry.slice(tab + 1);
-    markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path);
+    markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
     if (mode !== '120000') continue;
     markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
       (name) => folded(name) === folded(basename(path)),
@@ -333,6 +346,8 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     const firstName = segments.findIndex((segment) => segment !== '..');
     const lands = join(dirname(path), target).replace(/\/+$/, '');
     anywhere ||=
+      NON_ASCII.test(path) ||
+      NON_ASCII.test(target) ||
       target.startsWith('/') ||
       (firstName !== -1 && segments.slice(firstName).includes('..')) ||
       lands === '..' ||
@@ -362,18 +377,19 @@ const UNSPELLABLE_NAME = /[^\w.$+@-]/;
 
 /**
  * Which part of the diff-size split a path counts toward (decision 110). A
- * symlink is source wherever it sits, and so is any path one can reach. A test
- * is only the trusted suffix under a name a token can spell, and never a file
- * renamed onto it from a name that was not one, which would carry production
- * code in under the test count. `.md` under `docs/` is code where a Docusaurus
- * config compiles it.
+ * symlink is source wherever it sits, and so is any path one can reach and any
+ * path holding a character outside ASCII, which a link spelled in ASCII may
+ * reach through the filesystem's folding. A test is only the trusted suffix
+ * under a name a token can spell, and never a file renamed onto it from a name
+ * that was not one, which would carry production code in under the test count.
+ * `.md` under `docs/` is code where a Docusaurus config compiles it.
  */
 function diffSizeKind(
   path: string,
   entry: RawDiffEntry | undefined,
   tree: BranchTree,
 ): DiffSizeKind {
-  if (entry?.mode === '120000' || tree.linked(path)) return 'source';
+  if (entry?.mode === '120000' || NON_ASCII.test(path) || tree.linked(path)) return 'source';
   if (
     path.startsWith(DIFF_SIZE_DOCS_DIR) &&
     DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension)) &&
@@ -419,7 +435,9 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
  * name it spells, however many tokens repeat a name or targets share it. Grep
  * runs with colour pinned off: `color.grep=always` in the shared config would
  * wrap each path in escapes, and a listing entry that does not start with the
- * branch refuses rather than skips (decision 110).
+ * branch refuses rather than skips (decision 110). A path git listed in bytes
+ * that are not UTF-8 reads back with `U+FFFD` in their place, which names
+ * another file or none, so that importer names every target unread.
  */
 function filesNaming(
   repoPath: string,
@@ -466,6 +484,10 @@ function filesNaming(
     }
     const importer = entry.slice(prefix.length);
     if (skip(importer)) continue;
+    if (importer.includes('\ufffd')) {
+      named.set(importer, new Set(targets.filter((target) => target !== importer)));
+      continue;
+    }
     const text = runGit(repoPath, [
       '-c',
       'core.precomposeUnicode=false',

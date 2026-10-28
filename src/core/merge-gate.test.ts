@@ -5412,6 +5412,130 @@ describe('countChangedLines', () => {
       forged: [],
     });
   });
+
+  // APFS folds `\u017f` onto `s` and `\u03c2` onto `\u03c3` by tables no
+  // JavaScript case mapping shares, so a name holding a character outside
+  // ASCII is never compared: a link spelled with one lands anywhere, and a
+  // changed path named with one is source whatever an ASCII link reaches.
+  it.each([
+    ['a target', 'src/pkg/impl.py', '../../doc\u017f/impl.md'],
+    ['a directory', 'doc\u017f/impl.py', 'impl.md'],
+  ])('lets a link with %s outside ASCII reach every path', (_, link, target) => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'docs/impl.md', 'print(1)\n'.repeat(5)],
+      ['100644', 'src/plain.test.ts', 'export const v = 1;\n'],
+      ['120000', link, target],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a doc or test named outside ASCII as source, as an ASCII link may reach it', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'docs/\u017fecret.md', 'print(1)\n'.repeat(5)],
+      ['100644', 'src/\u017fub/big.test.ts', 'export const v = 1;\n'.repeat(3)],
+      ['120000', 'src/pkg/impl.py', '../../docs/secret.md'],
+      ['120000', 'src/impl.ts', 'sub/big.test.ts'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 10,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('takes no final sigma for a sigma', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      [
+        '100644',
+        'src/\u03bb\u03cc\u03b3\u03bf\u03c2/big.test.ts',
+        'export const v = 1;\n'.repeat(3),
+      ],
+      ['120000', 'src/impl.ts', '\u03bb\u03cc\u03b3\u03bf\u03c3/big.test.ts'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 4,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // git's `icase` pathspec and a JavaScript `/i` without `u` fold ASCII only,
+  // so a manifest under the Kelvin sign or a config under a long s went unseen
+  // where APFS opens either as the ASCII name.
+  it.each([
+    ['website/pac\u212aage.json', '{ "dependencies": { "@docusaurus/core": "3" } }\n'],
+    ['docu\u017faurus.config.ts', 'export default {};\n'],
+  ])('compiles docs/ Markdown beside %s', (witness, content) => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', witness, content],
+      ['100644', 'docs/big.md', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'docs/notes.rst', 'Notes\n=====\n'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 6,
+      test: 0,
+      docs: 2,
+      forged: [],
+    });
+  });
+
+  // runGit decodes git's output as UTF-8, so a path whose bytes are not UTF-8
+  // was listed as `src/\ufffd.ts`, and reading that path read a decoy
+  // committed under the replacement character itself.
+  it('names every test from an importer whose path is not UTF-8', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: "export * from './big.test.js';\n",
+      encoding: 'utf8',
+    }).trim();
+    // `src/\u00e9.ts` in Latin-1: no argument carries a byte that is not UTF-8.
+    execFileSync('git', ['update-index', '--index-info'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: Buffer.concat([
+        Buffer.from(`100644 ${blob}\tsrc/`),
+        Buffer.from([0xe9]),
+        Buffer.from('.ts\n'),
+      ]),
+    });
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/\ufffd.ts', 'export {};\n'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
 });
 
 describe('withMergeLock', () => {
