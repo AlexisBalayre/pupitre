@@ -1,9 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
@@ -22,6 +30,24 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
+
+// The file's temp dirs, its children's included, go to a TMPDIR of its own,
+// which must hold no pup-* entry once every test has removed its own
+// (decision 100).
+let sharedTmp: string | undefined;
+let fileTmp: string;
+beforeAll(() => {
+  sharedTmp = process.env.TMPDIR;
+  fileTmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-ci-wait-tmp-')));
+  process.env.TMPDIR = fileTmp;
+});
+afterAll(() => {
+  const left = readdirSync(fileTmp).filter((name) => name.startsWith('pup-'));
+  if (sharedTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = sharedTmp;
+  rmSync(fileTmp, { recursive: true, force: true, maxRetries: 3 });
+  expect(left).toEqual([]);
+});
 
 const SESSION_ID = 's1';
 const ORIGIN_URL = 'git@github.com:owner/repo.git';
@@ -112,7 +138,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-ci-wait-')));
+    repo = tempDir('pup-ci-wait-');
     const pid = projectId(repo);
     ensureProject(db, pid, repo);
     saveProjectOriginUrl(db, pid, ORIGIN_URL);
@@ -137,7 +163,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     // `pushTarget` reads origin from the repo, as the gate does.
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: GIT_ENV });
     execFileSync('git', ['remote', 'add', 'origin', ORIGIN_URL], { cwd: repo, env: GIT_ENV });
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-ci-wait-gh-')));
+    ghDir = tempDir('pup-ci-wait-gh-');
     // Each read takes the next answer, and the last one stands once they run out.
     writeFileSync(
       join(ghDir, 'gh'),

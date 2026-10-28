@@ -49,3 +49,15 @@
     one that refuses have each removed their checkout and their children's `TMPDIR` by the time
     they return. Each of these fails with its fix taken out: the unconditional group kill, the
     kill before removal, the 200 ms wait (the exit test, two runs in three) and the gate's call.
+    *Amended 2026-10-28 (task t-mvry50b8):* three files written after this decision called
+    `mkdtempSync` again and removed nothing: `fix-round.test.ts` (`pup-fix-origin-`, `-gh-`,
+    `-repo-`, `-claude-`, `-state-`, `-git-`, `-lookup-`), `ci-wait.test.ts` (`pup-ci-wait-`) and
+    `github-client.test.ts` (`pup-review-gh-`). About 76,000 `pup-*` entries had piled up again,
+    5,355 `pup-fix-origin-` in one day. They now make every directory through `tempDir`. Each of
+    them also guards itself: `beforeAll` points `TMPDIR` at a directory of its own, so whatever
+    the file and its children make lands there and no concurrent run's entries do, and `afterAll`
+    restores `TMPDIR`, removes that directory and fails the file if it held a `pup-*` entry.
+    `fix-round.test.ts` runs the gate, so its guard keeps `pup-toolchain-cache` but fails on a
+    repo cache inside it. Measured: the three files under a fresh `TMPDIR` leave no `pup-*` entry,
+    and a test added to `github-client.test.ts` that calls `mkdtempSync` and removes nothing
+    fails the file, naming the directory it left.
