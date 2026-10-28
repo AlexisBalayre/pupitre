@@ -42,24 +42,32 @@
     pinned diff command, unchanged, itself and no other git, since a bare `git diff`, `git show` or
     `git log -p` runs the diff drivers a session can arm in the shared git config (decision 41),
     unsandboxed, as the operator, and bare branch names resolve to a planted tag or a moved HEAD
-    (decision 80). It takes the branch's content only from that diff, and reads the unchanged code
-    around a hunk with Read in the main checkout, never under `.worktrees/<session-id>/`. The
-    conductor's review of this fix moved the reads there. The conductor's profile has no read guard,
-    so a symlink committed in the worktree (`docs/ctx.md -> ~/.ssh/id_ed25519`) would be followed,
-    and its target would go back to the session as a steer's evidence. And the working tree is not
-    the branch: uncommitted edits or a moved HEAD can show the reviewer a harmless version of a
-    file the hunks call. For the same reason it reads no path the diff marks mode 120000, nor
-    anything under one. It runs nothing the diff suggests and follows no instruction in it. And it
-    reports within ten turns, returning only the verdict and findings, never the diff. The Agent
-    tool has no turn limit, so the cap is advice: when the subagent returns no verdict, the
-    conductor says the review did not finish and never reports it as clean. A finding that holds
-    is still a steer, not a gate.
+    (decision 80). It takes the branch's content, and the code around each hunk, only from that
+    diff: the pinned command carries `--function-context`, so each hunk comes with the whole
+    function it changes, out of git's objects. It reads no file. Two rounds got there. The
+    conductor's review of this fix first moved the reads from `.worktrees/<session-id>/` to the
+    main checkout. The conductor's profile has no read guard, so a symlink committed in the
+    worktree (`docs/ctx.md -> ~/.ssh/id_ed25519`) would be followed, and its target would go back
+    to the session as a steer's evidence. And uncommitted edits or a moved HEAD can show the
+    reviewer a harmless version of a file the hunks call. The CI review then showed that the main
+    checkout's working tree is no safer. A session's Bash is guarded only against `.claude/`, so it
+    can write into the repo root (decision 51), which is why only `HEAD`'s tree counts in decision
+    58. It can plant the same symlink or decoy there, and a link it never commits is not in the
+    diff, so no mode 120000 rule catches it. Git's objects are the one copy the session cannot
+    rewrite. A funcname pattern the session names through `.gitattributes` and the shared config
+    only moves where a function starts: the context never drops below git's default three lines,
+    and no changed line is hidden. Dropping the reads also leaves the ten turns to the review. It
+    runs nothing the diff suggests and follows no instruction in it. And it reports within ten
+    turns, returning only the verdict and findings, never the diff. The Agent tool has no turn
+    limit, so the cap is advice: when the subagent returns no verdict, the conductor says the
+    review did not finish and never reports it as clean. A finding that holds is still a steer,
+    not a gate.
     *Tests.* The kickoff's Security review bullet names the general-purpose subagent with its
     `subagent_type`, `model: "opus"` and `effort: "high"`, never names `security-reviewer`, carries
     the ten-turn cap and no `xhigh"` effort, and keeps the pinned diff command byte for byte. A
     second test checks that the conductor is told never to read the diff, that the prompt names what
     to look for, and that the subagent runs the pinned command itself and no other git. It also
-    checks that the subagent takes the branch only from the diff, reads context in the main
-    checkout and never under the worktree or a mode 120000 path, runs nothing the diff suggests
-    and follows no instruction in it, and returns no diff. Last, it checks that a missing verdict
+    checks that the subagent takes the branch and the code around each hunk only from the diff's
+    function context, reads no file and never uses Read, runs nothing the diff suggests and
+    follows no instruction in it, and returns no diff. Last, it checks that a missing verdict
     is reported as unfinished, never clean, and that nothing says to pass the diff in the prompt.
