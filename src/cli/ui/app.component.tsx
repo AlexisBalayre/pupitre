@@ -74,6 +74,7 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
 
   // Lines the frame spends before any list: the header, the unreadable stores,
   // the four margins between blocks, the prompt, the footer and the merge pane.
+  // Each is one terminal row because each is truncated, never wrapped.
   const headerLines = isFleet || !only ? 1 + projects.length : only.snapshot.baseline ? 3 : 2;
   // The footer's two lines (hint or read-only reason, then the keys), and the status line over them.
   const footerLines = 2 + (status ? 1 : 0);
@@ -84,7 +85,7 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
   const body = Math.max(terminalRows - 1 - chrome, 0);
   const sectionCap = Math.floor(body / 4);
   const debtShare = sectionShare(sectionCap, projects.length, 2);
-  const radarShare = sectionShare(sectionCap, projects.length, 1);
+  const radarShare = sectionShare(sectionCap, projects.length, 2);
   const debtUsed = usedLines(
     projects.map(({ snapshot }) =>
       snapshot.overdueDebt.length + snapshot.openDebtCount === 0

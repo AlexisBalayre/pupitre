@@ -13,8 +13,11 @@
     height (a pipe) reads as unbounded and nothing is clipped. `App` counts what cannot shrink
     (header, unreadable stores, the margins between blocks, prompt, footer, merge pane), and
     the rest is the body. The debt and radar blocks are each held to a quarter of the body
-    (split evenly across projects, never under two lines for debt and one for radar), and the
-    session and backlog rows share what is left as one window around the cursor. A list that
+    (split evenly across projects, never under two lines each: a trailer for debt, the stale
+    notice for radar), and the session and backlog rows share what is left as one window around
+    the cursor. Every line counted as one row is truncated (`wrap="truncate-end"`, the input
+    prompt `truncate-start` so its cursor stays in view), never wrapped, so a narrow terminal
+    cannot add rows the count did not see. A list that
     was cut ends in a `+N more` line that is counted in its budget. The window is a function
     of the cursor alone, so a refresh does not move it, and moving the cursor past its edge
     scrolls it. The detail pane still replaces the table.

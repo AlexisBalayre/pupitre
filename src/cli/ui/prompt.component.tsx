@@ -12,14 +12,14 @@ import type { ControlPrompt } from './use-controls.hook.js';
 export function Prompt({ prompt }: { prompt: ControlPrompt }) {
   if (prompt.kind === 'confirm') {
     return (
-      <Text>
+      <Text wrap="truncate-end">
         <Text color="yellow">{prompt.question}</Text>
         <Text dimColor> (y/n, Esc cancels)</Text>
       </Text>
     );
   }
   return (
-    <Text>
+    <Text wrap="truncate-start">
       <Text color="cyan">{prompt.label}: </Text>
       {/* The block is the cursor: Ink draws no caret of its own, and a field
           with no visible end looks like a screen that has stopped responding. */}

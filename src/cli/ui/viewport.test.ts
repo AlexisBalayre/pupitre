@@ -60,14 +60,21 @@ function snapshot(live: number, planned: number): DashboardSnapshot {
 }
 
 /** The app on a terminal `rows` tall: the stream is told its height, then resized, as a real one is. */
-async function renderAt(rows: number, live = 6, planned = 40) {
+async function renderAt(
+  rows: number,
+  live = 6,
+  planned = 40,
+  options: { projects?: DashboardSnapshot[]; readOnlyReason?: string } = {},
+) {
+  const snapshots = options.projects ?? [snapshot(live, planned)];
   const instance = render(
     createElement(App, {
       read: () => ({
-        projects: [{ deps: DEPS, snapshot: snapshot(live, planned) }],
+        projects: snapshots.map((each) => ({ deps: DEPS, snapshot: each })),
         unreadable: [],
       }),
       showAttach: true,
+      ...(options.readOnlyReason ? { readOnlyReason: options.readOnlyReason } : {}),
     }),
   );
   await resize(instance, rows);
@@ -92,6 +99,56 @@ describe('viewport', () => {
     expect(heightOf(instance)).toBeLessThan(rows);
     instance.unmount();
   });
+
+  it('keeps long header, prompt and read-only lines to one row each', async () => {
+    const running = {
+      ...snapshot(6, 40),
+      conductor: {
+        running: true,
+        name: 'c',
+        attachCommand:
+          "tmux -L pup-conductor-ab12cd34ef56 attach -t '=pup-conductor-ab12cd34ef56:'",
+      },
+    };
+    const instance = await renderAt(24, 6, 40, {
+      projects: [running],
+      readOnlyReason: 'this is the conductor: it reads the dashboard and presses no keys. '.repeat(
+        3,
+      ),
+    });
+
+    expect(heightOf(instance)).toBeLessThan(24);
+    instance.unmount();
+  });
+
+  it('keeps a long prompt to one row', async () => {
+    const instance = await renderAt(24);
+
+    instance.stdin.write('k');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(instance.lastFrame()).toContain('(y/n, Esc cancels)');
+    expect(heightOf(instance)).toBeLessThan(24);
+    instance.unmount();
+  });
+
+  it.each([20, 24, 30])(
+    'keeps a stale radar over two projects under a %i-row terminal',
+    async (rows) => {
+      const stale = (projectId: string) => ({
+        ...snapshot(6, 40),
+        projectId,
+        overlaps: [{ sessionA: 's-a', sessionB: 's-b', files: ['src/x.ts'] }],
+        radarStale: true,
+      });
+      const instance = await renderAt(rows, 6, 40, {
+        projects: [stale('ab12cd34ef56'), stale('cd34ef56ab12')],
+      });
+
+      expect(heightOf(instance)).toBeLessThan(rows);
+      instance.unmount();
+    },
+  );
 
   it('ends a clipped list with a +N more line', async () => {
     const instance = await renderAt(24);
