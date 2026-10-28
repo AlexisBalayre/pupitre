@@ -1,0 +1,141 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T09:05:02.877Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40661065970",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40661065970",
+  "actor": "AlexisBalayre",
+  "commit_sha": "33aceb2a36efd6a98cd0535621ee1b067f99900e",
+  "source": "pr",
+  "pr_number": 196,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0114-the-gate-s-per-file-git-reads-pin-core-precomposeunicode.md",
+      "line": "1-3",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0114 corrects decision 113's claim that blobIsBinary's `<rev>:<path>` is safe, but lacks the `- Amends: [0113](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md)` line that docs/adr/README.md requires for the cross-references a decision states (0113 itself carries `- Amends: [0053]`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "515-517",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The added paragraph in `diffHunks`' JSDoc restates the WHY that the `PATH_AS_GIVEN` JSDoc already gives (macOS NFD-to-NFC rewrite, decision 114); AGENTS.md §Comments says to delete the call-site copy when the seam already says it, as the neighbouring DIFF_SAFE_FLAGS pins do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "113-156",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The decision-114 tests can only fail on macOS (git builds its precompose code only for Darwin), and the only workflow here (.github/workflows/claude-code-review.yml) runs on ubuntu-latest, so if a later change drops PATH_AS_GIVEN no automated run will catch it. The ADR acknowledges this ('On macOS, each test fails with its pin removed'). A darwin CI job, or a comment pointing to macOS-only verification, would make the guard real.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "113-116",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This is the third copy of the same macOS rewrite explanation, after the `PATH_AS_GIVEN` JSDoc and the ADR. Only the last sentence, \"Elsewhere git ignores the key and these pass either way\", is new. It is a useful WHY, because it explains why the tests don't fail on Linux. Trim the comment to that sentence plus \"(decision 114)\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "503",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`PATH_AS_GIVEN` sits about 85 lines below `DIFF_SAFE_FLAGS` (line 417), the existing per-call pin constant. Unlike `DIFF_SAFE_FLAGS`, it has no `as const`. Placing the two together would keep the per-call pins in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "616-623",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`PATH_AS_GIVEN` is spliced by hand into three git argv arrays (diffHunks and both cat-file calls in blobIsBinary), so any future git call taking a path or `<rev>:<path>` must remember to add it; the ADR deliberately keeps it out of GIT_SAFE_CONFIG, so this is only a note.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0114-the-gate-s-per-file-git-reads-pin-core-precomposeunicode.md",
+      "line": "8-11",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The line \"as two files, because the index takes any bytes; only a working tree on APFS cannot. Given `é.ts` spelled NFD, the per-file\" runs well past the ~90-column wrap of the surrounding lines. It looks like a reflow leftover.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8405721999999998,
+  "duration_ms": 150691,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 6775,
+    "cache_read": 172869,
+    "cache_creation": 55290,
+    "total": 234944
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 52,
+      "output": 25045,
+      "cache_read": 896445,
+      "cache_creation": 158716,
+      "cost_usd": 1.639847
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 6425,
+      "cache_read": 134997,
+      "cache_creation": 49171,
+      "cost_usd": 0.2007252
+    }
+  ],
+  "permission_denials": []
+}
