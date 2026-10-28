@@ -1,7 +1,7 @@
 # 0096. Test runs queue for a few machine-wide slots, the gate's first; launches stop at a per-project session cap and under 1.5 GB of available memory; the conductor fills the cap with tasks that share no source file (2026-10-18)
 
 - Status: accepted
-- Amended by: [0088](0088-the-merge-lock-records-its-holder-survives-every.md)
+- Amended by: [0088](0088-the-merge-lock-records-its-holder-survives-every.md), [0115](0115-the-session-cap-counts-working-sessions-not-those.md)
 
 96. **Test runs queue for a few machine-wide slots, the gate's first; launches stop at a
     per-project session cap and under 1.5 GB of available memory; the conductor fills the cap

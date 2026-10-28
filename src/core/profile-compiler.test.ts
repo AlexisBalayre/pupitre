@@ -1881,9 +1881,12 @@ describe('test runs queue for a slot (decision 96)', () => {
       maxSessions: 7,
     }).contextMarkdown;
 
-    expect(context).toContain('It is refused once 7 sessions are live');
     expect(context).toContain(
-      'Keep 7 sessions live: whenever fewer are, fill the free places with planned tasks whose ' +
+      'It is refused once 7 sessions are working (running, blocked or in a fix round; ' +
+        '`awaiting-review` sessions do not count)',
+    );
+    expect(context).toContain(
+      'Keep 7 sessions live and working (`awaiting-review` ones do not count): whenever fewer are, fill the free places with planned tasks whose ' +
         "scope-in globs share no source file with a running session's. The project's decisions " +
         'document and the file that registers CLI commands do not count as shared.',
     );

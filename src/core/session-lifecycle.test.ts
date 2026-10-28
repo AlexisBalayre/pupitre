@@ -1650,7 +1650,10 @@ describe('launch capacity (decision 96)', () => {
   });
 
   /** `count` sessions in `state`, each on a task of its own sharing no file with `t-1`. */
-  function seedSessions(count: number, state: 'running' | 'killed' = 'running'): void {
+  function seedSessions(
+    count: number,
+    state: 'running' | 'awaiting-review' | 'killed' = 'running',
+  ): void {
     for (let index = 0; index < count; index++) {
       const id = `s-${state}-${index}`;
       insertTask(db, {
@@ -1666,8 +1669,15 @@ describe('launch capacity (decision 96)', () => {
         profileHash: 'hash',
       });
       transitionSession(db, id, 'running');
-      if (state === 'killed') transitionSession(db, id, 'killed');
+      if (state !== 'running') transitionSession(db, id, state);
     }
+  }
+
+  /** The cap `pup conductor start --max-sessions` stores. */
+  function setCap(cap: number): void {
+    const file = join(projectPaths(repo).root, 'conductor', 'max-sessions');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${cap}\n`);
   }
 
   const launch = (by: 'operator' | 'conductor', overCap = false): string => {
@@ -1695,8 +1705,8 @@ describe('launch capacity (decision 96)', () => {
       seedSessions(4);
 
       expect(() => launch(by)).toThrow(
-        "4 sessions are live, at this project's cap of 4 (`pup conductor start --max-sessions` " +
-          'sets it); nothing was launched.',
+        "4 sessions are working, at this project's cap of 4 (`pup conductor start " +
+          '--max-sessions` sets it; sessions awaiting review do not count); nothing was launched.',
       );
       expect(launchSession).not.toHaveBeenCalled();
       expect(getSession(db, 't-1')).toBeUndefined();
@@ -1731,6 +1741,30 @@ describe('launch capacity (decision 96)', () => {
     seedSessions(2, 'killed');
 
     expect(launch('operator')).toBe('t-1');
+  });
+
+  it('does not count sessions awaiting review (decision 115)', () => {
+    setCap(2);
+    seedSessions(2, 'awaiting-review');
+    seedSessions(1);
+
+    expect(launch('conductor')).toBe('t-1');
+  });
+
+  it('refuses at a cap of 2 with two running sessions', () => {
+    setCap(2);
+    seedSessions(2);
+
+    expect(() => launch('conductor')).toThrow(SessionCapReachedError);
+  });
+
+  it('keeps the memory floor with only sessions awaiting review', () => {
+    setCap(2);
+    seedSessions(2, 'awaiting-review');
+    vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.2 * 1024 ** 3);
+
+    expect(() => launch('conductor')).toThrow(LowMemoryError);
+    expect(launchSession).not.toHaveBeenCalled();
   });
 
   it('refuses `pup new` at the cap before writing its task', () => {

@@ -91,13 +91,13 @@ interface CapOverride {
   overCap?: boolean;
 }
 
-/** A launch refused because the project already has as many live sessions as its cap. */
+/** A launch refused because the project already has as many working sessions as its cap. */
 export class SessionCapReachedError extends Error {
-  constructor(live: number, cap: number) {
+  constructor(working: number, cap: number) {
     super(
-      `${live} sessions are live, at this project's cap of ${cap} (\`pup conductor start ` +
-        '--max-sessions` sets it); nothing was launched. Wait for one to finish, or, as the ' +
-        'operator, pass --over-cap to `pup launch` or `pup new`.',
+      `${working} sessions are working, at this project's cap of ${cap} (\`pup conductor start ` +
+        '--max-sessions` sets it; sessions awaiting review do not count); nothing was launched. ' +
+        'Wait for one to finish, or, as the operator, pass --over-cap to `pup launch` or `pup new`.',
     );
     this.name = 'SessionCapReachedError';
   }
@@ -122,9 +122,11 @@ function gigabytes(bytes: number): string {
 /**
  * Refuse a launch past the project's session cap or into a machine short of
  * memory (decision 96). Asked before anything is built, and before `pup new`
- * writes its task, so a refusal leaves nothing behind. `--over-cap` lifts the
- * cap for the operator alone and never the memory floor: memory is the
- * machine's limit, the cap only the operator's choice of one.
+ * writes its task, so a refusal leaves nothing behind. The cap counts the
+ * sessions whose windows take turns, not those awaiting review (decision 115):
+ * an idle window costs memory, which the floor already measures, and no CPU.
+ * `--over-cap` lifts the cap for the operator alone and never the memory
+ * floor: memory is the machine's limit, the cap only the operator's choice of one.
  */
 function assertRoomToLaunch(
   db: Database,
@@ -133,9 +135,10 @@ function assertRoomToLaunch(
 ): void {
   const byOperator = req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';
   if (!(req.overCap && byOperator)) {
-    const live = listSessions(db, holdingStates()).length;
+    const working = holdingStates().filter((state) => state !== 'awaiting-review');
+    const count = listSessions(db, working).length;
     const cap = maxSessions(repoPath);
-    if (live >= cap) throw new SessionCapReachedError(live, cap);
+    if (count >= cap) throw new SessionCapReachedError(count, cap);
   }
   const available = availableMemoryBytes();
   if (available < MIN_AVAILABLE_MEMORY_BYTES) throw new LowMemoryError(available);
