@@ -1,0 +1,180 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T13:56:58.621Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40700274901",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40700274901",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c54fa7a6a28b20130602caa72ce131895c521a90",
+  "source": "pr",
+  "pr_number": 202,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "75-84",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The chrome count gives the header, prompt and read-only reason one row each, but those `<Text>` elements are not truncated. On a normal 80-100 column terminal the conductor-running header line, the kill/merge/unblock prompts and the conductor's read-only reason wrap to two rows, so the frame reaches `rows` and Ink clears the screen again.",
+      "body": "The chrome count gives each header, prompt and footer line one terminal row:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c54fa7a6a28b20130602caa72ce131895c521a90/src/cli/ui/app.component.tsx#L75-L84\n\nSeveral of those `<Text>` elements have no `wrap=\"truncate-end\"`, and Ink's `<Text>` wraps by default. Each wrapped line takes a terminal row the budget never counted. When the table is clipped it fills `tableLines` exactly, so the frame is `rows - 1`. One wrapped line then makes the frame as tall as the terminal, and Ink goes back to clearing and redrawing every 2 s, which is the flicker this PR set out to fix.\n\nLines that wrap in practice:\n\n- **Header, conductor running** ([header.component.tsx#L28-L35](https://github.com/AlexisBalayre/pupitre/blob/c54fa7a6a28b20130602caa72ce131895c521a90/src/cli/ui/header.component.tsx#L28-L35)): `conductor running (attach: tmux -L pup-conductor-<id> attach -t '=pup-conductor-<id>:')` is about 103 characters. With `paddingX={1}` it needs about 105 columns to fit on one row. This is the ordinary setup: one project, conductor up, operator watching. The repo-path line above it is not truncated either.\n- **Prompts** ([prompt.component.tsx#L15-L29](https://github.com/AlexisBalayre/pupitre/blob/c54fa7a6a28b20130602caa72ce131895c521a90/src/cli/ui/prompt.component.tsx#L15-L29)):\n  - The kill confirmation is about 88 characters.\n  - The worker-model input is about 100 characters before anything is typed.\n  - The unblock question embeds the blocked reason, so it has no length limit.\n- **Footer read-only reason** ([footer.component.tsx#L31](https://github.com/AlexisBalayre/pupitre/blob/c54fa7a6a28b20130602caa72ce131895c521a90/src/cli/ui/footer.component.tsx#L31)): the conductor's reason is about 145 characters.\n\nThe status line, hint lines, unreadable lines and `FleetHeader` rows already use `wrap=\"truncate-end\"`; these lines were missed. ADR 0121's *Known limits* do not mention width-driven wrapping. `viewport.test.ts` uses `conductor.running: false`, opens no prompt and passes no read-only reason, so the suite does not catch this.\n\nTwo possible fixes:\n\n- **Truncate the lines** so the hand count holds: `wrap=\"truncate-end\"` on the header lines, the read-only reason and the confirm prompt, and `truncate-start` on the input prompt so the cursor stays visible.\n- **Count the wrapped rows**: `Math.ceil(width / (columns - 2))` per line, which also needs `stdout.columns`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "87",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When `radarShare` is at its floor of 1 and a project's radar is stale with at least one overlap, `Radar` draws two lines but `radarUsed` counts one for it. A fleet of two or more projects on a 24-30 row terminal then reaches `rows`.",
+      "body": "The radar share can drop to its floor of one line:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c54fa7a6a28b20130602caa72ce131895c521a90/src/cli/ui/app.component.tsx#L86-L99\n\nWhen `radarStale` is true, `Radar` reserves one line for the stale notice and clips the overlaps to `Math.max(maxLines - 1, 1)`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c54fa7a6a28b20130602caa72ce131895c521a90/src/cli/ui/radar.component.tsx#L27\n\nWith `maxLines = 1` that is `clip(overlaps, 1)`, which still draws one line: a single overlap or `+N more`. Add the stale line and the block draws 2 lines, but `usedLines` counted `min(n + 1, 1) = 1`.\n\nReal data does reach this state. `dashboard.service.ts` reads `listOverlaps` whatever the heartbeat says, and a dead watcher leaves its last overlap rows in place. The repo's own fixture in `dashboard-components.test.ts` pairs an overlap with `radarStale: true`.\n\nWorked example, a two-project fleet on 24 rows:\n\n- `chrome` = 3 + 4 + 2 = 9, so `body` = 14.\n- `sectionCap` = 3, so `radarShare` = `max(floor(3/2), 1)` = 1.\n- The table fills its budget exactly, so the frame comes to `rows`.\n\nEach further project in that state adds one more row. For 2 projects this holds up to about 25 rows, and for 3 projects up to about 34.\n\n`Debt` already uses a floor of 2 for the same reason: one line is reserved for a trailer. Raising the radar floor to 2 makes `Radar`'s drawn height equal `usedLines` in both the stale and the fresh case. The ADR's \"one for radar\" wording would need the same change.",
+      "suggestion": "  const radarShare = sectionShare(sectionCap, projects.length, 2);"
+    },
+    {
+      "file": "src/cli/ui/use-terminal-rows.hook.ts",
+      "line": "11-13",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`stdout.rows ?? Infinity` only catches `undefined`. A pty with no size set (some `docker exec -t` / `ssh -t` setups) reports `rows === 0`, which gives a body of 0, a window of one row, and debt/radar at their floors. Before this PR such a terminal showed everything. `stdout.rows || Number.POSITIVE_INFINITY` treats 0 as unknown.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "154",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the cursor is near the end of the list, `windowStart` puts every hidden row above the window, but the only marker is under the table. It reads as \"more below\" when nothing is below.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "34-59",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The height test covers one project with the conductor stopped and no baseline, prompt, status, read-only reason, merge log or stale radar. Drift in the chrome counts for any of those paths, including the wrap and stale-radar overflows above, passes the suite even though ADR 0121 relies on this test to catch it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "75-103",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Shotgun Surgery and Duplicated Code. The chrome total hard-codes the line counts of components it does not own, so adding a header, footer or merge-pane line elsewhere makes the budget silently wrong. `App` also re-derives `Debt`'s and `Radar`'s natural heights. Exporting each component's line count next to the component would keep the two in sync.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.utils.ts",
+      "line": null,
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`moreLine` bakes in a two-space indent, so `Debt` and `Radar` both call `moreLine(hidden).trim()` to undo it. Having it return the bare `+N more` and letting the table caller indent would give it one call shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/sessions.component.tsx",
+      "line": null,
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `liveCount` prop gives `Sessions` a second source of truth to tell an empty window from no live sessions. `App` also hand-counts the matching \"no live sessions\" and \"finished\" rows in `fixedRows`, so two places must agree.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New tests go under `test/unit/` at the source's path (docs/conventions/testing.md §Layout; ADR 0116 says new code follows that layout). Put the `clip`/`windowStart`/`sectionShare`/`usedLines` tests in `test/unit/cli/ui/viewport-utils.test.ts` with `@src/` imports, and the full-`App` render scenarios in `test/integration/`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md",
+      "line": "13",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"The frame is at most one row short of the terminal\" reads backwards. `body = terminalRows - 1 - chrome` makes it at least one row shorter (at most `rows - 1` tall).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "76",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment says the chrome lines come \"before any list\", but the prompt, footer and merge pane are drawn after the lists. What the sum counts is the lines that cannot shrink.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0074094,
+  "duration_ms": 286783,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 10359,
+    "cache_read": 294494,
+    "cache_creation": 42865,
+    "total": 347732
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 70,
+      "output": 35328,
+      "cache_read": 975034,
+      "cache_creation": 143291,
+      "cost_usd": 1.7468968
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 7631,
+      "cache_read": 138886,
+      "cache_creation": 68108,
+      "cost_usd": 0.2605126
+    }
+  ],
+  "permission_denials": []
+}
