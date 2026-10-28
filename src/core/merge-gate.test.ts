@@ -122,7 +122,7 @@ import {
   waitForLoad,
   withMergeLock,
 } from './merge-gate.service.js';
-import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
+import { GateInterruptedError, sandboxLabel, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -4198,6 +4198,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         status: 'fail',
         detail: expect.stringContaining('Auto-merge of main hit conflicts'),
       });
+      // git's report a line each, as the worker reads it.
+      expect(outcome.report.stages.at(-1)?.detail).toMatch(
+        /^CONFLICT \(add\/add\): Merge conflict in src\/feature\.ts$/m,
+      );
       const steer = vi.mocked(steerPane).mock.calls[0]?.[1];
       expect(steer).toContain("`git merge 'refs/heads/main'`");
       expect(steer).not.toContain('rebase');
@@ -4812,13 +4816,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         );
       });
 
-      it('refuses a script that leaves a link where the README was', async () => {
+      // A fifo would block a read that waited for a writer.
+      it.each([
+        ['a link', 'ln -s /dev/null "$README"'],
+        ['a fifo', 'mkfifo "$README"'],
+      ])('refuses a script that leaves %s where the README was', async (_, plant) => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
         // Only in the gate's checkout, so the branch's own run commits a file.
         writeFileSync(
           join(worktree, 'scripts/adr-index.sh'),
-          `${ADR_SCRIPT}\ncase "$PWD" in *pup-gate-checkout-*) rm "$README"; ln -s /dev/null "$README";; esac\n`,
+          `${ADR_SCRIPT}\ncase "$PWD" in *pup-gate-checkout-*) rm "$README"; ${plant};; esac\n`,
         );
         addDecision(worktree, 2);
         addDecision(repo, 3);
@@ -4827,9 +4835,75 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
         expect(outcome.status).toBe('rejected');
         expect(outcome.report.stages.at(-1)?.detail).toContain(
-          'docs/adr/README.md was not regenerated: scripts/adr-index.sh left no regular file at docs/adr/README.md.',
+          'docs/adr/README.md was not regenerated: scripts/adr-index.sh left no regular file of ' +
+            'at most 1048576 bytes at docs/adr/README.md.',
         );
       });
+
+      // A process the script left in a session of its own outlives the run and
+      // can swap the path between any check and git's read of it.
+      it('hashes the README it checked, not a link swapped in after the check', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+        const secret = join(tempDir('pup-adr-secret-'), 'key');
+        writeFileSync(secret, 'a file the sandbox denies\n');
+        const secretOid = sh(repo, 'git', 'hash-object', secret).trim();
+        let checkout = '';
+        beforeGit(
+          (args) => {
+            const cwd = args[args.indexOf('-C') + 1] ?? '';
+            if (cwd.includes('pup-gate-checkout-')) checkout = cwd;
+            return args.includes('hash-object');
+          },
+          () => {
+            rmSync(join(checkout, INDEX));
+            symlinkSync(secret, join(checkout, INDEX));
+          },
+        );
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('merged');
+        expect(() => sh(repo, 'git', 'cat-file', '-e', secretOid)).toThrow();
+        const index = freshIndexAt('main');
+        for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
+      });
+
+      // Asserts pup's own profile, so only where pup applied it rather than
+      // running inside an outer one, as under its own gate.
+      it.runIf(sandboxLabel() === 'sandbox-exec (macOS)')(
+        'writes the merged README under the sandbox, never through a link swapped in first',
+        async () => {
+          seedAdr();
+          const worktree = seedSession(db, repo, adrScope);
+          addDecision(worktree, 2);
+          addDecision(repo, 3);
+          const outside = join(tempDir('pup-adr-outside-'), 'rc');
+          writeFileSync(outside, 'untouched\n');
+          let checkout = '';
+          // The checkout's link check, the last git call before the child runs.
+          beforeGit(
+            (args) => {
+              checkout = args[args.indexOf('-C') + 1] ?? '';
+              return checkout.includes('pup-gate-checkout-') && args.includes('ls-tree');
+            },
+            () => {
+              rmSync(join(checkout, INDEX));
+              symlinkSync(outside, join(checkout, INDEX));
+            },
+          );
+
+          const outcome = await merge();
+
+          expect(outcome.status).toBe('rejected');
+          expect(outcome.report.stages.at(-1)?.detail).toContain(
+            'docs/adr/README.md was not regenerated: scripts/adr-index.sh failed:',
+          );
+          expect(readFileSync(outside, 'utf8')).toBe('untouched\n');
+        },
+      );
 
       it('refuses a merged tree the script is missing from, naming its failure', async () => {
         seedAdr();
