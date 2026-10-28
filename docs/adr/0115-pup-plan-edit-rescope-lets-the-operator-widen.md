@@ -33,9 +33,10 @@
     audited, so it names paths. Refused are an empty glob, one made of only star segments
     (`*`, `**`, `**/*`, `*/**`), an absolute one, one with a `..` segment, and any with a
     C0 control, DEL or C1 control.
-    *Atomicity.* The read of the spec, the state and window checks, the write and both
+    *Atomicity.* The read of the spec, the write, the window check, the tier raise and both
     records run in one `immediate` transaction, so no writer lands between the read and the
-    write. The `UPDATE` also carries the state guard, so no other caller can write past it.
+    write. The state rule is the `UPDATE`'s own guard, the one check of it, so no caller
+    can write past it; an open window found after the write throws, which rolls it back.
     *What reads it.* The gate's scope-audit, `pup review` and `pup fix`'s recompiled
     profile all read `tasks.spec` through `readTaskSpec`, so the next re-gate and the next
     round's hooks see the widened scope with nothing else changed. Scope-out still wins

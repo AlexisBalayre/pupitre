@@ -23,42 +23,47 @@ import {
 import { sessionPane } from './session-lifecycle.service.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 
-export type RescopeOutcome =
-  | { status: 'rescoped'; sessionId: string; added: string[]; tier: Tier; raised: boolean }
-  | { status: 'unchanged'; sessionId: string }
-  | { status: 'working'; sessionId: string }
-  | { status: 'live'; sessionId: string }
-  | { status: 'unclaimed' }
-  | { status: 'unknown' };
-
-/** Any C0 control, DEL or C1 control: none belongs in a path. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
-const CONTROL_CHAR = /[\u0000-\u001f\u007f-\u009f]/;
-
-// A glob made of nothing but star segments (`*`, `**`, `**/*`, `*/**`) matches
-// every path or nearly every one.
-const STARS_ONLY = /^\*+(\/\*+)*\/?$/;
+/** What a rescope did: the globs it appended, none when all were there, and the tier it leaves. */
+interface Rescoped {
+  sessionId: string;
+  added: string[];
+  tier: Tier;
+  raised: boolean;
+}
 
 /**
- * The checks a glob passes before a rescope appends it, stricter than a plan's
- * (decision 115): a rescope widens a scope the gate already audited, so it
- * names paths, never the whole tree, never a path outside the repo.
+ * The globs a rescope refuses, stricter than a plan's (decision 115): a
+ * rescope widens a scope the gate already audited, so it names paths, never
+ * the whole tree, never a path outside the repo. A glob of nothing but star
+ * segments (`*`, `**`, `**` then `*`) matches every path or nearly.
  */
+const GLOB_REFUSALS: readonly (readonly [RegExp, string])[] = [
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+  [/[\u0000-\u001f\u007f-\u009f]/, 'contains a control character'],
+  [/^\s*$/, 'is empty'],
+  [/^\*+(\/\*+)*\/?$/, 'matches every path'],
+  [/^\//, 'is absolute'],
+  [/(^|\/)\.\.(\/|$)/, 'has a `..` segment'],
+];
+
+/**
+ * A rescope's refusals are the CLI's spec-edit refusals: it already refuses
+ * every InvalidProfileError `pup plan edit` meets, scrubbed, since the text
+ * can carry a stored session id.
+ */
+function refusal(message: string): InvalidProfileError {
+  return new InvalidProfileError(message);
+}
+
 function assertRescopableGlob(glob: string): void {
-  const refuse = (why: string) => {
-    throw new InvalidProfileError(`Rescope glob ${JSON.stringify(glob)} ${why}.`);
-  };
-  if (CONTROL_CHAR.test(glob)) refuse('contains a control character');
-  if (glob.trim() === '') refuse('is empty');
-  if (STARS_ONLY.test(glob)) refuse('matches every path');
-  if (glob.startsWith('/')) refuse('is absolute');
-  if (glob.split('/').includes('..')) refuse('has a `..` segment');
+  const refused = GLOB_REFUSALS.find(([pattern]) => pattern.test(glob));
+  if (refused) throw refusal(`Rescope glob ${JSON.stringify(glob)} ${refused[1]}.`);
 }
 
 /**
  * Whether the session's window may still be open, so its worker could keep
- * editing past a rescope: its recorded pane answers a capture, or a window
- * wears its name. Fails closed: a probe that errors any other way than "no
+ * editing past a rescope: a window wears its name, or its recorded pane
+ * answers a capture. Fails closed: a probe that errors any other way than "no
  * such pane" counts as open.
  */
 function windowOpen(row: SessionRow): boolean {
@@ -73,51 +78,74 @@ function windowOpen(row: SessionRow): boolean {
 }
 
 /**
+ * The tier the session's next window runs on once the scope-in is widened: a
+ * standard one is raised to critical when the widened scope implies it,
+ * since the window routes from the session's own stored tier; never lowered.
+ */
+function settleTier(
+  db: Database,
+  ids: { taskId: string; sessionId: string },
+  before: Tier,
+  widened: string[],
+): Tier {
+  if (before !== 'standard' || tierForScope(widened) !== 'critical') return before;
+  raiseToCritical(db, ids.taskId, ids.sessionId);
+  return 'critical';
+}
+
+/**
  * `pup plan edit <task> --rescope --scope <glob...>`: append globs to the
  * scope-in of a task a session claimed, whose spec `pup plan edit` otherwise
  * keeps frozen (decision 115). Never removes a glob. Refused while a session
- * on the task is in a state that is not listed as rescopable, or still has a
- * window open, whose hooks hold the old scope; once it has stopped, the gate,
- * `pup review` and the next `pup fix` all read the widened spec. The read, the
- * checks, the write, the `rescope` event on the claiming session and the
- * decision record `pup log` lists are one immediate transaction, so no other
- * writer lands between the read and the write. A widened scope-in that implies
- * critical raises a standard task and session to critical in the same write,
- * since the session's next window routes from its own stored tier; a tier is
- * never lowered. The caller is the operator: the CLI refuses a session and the
+ * on the task is in a state that is not listed as rescopable, which the
+ * write's own guard decides, or still has a window open, whose hooks hold the
+ * old scope; once it has stopped, the gate, `pup review` and the next
+ * `pup fix` all read the widened spec. The read, the checks, the write, the
+ * tier raise, the `rescope` event on the claiming session and the decision
+ * record `pup log` lists are one immediate transaction: no other writer lands
+ * between the read and the write, and a refusal after the write rolls it
+ * back. The caller is the operator: the CLI refuses a session and the
  * conductor before this runs.
  */
-export function rescopeTask(db: Database, taskId: string, globs: string[]): RescopeOutcome {
+export function rescopeTask(db: Database, taskId: string, globs: string[]): Rescoped {
   for (const glob of globs) assertRescopableGlob(glob);
   return db
-    .transaction((): RescopeOutcome => {
+    .transaction((): Rescoped => {
       const task = getTask(db, taskId);
-      if (!task) return { status: 'unknown' };
+      if (!task) throw refusal(`No task ${taskId}.`);
       const sessionId = claimingSession(db, taskId);
-      if (sessionId === undefined) return { status: 'unclaimed' };
-      const working = workingSession(db, taskId);
-      if (working !== undefined) return { status: 'working', sessionId: working };
-      const open = listTaskSessions(db, taskId).find(windowOpen);
-      if (open) return { status: 'live', sessionId: open.id };
+      if (sessionId === undefined) {
+        throw refusal(
+          `No session has claimed ${taskId}; widen its scope with \`pup plan edit ${taskId} --scope ...\`.`,
+        );
+      }
       const spec = readTaskSpec(db, taskId);
+      const before = asTier(getSession(db, sessionId)?.tier) ?? taskTier(task.tier, spec.scopeIn);
       const added = [...new Set(globs)].filter((glob) => !spec.scopeIn.includes(glob));
-      if (added.length === 0) return { status: 'unchanged', sessionId };
+      if (added.length === 0) return { sessionId, added, tier: before, raised: false };
       const widened = { ...spec, scopeIn: [...spec.scopeIn, ...added] };
       assertPlannableSpec(widened);
       if (!rescopeTaskSpec(db, taskId, JSON.stringify(widened))) {
-        return { status: 'working', sessionId: workingSession(db, taskId) ?? sessionId };
+        throw refusal(
+          `Session ${workingSession(db, taskId)} is at work on ${taskId}; rescope once it stops.`,
+        );
       }
-      const before = asTier(getSession(db, sessionId)?.tier) ?? taskTier(task.tier, spec.scopeIn);
-      const raised = before === 'standard' && tierForScope(widened.scopeIn) === 'critical';
-      if (raised) raiseToCritical(db, taskId, sessionId);
-      const tier: Tier = raised ? 'critical' : before;
+      const open = listTaskSessions(db, taskId).find(windowOpen);
+      if (open) {
+        throw refusal(
+          `Session ${open.id}'s window is still open, so its worker could keep editing ` +
+            `${taskId}; rescope once the window is closed.`,
+        );
+      }
+      const tier = settleTier(db, { taskId, sessionId }, before, widened.scopeIn);
+      const raised = tier !== before;
       appendEvent(db, sessionId, 'rescope', { task: taskId, added, by: 'operator', tier, raised });
       insertDecisionRecord(db, {
         sessionId,
         summary: `The operator widened ${taskId}'s scope-in after launch, adding ${added.join(', ')}.`,
         files: added,
       });
-      return { status: 'rescoped', sessionId, added, tier, raised };
+      return { sessionId, added, tier, raised };
     })
     .immediate();
 }

@@ -839,7 +839,7 @@ function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void 
     );
     return;
   }
-  if (opts.goal ?? opts.scopeOut ?? opts.accept ?? opts.tier) {
+  if ([opts.goal, opts.scopeOut, opts.accept, opts.tier].some((field) => field !== undefined)) {
     refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
     return;
   }
@@ -847,44 +847,25 @@ function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void 
     refuse('Usage: pup plan edit <task> --rescope --scope <glob...>');
     return;
   }
-  let outcome: ReturnType<typeof rescopeTask>;
   try {
-    outcome = rescopeTask(db, target, opts.scope);
+    console.log(rescopedLine(target, rescopeTask(db, target, opts.scope)));
   } catch (error) {
     if (!(error instanceof InvalidProfileError)) throw error;
+    // Store text: a refusal can name a session id read back from the store.
     refuse(sanitizeLines(error.message));
-    return;
   }
-  switch (outcome.status) {
-    case 'unknown':
-      refuse(`No task ${target}.`);
-      return;
-    case 'unclaimed':
-      refuse(
-        `No session has claimed ${target}; widen its scope with \`pup plan edit ${target} --scope ...\`.`,
-      );
-      return;
-    case 'working':
-      refuse(
-        `Session ${sanitizeReason(outcome.sessionId)} is at work on ${target}; rescope once it stops.`,
-      );
-      return;
-    case 'live':
-      refuse(
-        `Session ${sanitizeReason(outcome.sessionId)}'s window is still open, so its worker could ` +
-          `keep editing ${target}; rescope once the window is closed.`,
-      );
-      return;
-    case 'unchanged':
-      console.log(`${target}'s scope-in already holds every glob given; nothing changed.`);
-      return;
-    case 'rescoped':
-      console.log(
-        `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
-          `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
-          `${outcome.raised ? ', raised from standard' : ''}.`,
-      );
+}
+
+/** What a rescope that went through says: the globs it appended and the tier it leaves. */
+function rescopedLine(target: string, outcome: ReturnType<typeof rescopeTask>): string {
+  if (outcome.added.length === 0) {
+    return `${target}'s scope-in already holds every glob given; nothing changed.`;
   }
+  return (
+    `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
+    `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
+    `${outcome.raised ? ', raised from standard' : ''}.`
+  );
 }
 
 /**

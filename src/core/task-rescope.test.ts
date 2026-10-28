@@ -68,7 +68,6 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', state);
 
       expect(rescopeTask(db, 't-1', ['src/cli/index.ts', 'src/core/**'])).toEqual({
-        status: 'rescoped',
         sessionId: 's1',
         added: ['src/cli/index.ts'],
         tier: 'critical',
@@ -108,7 +107,9 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', 'merged');
       launched('s2', state);
 
-      expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'working', sessionId: 's2' });
+      expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+        'Session s2 is at work on t-1; rescope once it stops.',
+      );
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
       expect(listEvents(db, 's1')).toEqual([]);
       expect(listDecisionRecords(db)).toEqual([]);
@@ -116,10 +117,10 @@ describe('rescopeTask (decision 115)', () => {
   );
 
   it('refuses a task nobody claimed, and one that does not exist', () => {
-    expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'unclaimed' });
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow('No session has claimed t-1');
     launched('s1', 'killed');
-    expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'unclaimed' });
-    expect(rescopeTask(db, 't-gone', ['docs/**'])).toEqual({ status: 'unknown' });
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow('No session has claimed t-1');
+    expect(() => rescopeTask(db, 't-gone', ['docs/**'])).toThrow('No task t-gone.');
   });
 
   // The session's next window routes from its own stored tier, so a standard
@@ -193,8 +194,10 @@ describe('rescopeTask (decision 115)', () => {
     launched('s1', 'merged');
 
     expect(rescopeTask(db, 't-1', ['src/core/**'])).toEqual({
-      status: 'unchanged',
       sessionId: 's1',
+      added: [],
+      tier: 'critical',
+      raised: false,
     });
     expect(listEvents(db, 's1')).toEqual([]);
     expect(listDecisionRecords(db)).toEqual([]);
@@ -214,7 +217,9 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', state);
       vi.mocked(readInputBox).mockReturnValue('empty');
 
-      expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'live', sessionId: 's1' });
+      expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+        "Session s1's window is still open",
+      );
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
       expect(listEvents(db, 's1')).toEqual([]);
     },
@@ -224,7 +229,7 @@ describe('rescopeTask (decision 115)', () => {
     launched('s1', 'awaiting-review');
     vi.mocked(hasSessionWindow).mockReturnValue(true);
 
-    expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'live', sessionId: 's1' });
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow("Session s1's window is still open");
   });
 
   it('counts a pane probe that fails another way as open', () => {
@@ -233,7 +238,7 @@ describe('rescopeTask (decision 115)', () => {
       throw new Error('tmux: server exited unexpectedly');
     });
 
-    expect(rescopeTask(db, 't-1', ['docs/**'])).toEqual({ status: 'live', sessionId: 's1' });
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow("Session s1's window is still open");
   });
 
   it.each([

@@ -2610,13 +2610,13 @@ describe('CLI commands', () => {
     });
 
     describe('edit --rescope (decision 115)', () => {
-      const claimed = (repo: string, state: string) => {
+      const claimed = (repo: string, state: string, scopeIn = ['src/**']) => {
         const { db, repoPath } = resolveProject(repo);
         ensureProject(db, projectId(repoPath), repoPath);
         insertTask(db, {
           id: 't-1',
           projectId: projectId(repoPath),
-          spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+          spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn, acceptance: ['a'] }),
         });
         insertSession(db, {
           id: 's1',
@@ -2649,6 +2649,52 @@ describe('CLI commands', () => {
         expect(listEvents(db, 's1').map((event) => event.type)).toContain('rescope');
         expect(logs.join('\n')).toContain('session s1');
         expect(logs.join('\n')).toContain('files: docs/**');
+      });
+
+      it('says so when every glob is already in scope, writing nothing', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'merged');
+
+        buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'src/**'], {
+          from: 'user',
+        });
+
+        expect(logs).toContain("t-1's scope-in already holds every glob given; nothing changed.");
+        expect(listEvents(db, 's1')).toEqual([]);
+      });
+
+      it('names the tier a rescope raised', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'merged', ['docs/**']);
+        db.prepare("UPDATE sessions SET tier = 'standard', rung = 1 WHERE id = ?").run('s1');
+        vi.mocked(hasSessionWindow).mockReturnValueOnce(false);
+
+        buildProgram().parse(
+          ['plan', 'edit', 't-1', '--rescope', '--scope', 'src/core/merge-gate.service.ts'],
+          { from: 'user' },
+        );
+
+        expect(logs).toContain(
+          "Widened t-1's scope-in with src/core/merge-gate.service.ts; recorded on session s1; " +
+            'tier critical, raised from standard.',
+        );
+        expect(getSession(db, 's1')?.tier).toBe('critical');
+      });
+
+      it('refuses a glob that matches every path', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        const db = claimed(repo, 'merged');
+
+        buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', '**'], {
+          from: 'user',
+        });
+
+        expect(errors).toContain('Rescope glob "**" matches every path.');
+        expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+        expect(process.exitCode).toBe(1);
       });
 
       it('refuses while the session is running', () => {
