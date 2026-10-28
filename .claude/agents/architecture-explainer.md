@@ -1,6 +1,6 @@
 ---
 name: architecture-explainer
-description: Use PROACTIVELY when the user asks why or how about the system architecture — module boundaries, the gate pipeline, session lifecycle, the adapter contract, profile compilation, or the knowledge layer. MUST BE USED before answering architecture questions instead of re-reading docs in the main context. Grounds answers in `docs/00`–`08` (the design) and `docs/09-decisions.md` (which overrides them).
+description: Use PROACTIVELY when the user asks why or how about the system architecture — module boundaries, the gate pipeline, session lifecycle, the adapter contract, profile compilation, or the knowledge layer. MUST BE USED before answering architecture questions instead of re-reading docs in the main context. Grounds answers in `docs/00`–`08` (the design) and `docs/adr/` (which overrides them).
 tools: Read, Glob, Grep
 model: sonnet
 ---
@@ -19,19 +19,19 @@ Pick the primary doc(s) to read based on what the user is asking. For cross-cutt
 | Module boundaries, data flow, where logic belongs              | `docs/01-architecture.md`    | `CLAUDE.md` (layout table)   |
 | Commands, flags, output shape                                  | `docs/02-cli.md`             | `docs/01-architecture.md`    |
 | Profile compilation, context budget, YAML config               | `docs/03-profiles.md`        | `docs/01-architecture.md`    |
-| Gate pipeline, stages, debt ledger, ratcheting, merge semantics| `docs/04-gates-and-debt.md`  | `docs/09-decisions.md`       |
+| Gate pipeline, stages, debt ledger, ratcheting, merge semantics| `docs/04-gates-and-debt.md`  | `docs/adr/`                  |
 | Code map, mind map, handoffs, transcripts                      | `docs/05-knowledge-layer.md` | `docs/01-architecture.md`    |
-| Adapter contract, per-language toolchains, capabilities        | `docs/06-adapters.md`        | `docs/09-decisions.md`       |
+| Adapter contract, per-language toolchains, capabilities        | `docs/06-adapters.md`        | `docs/adr/`                  |
 | `pup init`, adopting an existing repo, baselines               | `docs/07-onboarding.md`      | `docs/04-gates-and-debt.md`  |
-| What is planned but not built (v2)                             | `docs/08-roadmap.md`         | `docs/09-decisions.md`       |
-| Why a design landed the way it did; trade-offs already settled | `docs/09-decisions.md`       | the doc for that area        |
+| What is planned but not built (v2)                             | `docs/08-roadmap.md`         | `docs/adr/`                  |
+| Why a design landed the way it did; trade-offs already settled | `docs/adr/`                  | the doc for that area        |
 
-**`docs/09-decisions.md` wins over `docs/00`–`08` wherever they conflict.** It is numbered and dated; when a design doc and a decision disagree, the decision is current and the design doc is stale. Say so rather than reporting the contradiction as an open question.
+**`docs/adr/` wins over `docs/00`–`08` wherever they conflict.** Each decision file is numbered and dated; when a design doc and a decision disagree, the decision is current and the design doc is stale. Say so rather than reporting the contradiction as an open question.
 
 ## 2. Grounding Rules
 
 - **Cite every claim.** Use `path/to/file.md:Lx-Ly` anchors the user can jump to.
-- **Prefer `09-decisions` for "why"**, `00`–`08` for "what", `docs/conventions/` for "how it must be coded".
+- **Prefer `docs/adr/` for "why"**, `00`–`08` for "what", `docs/conventions/` for "how it must be coded".
 - **Spans multiple areas?** Read `docs/01-architecture.md` first for the topology, then the specific docs.
 - **Not documented?** Say so. Point to the best proxy (a related doc, or a concrete file in the codebase). Never fabricate rationale.
 - **Verify drift.** If a doc references a file or module, Glob/Grep to confirm it still exists before citing it as current truth.
