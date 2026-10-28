@@ -264,17 +264,53 @@ interface BranchTree {
 }
 
 /**
+ * A path as the gate's filesystem looks it up: APFS, the macOS default
+ * (decision 78), opens a path in any case or Unicode form alike, so a link or
+ * specifier spelling one in another form still reaches it.
+ */
+const folded = (path: string): string => path.normalize('NFC').toLowerCase();
+
+/**
+ * Whether a `package.json` on the branch, in any case, names Docusaurus, by
+ * its `@docusaurus/core` dependency or a `docusaurus` script: `docusaurus
+ * build --config site.config.js` takes a config under any name.
+ */
+function packageNamesDocusaurus(repoPath: string, branch: string): boolean {
+  try {
+    runGit(repoPath, [
+      'grep',
+      '-q',
+      '-i',
+      '-F',
+      '--no-textconv',
+      '-e',
+      'docusaurus',
+      branch,
+      '--',
+      ':(glob,icase)**/package.json',
+    ]);
+    return true;
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is "nothing matched"; anything else is git failing to answer.
+    if ((error as { status?: number }).status !== 1) throw error;
+    return false;
+  }
+}
+
+/**
  * The branch's tree as the split reads it. A symlink reaches the path it lands
  * on and everything under it, read from its blob lexically from the link's
- * directory; `git grep` never reads a link's blob, so this is the one place a
- * link is seen. One whose target is absolute, lands outside the repo, or has a
- * `..` after a named segment, which climbs from wherever that segment resolves
- * and no lexical reading knows, may land anywhere and reaches every path.
+ * directory and compared folded; `git grep` never reads a link's blob, so this
+ * is the one place a link is seen. One whose target is absolute, lands outside
+ * the repo, or has a `..` after a named segment, which climbs from wherever
+ * that segment resolves and no lexical reading knows, may land anywhere and
+ * reaches every path.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
   let anywhere = false;
-  let markdownIsCode = false;
+  let markdownIsCode = packageNamesDocusaurus(repoPath, branch);
   for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
     if (!entry) continue;
     // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
@@ -292,22 +328,28 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
       (firstName !== -1 && segments.slice(firstName).includes('..')) ||
       lands === '..' ||
       lands.startsWith('../');
-    landings.push(lands);
+    landings.push(folded(lands));
   }
   return {
-    linked: (path) =>
-      anywhere ||
-      landings.some((lands) => lands === '.' || path === lands || path.startsWith(`${lands}/`)),
+    linked: (path) => {
+      const key = folded(path);
+      return (
+        anywhere ||
+        landings.some((lands) => lands === '.' || key === lands || key.startsWith(`${lands}/`))
+      );
+    },
     markdownIsCode,
   };
 }
 
 /**
- * A character no token spells a name with: whitespace and quotes end a token,
- * and a `?` or `#` is cut as a query or fragment. A test file named with one
- * can be imported with no token naming it, so it counts as source.
+ * A character no token spells a name with: whitespace, a quote, `<`, `>` and
+ * `=` end a token, a `?` or `#` is cut as a query or fragment, and a character
+ * outside printable ASCII has other forms the gate's filesystem opens alike
+ * but no byte search finds. A test file named with one can be imported with
+ * no token naming it, so it counts as source.
  */
-const UNSPELLABLE_NAME = /[\s'"`?#]/;
+const UNSPELLABLE_NAME = /[\s'"`<>=?#]|[^ -~]/;
 
 /**
  * Which part of the diff-size split a path counts toward (decision 110). A
@@ -341,19 +383,22 @@ function diffSizeKind(
 const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
 
 /**
- * A run between quotes or whitespace, which is how an import specifier, a
- * `src` attribute or a `package.json` value is spelt. One class with nothing
- * after it to backtrack into, so linear on any line: a pattern finding a name
- * inside a token backtracked quadratically on one long unspaced line, and held
- * the merge lock for minutes on a 1 MB file.
+ * A run between quotes, whitespace, `<`, `>` or `=`, which is how an import
+ * specifier, a `src` attribute quoted or not (`src=./page.test.ts>`) or a
+ * `package.json` value is spelt. One class with nothing after it to backtrack
+ * into, so linear on any line: a pattern finding a name inside a token
+ * backtracked quadratically on one long unspaced line, and held the merge lock
+ * for minutes on a 1 MB file.
  */
-const SPECIFIER_TOKEN = /[^\s'"`]+/g;
+const SPECIFIER_TOKEN = /[^\s'"`<>=]+/g;
 
 /**
  * Per file on `branch` that names one of `targets`, the targets it names. A
  * token names every target whose name its last segment spells, less a `?` or
- * `#` suffix (`?raw`) and a JS or TS extension. A relative specifier is not
- * resolved: a decoy file at its literal path would take the resolution and
+ * `#` suffix (`?raw`) and a JS or TS extension, in any case. The suffix is cut
+ * from the whole token and from its last segment alone, as `require` reads a
+ * `#` in a directory (`./x#y/big.test.js`) literally. A relative specifier is
+ * not resolved: a decoy file at its literal path would take the resolution and
  * hide the target, and matching by name only over-counts source, the safe
  * direction. Every file `git grep` lists is read but those `skip` names,
  * whatever its extension, since a Vue component, a Vite `index.html` or a
@@ -373,7 +418,8 @@ function filesNaming(
   const named = new Map<string, Set<string>>();
   const byName = new Map<string, string[]>();
   for (const target of targets) {
-    byName.set(testStem(target), [...(byName.get(testStem(target)) ?? []), target]);
+    const name = folded(testStem(target));
+    byName.set(name, [...(byName.get(name) ?? []), target]);
   }
   let listing = '';
   try {
@@ -386,6 +432,7 @@ function filesNaming(
       '--no-color',
       '-l',
       '-z',
+      '-i',
       '-F',
       '--no-textconv',
       ...[...byName.keys()].flatMap((name) => ['-e', name]),
@@ -408,8 +455,13 @@ function filesNaming(
     const text = runGit(repoPath, ['cat-file', 'blob', `${branch}:${importer}`]);
     const names = new Set<string>();
     for (const [token] of text.matchAll(SPECIFIER_TOKEN)) {
-      const name = basename(token.replace(/(?<=.)[?#].*$/s, '')).replace(/\.[cm]?[jt]sx?$/, '');
-      if (byName.has(name)) names.add(name);
+      for (const spelt of [token, basename(token)]) {
+        const name = folded(basename(spelt.replace(/(?<=.)[?#].*$/s, ''))).replace(
+          /\.[cm]?[jt]sx?$/,
+          '',
+        );
+        if (byName.has(name)) names.add(name);
+      }
     }
     const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
     hits.delete(importer);

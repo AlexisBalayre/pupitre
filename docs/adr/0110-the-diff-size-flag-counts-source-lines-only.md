@@ -28,7 +28,10 @@
     read but prose under `docs/`, whatever its extension: a Vue or Svelte component, a Vite
     `index.html` or a `package.json` loads a module as well as code does. Each token whose last
     segment, less a `?` or `#` suffix (`./big.test.js?raw`) and a JS or TS extension, spells a
-    test's name claims every test of that name, the safe direction. A relative specifier is not
+    test's name in any case claims every test of that name, the safe direction: the grep runs
+    with `-i`, as APFS, the gate's filesystem (decision 78), opens `./BIG.test.js` as
+    `big.test.ts`. The suffix is cut from the whole token and from its last segment alone, as
+    `require` reads the `#` in `./x#y/big.test.js` literally. A relative specifier is not
     resolved: `resolveImport` tried the literal path first, so a decoy `big.test.js` holding
     `export {}` took `./big.test.js` and hid `big.test.ts` behind it, and resolving only ever
     narrowed what the name already claims. A test file naming one is followed in turn, so a
@@ -37,30 +40,38 @@
     shared config wrapped each `-l` path in escapes, every importer then failed what was a
     source-file check, the reach check passed everything as test, and a listing entry that does
     not start with the branch now refuses the gate rather than being skipped. A token is a run
-    between quotes or whitespace, matched in one pass by a single class with nothing after it to
+    between quotes, whitespace, `<`, `>` or `=`, so an unquoted `src=./page.test.ts>` in a Vite
+    `index.html` spells the name, matched in one pass by a single class with nothing after it to
     backtrack into, and each name a file spells is looked up once. A regex with an unanchored
     leading class backtracked quadratically on one long unspaced line and held the merge lock
     for minutes on a 1 MB file (both found on the third security review), and weighing every
     token against every target made a million-token line naming 200 same-named tests cost 200
-    million lookups. A `*.test.ts` whose name holds whitespace, a quote, `?` or `#` counts as
-    source, since no token spells it whole. Docs are prose under `docs/` at the repo root: `.md`,
-    `.rst` and `.adoc`. Projects keep running code under `docs/` (Sphinx's `conf.py`, swag's
-    `docs/docs.go`), `.mdx` compiles to a component, and `.txt` takes in `requirements.txt` and
-    `CMakeLists.txt`, so those count as source. So does `.md` there when a
-    `docusaurus.config.*` sits anywhere on the branch: Docusaurus reads root `docs/` by default
-    and compiles `.md` as MDX, so `docs/big.md` can export code `src/` imports from
-    `@site/docs/big.md`. A symlink counts as source wherever it sits, and so does any changed
-    doc or test a symlink on the branch reaches: `src/pkg/impl.py -> ../../docs/impl.md` ran
-    2000 lines of Python counted as docs, and `src/impl.ts -> big.test.ts` imported a test file
-    no token names, as `git grep` never reads a link's blob. Each link's target is read from the
-    branch tree and resolved lexically from the link's directory; it reaches the path it lands
-    on and everything under it. One whose target is absolute, lands outside the repo, or has a
+    million lookups. A `*.test.ts` whose name holds whitespace, a quote, `<`, `>`, `=`, `?` or
+    `#` counts as source, since no token spells it whole, and so does one named outside
+    printable ASCII, whose other Unicode forms APFS opens alike and no byte search finds. Docs
+    are prose under `docs/` at the repo root: `.md`, `.rst` and `.adoc`. Projects keep running
+    code under `docs/` (Sphinx's `conf.py`, swag's `docs/docs.go`), `.mdx` compiles to a
+    component, and `.txt` takes in `requirements.txt` and `CMakeLists.txt`, so those count as
+    source. So does `.md` there when a `docusaurus.config.*` in any case sits anywhere on the
+    branch, or a `package.json` in any case names Docusaurus (its `@docusaurus/core` dependency,
+    a `docusaurus` script), since `docusaurus build --config site.config.js` takes a config
+    under any name: Docusaurus reads root `docs/` by default and compiles `.md` as MDX, so
+    `docs/big.md` can export code `src/` imports from `@site/docs/big.md`. A symlink counts as
+    source wherever it sits, and so does any changed doc or test a symlink on the branch
+    reaches: `src/pkg/impl.py -> ../../docs/impl.md` ran 2000 lines of Python counted as docs,
+    and `src/impl.ts -> big.test.ts` imported a test file no token names, as `git grep` never
+    reads a link's blob. Each link's target is read from the branch tree, resolved lexically
+    from the link's directory and compared case-folded and NFC-normalized, as APFS opens
+    `../../DOCS/impl.md` as `docs/impl.md`; it reaches the path it lands on and everything under
+    it. One whose target is absolute, lands outside the repo, or has a
     `..` after a named segment may land anywhere and reaches every path: `l/../impl.md` lands
     on a decoy `src/impl.md` read lexically, which is how Node's `realpath`, and so the gate's
-    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the Vue, decoy,
-    lookup, name, Docusaurus and reached-link rules came from the fourth security review; the
-    test name, rename, docs and link rules from the review of the first cut, which took every
-    JS/TS, Python and Go test spelling and every path under `docs/`). Leaving them out of the
+    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the case and Unicode
+    folding, the `<`, `>` and `=` token ends, the last-segment suffix cut and the Docusaurus
+    `package.json` rule came from the fifth security review; the Vue, decoy, lookup, name,
+    Docusaurus and reached-link rules from the fourth; the test name, rename, docs and link
+    rules from the review of the first cut, which took every JS/TS, Python and Go test spelling
+    and every path under `docs/`). Leaving them out of the
     size is not leaving them out of the gate: the scope audit and review still see every
     changed path, and the oversize ledger entry still names every changed file. The entry keeps
     its `Oversize diff (N lines)` wording, now with the source count, so a re-gate still reads
@@ -74,27 +85,31 @@
     pattern). Production code reaching a test file through a specifier that does not spell its
     name still counts it as test until the gate reads the module graph rather than names: one
     built at run time (`import('./big' + '.test.js')`), an alias mapped in package.json
-    `imports` or tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), and a
-    string or URL escape in a static one (`from './big\u002etest.js'`, `'./big%2Etest.js'`).
-    Prose loaded as code without a link still counts as docs: a textual include
-    (`#include "../docs/impl.md"`, Rust's `include!`) and a Markdown compiler other than
-    Docusaurus (VitePress and VuePress run a page's `<script setup>`). The flag is per merge, so
+    `imports` or tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), a string
+    or URL escape in a static one (`from './big\u002etest.js'`, `'./big%2Etest.js'`), and a
+    character APFS folds onto an ASCII one of the name, which no byte search finds (the Kelvin
+    sign, U+212A, for `k`). Prose loaded as code without a link still counts as docs: a textual
+    include (`#include "../docs/impl.md"`, Rust's `include!`), a Markdown compiler other than
+    Docusaurus (VitePress and VuePress run a page's `<script setup>`), and Docusaurus run under
+    another config name from outside any `package.json` (a global install a Makefile drives).
+    The flag is per merge, so
     a test or doc landed in one merge and made source in a later one, by a rename, a copy or one
     new import, counts only that later merge's delta; closing it means counting an unchanged
     file a merge newly reaches at full size. The tab-in-path and `gitDiffNumstat` copy-pairing
-    items this listed are closed by decisions 111 and 113. Tests: a 227/360/85 split
-    passes with that detail, a 700-line test-only diff passes, 601 source lines flag whatever
-    the tests add, every test spelling but `.test.ts` counts as source and so does a
-    `.test.ts` named with a space or `#`, a test file production code names by a relative
-    re-export, a `#` dynamic import, a `?raw` or `#x` suffix, a Vue component or a Vite
-    `index.html` counts as source, as does one reached through two other test files, one named
-    with grep colour forced on in the shared config and one behind a decoy at the literal path,
-    while one only tests or `docs/` prose name stays a test, a 1 MB unspaced line and a
-    million-token line naming 200 same-named tests read without stalling, code, `.mdx`,
-    `requirements.txt`, a symlink and a `src/docs/` file count as source while `.md` and `.rst`
-    under `docs/` count as docs, `.md` there counts as source beside a Docusaurus config, the
-    doc, test and directory a link reaches count as source and a link climbing past a named
-    segment makes every path source, a source file renamed onto a test name counts as source
-    with rename detection on and off in the shared config while a test renamed onto a test
-    stays a test, a root lockfile counts nothing and a lockfile-named file elsewhere still
-    counts.
+    items this listed are closed by decisions 111 and 113. Tests: a 227/360/85 split passes with
+    that detail, a 700-line test-only diff passes, 601 source lines flag whatever the tests add,
+    every test spelling but `.test.ts` counts as source and so does a `.test.ts` named with a
+    space, `#`, `=` or `é`, a test file production code names by a relative re-export, a `#`
+    dynamic import, a specifier in another case, a `?raw` or `#x` suffix, a `#` in a directory,
+    a Vue component or a Vite `index.html`, its `src` quoted or not, counts as source, as does
+    one reached through two other test files, one named with grep colour forced on in the shared
+    config and one behind a decoy at the literal path, while one only tests or `docs/` prose
+    name stays a test, a 1 MB unspaced line and a million-token line naming 200 same-named tests
+    read without stalling, code, `.mdx`, `requirements.txt`, a symlink and a `src/docs/` file
+    count as source while `.md` and `.rst` under `docs/` count as docs, `.md` there counts as
+    source beside a `docusaurus.config.ts`, a `Docusaurus.config.js` or a `Package.json` naming
+    `@docusaurus/core`, the doc, test and directory a link reaches, in any case, count as source
+    and a link climbing past a named segment makes every path source, a source file renamed onto
+    a test name counts as source with rename detection on and off in the shared config while a
+    test renamed onto a test stays a test, a root lockfile counts nothing and a lockfile-named
+    file elsewhere still counts.

@@ -24,10 +24,11 @@ Ordered stages; first hard failure stops the pipeline.
      (decision 59).
    - Diff size: more than 600 changed source lines (adds + deletes) is flagged. Lockfiles,
      binary files, `*.test.ts` files (not one renamed in from a non-test name, nor one any
-     non-test file names) and prose under `docs/` (`.md`, `.rst`, `.adoc`; not `.md` beside a
-     Docusaurus config) are left out of the count, unless a symlink reaches them; the stage
-     detail names the split (`227 source + 360 test + 85 docs changed lines`). Tests and docs
-     still go through the scope audit and review (decisions 17, 110).
+     non-test file names in any case) and prose under `docs/` (`.md`, `.rst`, `.adoc`; not
+     `.md` beside a Docusaurus config or a `package.json` naming Docusaurus) are left out of
+     the count, unless a symlink reaches them in any case; the stage detail names the split
+     (`227 source + 360 test + 85 docs changed lines`). Tests and docs still go through the
+     scope audit and review (decisions 17, 110).
 5. Reviewer subagent: mechanical review pass; findings attached to the review queue entry.
 6. Knowledge transaction: regenerate code map for touched modules, write decision record, create or close ledger entries. A merge without this transaction is invalid.
 

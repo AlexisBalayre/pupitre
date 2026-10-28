@@ -23,12 +23,13 @@ export const DIFF_SIZE_DOCS_DIR = 'docs/';
 export const DIFF_SIZE_DOCS_EXTENSIONS = ['.md', '.rst', '.adoc'];
 
 /**
- * A Docusaurus config anywhere on the branch. Its docs plugin reads root
- * `docs/` by default and compiles `.md` as MDX, so Markdown there can export
- * code that `src/` imports; with one present, that `.md` counts as source
- * (decision 110).
+ * A Docusaurus config anywhere on the branch, in any case, as the gate's
+ * case-insensitive filesystem finds one (decision 78). Its docs plugin reads
+ * root `docs/` by default and compiles `.md` as MDX, so Markdown there can
+ * export code that `src/` imports; with one present, that `.md` counts as
+ * source (decision 110).
  */
-export const DIFF_SIZE_DOCUSAURUS_CONFIG = /(?:^|\/)docusaurus\.config\.[cm]?[jt]s$/;
+export const DIFF_SIZE_DOCUSAURUS_CONFIG = /(?:^|\/)docusaurus\.config\.[cm]?[jt]s$/i;
 
 /** Excluded from the diff-size count — machine-generated churn, not review surface. */
 export const LOCKFILE_NAMES = [
