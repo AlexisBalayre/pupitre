@@ -1,4 +1,11 @@
-import { existsSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  type Dirent,
+  existsSync,
+  lstatSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -170,6 +177,9 @@ function escapeSbpl(value: string): string {
  * their own names left free: vitest removes its empty report directory after
  * a failing run and the re-run makes it again (decision 108). Their
  * ancestors stay pinned, and pup makes each one in a holder of its own.
+ * Below a pinned checkout, every directory that leads to a nested `.git` is
+ * pinned as well: moved out, `.worktrees/s1` had its pointer file rewritten in
+ * scratch and came back aimed at a git dir the child wrote.
  */
 export function writeProfile(
   policyDir: string,
@@ -190,12 +200,50 @@ export function writeProfile(
       writablePaths: grants,
       protectedPaths: checkouts.map((path) => join(path, GIT_DIRNAME)),
       checkoutPaths: checkouts,
-      pinnedPaths: [...new Set([...pinnedCheckouts, ...scratch, ...grants.flatMap(ancestors)])],
+      pinnedPaths: [
+        ...new Set([
+          ...pinnedCheckouts,
+          ...scratch,
+          ...pinnedCheckouts.flatMap(nestedRepoPaths),
+          ...grants.flatMap(ancestors),
+        ]),
+      ],
       home: resolvePath(homedir()),
       policyDir,
     }),
   );
   return profilePath;
+}
+
+/**
+ * Every directory below `root` that holds a `.git`, worktree pointer file or
+ * directory, or leads to one, deepest first. Read afresh for each child: pup
+ * adds worktrees while other runs go on. A child can add a `.git` under a
+ * checkout only by moving in a repo it made in scratch, which earns that repo
+ * pins and nothing else. Matched without
+ * case, as the APFS lookup git makes is. Nothing is followed: a link is not a
+ * directory here, and the root is only walked when it is a real directory.
+ * What the walk cannot read, it cannot pin, and a pin is only ever a deny.
+ */
+function nestedRepoPaths(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string): boolean => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    let leads = false;
+    for (const entry of entries) {
+      if (entry.name.toLowerCase() === GIT_DIRNAME) leads = true;
+      else if (entry.isDirectory() && walk(join(dir, entry.name))) leads = true;
+    }
+    if (leads && dir !== root) found.push(dir);
+    return leads;
+  };
+  if (lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) walk(root);
+  return found;
 }
 
 /** Every directory above `path`, nearest first, the root included. */

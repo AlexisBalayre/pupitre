@@ -713,6 +713,65 @@ describe('runGateChild', () => {
         ).toBe('ok');
       });
 
+      it('cannot move a nested worktree out from under its .git deny and back', async () => {
+        // The same move one level down: the operator's repo holds the session
+        // worktrees. Moved into scratch, `.worktrees/s1` had its `.git` pointer
+        // file aimed at a git dir the child wrote, and moved back, it ran that
+        // dir's config on pup's next git call there (decision 117).
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, '.worktrees', 's1');
+        mkdirSync(join(cwd, '.worktrees', 'plain'), { recursive: true });
+        mkdirSync(worktree);
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s1\n');
+
+        for (const script of [
+          'mv .worktrees/s1 "$TMPDIR/s1" && printf "gitdir: /evil" > "$TMPDIR/s1/.git" && mv "$TMPDIR/s1" .worktrees/s1',
+          'mv .worktrees "$TMPDIR/worktrees"',
+        ]) {
+          await expect(runGateChild('sh', ['-c', script], { cwd, repoPath: cwd })).rejects.toThrow(
+            /Operation not permitted/,
+          );
+        }
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s1\n',
+        );
+        // The control: a directory that leads to no .git still moves.
+        await runGateChild('sh', ['-c', 'mv .worktrees/plain .worktrees/moved'], {
+          cwd,
+          repoPath: cwd,
+        });
+        expect(existsSync(join(cwd, '.worktrees', 'moved'))).toBe(true);
+      });
+
+      it('cannot swap its checkout with a directory in its scratch, in either order', async () => {
+        // `renamex_np` with RENAME_SWAP moves both names at once; each is
+        // checked as a source, so neither side frees a pin. The swap is made
+        // through ctypes because no shell tool makes one.
+        const swap =
+          'import ctypes, os, sys\n' +
+          'libc = ctypes.CDLL(None, use_errno=True)\n' +
+          'if libc.renamex_np(sys.argv[1].encode(), sys.argv[2].encode(), 2):\n' +
+          '    sys.exit(os.strerror(ctypes.get_errno()))';
+        const cwd = fakeCheckout();
+        const inScratch = (pair: string) =>
+          runGateChild(
+            'sh',
+            [
+              '-c',
+              `mkdir -p "$TMPDIR/d" "$TMPDIR/e" && python3 -I -B -c "$1" ${pair}`,
+              'sh',
+              swap,
+              cwd,
+            ],
+            { cwd, repoPath: cwd },
+          );
+
+        await expect(inScratch('"$TMPDIR/d" "$2"')).rejects.toThrow(/Operation not permitted/);
+        await expect(inScratch('"$2" "$TMPDIR/d"')).rejects.toThrow(/Operation not permitted/);
+        // The control: the same swap of two names nobody pinned goes through.
+        await expect(inScratch('"$TMPDIR/d" "$TMPDIR/e"')).resolves.toBe('');
+      });
+
       it('creates a git repo in its own scratch space, where nothing is being measured', async () => {
         // The .git deny is scoped to checkout grants on purpose: a brand-new
         // repo a child creates in its own TMPDIR is not the repository being

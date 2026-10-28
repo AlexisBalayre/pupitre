@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -167,6 +167,27 @@ describe('writeProfile', () => {
     );
     expect(generated).toContain(
       '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x")\n  (literal "/")\n  (literal "/y/holder")\n  (literal "/y"))',
+    );
+  });
+
+  // Moved out and back, a nested worktree came home with its `.git` pointer
+  // aimed elsewhere (decision 117): each directory down to one is pinned.
+  it('pins every directory below a checkout that leads to a nested .git, and no other', () => {
+    const checkout = tempDir('pup-nested-');
+    const elsewhere = tempDir('pup-nested-target-');
+    mkdirSync(join(checkout, '.worktrees', 's1'), { recursive: true });
+    writeFileSync(join(checkout, '.worktrees', 's1', '.git'), 'gitdir: /x\n');
+    mkdirSync(join(checkout, 'vendor', 'lib', '.GIT'), { recursive: true });
+    mkdirSync(join(checkout, 'src', 'plain'), { recursive: true });
+    mkdirSync(join(checkout, '.git'));
+    mkdirSync(join(elsewhere, '.git'));
+    symlinkSync(elsewhere, join(checkout, 'linked'));
+
+    const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+    const pinned = [...generated.matchAll(/\(literal "([^"]*)"\)/g)].map(([, path = '']) => path);
+
+    expect(pinned.filter((path) => path.startsWith(`${checkout}/`)).sort()).toEqual(
+      ['.worktrees', '.worktrees/s1', 'vendor', 'vendor/lib'].map((path) => join(checkout, path)),
     );
   });
 
