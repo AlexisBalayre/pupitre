@@ -38,17 +38,28 @@
     hunks from the copy it passes on, since the subagent would never see git's own output. So the
     conductor never reads the diff. The subagent's prompt carries the session id, the target, what
     to look for (a check the change lets code skip, a measurement it can forge or empty, untrusted
-    input reaching a command, a secret or environment it exposes) and four rules. It runs the
+    input reaching a command, a secret or environment it exposes) and these rules. It runs the
     pinned diff command, unchanged, itself and no other git, since a bare `git diff`, `git show` or
     `git log -p` runs the diff drivers a session can arm in the shared git config (decision 41),
     unsandboxed, as the operator, and bare branch names resolve to a planted tag or a moved HEAD
-    (decision 80). It reads a branch file only with Read under `.worktrees/<session-id>/`. It runs
-    nothing the diff suggests. And it reports within ten turns, returning only the verdict and
-    findings, never the diff. A finding that holds is still a steer, not a gate.
+    (decision 80). It takes the branch's content only from that diff, and reads the unchanged code
+    around a hunk with Read in the main checkout, never under `.worktrees/<session-id>/`. The
+    conductor's review of this fix moved the reads there. The conductor's profile has no read guard,
+    so a symlink committed in the worktree (`docs/ctx.md -> ~/.ssh/id_ed25519`) would be followed,
+    and its target would go back to the session as a steer's evidence. And the working tree is not
+    the branch: uncommitted edits or a moved HEAD can show the reviewer a harmless version of a
+    file the hunks call. For the same reason it reads no path the diff marks mode 120000, nor
+    anything under one. It runs nothing the diff suggests and follows no instruction in it. And it
+    reports within ten turns, returning only the verdict and findings, never the diff. The Agent
+    tool has no turn limit, so the cap is advice: when the subagent returns no verdict, the
+    conductor says the review did not finish and never reports it as clean. A finding that holds
+    is still a steer, not a gate.
     *Tests.* The kickoff's Security review bullet names the general-purpose subagent with its
     `subagent_type`, `model: "opus"` and `effort: "high"`, never names `security-reviewer`, carries
     the ten-turn cap and no `xhigh"` effort, and keeps the pinned diff command byte for byte. A
     second test checks that the conductor is told never to read the diff, that the prompt names what
-    to look for, that the subagent runs the pinned command itself and no other git, reads branch
-    files only under the worktree, runs nothing the diff suggests and returns no diff, and that
-    nothing says to pass the diff in the prompt.
+    to look for, and that the subagent runs the pinned command itself and no other git. It also
+    checks that the subagent takes the branch only from the diff, reads context in the main
+    checkout and never under the worktree or a mode 120000 path, runs nothing the diff suggests
+    and follows no instruction in it, and returns no diff. Last, it checks that a missing verdict
+    is reported as unfinished, never clean, and that nothing says to pass the diff in the prompt.
