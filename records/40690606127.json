@@ -1,0 +1,227 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T12:57:01.320Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40690606127",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40690606127",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6b95c399456d8e667755421599883eb31fe96c94",
+  "source": "pr",
+  "pr_number": 186,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "476-516",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Only prose under `docs/` is skipped as an importer. Every other file that spells a changed test's stem as a token counts as code, so that test's lines count as source. This includes root-level prose (README.md, CONTRIBUTING.md), `.claude/*.md`, `.env`-style files and any JS regex `.test(` call on a constant that shares a test's stem. This repo already hits it: `CONTRIBUTING.md:55`, `.claude/project.env:34` and `.claude/agents/convention-checker.md:33` all mention `db-client.test.ts` as a naming example. When pup gates itself, any session that edits `src/core/db-client.test.ts` gets those lines counted as source. The token `db-client.test.ts` matches stem `db-client.test` at its second dot, and `kindOf('CONTRIBUTING.md')` is 'source', so `skip` doesn't drop it. The regex form is just as easy to hit: production `const UUID = /…/; UUID.test(s)` folds to the token `uuid.test`, which matches `src/uuid.test.ts` as a whole token. So a module's own test file counts as source whenever its regex constant shares the module's name. Either way the result is the false oversize flag this PR exists to remove (needs `--accept-debt`). ADR 0110 accepts over-counting as 'the safe direction', but it never names prose outside `docs/` or the `.test(` method collision. Either say so in the ADR, or skip Markdown outside `docs/` (it loads nothing unless `markdownIsCode`) and drop a whole-token match directly followed by `(`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/04-gates-and-debt.md",
+      "line": "25-30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Grammatically, the \"unless a symlink reaches them\" clause covers lockfiles and binary files too. The code never counts a linked lockfile (filtered at `merge-gate.service.ts:580-582`), and a linked real binary still counts zero (`gitDiffBinaryRecount` returns null). ADR 0110 limits the link rule to \"any changed doc or test\", and the code matches the ADR. Either count a linked lockfile as source, or reword docs/04 so the \"unless\" clause covers only test files and `docs/` prose.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.constants.ts",
+      "line": "52-57",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`dependenciesNameDocusaurus` greps only `package.json`, `package.yaml`, `package.json5` and `LOCKFILE_NAMES`, which has neither `bun.lock` (Bun 1.2+'s default text lockfile, naming every transitive package) nor `npm-shrinkwrap.json`. A project pulling Docusaurus in only through a wrapper dependency, with one of those as its only lockfile, leaves `markdownIsCode` false, so a 2000-line code-exporting `docs/big.md` reads as '0 source + 0 test + 2000 docs'. Add `'bun.lock'` and `'npm-shrinkwrap.json'` to `DIFF_SIZE_DEPENDENCY_FILES`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0110-the-diff-size-flag-counts-source-lines-only.md",
+      "line": "110-116",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Production code can load a changed `*.test.ts` with no token naming it through resolver configuration or a glob import (Vite `resolve.extensions: ['.test.ts', ...]` with `import './big'`, TS `moduleSuffixes: ['.test', '']`, `import.meta.glob('./*.test.ts')`, webpack `require.context`, a package.json `exports` pattern mapping to `*.test.ts`). The ADR's owed sentence covers this class in general, but its examples name only run-time concatenation, aliases, escapes and APFS folding; name these so the module-graph task covers them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "307-313",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Both new functions run `git grep` and copy the same three-line handler, including the cast to `{ status?: number }` and the same comment (L307-313 in `dependenciesNameDocusaurus` and L473-478 in `filesNaming`). A small helper inside the module, such as `gitGrepOrNoMatch(repoPath, args): string | undefined`, would hold the exit-1 rule once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "491-497",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`filesNaming` inlines `'-c', 'core.precomposeUnicode=false'` for its per-file blob read, while `git-diff.client.ts:503` already defines this pin as `PATH_AS_GIVEN` with its decision-114 rationale and uses it for the client's own per-file reads. Export and spread `PATH_AS_GIVEN` (or move this read behind a client function), and the JSDoc sentence restating decision 114 can go.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "268-279",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `NON_ASCII` JSDoc lists every consequence of a non-ASCII name at its call sites, and the `readBranchTree` (L318-328) and `diffSizeKind` (L378-386) JSDoc blocks each repeat their share of those consequences. AGENTS.md §Comments treats a WHY restating the callee's doc as a duplicate; keep the rule in one home so the three copies cannot drift.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "336",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`general.md` §No hardcoded values says path fragments go in the area's `*.constants.ts`. The new code adds `DIFF_SIZE_DOCS_EXTENSIONS` (`['.md', '.rst', '.adoc']`), yet `diffSizeKind` hard-codes one of its members at the use site: `!(tree.markdownIsCode && path.endsWith('.md'))`. A named constant for the Markdown extension, with the list built from it, would remove the duplicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2348-2644",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Five new diff-size tests (L2348-2350, 2548-2552, 2570-2573, 2593-2596, 2642-2644) write symlinks then commit them by hand with `git add` + `git commit`, though the file already has `commitLink(worktree, path, target)` at L1149-1160, unreachable because it is declared inside `describe('the gate checkout')`. Move `commitLink` to module scope next to `commitIn` and use it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "5358-5369",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `commitBlobs` helper repeats the core of `commitLink` (L1150-1157: `git hash-object -w --stdin`, `git update-index --add --cacheinfo`, commit), and the non-UTF-8 importer test (L5511-5516) inlines the same `hash-object` call again, so the file now writes blobs into the index three ways. One module-level helper that writes a blob and returns its id would leave one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "5377-5490",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Almost every test in the new `describe('countChangedLines')` starts with the same three lines (`initRepo()`, `git config core.precomposeUnicode false`, `git checkout -q -b feature`); move them to the block's `beforeEach` or a small `featureRepo()` helper, as `describe('runMergeGate')` does, so each test's distinguishing setup is visible.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "2760",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test name 'passes a large test-only diff that the old count flagged' refers to 'the old count', which exists only in this PR's history; something like 'passes a test-only diff over the line flag' says what it checks.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0110-the-diff-size-flag-counts-source-lines-only.md",
+      "line": "48-193",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0110 carries review-round history that belongs in git/PR history ('found on the second security review', the first-through-eighth review attributions at L135-141), its closing 'Tests:' paragraph (L168-193) restates test cases and will rot on a rename, and the decision is one ~145-line paragraph; split it into the rule, exemptions, reach/link rules and owed items.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/04-gates-and-debt.md",
+      "line": "25-32",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The single exemption bullet in docs/04 packs ADR 0110's full grammar into nested parentheticals; the pipeline overview needs the rule and a pointer to decision 110. It also omits that a `*.test.ts` whose name holds a space, `#`, `=` or `[id]` counts as source.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "580-582",
+      "area": "security",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "Root lockfiles are filtered out before `diffSizeKind` runs, so the new rule that anything a symlink reaches counts as source never applies to them: 2000 lines of Python committed as root `poetry.lock` plus `src/impl.py -> ../poetry.lock` reads '1 source' and passes. The exclusion predates this PR; `(stat) => !LOCKFILE_NAMES.includes(stat.path) || tree.linked(stat.path)` closes it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.708450000000002,
+  "duration_ms": 578709,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 16003,
+    "cache_read": 283159,
+    "cache_creation": 89950,
+    "total": 389124
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 136,
+      "output": 164926,
+      "cache_read": 2745673,
+      "cache_creation": 446677,
+      "cost_usd": 6.351433600000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 10867,
+      "cache_read": 306244,
+      "cache_creation": 87068,
+      "cost_usd": 0.3570164
+    }
+  ],
+  "permission_denials": []
+}
