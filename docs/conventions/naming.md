@@ -49,7 +49,7 @@ Each role locks in a calling convention, not just a label.
 | `types`     | `type` aliases and exported type definitions.       |
 | `interface` | A single primary `interface` definition.            |
 | `schemas`   | Validation schemas (no validation library in use yet). |
-| `enums`     | `enum` / `as const` enumerations.                   |
+| `enums`     | String `enum`s for every value set.                 |
 | `constants` | Exported constant values.                           |
 | `errors`    | Typed `Error` subclasses callers `instanceof`-narrow. |
 
@@ -120,11 +120,22 @@ These filenames are allowed as-is:
 
 ## Test files
 
-The kebab-case part may not contain a dot, so a test's name is its subject's filename with
-dots flattened to hyphens — `db.client.ts` → `db-client.test.ts`, `capability.utils.ts` →
-`capability-utils.test.ts`. Mirroring the source name verbatim (`db.client.test.ts`) is
-**blocked**. Drop the role suffix when the test covers a whole subject rather than a single
-file: `overlap.test.ts` covers both `overlap.service.ts` and `overlap.repository.ts`.
+A test lives under `test/unit/` at the path of its subject under `src/`, and its name is the
+subject's filename with the dot before the role turned into a hyphen: `src/core/bar.service.ts`
+→ `test/unit/core/bar-service.test.ts`. The kebab-case part may not contain a dot, so
+mirroring the source name verbatim (`bar.service.test.ts`) is **blocked**. A scenario that
+spans several subjects goes in `test/integration/` as `<scenario>.integration.test.ts`;
+shared doubles and fixtures go in `test/helpers/` as `<name>.mock.ts`. See
+[testing.md](testing.md) for the layout.
+
+## Enums, types and errors
+
+Every value set is a string `enum` in a `*.enums.ts` file (`enum SessionState { Running =
+'running' }`), never a string-literal union or an `as const` object. Every exported type or
+interface is in a `*.types.ts` / `*.interface.ts` file, and every `Error` subclass in a
+`*.errors.ts` file; none is declared inline in a `service`, `routes` or other behavioural
+file. Each lives in the area's `types/`, `enums/` or `errors/` folder (see
+[general.md](general.md) §Code layout).
 
 ## Enforcement
 

@@ -46,7 +46,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "biome check . && bash scripts/adr-index.sh --check",
-    "lint:fix": "biome check --write .",
+    "lint:fix": "biome check --write . && bash scripts/adr-index.sh",
     "worktree:create": "bash scripts/worktree-create.sh",
     "worktree:remove": "bash scripts/worktree-remove.sh"
   },
