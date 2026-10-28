@@ -1,10 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  hasSessionWindow,
-  readInputBox,
-  SessionPaneMissingError,
-} from '../claude/session-runtime.service.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { InvalidProfileError } from './profile.errors.js';
@@ -20,12 +16,11 @@ import {
 } from './session.repository.js';
 import { rescopeTask } from './task-rescope.service.js';
 
-// The tmux boundary: by default no window wears the session's name and its
-// recorded pane is gone, as the gate leaves a merged session's.
-vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
-  hasSessionWindow: vi.fn(),
-  readInputBox: vi.fn(),
+// The tmux boundary: by default the default server answers and lists no
+// window of the task's, as the gate leaves a merged session's.
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFileSync: vi.fn(),
 }));
 
 const SPEC = {
@@ -51,15 +46,14 @@ describe('rescopeTask (decision 115)', () => {
   };
 
   beforeEach(() => {
-    vi.mocked(hasSessionWindow).mockReset().mockReturnValue(false);
-    vi.mocked(readInputBox)
-      .mockReset()
-      .mockImplementation((pane) => {
-        throw new SessionPaneMissingError(pane.sessionId, pane.paneId, 'gone');
-      });
+    vi.mocked(execFileSync).mockReset().mockReturnValue('%1 pup-other\n');
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it.each(['merged', 'awaiting-review', 'blocked'])(
@@ -173,6 +167,20 @@ describe('rescopeTask (decision 115)', () => {
       expect(getSession(db, 's1')).toMatchObject({ tier: 'standard', rung: 2 });
     });
 
+    // A relaunch after a kill routes from the task's row, so it is settled
+    // from its own stored tier, not from the session's.
+    it('raises a task stored standard under a session already critical', () => {
+      standard('standard');
+      db.prepare("UPDATE sessions SET tier = 'critical', rung = 1 WHERE id = ?").run('s1');
+
+      expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'])).toMatchObject({
+        tier: 'critical',
+        raised: true,
+      });
+      expect(getTask(db, 't-1')?.tier).toBe('critical');
+      expect(getSession(db, 's1')).toMatchObject({ tier: 'critical', rung: 1 });
+    });
+
     it('never lowers a critical tier', () => {
       db.prepare("UPDATE tasks SET spec = ?, tier = 'critical' WHERE id = ?").run(
         JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
@@ -211,53 +219,99 @@ describe('rescopeTask (decision 115)', () => {
 
   // A worker that ran `pup session done` is awaiting review with its window
   // still up: rescoping then would let it keep editing into the wider scope.
-  it.each(['awaiting-review', 'blocked'])(
-    'refuses while a %s session still has its pane, writing nothing',
-    (state) => {
-      launched('s1', state);
-      vi.mocked(readInputBox).mockReturnValue('empty');
+  it.each([
+    ['awaiting-review', 'its pane', '%3 renamed\n'],
+    ['blocked', 'its pane', '%3 renamed\n'],
+    ['awaiting-review', 'its name', '%9 pup-s1\n'],
+  ])('refuses while a %s session has %s on the server, writing nothing', (state, _what, panes) => {
+    launched('s1', state);
+    vi.mocked(execFileSync).mockReturnValue(panes);
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+      "Session s1's window may still be open",
+    );
+    expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
+    expect(listEvents(db, 's1')).toEqual([]);
+  });
+
+  // A server that cannot be reached, a tmux that is not there: either way no
+  // window is shown closed.
+  it.each(['no server running on /tmp/tmux-501/default', 'spawnSync tmux ENOENT'])(
+    'counts a probe that fails (%s) as an open window',
+    (message) => {
+      launched('s1', 'merged');
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw new Error(message);
+      });
 
       expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
-        "Session s1's window is still open",
+        "Session s1's window may still be open",
       );
-      expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
-      expect(listEvents(db, 's1')).toEqual([]);
     },
   );
 
-  it('refuses while a window wears the session name, whatever its pane', () => {
-    launched('s1', 'awaiting-review');
-    vi.mocked(hasSessionWindow).mockReturnValue(true);
+  // A worker could point TMUX_TMPDIR at an empty server, or PATH at a fake tmux.
+  it("asks the default socket with a pinned PATH, whatever the caller's env says", () => {
+    launched('s1', 'merged');
+    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
+    vi.stubEnv('PATH', '/tmp/fake-bin');
 
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow("Session s1's window is still open");
-  });
+    rescopeTask(db, 't-1', ['docs/**']);
 
-  it('counts a pane probe that fails another way as open', () => {
-    launched('s1', 'awaiting-review');
-    vi.mocked(readInputBox).mockImplementation(() => {
-      throw new Error('tmux: server exited unexpectedly');
+    const [file, args, options] = vi.mocked(execFileSync).mock.calls[0] ?? [];
+    expect(file).toBe('tmux');
+    expect(args).toEqual([
+      '-S',
+      `/tmp/tmux-${process.getuid?.()}/default`,
+      'list-panes',
+      '-a',
+      '-F',
+      '#{pane_id} #{session_name}',
+    ]);
+    expect((options as { env?: unknown }).env).toEqual({
+      PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
     });
-
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow("Session s1's window is still open");
   });
 
   it.each([
-    ['**', 'matches every path'],
-    ['*', 'matches every path'],
-    ['**/*', 'matches every path'],
-    ['*/**', 'matches every path'],
+    ['**', 'has a wildcard in its first segment'],
+    ['*', 'has a wildcard in its first segment'],
+    ['**/*', 'has a wildcard in its first segment'],
+    ['*/**', 'has a wildcard in its first segment'],
+    ['./**', 'has a wildcard in its first segment'],
+    [' **', 'has a wildcard in its first segment'],
+    ['?**', 'has a wildcard in its first segment'],
+    ['**?', 'has a wildcard in its first segment'],
+    ['**/?*', 'has a wildcard in its first segment'],
+    ['*?/**', 'has a wildcard in its first segment'],
+    ['*.ts', 'has a wildcard in its first segment'],
     ['/etc/passwd', 'is absolute'],
+    [' /etc/passwd', 'is absolute'],
     ['src/../../etc/x', 'has a `..` segment'],
     ['..', 'has a `..` segment'],
+    [' ../x', 'has a `..` segment'],
+    ['.github/**', 'reaches `.github`'],
+    ['.github/workflows/ci.yml', 'reaches `.github`'],
+    ['./.GitHub', 'reaches `.github`'],
     ['  ', 'is empty'],
+    ['./', 'is empty'],
     ['src/\u0007x', 'contains a control character'],
     ['src/\u007fx', 'contains a control character'],
     ['src/\u009bx', 'contains a control character'],
+    ['src/x\n', 'contains a control character'],
   ])('refuses the glob %j: it %s', (glob, why) => {
     launched('s1', 'merged');
 
     expect(() => rescopeTask(db, 't-1', ['docs/**', glob])).toThrow(why);
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
+  });
+
+  it('takes a glob the matcher reads as a plain path', () => {
+    launched('s1', 'merged');
+
+    expect(rescopeTask(db, 't-1', ['./docs/**', 'src/cli/'])).toMatchObject({
+      added: ['./docs/**', 'src/cli/'],
+    });
   });
 
   // What the gate's scope-audit stage runs, on the spec it reads back.

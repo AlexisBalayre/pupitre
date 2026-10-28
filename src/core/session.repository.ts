@@ -378,14 +378,19 @@ export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean
  * alone, since it is derived from the scope-in that now implies critical. The
  * session's rung is cleared with it, so its next window starts the critical
  * ladder from the bottom, as a re-tiered task's does, rather than clamping a
- * standard rung onto it.
+ * standard rung onto it. True when either row was raised.
  */
-export function raiseToCritical(db: Database, taskId: string, sessionId: string): void {
-  db.prepare("UPDATE tasks SET tier = 'critical' WHERE id = ? AND tier = 'standard'").run(taskId);
-  db.prepare(
-    `UPDATE sessions SET tier = 'critical', rung = NULL, rung_reason = NULL
-      WHERE id = ? AND tier = 'standard'`,
-  ).run(sessionId);
+export function raiseToCritical(db: Database, taskId: string, sessionId: string): boolean {
+  const task = db
+    .prepare("UPDATE tasks SET tier = 'critical' WHERE id = ? AND tier = 'standard'")
+    .run(taskId);
+  const session = db
+    .prepare(
+      `UPDATE sessions SET tier = 'critical', rung = NULL, rung_reason = NULL
+        WHERE id = ? AND tier = 'standard'`,
+    )
+    .run(sessionId);
+  return task.changes + session.changes > 0;
 }
 
 function isStringArray(value: unknown): value is string[] {

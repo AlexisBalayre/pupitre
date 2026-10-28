@@ -2632,12 +2632,22 @@ describe('CLI commands', () => {
         buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
           from: 'user',
         });
+      // The rescope's window probe asks the default tmux server for its panes;
+      // every other call, the fixtures' git included, runs for real.
+      const tmuxLists = (panes: string) => {
+        const real = vi.mocked(execFileSync).getMockImplementation() as typeof execFileSync;
+        vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: never[]) =>
+          file === 'tmux' ? panes : real(file, ...rest)) as typeof execFileSync);
+      };
+
+      beforeEach(() => {
+        tmuxLists('%1 pup-other\n');
+      });
 
       it("appends to a merged task's scope-in, and pup log shows it", () => {
         const repo = initRepo();
         useCwd(repo);
         const db = claimed(repo, 'merged');
-        vi.mocked(hasSessionWindow).mockReturnValueOnce(false);
 
         rescope();
         buildProgram().parse(['log'], { from: 'user' });
@@ -2669,7 +2679,6 @@ describe('CLI commands', () => {
         useCwd(repo);
         const db = claimed(repo, 'merged', ['docs/**']);
         db.prepare("UPDATE sessions SET tier = 'standard', rung = 1 WHERE id = ?").run('s1');
-        vi.mocked(hasSessionWindow).mockReturnValueOnce(false);
 
         buildProgram().parse(
           ['plan', 'edit', 't-1', '--rescope', '--scope', 'src/core/merge-gate.service.ts'],
@@ -2683,7 +2692,7 @@ describe('CLI commands', () => {
         expect(getSession(db, 's1')?.tier).toBe('critical');
       });
 
-      it('refuses a glob that matches every path', () => {
+      it('refuses a glob with a wildcard in its first segment', () => {
         const repo = initRepo();
         useCwd(repo);
         const db = claimed(repo, 'merged');
@@ -2692,7 +2701,7 @@ describe('CLI commands', () => {
           from: 'user',
         });
 
-        expect(errors).toContain('Rescope glob "**" matches every path.');
+        expect(errors).toContain('Rescope glob "**" has a wildcard in its first segment.');
         expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
         expect(process.exitCode).toBe(1);
       });
@@ -2714,10 +2723,11 @@ describe('CLI commands', () => {
         const repo = initRepo();
         useCwd(repo);
         const db = claimed(repo, 'awaiting-review');
+        tmuxLists('%9 pup-s1\n');
 
         rescope();
 
-        expect(errors.join('\n')).toContain("Session s1's window is still open");
+        expect(errors.join('\n')).toContain("Session s1's window may still be open");
         expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
         expect(process.exitCode).toBe(1);
       });
