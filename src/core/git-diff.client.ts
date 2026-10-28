@@ -494,6 +494,15 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
 }
 
 /**
+ * Git config that keeps a path argument the bytes it was given. On macOS
+ * `core.precomposeUnicode`, which `git init` turns on and a session can set in
+ * the shared config, rewrites an NFD path to NFC in a pathspec and in a
+ * `<rev>:<path>` object name alike, so a tree holding both spellings would
+ * answer for the other file (decision 114).
+ */
+const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
+
+/**
  * The `-U0` hunk headers of one file's branch diff (merge-base diff): where
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
@@ -503,6 +512,9 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
  * `diff.interHunkContext` would merge the hunks and a `diff.algorithm` of
  * patience or histogram could read an unchanged block as deleted and
  * re-added, both reporting unchanged lines as added (decision 113).
+ * `core.precomposeUnicode` is pinned off, or on macOS git would rewrite an NFD
+ * path to NFC before matching it and read the hunks of an NFC sibling the tree
+ * also holds (decision 114).
  */
 function diffHunks(
   repoPath: string,
@@ -511,6 +523,7 @@ function diffHunks(
   path: string,
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
+    ...PATH_AS_GIVEN,
     '--literal-pathspecs',
     'diff',
     ...DIFF_SAFE_FLAGS,
@@ -600,15 +613,19 @@ const BINARY_SNIFF_BYTES = 8000;
 function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
   const spec = `${rev}:${path}`;
   try {
-    runGit(repoPath, ['cat-file', '-e', spec]);
+    runGit(repoPath, [...PATH_AS_GIVEN, 'cat-file', '-e', spec]);
   } catch {
     return false;
   }
   // `runGit`'s argv and env, read as bytes: a NUL is the whole question.
-  const blob = execFileSync('git', safeArgv(repoPath, ['cat-file', 'blob', spec]), {
-    ...spawnOptions({}),
-    encoding: 'buffer',
-  });
+  const blob = execFileSync(
+    'git',
+    safeArgv(repoPath, [...PATH_AS_GIVEN, 'cat-file', 'blob', spec]),
+    {
+      ...spawnOptions({}),
+      encoding: 'buffer',
+    },
+  );
   return blob.subarray(0, BINARY_SNIFF_BYTES).includes(0);
 }
 
