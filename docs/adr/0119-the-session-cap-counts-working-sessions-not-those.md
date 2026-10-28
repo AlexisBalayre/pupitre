@@ -1,9 +1,9 @@
-# 0115. The session cap counts working sessions, not those awaiting review (2026-10-28).
+# 0119. The session cap counts working sessions, not those awaiting review (2026-10-28).
 
 - Status: accepted
 - Amends: [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
 
-115. **The session cap counts working sessions, not those awaiting review (2026-10-28).**
+119. **The session cap counts working sessions, not those awaiting review (2026-10-28).**
     Decision 96 counted every session in a holding state against the cap. On 2026-10-28
     six sessions awaiting review filled a cap of 6 while no window ran a turn: `pup fix`
     was refused twice, and every planned task waited behind `pup merge`, which runs one at

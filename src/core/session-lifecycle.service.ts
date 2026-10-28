@@ -123,7 +123,7 @@ function gigabytes(bytes: number): string {
  * Refuse a launch past the project's session cap or into a machine short of
  * memory (decision 96). Asked before anything is built, and before `pup new`
  * writes its task, so a refusal leaves nothing behind. The cap counts the
- * sessions whose windows take turns, not those awaiting review (decision 115):
+ * sessions whose windows take turns, not those awaiting review (decision 119):
  * an idle window costs memory, which the floor already measures, and no CPU.
  * `--over-cap` lifts the cap for the operator alone and never the memory
  * floor: memory is the machine's limit, the cap only the operator's choice of one.

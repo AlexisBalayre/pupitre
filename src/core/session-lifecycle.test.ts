@@ -1743,7 +1743,7 @@ describe('launch capacity (decision 96)', () => {
     expect(launch('operator')).toBe('t-1');
   });
 
-  it('does not count sessions awaiting review (decision 115)', () => {
+  it('does not count sessions awaiting review (decision 119)', () => {
     setCap(2);
     seedSessions(2, 'awaiting-review');
     seedSessions(1);
