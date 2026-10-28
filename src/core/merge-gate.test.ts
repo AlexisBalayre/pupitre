@@ -2606,11 +2606,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // Docusaurus compiles `.md` under root docs/ as MDX, which can export code.
   // The gate's filesystem finds its config in any case, and `--config` takes
-  // one under any name, so a package.json naming Docusaurus counts too.
+  // one under any name, so a manifest naming Docusaurus counts too, and so
+  // does a lockfile, which spells the name plainly however a manifest escapes it.
   it.each([
     ['docusaurus.config.ts', 'export default {};\n'],
     ['Docusaurus.config.js', 'module.exports = {};\n'],
     ['website/Package.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n'],
+    ['website/package.yaml', "dependencies: { '@docusaurus/core': 3.0.0 }\n"],
+    ['website/package.json5', "{ dependencies: { '@docusaurus/core': '3.0.0' } }\n"],
+    ['website/pnpm-lock.yaml', "  '@docusaurus/core': 3.0.0\n"],
+    ['website/package-lock.json', '{ "packages": { "node_modules/@docusaurus/core": {} } }\n'],
+    ['website/yarn.lock', '"@docusaurus/core@^3.0.0":\n'],
   ])('counts Markdown under docs/ as source beside %s', async (file, content) => {
     const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**', file] });
     commitIn(worktree, file, content);
@@ -2623,6 +2629,26 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       stage: 'diff-size',
       status: 'pass',
       detail: '6 source + 0 test + 2 docs changed lines',
+    });
+  });
+
+  // `git grep` never reads a link's blob, so a manifest that is a link names
+  // Docusaurus whatever it points at.
+  it('counts Markdown under docs/ as source beside a package.json that is a symlink', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/**', 'package.json'] });
+    commitIn(worktree, 'src/deps.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n');
+    commitIn(worktree, 'docs/big.md', 'export const v = 1;\n'.repeat(5));
+    commitIn(worktree, 'docs/notes.rst', 'prose\n'.repeat(2));
+    symlinkSync('src/deps.json', join(worktree, 'package.json'));
+    sh(worktree, 'git', 'add', '.');
+    sh(worktree, 'git', 'commit', '-m', 'link the manifest');
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '7 source + 0 test + 2 docs changed lines',
     });
   });
 
@@ -2679,6 +2705,23 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
         '800 source + 0 test + 0 docs changed lines',
+      );
+    });
+
+    // `diff.renameLimit` is shared config too: at 1, a second added file
+    // skipped the inexact pairing. The numstat leaves the limit to that config,
+    // so it lists the rename as a delete and an add, both counted as source.
+    it('counts it as source with the rename limit lowered in the shared config', async () => {
+      commitIn(repo, 'src/big.ts', numbered(1000));
+      const worktree = seedSession(db, repo);
+      renameOntoTest(worktree);
+      commitIn(worktree, 'src/extra.ts', 'x\n');
+      sh(repo, 'git', 'config', 'diff.renameLimit', '1');
+
+      const outcome = await merge();
+
+      expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
+        '2001 source + 0 test + 0 docs changed lines',
       );
     });
 
@@ -5310,35 +5353,60 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   });
 });
 
-// On macOS `core.precomposeUnicode`, which `git init` turns on and a session
-// can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC, so
-// the importer read returned its NFC sibling's text and the test it names went
-// unreached (decision 114). Elsewhere git ignores the key and this passes
-// either way.
 describe('countChangedLines', () => {
-  it('reads an NFD importer, not its NFC sibling', () => {
-    const repo = initRepo();
-    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
-    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
-    // A working tree on APFS cannot hold both spellings, so they go straight to the index.
-    for (const [path, content] of [
-      ['src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
-      ['src/café.ts', "export * from './big.test.js';\n"],
-      ['src/café.ts', 'export {};\n'],
-    ] as const) {
+  /** Commits `entries` from the index alone, holding what no APFS working tree could. */
+  function commitBlobs(repo: string, entries: [mode: string, path: string, content: string][]) {
+    for (const [mode, path, content] of entries) {
       const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
         cwd: repo,
         env: GIT_ENV,
         input: content,
         encoding: 'utf8',
       }).trim();
-      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `100644,${blob},${path}`);
+      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `${mode},${blob},${path}`);
     }
-    sh(repo, 'git', 'commit', '-q', '-m', 'siblings');
+    sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
+  }
+
+  // On macOS `core.precomposeUnicode`, which `git init` turns on and a session
+  // can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC,
+  // so the importer read returned its NFC sibling's text and the test it names
+  // went unreached (decision 114). Elsewhere git ignores the key and this
+  // passes either way.
+  it('reads an NFD importer, not its NFC sibling', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/cafe\u0301.ts', "export * from './big.test.js';\n"],
+      ['100644', 'src/caf\u00e9.ts', 'export {};\n'],
+    ]);
     sh(repo, 'git', 'config', 'core.precomposeUnicode', 'true');
 
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
       source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // Checkout writes a link with `symlink()`, which takes its target as a C
+  // string, so a link blob `big.test.ts\0x` lands on `big.test.ts`. The link
+  // blobs themselves are binary for their NUL and count nothing.
+  it('reads a link target up to its first NUL, as checkout writes it', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'docs/impl.md', 'print(1)\n'.repeat(3)],
+      ['120000', 'src/impl.ts', 'big.test.ts\0x'],
+      ['120000', 'src/pkg/impl.py', '../../docs/impl.md\0'],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 8,
       test: 0,
       docs: 0,
       forged: [],

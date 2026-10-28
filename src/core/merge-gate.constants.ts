@@ -42,6 +42,21 @@ export const LOCKFILE_NAMES = [
   'Cargo.lock',
 ];
 
+/**
+ * Where a project names what it installs: a manifest, or a lockfile, which
+ * lists `@docusaurus/core` in plain text however the manifest escapes the
+ * name. One on the branch naming Docusaurus, at any depth and in any case,
+ * makes `.md` under `docs/` source as a config does, since `docusaurus build
+ * --config site.config.js` takes a config under any name; so does a symlink
+ * under one of these names, whose blob `git grep` never reads (decision 110).
+ */
+export const DIFF_SIZE_DEPENDENCY_FILES = [
+  'package.json',
+  'package.yaml',
+  'package.json5',
+  ...LOCKFILE_NAMES,
+];
+
 /** Per-file rise in decision points above which the complexity stage flags (docs/04 stage 4). */
 export const COMPLEXITY_FILE_FLAG_DELTA = 15;
 

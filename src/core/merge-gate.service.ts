@@ -71,6 +71,7 @@ import {
 } from './ledger.repository.js';
 import {
   DEBT_DETAIL_SAMPLES,
+  DIFF_SIZE_DEPENDENCY_FILES,
   DIFF_SIZE_DOCS_DIR,
   DIFF_SIZE_DOCS_EXTENSIONS,
   DIFF_SIZE_DOCUSAURUS_CONFIG,
@@ -212,9 +213,11 @@ interface RawDiffEntry {
 }
 
 /**
- * The branch diff's `--raw` entries by new path. `-M` is passed rather than
- * left to `diff.renames`, which sits in the shared config a session can write,
- * so a rename onto a test name is paired whatever that config says.
+ * The branch diff's `--raw` entries by new path. `-M` and `-l0` are passed
+ * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
+ * shared config a session can write, so a rename onto a test name is paired
+ * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
+ * second file was added.
  */
 function rawDiffEntries(
   repoPath: string,
@@ -229,6 +232,7 @@ function rawDiffEntries(
     '-z',
     '--raw',
     '-M',
+    '-l0',
     `${target}...${branch}`,
   ]).split('\0');
   const entries = new Map<string, RawDiffEntry>();
@@ -271,11 +275,11 @@ interface BranchTree {
 const folded = (path: string): string => path.normalize('NFC').toLowerCase();
 
 /**
- * Whether a `package.json` on the branch, in any case, names Docusaurus, by
- * its `@docusaurus/core` dependency or a `docusaurus` script: `docusaurus
- * build --config site.config.js` takes a config under any name.
+ * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
+ * any case, names Docusaurus: its `@docusaurus/core` dependency or a
+ * `docusaurus` script.
  */
-function packageNamesDocusaurus(repoPath: string, branch: string): boolean {
+function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
   try {
     runGit(repoPath, [
       'grep',
@@ -287,7 +291,7 @@ function packageNamesDocusaurus(repoPath: string, branch: string): boolean {
       'docusaurus',
       branch,
       '--',
-      ':(glob,icase)**/package.json',
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
     ]);
     return true;
   } catch (error) {
@@ -302,15 +306,17 @@ function packageNamesDocusaurus(repoPath: string, branch: string): boolean {
  * The branch's tree as the split reads it. A symlink reaches the path it lands
  * on and everything under it, read from its blob lexically from the link's
  * directory and compared folded; `git grep` never reads a link's blob, so this
- * is the one place a link is seen. One whose target is absolute, lands outside
- * the repo, or has a `..` after a named segment, which climbs from wherever
- * that segment resolves and no lexical reading knows, may land anywhere and
- * reaches every path.
+ * is the one place a link is seen. The blob is read up to its first NUL, as
+ * checkout writes the link with `symlink()`, which takes a C string. One whose
+ * target is absolute, lands outside the repo, or has a `..` after a named
+ * segment, which climbs from wherever that segment resolves and no lexical
+ * reading knows, may land anywhere and reaches every path. A link named as a
+ * dependency file may name Docusaurus where no grep reads it.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
   let anywhere = false;
-  let markdownIsCode = packageNamesDocusaurus(repoPath, branch);
+  let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
   for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
     if (!entry) continue;
     // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
@@ -319,7 +325,10 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     const path = entry.slice(tab + 1);
     markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path);
     if (mode !== '120000') continue;
-    const target = runGit(repoPath, ['cat-file', 'blob', oid]);
+    markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
+      (name) => folded(name) === folded(basename(path)),
+    );
+    const [target = ''] = runGit(repoPath, ['cat-file', 'blob', oid]).split('\0', 1);
     const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
     const firstName = segments.findIndex((segment) => segment !== '..');
     const lands = join(dirname(path), target).replace(/\/+$/, '');

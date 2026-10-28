@@ -19,8 +19,10 @@
     `test_*.py` and `*_test.py` import as ordinary modules and fail nothing when they hold no
     tests, so they count as source. A file renamed onto a test name from a name that was not one
     counts as source too, or `git mv big.ts big.test.ts` plus a rewrite would carry production
-    code in under the test count. The rename is read from the branch's `--raw` diff with `-M`,
-    never left to `diff.renames`, which sits in the shared config a session can write. A
+    code in under the test count. The rename is read from the branch's `--raw` diff with `-M`
+    and `-l0`, never left to `diff.renames` or `diff.renameLimit`, which sit in the shared
+    config a session can write: a limit of 1 skipped inexact pairing once a second file was
+    added. A
     `*.test.ts` that non-test code reaches counts as source as well: one test behind `if
     (process.env.VITEST)` passes vitest, so 2000 lines of exports beside it, imported from
     production as `./big.test.js`, read as "0 source + 2000 test" (found on the second security
@@ -60,25 +62,32 @@
     code under `docs/` (Sphinx's `conf.py`, swag's `docs/docs.go`), `.mdx` compiles to a
     component, and `.txt` takes in `requirements.txt` and `CMakeLists.txt`, so those count as
     source. So does `.md` there when a `docusaurus.config.*` in any case sits anywhere on the
-    branch, or a `package.json` in any case names Docusaurus (its `@docusaurus/core` dependency,
-    a `docusaurus` script), since `docusaurus build --config site.config.js` takes a config
-    under any name: Docusaurus reads root `docs/` by default and compiles `.md` as MDX, so
-    `docs/big.md` can export code `src/` imports from `@site/docs/big.md`. A symlink counts as
-    source wherever it sits, and so does any changed doc or test a symlink on the branch
-    reaches: `src/pkg/impl.py -> ../../docs/impl.md` ran 2000 lines of Python counted as docs,
-    and `src/impl.ts -> big.test.ts` imported a test file no token names, as `git grep` never
-    reads a link's blob. Each link's target is read from the branch tree, resolved lexically
-    from the link's directory and compared case-folded and NFC-normalized, as APFS opens
-    `../../DOCS/impl.md` as `docs/impl.md`; it reaches the path it lands on and everything under
-    it. One whose target is absolute, lands outside the repo, or has a
+    branch, or a dependency file in any case names Docusaurus, since `docusaurus build --config
+    site.config.js` takes a config under any name: a `package.json`, `package.yaml` or
+    `package.json5` by its `@docusaurus/core` dependency or a `docusaurus` script, or a
+    lockfile, which spells `@docusaurus/core` plainly however a manifest escapes it
+    (`"@docusaur\u0075s/core"`). A symlink under one of those names counts as naming it, as no
+    grep reads a link's blob. Docusaurus reads root `docs/` by default and compiles `.md` as
+    MDX, so `docs/big.md` can export code `src/` imports from `@site/docs/big.md`. A symlink
+    counts as source wherever it sits, and so does any changed doc or test a symlink on the
+    branch reaches: `src/pkg/impl.py -> ../../docs/impl.md` ran 2000 lines of Python counted as
+    docs, and `src/impl.ts -> big.test.ts` imported a test file no token names, as `git grep`
+    never reads a link's blob. Each link's target is read from the branch tree up to its first
+    NUL, as checkout's `symlink()` takes a C string (a blob `big.test.ts\0x` landed nowhere and
+    left the test it reaches counted as test), resolved lexically from the link's directory and
+    compared case-folded and NFC-normalized, as APFS opens `../../DOCS/impl.md` as
+    `docs/impl.md`; it reaches the path it lands on and everything under it. One whose target is
+    absolute, lands outside the repo, or has a
     `..` after a named segment may land anywhere and reaches every path: `l/../impl.md` lands
     on a decoy `src/impl.md` read lexically, which is how Node's `realpath`, and so the gate's
-    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the name-character
-    token, the dot rule and the importer's `core.precomposeUnicode` pin came from the sixth
-    security review; the case and Unicode folding and the Docusaurus `package.json` rule from
-    the fifth; the Vue, decoy, lookup, name, Docusaurus and reached-link rules from the fourth;
-    the test name, rename, docs and link rules from the review of the first cut, which took
-    every JS/TS, Python and Go test spelling and every path under `docs/`). Leaving them out of
+    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the link's NUL cut,
+    the lockfile, `package.yaml`, `package.json5` and linked-manifest rules and the `-l0` pin
+    came from the seventh security review; the name-character token, the dot rule and the
+    importer's `core.precomposeUnicode` pin from the sixth; the case and Unicode folding and the
+    Docusaurus `package.json` rule from the fifth; the Vue, decoy, lookup, name, Docusaurus and
+    reached-link rules from the fourth; the test name, rename, docs and link rules from the
+    review of the first cut, which took every JS/TS, Python and Go test spelling and every path
+    under `docs/`). Leaving them out of
     the size is not leaving them out of the gate: the scope audit and review still see every
     changed path, and the oversize ledger entry still names every changed file. The entry keeps
     its `Oversize diff (N lines)` wording, now with the source count, so a re-gate still reads
@@ -98,8 +107,9 @@
     sign, U+212A, for `k`). Prose loaded as code without a link still counts as docs: a textual
     include (`#include "../docs/impl.md"`, Rust's `include!`), a Markdown compiler other than
     Docusaurus (VitePress and VuePress run a page's `<script setup>`), and Docusaurus run under
-    another config name from outside any `package.json` (a global install a Makefile drives).
-    The flag is per merge, so
+    another config name where no dependency file on the branch names it plainly: a global
+    install a Makefile drives, or a manifest naming it only through an escape with no lockfile
+    committed. The flag is per merge, so
     a test or doc landed in one merge and made source in a later one, by a rename, a copy or one
     new import, counts only that later merge's delta; closing it means counting an unchanged
     file a merge newly reaches at full size. The tab-in-path and `gitDiffNumstat` copy-pairing
@@ -117,8 +127,12 @@
     million-token line naming 200 same-named tests read without stalling, code, `.mdx`,
     `requirements.txt`, a symlink and a `src/docs/` file count as source while `.md` and `.rst`
     under `docs/` count as docs, `.md` there counts as source beside a `docusaurus.config.ts`, a
-    `Docusaurus.config.js` or a `Package.json` naming `@docusaurus/core`, the doc, test and
-    directory a link reaches, in any case, count as source and a link climbing past a named
-    segment makes every path source, a source file renamed onto a test name counts as source
-    with rename detection on and off in the shared config while a test renamed onto a test stays
-    a test, a root lockfile counts nothing and a lockfile-named file elsewhere still counts.
+    `Docusaurus.config.js`, a `Package.json`, `package.yaml` or `package.json5` naming
+    `@docusaurus/core`, a `pnpm-lock.yaml`, `package-lock.json` or `yarn.lock` listing it, or a
+    `package.json` that is a symlink, the doc, test and directory a link reaches, in any case
+    and with its target cut at a NUL, count as source and a link climbing past a named segment
+    makes every path source, a source file renamed onto a test name counts as source with rename
+    detection on and off and the rename limit at 1 in the shared config (where the numstat,
+    which leaves the limit to that config, also counts the delete) while a test renamed onto a
+    test stays a test, a root lockfile counts nothing and a lockfile-named file elsewhere still
+    counts.
