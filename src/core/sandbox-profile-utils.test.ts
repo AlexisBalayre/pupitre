@@ -19,11 +19,13 @@ function profile(
   writablePaths: string[] = ['/repo'],
   protectedPaths: string[] = [],
   checkoutPaths: string[] = [],
+  pinnedPaths: string[] = [],
 ): string {
   return sandboxProfile({
     writablePaths,
     protectedPaths,
     checkoutPaths,
+    pinnedPaths,
     home: HOME,
     policyDir: '/scratch/pup-sandbox-x',
   });
@@ -57,7 +59,7 @@ describe('sandboxProfile', () => {
     // deny. Whole-text equality is the only formatting-proof pin: any grant
     // added, deny dropped, or subpath widened — anywhere, however spelled —
     // fails by construction.
-    expect(profile(['/repo', '/reports'], ['/repo/.git'], ['/repo'])).toBe(
+    expect(profile(['/repo', '/reports'], ['/repo/.git'], ['/repo'], ['/repo', '/'])).toBe(
       [
         '(version 1)',
         '(allow default)',
@@ -68,6 +70,7 @@ describe('sandboxProfile', () => {
         '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
         `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x")\n  (subpath "/repo/.git"))`,
         String.raw`(deny file-write* (require-all (subpath "/repo") (regex #"/\.git(/|$)")))`,
+        '(deny file-write-unlink\n  (literal "/repo")\n  (literal "/"))',
         '',
       ].join('\n'),
     );
@@ -109,6 +112,10 @@ describe('sandboxProfile', () => {
     expect(generated.indexOf(gitDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
   });
 
+  it('leaves the unlink deny out when nothing is pinned, since bare it denies every unlink', () => {
+    expect(profile(['/repo'], [], [], [])).not.toContain('file-write-unlink');
+  });
+
   it('escapes a path that would otherwise break out of the SBPL string', () => {
     const generated = profile([String.raw`/repo/a"b\c`]);
 
@@ -140,8 +147,26 @@ describe('writeProfile', () => {
         '(allow file-write*\n  (subpath "/x/checkout")\n  (subpath "/x/scratch")\n  (subpath "/dev"))',
         `(deny file-write*\n  (subpath "${home}/.pupitre")\n  (subpath "${policyDir}")\n  (subpath "/x/checkout/.git"))`,
         String.raw`(deny file-write* (require-all (subpath "/x/checkout") (regex #"/\.git(/|$)")))`,
+        '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x/scratch")\n  (literal "/x")\n  (literal "/"))',
         '',
       ].join('\n'),
+    );
+  });
+
+  // A failing vitest run removes its empty report directory and the re-run
+  // makes it again (decision 108), so an output keeps its own name free; what
+  // holds it does not (decision 117).
+  it('protects an output as a checkout and pins what holds it, but not its own name', () => {
+    const generated = readFileSync(
+      writeProfile(tempDir('pup-profile-'), ['/x/checkout'], [], ['/y/holder/report']),
+      'utf8',
+    );
+
+    expect(generated).toContain(
+      String.raw`(deny file-write* (require-all (subpath "/y/holder/report") (regex #"/\.git(/|$)")))`,
+    );
+    expect(generated).toContain(
+      '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x")\n  (literal "/")\n  (literal "/y/holder")\n  (literal "/y"))',
     );
   });
 

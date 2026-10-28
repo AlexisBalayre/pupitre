@@ -100,7 +100,8 @@ const PUPITRE_HOME = '.pupitre';
  *
  * The trailing denies are last on purpose: pup's own store, the profile file
  * itself, and each granted checkout's git directory stay unwritable even when
- * they sit inside a path the caller granted.
+ * they sit inside a path the caller granted, and the pinned paths stay where
+ * they are.
  */
 export function sandboxProfile(policy: {
   /** Absolute, symlink-resolved paths the child may write under. */
@@ -109,6 +110,8 @@ export function sandboxProfile(policy: {
   protectedPaths: string[];
   /** Checkout grants; `.git` is denied at any depth under each, and only these. */
   checkoutPaths: string[];
+  /** Never unlinked nor renamed, though a grant covers them; matched exactly. */
+  pinnedPaths: string[];
   /** The operator's home. Only the read denies key off it now. */
   home: string;
   /** Directory holding the generated profile; a writable one is a widened next run. */
@@ -130,6 +133,12 @@ export function sandboxProfile(policy: {
       ...policy.protectedPaths,
     ])})`,
     ...policy.checkoutPaths.map(gitDenyRule),
+    // Bare, the rule would deny every unlink, so no pins means no rule.
+    ...(policy.pinnedPaths.length > 0
+      ? [
+          `(deny file-write-unlink${policy.pinnedPaths.map((path) => `\n  (literal "${escapeSbpl(path)}")`).join('')})`,
+        ]
+      : []),
     '',
   ].join('\n');
 }
@@ -151,28 +160,48 @@ function escapeSbpl(value: string): string {
  * caller's grant. A repo a child makes in its own scratch is not the
  * repository being measured, and writing one is a legitimate toolchain move:
  * git dependencies clone into TMPDIR or the cache.
+ *
+ * Every grant's own name is pinned, and so is every directory above it: a
+ * grant covers its own name, so without the pin a child could move the
+ * checkout it runs in into its scratch, where no `.git` rule reaches, edit
+ * `.git/config` there and move it back (decision 117). An ancestor is pinned
+ * too because moving it moves the grant, whether or not another grant covers
+ * it. The one exemption is `outputPaths`, protected as checkouts are but with
+ * their own names left free: vitest removes its empty report directory after
+ * a failing run and the re-run makes it again (decision 108). Their
+ * ancestors stay pinned, and pup makes each one in a holder of its own.
  */
 export function writeProfile(
   policyDir: string,
   writablePaths: string[],
   scratchPaths: string[] = [],
+  outputPaths: string[] = [],
 ): string {
   const profilePath = join(policyDir, 'gate-child.sb');
-  const checkouts = [...new Set(writablePaths.map(grantPath))];
+  const pinnedCheckouts = [...new Set(writablePaths.map(grantPath))];
+  const checkouts = [...new Set([...pinnedCheckouts, ...outputPaths.map(grantPath)])];
   const scratch = [...new Set(scratchPaths.map(grantPath))].filter(
     (path) => !checkouts.includes(path),
   );
+  const grants = [...checkouts, ...scratch];
   writeFileSync(
     profilePath,
     sandboxProfile({
-      writablePaths: [...checkouts, ...scratch],
+      writablePaths: grants,
       protectedPaths: checkouts.map((path) => join(path, GIT_DIRNAME)),
       checkoutPaths: checkouts,
+      pinnedPaths: [...new Set([...pinnedCheckouts, ...scratch, ...grants.flatMap(ancestors)])],
       home: resolvePath(homedir()),
       policyDir,
     }),
   );
   return profilePath;
+}
+
+/** Every directory above `path`, nearest first, the root included. */
+function ancestors(path: string): string[] {
+  const parent = dirname(path);
+  return parent === path ? [] : [parent, ...ancestors(parent)];
 }
 
 /**

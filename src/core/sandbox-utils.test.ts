@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -41,6 +42,15 @@ afterEach(() => {
 
 /** The label pup reports when it applied its own profile rather than inheriting one. */
 const APPLIED_LABEL = 'sandbox-exec (macOS)';
+
+// Same isolation the other suites use: a test repo must not inherit the
+// developer's global git config, nor the GIT_DIR family a pre-commit run sets —
+// unscrubbed, `git init` re-initialised the hook's repo and set it bare.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
 
 /** Both darwin answers: which one depends on whether this suite runs inside pup's own gate. */
 const DARWIN_LABEL = /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/;
@@ -639,6 +649,68 @@ describe('runGateChild', () => {
           repoPath: cwd,
         });
         expect(readFileSync(join(cwd, '.worktrees', 's1', 'ordinary.txt'), 'utf8')).toBe('ok');
+      });
+
+      it('cannot move the checkout it runs in out from under its .git deny and back', async () => {
+        // `pup init` and `pup audit` run the child in the operator's own repo.
+        // Its grant covered its own name, so the child moved the repo into its
+        // TMPDIR, where no .git rule reaches, set `core.hooksPath` and moved it
+        // back: pup's next unsandboxed git call ran the hook (decision 117).
+        const cwd = fakeCheckout();
+        execFileSync('git', ['init', '-q', cwd], { env: GIT_ENV });
+        const config = join(cwd, '.git', 'config');
+        expect(existsSync(config)).toBe(true);
+
+        await expect(
+          runGateChild(
+            'sh',
+            [
+              '-c',
+              'mv "$1" "$TMPDIR/moved" && git -C "$TMPDIR/moved" config core.hooksPath /tmp/pup-hooks && mv "$TMPDIR/moved" "$1"',
+              'sh',
+              cwd,
+            ],
+            { cwd, repoPath: cwd },
+          ),
+        ).rejects.toThrow(/Operation not permitted/);
+        // Read as a file: git would follow a GIT_DIR a pre-commit run sets.
+        expect(readFileSync(config, 'utf8')).not.toContain('hooksPath');
+      });
+
+      it('cannot move or remove its scratch, its cache, or a grant above its checkout', async () => {
+        // The same move through a directory above the checkout, where another
+        // grant covers it, and the symlink swaps of the scratch and cache roots
+        // at the source: none of these names can be freed. Each destination is
+        // granted, so only the pin refuses the move.
+        const outer = tempDir('pup-outer-grant-');
+        const cwd = join(outer, 'repo');
+        mkdirSync(cwd);
+        const cache = join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(cwd));
+        onTestFinished(() => {
+          rmSync(cache, { recursive: true, force: true });
+        });
+        const options = { cwd, repoPath: cwd, writablePaths: [outer] };
+
+        for (const script of [
+          'mv "$1" "$TMPDIR/moved"',
+          'mv "$TMPDIR" "$1/moved"',
+          'mv "$2" "$1/moved"',
+          'rm -r -f "$2" && ln -s "$1" "$2"',
+        ]) {
+          await expect(
+            runGateChild('sh', ['-c', script, 'sh', outer, cache], options),
+          ).rejects.toThrow(/Operation not permitted/);
+        }
+        expect(existsSync(cwd)).toBe(true);
+        expect(lstatSync(cache).isDirectory()).toBe(true);
+        // The control: below those names, moving and removing still works.
+        expect(
+          await runGateChild(
+            'sh',
+            ['-c', 'mkdir a "$TMPDIR/b" && mv a c && rmdir c "$TMPDIR/b" && printf ok'],
+            options,
+          ),
+        ).toBe('ok');
       });
 
       it('creates a git repo in its own scratch space, where nothing is being measured', async () => {
