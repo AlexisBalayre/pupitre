@@ -13,7 +13,7 @@ for the cross-references the text states, then the decision itself.
 - Read the decisions your change touches, found through the index below. Do not read the whole
   directory.
 - Number a new decision by taking the highest `NNNN` on `origin/main` (after a fetch) and
-  incrementing it: `git ls-tree --name-only origin/main docs/adr/ | sort | tail -n 2`.
+  incrementing it: `git ls-tree --name-only origin/main docs/adr/ | grep -E '/[0-9]{4}-' | sort | tail -n 1`.
 - Record a decision only when it is hard to reverse, surprising without context, and the result
   of a real trade-off.
 - An open PR may still edit the decision it adds. Once a decision has landed, a later change
