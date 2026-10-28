@@ -23,17 +23,19 @@
     blob in the index, `checkout-index` writes the file, and `rebase --continue` runs with
     `GIT_EDITOR=:`. The scratch checkout goes before fresh-base ends, so the stages cut their
     own at the same path.
-    *What still refuses.* Any other conflicted path, a link, a side that added or deleted the
-    file, an extra or missing marker, an oversized or non-UTF-8 side, a change outside the
-    block on both sides, a tree with no script, a failing script, or output that changed the
-    text outside the block. Each keeps the existing fresh-base detail, and a refusal over the
-    index alone adds a line naming why it was not regenerated.
+    *What still refuses.* A conflict list of any other shape (another path, a link, a side
+    that added or deleted the file) is not two added lines and keeps the existing fresh-base
+    detail unchanged. An extra or missing marker, an oversized or non-UTF-8 side, a change
+    outside the block on both sides, a script that fails (one missing from the tree
+    included), or output that is not a regular file or changed the text outside the block
+    keeps that detail and adds a line naming why the index was not regenerated.
     *No merge driver.* Resolution is keyed on the path in pup's own code, and no
     `.gitattributes` entry, `merge.<name>.driver` or other config is added: decision 41 treats
     those as armed drivers, and the gate still refuses one. The scratch checkout is cut
     through `cutGateCheckout`, which checks the drivers first, and the rebase path checks
-    them again before `checkout-index`. An armed driver found mid-rebase leaves the rebase
-    stopped rather than abort it, because the abort checks files out and would run it.
+    them again before `checkout-index`. Every way out of the rebase aborts what is left of it,
+    except past an armed driver: the abort checks files out and would run it, so the rebase is
+    left stopped for the operator.
     *Security review.* The review of this change, and of any later one to it, must cover the
     scratch checkout (what is cut, what is written into it, what is read back and how), and
     the script run. The script is the branch's own code, so it runs as a gate stage runs
@@ -43,7 +45,8 @@
     *Tests.* In `merge-gate.test.ts`: a branch never pushed and an open PR's branch, each
     adding a decision while main adds another, merge with no worker action, and the merged
     index passes `adr-index.sh --check` on a checkout of the result. A stop that also
-    conflicts in another file keeps the plain refusal. A preamble both sides changed, a
-    second begin marker, a side over the cap, an index made a link, and a script that
-    appends outside the block are each refused with the plain detail and the reason. A smudge
-    filter armed before the scratch checkout throws `ArmedGitDriverError` and never runs.
+    conflicts in another file, and an index the branch made a link, keep the plain refusal.
+    A preamble both sides changed, a second begin marker, a side over the cap, a tree with no
+    script, a script that appends outside the block, and one that leaves a link are each
+    refused with the plain detail and the reason. A smudge filter armed before the scratch
+    checkout throws `ArmedGitDriverError` and never runs.

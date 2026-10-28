@@ -4743,7 +4743,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           'a second begin marker',
           (text: string) => `${text}<!-- adr-index:begin -->\n`,
           unchanged,
-          'docs/adr/README.md does not hold each adr-index marker once',
+          'docs/adr/README.md is not UTF-8 text holding each adr-index marker once',
         ],
         [
           'a file over the size cap',
@@ -4773,7 +4773,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
 
-      it('refuses an index the branch made a link', async () => {
+      // Not two added lines: the worker merges it, with nothing regenerated.
+      it('keeps the plain refusal for an index the branch made a link', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
         rmSync(join(worktree, INDEX));
@@ -4785,9 +4786,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         const outcome = await merge();
 
         expect(outcome.status).toBe('rejected');
-        expect(outcome.report.stages.at(-1)?.detail).toContain(
-          'docs/adr/README.md was not regenerated: docs/adr/README.md is not a regular file on every side.',
-        );
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).not.toContain('was not regenerated');
         expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
 
@@ -4809,6 +4810,44 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         expect(outcome.report.stages.at(-1)?.detail).toContain(
           'scripts/adr-index.sh changed docs/adr/README.md outside the adr-index markers',
         );
+      });
+
+      it('refuses a script that leaves a link where the README was', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        // Only in the gate's checkout, so the branch's own run commits a file.
+        writeFileSync(
+          join(worktree, 'scripts/adr-index.sh'),
+          `${ADR_SCRIPT}\ncase "$PWD" in *pup-gate-checkout-*) rm "$README"; ln -s /dev/null "$README";; esac\n`,
+        );
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)?.detail).toContain(
+          'docs/adr/README.md was not regenerated: scripts/adr-index.sh left no regular file at docs/adr/README.md.',
+        );
+      });
+
+      it('refuses a merged tree the script is missing from, naming its failure', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        sh(worktree, 'git', 'rm', '-q', 'scripts/adr-index.sh');
+        sh(worktree, 'git', 'commit', '-q', '--amend', '--no-edit');
+        addDecision(repo, 3);
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toContain(
+          'docs/adr/README.md was not regenerated: scripts/adr-index.sh failed:',
+        );
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
 
       it('refuses a smudge filter armed before the scratch checkout, running nothing', async () => {
