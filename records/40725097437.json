@@ -1,0 +1,211 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-28T16:30:45.306Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40725097437",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40725097437",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1e2aade03f2a348d445e4df2854fc61aeaa8c4a9",
+  "source": "pr",
+  "pr_number": 204,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1716-1724",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The regenerated README is checked with lstat and then reopened by path by an unsandboxed `git hash-object -w`. That leaves a check-then-use gap, and the bytes are written to the object store before the size cap is applied.",
+      "body": "Decision 120 says this review must cover \"what is read back and how\". The branch's own `scripts/adr-index.sh` has write access to the scratch checkout. When it finishes, the gate checks the result and then reads it again by path, outside the sandbox:\n\n```ts\nif (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) { ... }\nconst blob = runGit(req.repoPath, ['hash-object', '-w', '--no-filters', '--', file], piped).trim();\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1e2aade03f2a348d445e4df2854fc61aeaa8c4a9/src/core/merge-gate.service.ts#L1716-L1724\n\n**The race.** `settle()` kills the process group, but a process that called `setsid()` survives; `endSandboxRun`'s own comment calls such a process \"out of reach\". That survivor can keep swapping `README.md` between a regular file and a symlink. The swap goes like this:\n\n1. The gate's `lstat` sees the regular file and passes.\n2. `hash-object` then opens the path, follows the link, and reads a file the sandbox's read deny list covers (for example `~/.ssh/...`, decision 36).\n3. Because of `-w`, git writes that file as a loose object into the shared `.git/objects`.\n4. `aroundAdrIndex` then refuses the content, but the object stays behind.\n\nSandboxed children can read `.git/objects`, so later branch code can read the denied file from there. A FIFO swapped in instead would block the timeout-less `execFileSync` while the merge lock is held. Separately, `-w` stores the object before `ADR_INDEX_MAX_BYTES` is enforced.\n\n**Existing pattern.** The codebase already guards this pattern elsewhere with `O_NOFOLLOW | O_NONBLOCK` plus `fstat`: `readPointer` in `src/core/git-diff.client.ts`, and `snapshotIndex` in `src/core/codegraph.client.ts`.\n\n**Suggested fix.**\n\n1. Open the README with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`.\n2. `fstat` the descriptor and require a regular file of at most `ADR_INDEX_MAX_BYTES`.\n3. Read through the descriptor.\n4. Hash the buffer with `git hash-object -w --no-filters --stdin`, so git never opens the path itself.\n\nThe reachability bar is a setsid survivor plus a race that can be retried on each merge, so this is low-end important. It still breaks the deny-list property decision 36 relies on.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1781-1810",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Switching to `merge-tree -z` flattens the refusal detail for every open-PR fresh-base conflict into one run-on line, despite ADR 0120 promising the existing detail is unchanged.",
+      "body": "`mergeTargetInto` now runs `git merge-tree -z --write-tree` so `regenerateAdrIndex` can parse the conflict list. On refusal, though, the detail is still built from the raw stdout of that `-z` run through `commandFailureDetail(error)`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1e2aade03f2a348d445e4df2854fc61aeaa8c4a9/src/core/merge-gate.service.ts#L1781-L1810\n\n`plainDetail` deliberately keeps `\\n` (\"Newline stays: a detail may list a line each\") but maps NUL and tab to spaces. So any open-PR conflict, ADR-related or not, used to steer the worker with the multi-line `merge-tree` report:\n\n- the tree OID\n- one `<mode> <oid> <stage> <path>` line per entry\n- `CONFLICT (content): Merge conflict in …` lines\n\nNow it gets one line that fuses all of those, plus the `-z` message records' path counts and type fields. This contradicts ADR 0120 L26-28: \"keeps the existing fresh-base detail unchanged\".\n\nThe existing open-PR conflict test (`merge-gate.test.ts` ~L4196-4200) only checks the `Auto-merge of main hit conflicts` prefix, so nothing catches it.\n\nTwo ways to fix it:\n\n- Re-run plain `merge-tree --write-tree` (no `-z`) on the refusal path to get the human-readable report.\n- Build the detail from the `-z` output with NUL mapped back to `\\n`. This is closer, but the message records would still carry their count and type fields.\n\nEither way, add an open-PR refusal test that asserts `CONFLICT (content): Merge conflict in src/feature.ts` appears on its own line.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1944-1962",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When an armed driver is thrown on an index-only rebase stop, `treeOf` has already put a stage-0 README (HEAD's side) in the index while the working file still has conflict markers. The stop is left half-resolved: `git status` shows it modified rather than both-modified, and `rebase --continue` after disarming fails on unstaged changes. Build the tree from a temporary `GIT_INDEX_FILE`, or name this state in the error.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4615-4908",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Every rebase test conflicts at exactly one stop, so the recursive `rebase --continue` path is never exercised. Add a branch with two index-conflicting decision commits, and a resolved index stop followed by a conflict in another file (asserting the abort restores the tip and leaves the worktree clean).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1670",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`regenerateAdrIndex`'s JSDoc says `treeOf` \"gives the merged tree with our side's README in place\", but the merge-tree caller passes `() => conflicted`, a tree whose README holds conflict markers. Reword it to say `treeOf` gives the tree the scratch checkout is cut from and that its README is overwritten, or have the callee return the side oids instead of taking a callback.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1650",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`aroundAdrIndex`'s JSDoc says each part carries \"the newline that joins it to its marker\". That is true of `after`, but `before` has no trailing newline and starts with a sentinel `\\n` that the caller strips with `.slice(1)`. Fix the wording or drop the clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1632",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`class AdrIndexRefused extends Error {}` is declared inline in the service. docs/conventions/general.md §Code layout says there are no inline error classes, so move it to src/core/merge-gate.errors.ts beside MergeLockHeldError.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1610-1629",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR_INDEX, ADR_INDEX_SCRIPT, the marker strings and ADR_INDEX_MAX_BYTES are declared in the service. docs/conventions/general.md §No hardcoded values puts paths and thresholds in the area's merge-gate.constants.ts, although the service already holds some local constants.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1733, 1919-1921",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The same `update-index --cacheinfo 100644,${blob},${ADR_INDEX}` call is built twice (scratch checkout and rebase `setIndex`), and the `100644` mode is also hardcoded in ADR_INDEX_CONFLICT, so a change to the path or mode means editing three sites.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1916",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`rebaseOntoTarget` exposes its recursion state as an optional git argv parameter (`step = ['rebase', targetSha]`). Only the recursive call passes it, so a boolean `continuing` or a private inner loop would keep the git argv out of the function's contract.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4864-4875",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The armed-smudge test disarms on the second `--git-common-dir` call after `commit-tree` (`++checks === 2`). That ties it to how many `armedGitDrivers` checks the service runs, so a moved check could leave the test passing without proving its point. Anchor the disarm to an observable event such as the scratch-checkout path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4731",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`const unchanged = (text: string) => text;` duplicates `addDecision`'s default `plant` identity. Make the table column optional and pass `undefined` instead.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "The security instance assigned to the script run and scratch-checkout confinement stopped before finishing two checks (the gap between lstat and read, and hashing before the size cap). Both were covered by the other security instance's finding and its validator, so coverage was not lost."
+    },
+    {
+      "component": "conventions",
+      "description": "Could not verify that the 0120 ADR number is next after the highest on origin/main (0117-0119 not visible from the checkout; git fetch is off-limits under CI)."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.581010799999998,
+  "duration_ms": 505232,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 16389,
+    "cache_read": 248295,
+    "cache_creation": 71090,
+    "total": 335786
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 190,
+      "output": 115426,
+      "cache_read": 2944365,
+      "cache_creation": 427167,
+      "cost_usd": 5.247257999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 10535,
+      "cache_read": 396998,
+      "cache_creation": 75454,
+      "cost_usd": 0.3337528
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff f05f05ed8daadd126eaab6d6238a41071f5ce950 1e2aade03f2a348d445e4df2854fc61aeaa8c4a9 --stat; git -C /home/runner/work/pupitre/pupitre diff f05f05ed8daadd126e"
+    }
+  ]
+}
