@@ -343,13 +343,13 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
 }
 
 /**
- * A character no token spells a name with: whitespace, a quote, `<`, `>` and
- * `=` end a token, a `?` or `#` is cut as a query or fragment, and a character
- * outside printable ASCII has other forms the gate's filesystem opens alike
- * but no byte search finds. A test file named with one can be imported with
- * no token naming it, so it counts as source.
+ * A character no token (`NAME_TOKEN`) holds: anything but a letter, a digit
+ * or `_ . $ + @ -`, so a space, `#`, `=`, Next's `[id].test.ts` and a letter
+ * outside ASCII, whose other Unicode forms the gate's filesystem opens alike
+ * but no byte search finds. A test file named with one can be imported with no
+ * token naming it, so it counts as source.
  */
-const UNSPELLABLE_NAME = /[\s'"`<>=?#]|[^ -~]/;
+const UNSPELLABLE_NAME = /[^\w.$+@-]/;
 
 /**
  * Which part of the diff-size split a path counts toward (decision 110). A
@@ -383,31 +383,34 @@ function diffSizeKind(
 const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
 
 /**
- * A run between quotes, whitespace, `<`, `>` or `=`, which is how an import
- * specifier, a `src` attribute quoted or not (`src=./page.test.ts>`) or a
- * `package.json` value is spelt. One class with nothing after it to backtrack
- * into, so linear on any line: a pattern finding a name inside a token
- * backtracked quadratically on one long unspaced line, and held the merge lock
- * for minutes on a 1 MB file.
+ * A run of the characters a name may hold. Every other character ends one, so
+ * a name reads whole after a `/`, a quote or `=` and before a `?`, a `#`, a
+ * `>`, a script's `;`, `&&` or `)`, or a YAML list's `]`, with no list of
+ * delimiters to keep up. One class with nothing after it to backtrack into, so
+ * linear on any line: a pattern finding a name inside a token backtracked
+ * quadratically on one long unspaced line, and held the merge lock for minutes
+ * on a 1 MB file.
  */
-const SPECIFIER_TOKEN = /[^\s'"`<>=]+/g;
+const NAME_TOKEN = /[\w.$+@-]+/g;
 
 /**
  * Per file on `branch` that names one of `targets`, the targets it names. A
- * token names every target whose name its last segment spells, less a `?` or
- * `#` suffix (`?raw`) and a JS or TS extension, in any case. The suffix is cut
- * from the whole token and from its last segment alone, as `require` reads a
- * `#` in a directory (`./x#y/big.test.js`) literally. A relative specifier is
- * not resolved: a decoy file at its literal path would take the resolution and
+ * token names every target whose name, in any case, is the token or the token
+ * up to one of its dots, where an extension (`big.test.js`) or a serverless
+ * handler's export (`big.test.handler`) starts. Only dots within the longest
+ * name are tried, so a long token costs one scan. A relative specifier is not
+ * resolved: a decoy file at its literal path would take the resolution and
  * hide the target, and matching by name only over-counts source, the safe
  * direction. Every file `git grep` lists is read but those `skip` names,
- * whatever its extension, since a Vue component, a Vite `index.html` or a
- * `package.json` loads a module as well as code does. A file costs one pass
- * over its text and one lookup per distinct name it spells, however many
- * tokens repeat a name or targets share it. Grep runs with colour pinned off:
- * `color.grep=always` in the shared config would wrap each path in escapes,
- * and a listing entry that does not start with the branch refuses rather than
- * skips (decision 110).
+ * whatever its extension, since a Vue component, a Vite `index.html`, a
+ * `package.json` or a serverless config loads a module as well as code does.
+ * It is read with `core.precomposeUnicode` pinned off, as decision 114 pins
+ * the gate's other per-file reads: on macOS an NFD path read as its NFC
+ * sibling. A file costs one pass over its text and one lookup per distinct
+ * name it spells, however many tokens repeat a name or targets share it. Grep
+ * runs with colour pinned off: `color.grep=always` in the shared config would
+ * wrap each path in escapes, and a listing entry that does not start with the
+ * branch refuses rather than skips (decision 110).
  */
 function filesNaming(
   repoPath: string,
@@ -417,9 +420,11 @@ function filesNaming(
 ): Map<string, Set<string>> {
   const named = new Map<string, Set<string>>();
   const byName = new Map<string, string[]>();
+  let longest = 0;
   for (const target of targets) {
     const name = folded(testStem(target));
     byName.set(name, [...(byName.get(name) ?? []), target]);
+    longest = Math.max(longest, name.length);
   }
   let listing = '';
   try {
@@ -452,16 +457,23 @@ function filesNaming(
     }
     const importer = entry.slice(prefix.length);
     if (skip(importer)) continue;
-    const text = runGit(repoPath, ['cat-file', 'blob', `${branch}:${importer}`]);
+    const text = runGit(repoPath, [
+      '-c',
+      'core.precomposeUnicode=false',
+      'cat-file',
+      'blob',
+      `${branch}:${importer}`,
+    ]);
     const names = new Set<string>();
-    for (const [token] of text.matchAll(SPECIFIER_TOKEN)) {
-      for (const spelt of [token, basename(token)]) {
-        const name = folded(basename(spelt.replace(/(?<=.)[?#].*$/s, ''))).replace(
-          /\.[cm]?[jt]sx?$/,
-          '',
-        );
-        if (byName.has(name)) names.add(name);
+    for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
+      for (
+        let dot = token.indexOf('.', 1);
+        dot !== -1 && dot <= longest;
+        dot = token.indexOf('.', dot + 1)
+      ) {
+        if (byName.has(token.slice(0, dot))) names.add(token.slice(0, dot));
       }
+      if (token.length <= longest && byName.has(token)) names.add(token);
     }
     const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
     hits.delete(importer);

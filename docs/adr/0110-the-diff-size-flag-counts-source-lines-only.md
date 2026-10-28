@@ -26,12 +26,14 @@
     production as `./big.test.js`, read as "0 source + 2000 test" (found on the second security
     review). A `git grep` on the branch lists the files naming a changed test, and every one is
     read but prose under `docs/`, whatever its extension: a Vue or Svelte component, a Vite
-    `index.html` or a `package.json` loads a module as well as code does. Each token whose last
-    segment, less a `?` or `#` suffix (`./big.test.js?raw`) and a JS or TS extension, spells a
-    test's name in any case claims every test of that name, the safe direction: the grep runs
-    with `-i`, as APFS, the gate's filesystem (decision 78), opens `./BIG.test.js` as
-    `big.test.ts`. The suffix is cut from the whole token and from its last segment alone, as
-    `require` reads the `#` in `./x#y/big.test.js` literally. A relative specifier is not
+    `index.html`, a `package.json` or a serverless config loads a module as well as code does.
+    Each token that, in any case, is a test's name, or is one up to a dot, where an extension
+    (`big.test.js`) or a serverless handler's export (`src/big.test.handler`) starts, claims
+    every test of that name, the safe direction: the grep runs with `-i`, as APFS, the gate's
+    filesystem (decision 78), opens `./BIG.test.js` as `big.test.ts`. Each importer is read with
+    `core.precomposeUnicode` pinned off, as decision 114 pins the gate's other per-file reads:
+    on macOS an NFD `src/café.ts` naming `./big.test.js` was read as its NFC sibling holding
+    `export {}`, and the test went unreached. A relative specifier is not
     resolved: `resolveImport` tried the literal path first, so a decoy `big.test.js` holding
     `export {}` took `./big.test.js` and hid `big.test.ts` behind it, and resolving only ever
     narrowed what the name already claims. A test file naming one is followed in turn, so a
@@ -40,15 +42,20 @@
     shared config wrapped each `-l` path in escapes, every importer then failed what was a
     source-file check, the reach check passed everything as test, and a listing entry that does
     not start with the branch now refuses the gate rather than being skipped. A token is a run
-    between quotes, whitespace, `<`, `>` or `=`, so an unquoted `src=./page.test.ts>` in a Vite
-    `index.html` spells the name, matched in one pass by a single class with nothing after it to
-    backtrack into, and each name a file spells is looked up once. A regex with an unanchored
-    leading class backtracked quadratically on one long unspaced line and held the merge lock
-    for minutes on a 1 MB file (both found on the third security review), and weighing every
-    token against every target made a million-token line naming 200 same-named tests cost 200
-    million lookups. A `*.test.ts` whose name holds whitespace, a quote, `<`, `>`, `=`, `?` or
-    `#` counts as source, since no token spells it whole, and so does one named outside
-    printable ASCII, whose other Unicode forms APFS opens alike and no byte search finds. Docs
+    of the characters a name may hold, a letter, a digit or `_ . $ + @ -`, and every other
+    character ends one, so a name reads whole after a `/`, a quote or `=` and before a `?`, a
+    `#`, a `>`, a script's `;`, `&&` or `)`, a list's `,` or a YAML `]`: `./big.test.js?raw`,
+    `./x#y/big.test.js` (which `require` reads literally), an unquoted `src=./page.test.ts>`,
+    `tsx src/big.test.ts;` and `[big.test.ts]` all spell it, with no list of delimiters to keep
+    up (the fifth and sixth reviews each found one missing). One class with nothing after it to
+    backtrack into matches the tokens in one pass, only dots within the longest name are tried,
+    and each name a file spells is looked up once. A regex with an unanchored leading class
+    backtracked quadratically on one long unspaced line and held the merge lock for minutes on a
+    1 MB file (both found on the third security review), and weighing every token against every
+    target made a million-token line naming 200 same-named tests cost 200 million lookups. A
+    `*.test.ts` whose name holds any other character counts as source, since no token spells it
+    whole: a space, `#`, `=`, Next's `[id].test.ts`, and a letter outside ASCII, whose other
+    Unicode forms APFS opens alike and no byte search finds. Docs
     are prose under `docs/` at the repo root: `.md`, `.rst` and `.adoc`. Projects keep running
     code under `docs/` (Sphinx's `conf.py`, swag's `docs/docs.go`), `.mdx` compiles to a
     component, and `.txt` takes in `requirements.txt` and `CMakeLists.txt`, so those count as
@@ -66,13 +73,13 @@
     it. One whose target is absolute, lands outside the repo, or has a
     `..` after a named segment may land anywhere and reaches every path: `l/../impl.md` lands
     on a decoy `src/impl.md` read lexically, which is how Node's `realpath`, and so the gate's
-    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the case and Unicode
-    folding, the `<`, `>` and `=` token ends, the last-segment suffix cut and the Docusaurus
-    `package.json` rule came from the fifth security review; the Vue, decoy, lookup, name,
-    Docusaurus and reached-link rules from the fourth; the test name, rename, docs and link
-    rules from the review of the first cut, which took every JS/TS, Python and Go test spelling
-    and every path under `docs/`). Leaving them out of the
-    size is not leaving them out of the gate: the scope audit and review still see every
+    link check, reads it, but on `docs/impl.md` through `l -> ../docs/sub` (the name-character
+    token, the dot rule and the importer's `core.precomposeUnicode` pin came from the sixth
+    security review; the case and Unicode folding and the Docusaurus `package.json` rule from
+    the fifth; the Vue, decoy, lookup, name, Docusaurus and reached-link rules from the fourth;
+    the test name, rename, docs and link rules from the review of the first cut, which took
+    every JS/TS, Python and Go test spelling and every path under `docs/`). Leaving them out of
+    the size is not leaving them out of the gate: the scope audit and review still see every
     changed path, and the oversize ledger entry still names every changed file. The entry keeps
     its `Oversize diff (N lines)` wording, now with the source count, so a re-gate still reads
     an entry filed before this as the same kind (decision 86). The review queue's
@@ -99,17 +106,19 @@
     items this listed are closed by decisions 111 and 113. Tests: a 227/360/85 split passes with
     that detail, a 700-line test-only diff passes, 601 source lines flag whatever the tests add,
     every test spelling but `.test.ts` counts as source and so does a `.test.ts` named with a
-    space, `#`, `=` or `é`, a test file production code names by a relative re-export, a `#`
-    dynamic import, a specifier in another case, a `?raw` or `#x` suffix, a `#` in a directory,
-    a Vue component or a Vite `index.html`, its `src` quoted or not, counts as source, as does
-    one reached through two other test files, one named with grep colour forced on in the shared
-    config and one behind a decoy at the literal path, while one only tests or `docs/` prose
-    name stays a test, a 1 MB unspaced line and a million-token line naming 200 same-named tests
-    read without stalling, code, `.mdx`, `requirements.txt`, a symlink and a `src/docs/` file
-    count as source while `.md` and `.rst` under `docs/` count as docs, `.md` there counts as
-    source beside a `docusaurus.config.ts`, a `Docusaurus.config.js` or a `Package.json` naming
-    `@docusaurus/core`, the doc, test and directory a link reaches, in any case, count as source
-    and a link climbing past a named segment makes every path source, a source file renamed onto
-    a test name counts as source with rename detection on and off in the shared config while a
-    test renamed onto a test stays a test, a root lockfile counts nothing and a lockfile-named
-    file elsewhere still counts.
+    space, `#`, `=`, `é` or `[id]` while `+page.test.ts` stays a test, a test file production
+    code names by a relative re-export, a `#` dynamic import, a specifier in another case, a
+    `?raw` or `#x` suffix, a `#` in a directory, a Vue component, a Vite `index.html` with its
+    `src` quoted or not, a script ending the name at `;`, `&&` or `)` or starting it after `,`,
+    a YAML list with or without a directory, a serverless handler or an NFD importer beside an
+    NFC sibling counts as source, as does one reached through two other test files, one named
+    with grep colour forced on in the shared config and one behind a decoy at the literal path,
+    while one only tests or `docs/` prose name stays a test, a 1 MB unspaced line and a
+    million-token line naming 200 same-named tests read without stalling, code, `.mdx`,
+    `requirements.txt`, a symlink and a `src/docs/` file count as source while `.md` and `.rst`
+    under `docs/` count as docs, `.md` there counts as source beside a `docusaurus.config.ts`, a
+    `Docusaurus.config.js` or a `Package.json` naming `@docusaurus/core`, the doc, test and
+    directory a link reaches, in any case, count as source and a link climbing past a named
+    segment makes every path source, a source file renamed onto a test name counts as source
+    with rename detection on and off in the shared config while a test renamed onto a test stays
+    a test, a root lockfile counts nothing and a lockfile-named file elsewhere still counts.

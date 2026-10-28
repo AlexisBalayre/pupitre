@@ -115,7 +115,12 @@ import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
-import { runMergeGate as runGate, waitForLoad, withMergeLock } from './merge-gate.service.js';
+import {
+  countChangedLines,
+  runMergeGate as runGate,
+  waitForLoad,
+  withMergeLock,
+} from './merge-gate.service.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
@@ -2301,9 +2306,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // Only `.test.ts` is a spelling a vitest include is trusted to collect
   // (decision 39); the rest import as production code and nothing fails. A
-  // name holding a space, a quote, `<`, `>`, `=`, `?` or `#` is never one whole
-  // token, and one outside printable ASCII has forms no byte search finds, so
-  // no name search could find what imports it.
+  // name holding anything but a letter, a digit or `_ . $ + @ -` is never one
+  // whole token, and one outside ASCII has forms no byte search finds, so no
+  // name search could find what imports it.
   it('counts every test spelling but .test.ts, and a name no token spells, as source', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/a.spec.ts', 'x\n');
@@ -2318,13 +2323,15 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'src/k#l.test.ts', 'x\n');
     commitIn(worktree, 'src/m=n.test.ts', 'x\n');
     commitIn(worktree, 'src/é.test.ts', 'x\n');
+    commitIn(worktree, 'src/[id].test.ts', 'x\n');
+    commitIn(worktree, 'src/+page.test.ts', 'x\n');
 
     const outcome = await merge();
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
       status: 'pass',
-      detail: '11 source + 1 test + 0 docs changed lines',
+      detail: '12 source + 2 test + 0 docs changed lines',
     });
   });
 
@@ -2389,6 +2396,30 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       stage: 'diff-size',
       status: 'pass',
       detail: '8 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  // A script, a YAML list or a serverless handler spells the name between
+  // punctuation no specifier uses, before or after it, or with an export after it.
+  it.each([
+    ['package.json', '{ "scripts": { "start": "tsx src/big.test.ts;" } }\n'],
+    ['run.sh', 'node dist/big.test.js&&true\n'],
+    ['src/start.sh', '(node ./big.test.js)\n'],
+    ['entries.yml', 'entries: [src/big.test.ts]\n'],
+    ['serverless.yml', 'handler: src/big.test.handler\n'],
+    ['lint.sh', 'eslint a.ts,big.test.ts\n'],
+    ['list.yml', 'files: [big.test.ts]\n'],
+  ])('counts a test file %s names as source', async (file, content) => {
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', file] });
+    commitIn(worktree, 'src/big.test.ts', 'export const handler = 1;\n'.repeat(5));
+    commitIn(worktree, file, content);
+
+    const outcome = await merge();
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
     });
   });
 
@@ -5275,6 +5306,42 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(errors.mock.calls.flat().join('\n')).toMatch(
         /The test slots could not be used \(.+\); the gate runs its tests without one\./,
       );
+    });
+  });
+});
+
+// On macOS `core.precomposeUnicode`, which `git init` turns on and a session
+// can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC, so
+// the importer read returned its NFC sibling's text and the test it names went
+// unreached (decision 114). Elsewhere git ignores the key and this passes
+// either way.
+describe('countChangedLines', () => {
+  it('reads an NFD importer, not its NFC sibling', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    // A working tree on APFS cannot hold both spellings, so they go straight to the index.
+    for (const [path, content] of [
+      ['src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['src/café.ts', "export * from './big.test.js';\n"],
+      ['src/café.ts', 'export {};\n'],
+    ] as const) {
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: content,
+        encoding: 'utf8',
+      }).trim();
+      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `100644,${blob},${path}`);
+    }
+    sh(repo, 'git', 'commit', '-q', '-m', 'siblings');
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'true');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: [],
     });
   });
 });
