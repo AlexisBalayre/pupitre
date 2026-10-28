@@ -1046,7 +1046,7 @@ function buildConductorContext(
       '<criterion>...]` adds a task, recorded as authored by the conductor.\n' +
       `- \`pup launch <task>${workerModel}\` — one session per task. It is refused once ` +
       `${cap} sessions are working (running, blocked or in a fix round; \`awaiting-review\` ` +
-      'sessions do not count), and while the machine has under 1.5 GB of memory available. ' +
+      'sessions do not count once idle), and while the machine has under 1.5 GB of memory available. ' +
       'Scopes may overlap: pup names each worker the live sessions sharing its files, and ' +
       'they agree between themselves who changes what.\n' +
       '- `pup steer <session-id> "<message>"` — type into the session\'s input box instead of ' +
@@ -1072,7 +1072,7 @@ function buildConductorContext(
       'If `pup` is not on PATH, run `node "$PUP_BIN" <command>` instead.',
     '## Protocol\n' +
       `1. \`pup status\`, then \`pup plan\`. Keep ${cap} sessions live and working ` +
-      '(`awaiting-review` ones do not count): whenever fewer are, ' +
+      '(idle `awaiting-review` ones do not count): whenever fewer are, ' +
       'fill the free places with planned tasks whose scope-in globs share no source file ' +
       "with a running session's. The project's decisions document and the file that " +
       'registers CLI commands do not count as shared. Launch at most one session per backlog ' +

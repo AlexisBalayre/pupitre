@@ -1670,7 +1670,20 @@ describe('launch capacity (decision 96)', () => {
       });
       transitionSession(db, id, 'running');
       if (state !== 'running') transitionSession(db, id, state);
+      if (state === 'awaiting-review') writeHookLog(id, DONE_TURN);
     }
+  }
+
+  /** The turn that ran `pup session done`, ended: the hook log of a window idle in review. */
+  const DONE_TURN = [
+    { hook_event_name: 'PostToolUse', tool_name: 'Bash' },
+    { hook_event_name: 'Stop' },
+  ];
+
+  function writeHookLog(sessionId: string, events: object[], prefix = ''): void {
+    const file = projectPaths(repo).eventsFile(sessionId);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, prefix + events.map((event) => `${JSON.stringify(event)}\n`).join(''));
   }
 
   /** The cap `pup conductor start --max-sessions` stores. */
@@ -1706,7 +1719,8 @@ describe('launch capacity (decision 96)', () => {
 
       expect(() => launch(by)).toThrow(
         "4 sessions are working, at this project's cap of 4 (`pup conductor start " +
-          '--max-sessions` sets it; sessions awaiting review do not count); nothing was launched.',
+          '--max-sessions` sets it; sessions awaiting review do not count once idle); nothing ' +
+          'was launched.',
       );
       expect(launchSession).not.toHaveBeenCalled();
       expect(getSession(db, 't-1')).toBeUndefined();
@@ -1743,10 +1757,43 @@ describe('launch capacity (decision 96)', () => {
     expect(launch('operator')).toBe('t-1');
   });
 
-  it('does not count sessions awaiting review (decision 119)', () => {
+  it('does not count sessions idle in review (decision 119)', () => {
     setCap(2);
     seedSessions(2, 'awaiting-review');
     seedSessions(1);
+
+    expect(launch('conductor')).toBe('t-1');
+  });
+
+  it.each([
+    ['woken by a steer', [...DONE_TURN, { hook_event_name: 'PostToolUse', tool_name: 'Edit' }]],
+    ['still working past its done', [{ hook_event_name: 'PostToolUse', tool_name: 'Bash' }]],
+    ['on a permission ask', [...DONE_TURN, { hook_event_name: 'Notification' }]],
+  ])('counts a session awaiting review %s', (_, events) => {
+    setCap(2);
+    seedSessions(2, 'awaiting-review');
+    seedSessions(1);
+    writeHookLog('s-awaiting-review-0', events);
+
+    expect(() => launch('conductor')).toThrow("2 sessions are working, at this project's cap of 2");
+  });
+
+  it('counts a session awaiting review whose hook log is missing or not a regular file', () => {
+    setCap(2);
+    seedSessions(2, 'awaiting-review');
+    unlinkSync(projectPaths(repo).eventsFile('s-awaiting-review-0'));
+    unlinkSync(projectPaths(repo).eventsFile('s-awaiting-review-1'));
+    // A fifo would block a plain read, and the launch with it.
+    execFileSync('mkfifo', [projectPaths(repo).eventsFile('s-awaiting-review-1')]);
+
+    expect(() => launch('conductor')).toThrow(SessionCapReachedError);
+  });
+
+  it('frees the place of a session idle in review whose hook log is over 1 MiB', () => {
+    setCap(1);
+    seedSessions(1, 'awaiting-review');
+    const working = `${JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'x'.repeat(1_200_000) })}\n`;
+    writeHookLog('s-awaiting-review-0', DONE_TURN, working);
 
     expect(launch('conductor')).toBe('t-1');
   });

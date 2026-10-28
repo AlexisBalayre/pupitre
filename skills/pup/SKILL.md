@@ -35,7 +35,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Onboard a repo (operator only) | `pup init` in the repo; `pup init --gate-env A,B` for gate env vars; `pup init --session-env A,B` for the config variables (`CLAUDE_CONFIG_DIR`, effort, subagent model, telemetry) every session window gets from the launching shell |
 | Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"... [--tier critical|standard]` |
 | Backlog | `pup plan` (list, with each task's tier), `pup plan drop|edit <task>` |
-| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap (sessions awaiting review do not count) or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor |
+| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap (sessions awaiting review do not count once idle) or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor |
 | Who needs me | `pup status`, `pup ui` (live), `pup dashboard --open` (live page in the browser, read-only, operator-only), `pup watch` (conflict radar) |
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn <session>`, `pup unblock` |

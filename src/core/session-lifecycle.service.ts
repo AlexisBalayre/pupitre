@@ -1,4 +1,13 @@
-import { lstatSync, mkdirSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  rmSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
@@ -57,6 +66,7 @@ import {
   transitionSession,
   transitionSessionAlong,
 } from './session.repository.js';
+import { classifySessionActivity } from './session-activity.utils.js';
 import {
   isRefusedSteer,
   rollBackRefusedLaunch,
@@ -96,8 +106,9 @@ export class SessionCapReachedError extends Error {
   constructor(working: number, cap: number) {
     super(
       `${working} sessions are working, at this project's cap of ${cap} (\`pup conductor start ` +
-        '--max-sessions` sets it; sessions awaiting review do not count); nothing was launched. ' +
-        'Wait for one to finish, or, as the operator, pass --over-cap to `pup launch` or `pup new`.',
+        '--max-sessions` sets it; sessions awaiting review do not count once idle); nothing ' +
+        'was launched. Wait for one to finish, or, as the operator, pass --over-cap to ' +
+        '`pup launch` or `pup new`.',
     );
     this.name = 'SessionCapReachedError';
   }
@@ -123,8 +134,7 @@ function gigabytes(bytes: number): string {
  * Refuse a launch past the project's session cap or into a machine short of
  * memory (decision 96). Asked before anything is built, and before `pup new`
  * writes its task, so a refusal leaves nothing behind. The cap counts the
- * sessions whose windows take turns, not those awaiting review (decision 119):
- * an idle window costs memory, which the floor already measures, and no CPU.
+ * sessions whose windows take turns, not those idle in review (decision 119).
  * `--over-cap` lifts the cap for the operator alone and never the memory
  * floor: memory is the machine's limit, the cap only the operator's choice of one.
  */
@@ -135,13 +145,54 @@ function assertRoomToLaunch(
 ): void {
   const byOperator = req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';
   if (!(req.overCap && byOperator)) {
-    const working = holdingStates().filter((state) => state !== 'awaiting-review');
-    const count = listSessions(db, working).length;
+    const paths = projectPaths(repoPath);
+    const count = listSessions(db, holdingStates()).filter(
+      (row) => row.state !== 'awaiting-review' || takesTurns(paths, row.id),
+    ).length;
     const cap = maxSessions(repoPath);
     if (count >= cap) throw new SessionCapReachedError(count, cap);
   }
   const available = availableMemoryBytes();
   if (available < MIN_AVAILABLE_MEMORY_BYTES) throw new LowMemoryError(available);
+}
+
+/** Enough of a hook log's end to hold the turns since a session's `pup session done`. */
+const ACTIVITY_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Whether a session awaiting review still takes turns: a steer or a peer's
+ * message woke it, or it worked on past `pup session done` (decision 119).
+ * Read from the end of its hook log (decision 2), opened as `readPlainFile`
+ * opens a file a session may have replaced, so a fifo planted there cannot
+ * block the launch. Only a log whose end reads idle frees the place: one that
+ * is missing, unreadable or not a regular file counts, as does one that reads
+ * as anything else.
+ */
+function takesTurns(paths: ProjectPaths, sessionId: string): boolean {
+  if (!SESSION_ID_PATTERN.test(sessionId)) return true;
+  let fd: number;
+  try {
+    fd = openSync(
+      paths.eventsFile(sessionId),
+      constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+    );
+  } catch {
+    return true;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return true;
+    const start = Math.max(0, stat.size - ACTIVITY_TAIL_BYTES);
+    const buffer = Buffer.alloc(stat.size - start);
+    const text = buffer.toString('utf8', 0, readSync(fd, buffer, 0, buffer.length, start));
+    // A read that starts mid-file starts mid-line: drop that torn line.
+    const lines = start > 0 ? text.slice(text.indexOf('\n') + 1) : text;
+    return classifySessionActivity(lines).kind !== 'idle';
+  } catch {
+    return true;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** A short, filesystem- and tmux-safe id derived from the task id and a counter. */
