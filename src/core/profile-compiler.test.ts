@@ -1891,3 +1891,132 @@ describe('test runs queue for a slot (decision 96)', () => {
     expect(context).toContain('A session waiting there is not stalled.');
   });
 });
+
+describe('source reads go through Read (decision 112)', () => {
+  const GIT_ENV: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+  let root: string;
+  let worktree: string;
+
+  const git = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, env: GIT_ENV });
+
+  /**
+   * A real linked worktree whose tracked files are the ones the commands read,
+   * beside an ignored coverage report and an untracked scratch file.
+   */
+  beforeEach(() => {
+    root = tempDir('pup-read-guard-');
+    const repo = join(root, 'repo');
+    worktree = join(repo, '.worktrees', 's-1');
+    for (const [path, content] of Object.entries({
+      '.gitignore': '.worktrees/\ncoverage/\n',
+      'README.md': '# readme\n',
+      'docs/09-decisions.md': '# decisions\n',
+      'src/core/x.ts': 'export {};\n',
+    })) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), content);
+    }
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+    git(repo, 'worktree', 'add', '-q', '-b', 'pup/s-1', worktree, 'main');
+    mkdirSync(join(worktree, 'coverage'));
+    writeFileSync(join(worktree, 'coverage/lcov.info'), 'TN:\n');
+    writeFileSync(join(worktree, 'scratch.txt'), 'notes\n');
+    const outDir = join(root, 'compiled');
+    const compiled = ProfileCompiler.compileProfile(
+      makeInput({ repoPath: repo, worktreePath: worktree, outDir }),
+    );
+    ProfileCompiler.writeCompiledProfile(compiled, outDir);
+  });
+
+  function guard(command: string, cwd = worktree) {
+    return spawnSync('/bin/sh', [join(root, 'compiled/hooks/read-guard.sh')], {
+      input: JSON.stringify({ cwd, tool_input: { command } }),
+      encoding: 'utf8',
+      timeout: 4_000,
+      env: GIT_ENV,
+    });
+  }
+
+  it.each([
+    'sed -n 1,80p src/core/x.ts',
+    'cat README.md',
+    'head -50 docs/09-decisions.md',
+    'tail -n 20 "src/core/x.ts"',
+    'nl -ba src/core/x.ts',
+    'cat -n src/core/x.ts | head -80',
+    'git status && sed -n 1,40p src/core/x.ts',
+    'echo start; cat README.md',
+    'false || head docs/09-decisions.md',
+    'pnpm build\ncat README.md',
+    'LC_ALL=C cat README.md',
+    '/bin/cat README.md 2>/dev/null',
+  ])('refuses `%s`, naming Read', (command) => {
+    const { status, stderr } = guard(command);
+
+    expect(status).toBe(2);
+    expect(stderr).toContain('Read tool');
+    expect(stderr).toContain('offset and limit');
+  });
+
+  it.each([
+    'pnpm test 2>&1 | tail -40',
+    'git log | head',
+    'git diff main --stat; git log --oneline | head -5',
+    'cat coverage/lcov.info',
+    'head -5 scratch.txt',
+    'tail -f /dev/null',
+    'cat src/core/missing.ts',
+    'head -n 50 src/core',
+    'sed -i "" s/export/import/ src/core/x.ts',
+    'cat > scratch.txt',
+    'grep -n export src/core/x.ts',
+  ])('lets `%s` through', (command) => {
+    expect(guard(command).status).toBe(0);
+  });
+
+  it('resolves a relative name from the call’s working directory', () => {
+    expect(guard('cat x.ts', join(worktree, 'src/core')).status).toBe(2);
+    expect(guard('cat x.ts').status).toBe(0);
+  });
+
+  it('refuses a tracked file named by its absolute path', () => {
+    expect(guard(`cat ${join(worktree, 'README.md')}`).status).toBe(2);
+  });
+
+  it('lets a file outside the worktree through, even one named like a tracked file', () => {
+    mkdirSync(join(root, 'pkg'));
+    writeFileSync(join(root, 'pkg/README.md'), '# unpacked\n');
+
+    expect(guard(`cat ${join(root, 'pkg/README.md')}`).status).toBe(0);
+    expect(guard('head ../../README.md').status).toBe(0);
+    expect(guard('cat ../../README.md', join(worktree, 'src/core')).status).toBe(2);
+  });
+
+  it('runs on every worker Bash call, and the conductor never gets it', () => {
+    const bash = ProfileCompiler.compileProfile(makeInput()).settings.hooks.PreToolUse?.find(
+      (entry) => entry.matcher === 'Bash',
+    );
+
+    expect(bash?.hooks.map((hook) => hook.command.split('/').at(-1))).toContain('read-guard.sh');
+    expect(
+      Object.keys(
+        ProfileCompiler.compileConductorProfile({
+          base: { name: 'base' },
+          repoPath: '/repo',
+          projectId: 'proj-1',
+          conductorName: 'pup-conductor-proj-1',
+          userConfigHash: 'user-hash-a',
+          outDir: '/state/conductor/compiled',
+          checkoutPath: '/state/conductor/checkout',
+          maxSessions: 7,
+        }).files,
+      ),
+    ).not.toContain('hooks/read-guard.sh');
+  });
+});
