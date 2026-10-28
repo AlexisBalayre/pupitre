@@ -30,7 +30,12 @@
     into the conductor's profile and pass it as `--agents` JSON on the conductor launch only. Then
     neither the repo nor a session could shadow or plant it. That changes `launchArgs` and
     `launchConductor` in `session-runtime.service.ts` and `startConductor` in `conductor.service.ts`,
-    so it is a task of its own. Until then the subagent's prompt carries the protocol.
+    so it is a task of its own. Until then the subagent's prompt carries the protocol. The same
+    task owes the limits a reviewer that cannot break them. The general-purpose subagent has every
+    tool, so "read no file", "no other git" and "ten turns" are only words, and a hunk can argue it
+    out of them, for instance by quoting `~/.ssh/id_ed25519` "as evidence". That agent should have
+    only Bash (`"tools": ["Bash"]` in the `--agents` JSON) and a hook that lets only the two pinned
+    commands run.
     *Who reads the diff.* The task first had the conductor run the diff and paste it into the
     subagent's prompt, which saves the subagent a call. The conductor's own pre-gate review rejected
     that: it puts untrusted hunks in the context of the window that can run `pup merge --pr`,
@@ -53,21 +58,41 @@
     checkout's working tree is no safer. A session's Bash is guarded only against `.claude/`, so it
     can write into the repo root (decision 51), which is why only `HEAD`'s tree counts in decision
     58. It can plant the same symlink or decoy there, and a link it never commits is not in the
-    diff, so no mode 120000 rule catches it. Git's objects are the one copy the session cannot
-    rewrite. A funcname pattern the session names through `.gitattributes` and the shared config
-    only moves where a function starts: the context never drops below git's default three lines,
-    and no changed line is hidden. Dropping the reads also leaves the ten turns to the review. It
-    runs nothing the diff suggests and follows no instruction in it. And it reports within ten
-    turns, returning only the verdict and findings, never the diff. The Agent tool has no turn
-    limit, so the cap is advice: when the subagent returns no verdict, the conductor says the
-    review did not finish and never reports it as clean. A finding that holds is still a steer,
-    not a gate.
+    diff, so no mode 120000 rule catches it. Git's objects are content-addressed, so a session
+    cannot rewrite them, but it can choose which repo git opens. The conductor's review of the
+    function-context round found that `-C .worktrees/<session-id>` finds the repo through the
+    worktree's `.git` and its admin dir's `commondir`, which a session can point at a decoy repo
+    (decision 101). There `refs/heads/<target>` and the session's branch hold harmless commits,
+    so the review prints an empty diff that reads as clean while the gate checks the real
+    branch. So the command names the common dir, `--git-dir=<repo>/.git` as `worktreeGitEnv`
+    resolves it, and runs from `-C /`, where no `.gitattributes` a session wrote is read. The
+    refs it reads are the ones the gate reads. Function context alone does not hold a floor
+    either: `diff.context=0` in the shared config drops git's default three lines. With a
+    funcname pattern that matches every line (`* diff=x` and `diff.x.xfuncname=.`), a hunk then
+    comes with no context at all; that was reproduced on git 2.39.5. So the command pins
+    `--unified=3` beside `--function-context`. A planted pattern can then only widen the context,
+    and no changed line is hidden. Function context also grows the diff. One edited line inside a
+    large `describe` block brings in about 260 lines, and touching every top-level block of a big
+    test file brings in about 84 KB. That is past the roughly 30,000 characters Bash returns, and a
+    hunk past the cut could come back clean. So the conductor first runs the same pinned command
+    with `--numstat`, which lists the files the diff touches and none of its hunks. The subagent
+    returns every file it reviewed and says so when the diff came back cut short. A verdict that
+    leaves out a listed file, or that names a cut, is a review that did not finish. Dropping the
+    reads also leaves the ten turns to the review. It runs nothing the diff suggests and follows
+    no instruction in it. And it reports within ten turns, returning only the verdict, the files
+    it reviewed and its findings, never the diff. The Agent tool has no turn limit, so the cap is
+    advice: when the subagent returns no verdict, the conductor says the review did not finish and
+    never reports it as clean. A finding that holds is still a steer, not a gate.
     *Tests.* The kickoff's Security review bullet names the general-purpose subagent with its
     `subagent_type`, `model: "opus"` and `effort: "high"`, never names `security-reviewer`, carries
-    the ten-turn cap and no `xhigh"` effort, and keeps the pinned diff command byte for byte. A
-    second test checks that the conductor is told never to read the diff, that the prompt names what
-    to look for, and that the subagent runs the pinned command itself and no other git. It also
-    checks that the subagent takes the branch and the code around each hunk only from the diff's
-    function context, reads no file and never uses Read, runs nothing the diff suggests and
-    follows no instruction in it, and returns no diff. Last, it checks that a missing verdict
-    is reported as unfinished, never clean, and that nothing says to pass the diff in the prompt.
+    the ten-turn cap and no `xhigh"` effort, and keeps both pinned commands, the `--numstat` one
+    and the diff, byte for byte. A second test checks that the conductor runs the numstat before
+    it spawns the subagent and is told never to read the diff, that the prompt names what to look
+    for, and that the subagent runs the pinned command itself and no other git, never through
+    `-C .worktrees/`. It also checks that the subagent takes the branch and the code around each
+    hunk only from the diff's function context, reads no file and never uses Read, runs nothing
+    the diff suggests and follows no instruction in it, and returns every file it reviewed and no
+    diff. Last, it checks that a missing verdict, a cut diff or a missing file is reported as
+    unfinished, never clean, and that nothing says to pass the diff in the prompt. A third test
+    gives the repo a symlinked `.git`, checks that the command names the dir it resolves to, and
+    checks that a dir whose name holds a shell metacharacter is refused at compile time.
