@@ -364,7 +364,7 @@ describe('compileProfile with a code graph (decision 51)', () => {
     expect(config.mcpServers.codegraph.args).toContain('/repo/.worktrees/s-1');
   });
 
-  // The server's git runs outside the sandbox for the whole session (decision 117).
+  // The server's git runs outside the sandbox for the whole session (decision 124).
   it("pins the served graph's git to the worktree's admin and common dirs", () => {
     const compiled = ProfileCompiler.compileProfile(withGraph);
 
@@ -679,7 +679,7 @@ describe('generated bash re-check (decision 63)', () => {
   it('refuses when git fails or is missing, and never blocks the call before it', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin);
-    // date, sleep and env bound the hook's reads in time (decision 117).
+    // date, sleep and env bound the hook's reads in time (decision 124).
     for (const tool of [
       ...['jq', 'cat', 'tr', 'grep', 'head', 'mktemp', 'rm', 'mkdir', 'mv', 'wc'],
       ...['date', 'sleep', 'env'],
@@ -1232,7 +1232,7 @@ describe('generated hooks over a merge of the target', () => {
     /**
      * The resolving Edit's scope hook, timed. The test's own timeout sits well past
      * the hook's, so a hook that blocks reads as a slow or null status rather than
-     * as the test's kill passing for a refusal (decision 117).
+     * as the test's kill passing for a refusal (decision 124).
      */
     function timedResolvingEdit(env: NodeJS.ProcessEnv = {}) {
       const started = Date.now();
@@ -1834,7 +1834,7 @@ describe('compileConductorProfile', () => {
     });
 
     // Its `git status` runs outside the sandbox for the conductor's whole life,
-    // and a session can rewrite the checkout's `commondir` and `index` (decision 117).
+    // and a session can rewrite the checkout's `commondir` and `index` (decision 124).
     it("pins the served graph's git to the checkout's verified admin dir", () => {
       const root = tempDir('pup-conductor-graph-');
       const repo = join(root, 'repo');

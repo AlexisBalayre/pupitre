@@ -1,9 +1,9 @@
-# 0117. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)
+# 0124. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)
 
 - Status: accepted
 - Amends: [0063](0063-every-bash-call-is-re-checked-against-the.md), [0099](0099-workers-share-files-and-collaborate-a-launch-overlapping.md), [0101](0101-git-in-a-session-worktree-runs-pinned-to.md)
 
-117. **The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29).**
+124. **The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29).**
     Amends decisions 63, 99 and 101. The scope hook, the Bash re-check and the read guard run
     outside the sandbox under Claude Code's 5-second hook timeout, which fails open. Some of
     their reads open files the session can write, and opening a fifo blocks until a writer

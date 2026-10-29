@@ -48,7 +48,7 @@ const SHELL_UNSAFE_PATH = /['"\n`$\\]/;
  * How long a worktree hook's reads may run, from its start, in whole seconds
  * of `date +%s`: a read still running is killed by then at the latest, which
  * leaves the hook a second to refuse before the hook timeout, which fails
- * open (decision 117).
+ * open (decision 124).
  */
 const HOOK_READ_DEADLINE_SECONDS = HOOK_TIMEOUT_SECONDS - 1;
 
@@ -379,7 +379,7 @@ function buildContextMarkdown(
  * branch's own diff, is what holds (decisions 6, 63).
  *
  * `bounded` runs one command, and kills it once the hook has run
- * `HOOK_READ_DEADLINE_SECONDS`, which fails it (decision 117). Every `safe_git`
+ * `HOOK_READ_DEADLINE_SECONDS`, which fails it (decision 124). Every `safe_git`
  * and every read of a file the session can write goes through it: a fifo
  * swapped in after a `-f` test, or named by an `include.path` in the shared
  * config, blocks the open forever, and the hook timeout it would otherwise run
@@ -843,7 +843,7 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
 
 /**
  * The served code graph's `mcp.json`, its git pinned to the dirs pup trusts for
- * the checkout it serves (decision 117). The server's `git status` runs outside
+ * the checkout it serves (decision 124). The server's `git status` runs outside
  * the sandbox for the window's whole life, so unpinned it follows a gitfile or
  * `commondir` the session rewrote after the launch into a repo whose clean
  * filter it chose. These are the dirs the launch's check verified before it

@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Amends: [0041](0041-a-launch-is-refused-when-its-scope-collides.md)
-- Amended by: [0104](0104-peer-joined-introductions-and-main-landed-notices-go.md), [0117](0117-the-worktree-hooks-reads-run-under-a-deadline.md)
+- Amended by: [0104](0104-peer-joined-introductions-and-main-landed-notices-go.md), [0124](0124-the-worktree-hooks-reads-run-under-a-deadline.md)
 
 99. **Workers share files and collaborate: a launch overlapping a live session is never refused,
     with no cap, and introduces the two (2026-10-18, supersedes decision 41's refusal).**

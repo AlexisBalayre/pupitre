@@ -1,7 +1,7 @@
 # 0101. Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18)
 
 - Status: accepted
-- Amended by: [0117](0117-the-worktree-hooks-reads-run-under-a-deadline.md)
+- Amended by: [0124](0124-the-worktree-hooks-reads-run-under-a-deadline.md)
 
 101. **Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18).**
     Extends decision 50. A linked worktree finds its repo through two files: its `.git` gitfile
