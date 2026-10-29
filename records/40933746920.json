@@ -1,0 +1,194 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-29T18:53:30.854Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40933746920",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40933746920",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6fb7c1b18fc11ada09f59931ffc6a346a7489c92",
+  "source": "pr",
+  "pr_number": 208,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "47-53",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The watcher sleeps whole seconds from a floored clock, so a blocked read is killed at `DEADLINE + frac(now at call)`. That lands between 3 and 5 seconds after the deadline is recorded, not between 3 and 4. A read that blocks late in a wall-clock second can therefore outlast the 5s hook timeout, and the hook fails open.",
+      "body": "**The kill can land at the hook timeout, not a second before it**\n\n`DEADLINE` is `floor(S) + 4`, where `S` is when the hook records it. A `bounded` call at wall time `T` computes `BOUND_LEFT = DEADLINE - floor(T)` and then runs `sleep \"$BOUND_LEFT\"` starting at `T`. So the kill fires at `T + DEADLINE - floor(T) = DEADLINE + frac(T)`. Measured from `S`, that is `4 - frac(S) + frac(T)`, which ranges over (3, 5). The JSDoc (\"killed by then at the latest, which leaves the hook a second to refuse\") and decision 124 (\"Whole seconds put the kill between 3 and 4 seconds after the start\") both say (3, 4].\n\n```sh\nDEADLINE=$(date +%s)\n...\n  BOUND_LEFT=$(( DEADLINE - BOUND_NOW ))\n...\n      sleep \"$BOUND_LEFT\" &\n```\n\nExample: the hook records the deadline at 10.02 (`DEADLINE=14`). A blocking read starts at 13.97, so `BOUND_LEFT=1`, and it is killed at 14.97, which is 4.95 s after capture. Add the time the hook spent before capturing the deadline (`cat`, two `jq`s, `mkdir`/`mktemp` in the re-check; `jq`/`sed`/`grep` in the scope hook) and the refusal tail (reap, kill and wait for the watcher, `printf`, exit, the `rm -rf` trap). That passes Claude Code's 5 s timeout (`HOOK_TIMEOUT_SECONDS = 5` in `profile.constants.ts`), which fails open.\n\nNothing else bounds a running job: `in_time` only gates a call's start, and ADR 0124 rejects a hook-wide watchdog. A session can reach the window without racing: in the re-check loop it chooses how many dirty files, and how large (near the 64 MiB hashing cap, as the ADR itself describes), sit ahead of the read, so it controls when the last `hash-object`/`wc` starts, and it can retry on every Bash call. The new `< HOOK_TIMEOUT_SECONDS * 1000` test assertions pass because their block starts early in the hook, where `frac(T) ≈ frac(S)`.\n\nFix: take two seconds off the timeout, which puts the kill in (S+2, S+4) and restores the second to refuse. The JSDoc above the constant and decision 124 (\"the hook timeout less one\", \"between 3 and 4 seconds\") need the same correction.\n\n- https://github.com/AlexisBalayre/pupitre/blob/6fb7c1b18fc11ada09f59931ffc6a346a7489c92/src/core/profile-compiler.service.ts#L47-L53\n- https://github.com/AlexisBalayre/pupitre/blob/6fb7c1b18fc11ada09f59931ffc6a346a7489c92/src/core/profile-compiler.service.ts#L394-L433\n- https://github.com/AlexisBalayre/pupitre/blob/6fb7c1b18fc11ada09f59931ffc6a346a7489c92/docs/adr/0124-the-worktree-hooks-reads-run-under-a-deadline.md#L29-L31",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "107-112",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `SERVED_ENV` doc says the served server gets the git config \"not its pins, which this declaration has no repo path to build (decision 101)\". After this PR the profile compiler's `servedGraphConfig` adds the pins to the config `codegraphMcpConfig` returns, so a reader of `mcp.json` would wrongly think the server is unpinned. ADR 0124 lines 73-74 knowingly leaves this comment stale. Reword it to point at `servedGraphConfig`, for example \"the compiler adds the pins (decision 124)\". It stays a nit because the sentence is literally true of the `SERVED_ENV` declaration itself.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0101-git-in-a-session-worktree-runs-pinned-to.md",
+      "line": "246-247",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 101's Tests paragraph still says \"The served config carries the git config and no pins.\" This PR drops the matching ceiling paragraph and pins the server, so the sentence now contradicts decision 124 and the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0101-git-in-a-session-worktree-runs-pinned-to.md",
+      "line": "195-200",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR deletes landed decision-101 text (the 'served code graph server gets the git config but not the pins ... follow-up' passage) instead of appending an amendment section. docs/adr/README.md:19-21 says 'Once a decision has landed, a later change appends an amendment section to it (dated, with the PR) or adds a new decision that links back through `Amends:`. It does not rewrite the landed text.' The new 0124 plus the 'Amended by' link covers the second option, but the old text was still rewritten. The joined line 'the prune is refused before the add. With `all`, the hooks ...' is now also left as one over-long line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "47-53",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`HOOK_READ_DEADLINE_SECONDS` is declared in the service file. general.md:104-106 says timeouts and thresholds go 'in the area's `*.constants.ts` as a named export with a JSDoc line'. Its sibling `HOOK_TIMEOUT_SECONDS` and the other hook limits (`RECHECK_HASH_MAX_BYTES`) are in `src/core/profile.constants.ts`. It belongs there. `SHELL_UNSAFE_PATH` is a precedent for a local constant in the service file, but that one is a regex, not a timeout.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1337-1347",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test asserts only `status 2` and the elapsed time, never the deadline line. Any fast refusal on another path would also satisfy it, unlike its MERGE_HEAD sibling and the re-check include test, which assert `'outran the hook deadline'`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "265-275",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`graphForRespawn` reuses the `mcp.json` already compiled on disk and never recompiles, so the profile hash doesn't move. A session launched before the upgrade and respawned after it still serves its graph unpinned. This is a one-time upgrade window; no current code path produces it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "888-893",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Duplicated Code and a loose shape. `servedGraphConfig` calls `codegraphMcpConfig`, which has just stringified a config object. It then runs JSON.parse on the result, casts it to a hand-written `{mcpServers:{codegraph:{env}}}` type, mutates `env` with Object.assign, and stringifies again. The cast restates a contract that `codegraph.client.ts:327` already owns, and it will drift silently if the config shape changes. `codegraphMcpConfig` has no other production caller; the only other caller is its own test in `codegraph-client.test.ts`. Fix: give `codegraphMcpConfig` an optional `extraEnv` parameter, spread as `env: { ...SERVED_ENV, ...extraEnv }`, so no parse or cast is needed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "810-820",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Duplicated Code. The generated shell repeats the `if VAR=$(bounded ...); then ...; elif [ $? -eq 124 ]; then return 3; else <fallback>; fi` idiom twice in `out_of_scope`, once for `wc` and once for `hash-object`. Each copy hides its own fallback (`SIZE=` and `SUM=unreadable`). Mapping a 124 status to return 3 is the deadline contract. A third bounded read would need a third copy of it. Consider having `in_time` or `bounded` record the timeout, for example by setting a flag that the loop checks once. Alternatively, keep the two copies and note why.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "47-53, 380-388",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Two JSDoc blocks carry the same facts: the `HOOK_READ_DEADLINE_SECONDS` JSDoc and the `worktreeGitShell` JSDoc paragraph on `bounded` both say \"the hook timeout fails open\". The `worktreeGitShell` paragraph also re-narrates ADR 0124's mechanics, and the fifo and `include.path` rationale appears in both the JSDoc and the ADR. Keep the WHY in one place and let the other cite decision 124.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "878-887",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `servedGraphConfig` JSDoc spends two sentences on why `GIT_CONFIG_NOSYSTEM` is set (\"which pup never checks and a Homebrew git keeps in a prefix the operator owns\"). ADR 0124 lines 69-71 already says this. The WHY is real, but the mechanics-level narration (\"the launch's check verified before it handed the file over\") belongs only in the ADR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned: the change touches no CORS/HTTP/docker/CI/settings surface beyond the generated hook and mcp.json content, which the two security instances covered. review-spec was not spawned: no spec source (no closing keywords or linked issues). The important finding's suggestion was left null because the full fix also needs the JSDoc and ADR 0124 wording updated, so the one-line constant change alone does not resolve it."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported it did not read naming.md, testing.md or the test diff, so src/core/profile-compiler.test.ts was not reviewed for conventions."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.182475500000002,
+  "duration_ms": 459365,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 15385,
+    "cache_read": 211626,
+    "cache_creation": 58009,
+    "total": 285030
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 126,
+      "output": 119081,
+      "cache_read": 2608937,
+      "cache_creation": 358882,
+      "cost_usd": 4.872348400000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 9008,
+      "cache_read": 311041,
+      "cache_creation": 75550,
+      "cost_usd": 0.3101271
+    }
+  ],
+  "permission_denials": []
+}
