@@ -1845,6 +1845,28 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(existsSync(fired)).toBe(false);
   });
 
+  // Git's sequencer takes the first `pull.twohead` it reads, the shared
+  // config's before the `-c` pin, and runs any strategy but ort as
+  // `git merge-<name>`, which a slash makes a path from the worktree.
+  it('rebases with ort whatever pull.twohead the session wrote, running none of its own', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const dir = tempDir('pup-twohead-');
+    const fired = join(dir, 'fired');
+    writeFileSync(join(dir, 'planted.sh'), `#!/bin/sh\ntouch '${fired}'\nexit 2\n`, {
+      mode: 0o755,
+    });
+    // Empty, so the worktree stays clean; the climb lands at the root.
+    mkdirSync(join(worktree, 'git-merge-'));
+    sh(repo, 'git', 'config', 'pull.twohead', `/..${'/..'.repeat(32)}${dir}/planted.sh`);
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('merged');
+    expect(existsSync(fired)).toBe(false);
+  });
+
   // The auto-rebase checks out every file and runs a merge driver on every
   // conflict, with the operator's environment and ahead of the sandbox that
   // confines the stages. The driver name is chosen by whoever wrote it, so
@@ -4975,6 +4997,116 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
 
         await expect(merge()).rejects.toThrow(ArmedGitDriverError);
+        expect(existsSync(marker)).toBe(false);
+        expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+      });
+
+      /** Where the worktree's stopped rebase keeps the state `--continue` reads back. */
+      const rebaseStateOf = (worktree: string): string =>
+        join(sh(worktree, 'git', 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge');
+      const continues = (): number =>
+        vi
+          .mocked(execFileSync)
+          .mock.calls.filter(([, callArgs]) =>
+            ((callArgs ?? []) as string[]).includes('--continue'),
+          ).length;
+      const execStep = (state: string, marker: string): void => {
+        writeFileSync(join(state, 'git-rebase-todo'), `exec touch '${marker}'\n`, { flag: 'a' });
+      };
+
+      // The second stop's state holds a file the first one's does not.
+      it('resolves each stop of a branch that records two decisions', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        addDecision(worktree, 4);
+        addDecision(repo, 3);
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('merged');
+        expect(continues()).toBe(2);
+        const index = freshIndexAt('main');
+        for (const n of [1, 2, 3, 4]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
+      });
+
+      // `--continue` reads the state back from the admin dir, which the session
+      // can write, and runs an `exec` step it finds in the todo.
+      it.each([
+        ['an exec step in its todo', execStep, 'has a todo step other than a pick'],
+        [
+          'an option file a plain rebase does not write',
+          (state: string) => writeFileSync(join(state, 'gpg_sign_opt'), '-Spwn\n'),
+          'holds gpg_sign_opt, which a plain rebase does not write',
+        ],
+        [
+          'another strategy',
+          (state: string) => writeFileSync(join(state, 'strategy'), 'resolve\n'),
+          'names a strategy other than ort',
+        ],
+        [
+          'a link',
+          (state: string) => {
+            rmSync(join(state, 'message'));
+            symlinkSync('/etc/passwd', join(state, 'message'));
+          },
+          'holds message as a link, a special file or one past the size cap',
+        ],
+      ])('refuses a stop whose state holds %s, running none of it', async (_, plant, reason) => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+        const state = rebaseStateOf(worktree);
+        const marker = join(tempDir('pup-rebase-state-'), 'ran');
+        // Right after the stop, before the gate reads anything of it.
+        beforeGit(
+          (args) => args.includes('ls-files') && args.includes('-u'),
+          () => plant(state, marker),
+        );
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toContain(
+          `docs/adr/README.md was not regenerated: the stopped rebase ${reason}.`,
+        );
+        expect(continues()).toBe(0);
+        expect(existsSync(marker)).toBe(false);
+      });
+
+      // The session is alive while the script runs, which is the window here.
+      it.each([
+        ['an exec step', execStep],
+        [
+          'another branch to finish on',
+          (state: string) => writeFileSync(join(state, 'head-name'), 'refs/heads/main\n'),
+        ],
+      ])('throws a stop given %s while the script ran, left stopped', async (_, plant) => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+        const state = rebaseStateOf(worktree);
+        const marker = join(tempDir('pup-rebase-state-'), 'ran');
+        // The README's hash, the gate's first git call after the script.
+        beforeGit(
+          (args) => args.includes('hash-object'),
+          () => plant(state, marker),
+        );
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        await expect(merge()).rejects.toThrow(
+          'changed while the gate regenerated docs/adr/README.md',
+        );
+        expect(continues()).toBe(0);
+        expect(ran('--abort')).toBe(false);
         expect(existsSync(marker)).toBe(false);
         expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);

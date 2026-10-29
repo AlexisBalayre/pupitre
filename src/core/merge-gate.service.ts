@@ -1638,6 +1638,89 @@ const ADR_INDEX_MARKER = new RegExp(`\n(${ADR_INDEX_BEGIN}|${ADR_INDEX_END})(?=\
 class AdrIndexRefused extends Error {}
 
 /**
+ * What git 2.39.5 leaves in `rebase-merge/` when the gate's rebase stops on a
+ * conflicted pick: the picks to come, their bookkeeping, and the strategy
+ * `REBASE_STRATEGY` holds. Any other file is an option `--continue` would read
+ * back (a signer, an autostash, refs to update), which the gate's rebase never
+ * asked for.
+ */
+const REBASE_STATE_FILES = new Set([
+  'author-script',
+  'done',
+  'drop_redundant_commits',
+  'end',
+  'git-rebase-todo',
+  'git-rebase-todo.backup',
+  'head-name',
+  'interactive',
+  'message',
+  'msgnum',
+  'no-reschedule-failed-exec',
+  'onto',
+  'orig-head',
+  'patch',
+  'reschedule-failed-exec',
+  'rewritten-list',
+  'stopped-sha',
+  'strategy',
+]);
+/**
+ * The strategy the gate's rebase names in argv, and so the `strategy` file's
+ * one text. Named, not left to `pull.twohead`: git's sequencer takes the first
+ * value it reads, a session's local one before `GIT_SAFE_CONFIG`'s pin, and
+ * runs any name but `ort` as `git merge-<name>`, a path into the worktree
+ * included (decision 120, amending 79).
+ */
+const REBASE_STRATEGY = 'ort';
+/** A todo step as the gate's rebase writes one, with `rebase.instructionFormat` pinned. */
+const REBASE_PICK = /^pick [0-9a-f]+(?: |$)/;
+
+/**
+ * The state a rebase stopped in the worktree whose admin dir is `gitDir`
+ * holds, every file of `rebase-merge/` by name with its text, which is what
+ * `--continue` reads back and acts on. The session can write that directory
+ * (decision 101), and `--continue` runs an `exec` step it finds in the todo
+ * there, so the state is refused unless it is what the gate's own rebase
+ * writes: regular files only, each one `REBASE_STATE_FILES` lists, a todo of
+ * picks and comments, and no `rebase-apply/` beside it, which `--continue`
+ * would take instead (decision 120).
+ */
+function stoppedRebase(gitDir: string): string {
+  const refuse = (why: string): never => {
+    throw new AdrIndexRefused(`the stopped rebase ${why}`);
+  };
+  if (lstatSync(join(gitDir, 'rebase-apply'), { throwIfNoEntry: false })) {
+    refuse('has a rebase-apply directory beside it');
+  }
+  const dir = join(gitDir, 'rebase-merge');
+  if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+    refuse('has no rebase-merge directory');
+  }
+  const state = readdirSync(dir)
+    .sort()
+    .map((name) => {
+      if (!REBASE_STATE_FILES.has(name)) {
+        refuse(`holds ${sanitizeReason(name)}, which a plain rebase does not write`);
+      }
+      let text: string;
+      try {
+        text = readPlainFile(join(dir, name), { followLinks: false });
+      } catch {
+        return refuse(`holds ${name} as a link, a special file or one past the size cap`);
+      }
+      if (name === 'strategy' && text !== `${REBASE_STRATEGY}\n`) {
+        refuse(`names a strategy other than ${REBASE_STRATEGY}`);
+      }
+      const steps = name === 'git-rebase-todo' ? text.split('\n') : [];
+      if (steps.some((step) => step.trim() && !step.startsWith('#') && !REBASE_PICK.test(step))) {
+        refuse('has a todo step other than a pick');
+      }
+      return [name, text];
+    });
+  return JSON.stringify(state);
+}
+
+/**
  * The ADR index blob `oid` as the text before its begin marker and after its
  * end marker, each with the newline that joins it to its marker. Refused when
  * the markers are not each one line, once, begin first, since then there is
@@ -1696,7 +1779,8 @@ function hashAdrIndex(repoPath: string, file: string): string {
 /**
  * Resolve a conflict confined to the ADR index (decision 120). `conflicts` is
  * the conflict list `ADR_INDEX_CONFLICT` reads, and `treeOf` gives the merged
- * tree with our side's README in place. The text outside the markers merges
+ * tree with our side's README in place, or refuses with `AdrIndexRefused`
+ * what the merge's own state rules out. The text outside the markers merges
  * whole, region by region: a side that left one as the base takes the other's,
  * and two sides that both changed it are refused, as the plain merge refuses
  * them. The tree is committed (unreferenced) and cut into the gate's scratch
@@ -1719,8 +1803,8 @@ async function regenerateAdrIndex(
   const sides = ADR_INDEX_CONFLICT.exec(conflicts.join('\0'));
   if (!sides) return '';
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
-  const tree = treeOf(sides[2] as string);
   try {
+    const tree = treeOf(sides[2] as string);
     const cut = sides.slice(1).map((oid) => aroundAdrIndex(req.repoPath, oid));
     const [before, after] = [0, 1].map((at) => {
       const [base, ours, theirs] = cut.map((side) => side[at] as string);
@@ -1937,12 +2021,16 @@ async function mergeTargetInto(
  * takes our side for the tree the scratch checkout is cut from, then the
  * regenerated README, which `checkout-index` writes to the file, and the
  * rebase goes on with `:` as its editor, which git reads as none, in a call of
- * its own. Any other way out aborts the rebase, except past an armed driver:
+ * its own. That call acts on the todo and options the stop left in the admin
+ * dir, which the live session can write while the script runs, so the state
+ * `stoppedRebase` reads at the stop must still be there, unchanged, right
+ * before it. Any other way out aborts the rebase, except past an armed driver:
  * the abort checks out every file the rebase changed, which runs it, so the
- * rebase is left stopped for the operator. A driver armed in flight is
- * thrown as it was; one the re-check finds is thrown after a refused stop,
- * and never over another error in flight. Returns the failure for the worker,
- * or undefined once the branch is rebased.
+ * rebase is left stopped for the operator, as it is past a changed state,
+ * which the abort reads too. A driver armed in flight is thrown as it was;
+ * one the re-check finds is thrown after a refused stop, and never over
+ * another error in flight. Returns the failure for the worker, or undefined
+ * once the branch is rebased.
  */
 async function rebaseOntoTarget(
   req: MergeRequest,
@@ -1951,7 +2039,7 @@ async function rebaseOntoTarget(
   target: string,
   targetSha: string,
   checkoutDir: string,
-  step = ['rebase', targetSha],
+  step = ['rebase', `--strategy=${REBASE_STRATEGY}`, targetSha],
 ): Promise<string | undefined> {
   const pinned = { env: { ...worktreeEnv } };
   const setIndex = (blob: string): void => {
@@ -1973,6 +2061,7 @@ async function rebaseOntoTarget(
   } catch (error) {
     failure = error;
   }
+  let stopped: string | undefined;
   try {
     const unmerged = runGit(worktree, ['ls-files', '-u', '-z'], pinned).split('\0');
     const resolved = await regenerateAdrIndex(
@@ -1980,6 +2069,7 @@ async function rebaseOntoTarget(
       checkoutDir,
       unmerged.filter(Boolean),
       (ours) => {
+        stopped = stoppedRebase(worktreeEnv.GIT_DIR);
         setIndex(ours);
         return runGit(worktree, ['write-tree'], pinned).trim();
       },
@@ -2002,6 +2092,24 @@ async function rebaseOntoTarget(
   } catch (error) {
     if (!(error instanceof ArmedGitDriverError)) abort();
     throw error;
+  }
+  // Last before `--continue` reads it back: the script ran since the stop, and
+  // the session alongside it (decision 80). The window left is a check's, as
+  // decision 50 accepts, not the script's run.
+  const now = (() => {
+    try {
+      return stoppedRebase(worktreeEnv.GIT_DIR);
+    } catch (error) {
+      if (error instanceof AdrIndexRefused) return undefined;
+      throw error;
+    }
+  })();
+  if (now === undefined || now !== stopped) {
+    throw new Error(
+      `The rebase stopped in ${worktree} changed while the gate regenerated ${ADR_INDEX}; ` +
+        '`git rebase --continue` did not run over it, and it is left stopped. Nothing was ' +
+        'merged. Treat a session that wrote it as compromised.',
+    );
   }
   return rebaseOntoTarget(req, worktree, worktreeEnv, target, targetSha, checkoutDir, [
     'rebase',
