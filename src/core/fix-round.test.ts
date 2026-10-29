@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -11,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -42,6 +43,7 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
@@ -50,6 +52,7 @@ import { WorktreeRepointedError } from './git-diff.client.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
+import { TOOLCHAIN_CACHE_DIRNAME } from './sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -77,6 +80,29 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
+
+// The file's temp dirs, its children's included, go to a TMPDIR of its own,
+// which must hold no pup-* entry once every test has removed its own
+// (decision 100). The gate's toolchain cache stays, by design, but empty.
+let sharedTmp: string | undefined;
+let fileTmp: string;
+beforeAll(() => {
+  sharedTmp = process.env.TMPDIR;
+  fileTmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-round-tmp-')));
+  process.env.TMPDIR = fileTmp;
+});
+afterAll(() => {
+  const left = readdirSync(fileTmp).flatMap((name) => {
+    if (name === TOOLCHAIN_CACHE_DIRNAME) {
+      return readdirSync(join(fileTmp, name)).map((cache) => join(name, cache));
+    }
+    return name.startsWith('pup-') ? [name] : [];
+  });
+  if (sharedTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = sharedTmp;
+  rmSync(fileTmp, { recursive: true, force: true, maxRetries: 3 });
+  expect(left).toEqual([]);
+});
 
 function sh(cwd: string, ...args: string[]): string {
   return execFileSync(args[0] as string, args.slice(1), {
@@ -148,12 +174,12 @@ describe('startFixRound', { timeout: 30_000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-repo-')));
+    repo = tempDir('pup-fix-repo-');
     sh(repo, 'git', 'init', '-q', '-b', 'main');
     commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
     // GitHub-shaped origin, rewritten by the operator's global config into a
     // local bare repo so every push and fetch stays offline.
-    const host = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-origin-')));
+    const host = tempDir('pup-fix-origin-');
     origin = join(host, 'owner', 'repo.git');
     mkdirSync(origin, { recursive: true });
     sh(origin, 'git', 'init', '-q', '--bare', '-b', 'main');
@@ -186,14 +212,14 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     transitionSession(db, SESSION_ID, 'awaiting-review');
 
     // projectPaths defaults to ~/.pupitre; tests must never write there.
-    stateBase = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-state-')));
+    stateBase = tempDir('pup-fix-state-');
     const compiled = projectPaths(repo, stateBase).compiledDir(SESSION_ID);
     mkdirSync(compiled, { recursive: true });
     writeFileSync(join(compiled, 'context.md'), '# task context\n');
     writeFileSync(join(compiled, 'settings.json'), '{}');
 
-    claudeUserDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-claude-')));
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-gh-')));
+    claudeUserDir = tempDir('pup-fix-claude-');
+    ghDir = tempDir('pup-fix-gh-');
     writeFileSync(
       join(ghDir, 'gh'),
       [
@@ -790,7 +816,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
   /** A git on PATH that runs `shimCase` (given its one-shot flag file) before the real one. */
   function shimGit(shimCase: (once: string) => string): void {
     const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-    const shim = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-git-')));
+    const shim = tempDir('pup-fix-git-');
     const once = join(shim, 'once');
     writeFileSync(once, '');
     writeFileSync(
@@ -1885,7 +1911,7 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-lookup-')));
+    repo = tempDir('pup-fix-lookup-');
     const pid = projectId(repo);
     ensureProject(db, pid, repo);
     saveProjectOriginUrl(db, pid, ORIGIN_URL);
@@ -1910,7 +1936,7 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
     // `pushTarget` reads origin from the repo, as the gate does.
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: GIT_ENV });
     execFileSync('git', ['remote', 'add', 'origin', ORIGIN_URL], { cwd: repo, env: GIT_ENV });
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-lookup-gh-')));
+    ghDir = tempDir('pup-fix-lookup-gh-');
     originalPath = process.env.PATH;
     process.env.PATH = `${ghDir}:${originalPath}`;
   });
