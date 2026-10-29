@@ -1,6 +1,7 @@
 # 0101. Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18)
 
 - Status: accepted
+- Amended by: [0117](0117-the-worktree-hooks-reads-run-under-a-deadline.md)
 
 101. **Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18).**
     Extends decision 50. A linked worktree finds its repo through two files: its `.git` gitfile
@@ -194,17 +195,7 @@
     pick another name, because a stale admin dir held it, is refused at launch, never followed;
     a conductor checkout whose admin dir is not `checkout` costs the conductor its graph until
     the checkout is deleted and re-cut, and a re-cut while `checkout` is still registered after
-    the prune is refused before the add. The served code graph server gets the git config but not
-    the pins: `codegraphMcpConfig` is handed no repo path, and the profile compiler, which has
-    one, is the follow-up. Its `git status` runs outside the sandbox for the whole session, so a
-    gitfile rewritten after the launch, or a gitlink planted with a `.gitmodules` override, still
-    reaches it, as it reaches any git Claude Code runs after its startup. The config disarms a
-    planted fsmonitor there, and no clean filter. The worst case is the conductor's: its server
-    runs `--path <checkout>` with unpinned `git status` for the conductor's whole life, so a
-    session that rewrites `<common>/worktrees/checkout/commondir` and that admin dir's `index`
-    toward a repo it armed with a `filter.<x>.clean` gets that filter run outside the sandbox.
-    That was already true on main before this change. Pinning the served server is a follow-up
-    task in the profile compiler. With `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
+    the prune is refused before the add. With `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
     gate's scope audit, on the branch's own diff, still does. A project that commits submodules
     gets no code graph.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in

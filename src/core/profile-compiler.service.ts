@@ -45,6 +45,14 @@ import type { SessionPeer } from './types/session-lifecycle.types.js';
 const SHELL_UNSAFE_PATH = /['"\n`$\\]/;
 
 /**
+ * How long a worktree hook's reads may run, from its start, in whole seconds
+ * of `date +%s`: a read still running is killed by then at the latest, which
+ * leaves the hook a second to refuse before the hook timeout, which fails
+ * open (decision 117).
+ */
+const HOOK_READ_DEADLINE_SECONDS = HOOK_TIMEOUT_SECONDS - 1;
+
+/**
  * Tools that open a screen pup cannot answer (decision 74). Skipping
  * permissions (decision 19) silences permission prompts, not the selector
  * AskUserQuestion opens or the approval ExitPlanMode waits on: the pane has no
@@ -369,21 +377,49 @@ function buildContextMarkdown(
  * write, and a huge one would run every check past the hook timeout. Best effort: a session
  * can move the target's branch itself, so the gate's scope audit, on the
  * branch's own diff, is what holds (decisions 6, 63).
+ *
+ * `bounded` runs one command, and kills it once the hook has run
+ * `HOOK_READ_DEADLINE_SECONDS`, which fails it (decision 117). Every `safe_git`
+ * and every read of a file the session can write goes through it: a fifo
+ * swapped in after a `-f` test, or named by an `include.path` in the shared
+ * config, blocks the open forever, and the hook timeout it would otherwise run
+ * into fails open. The deadline is the hook's, not the call's, so a check of
+ * many paths cannot spend it once per path. The command is exec'd in place,
+ * never a shell function, so the kill reaches the process that blocks.
  */
 function worktreeGitShell(git: WorktreeGitEnv): string {
   return `GIT_ADMIN='${git.GIT_DIR}'
 GIT_COMMON='${git.GIT_COMMON_DIR}'
+DEADLINE=$(( $(date +%s) + ${HOOK_READ_DEADLINE_SECONDS} ))
+bounded() {
+  BOUND_LEFT=$(( DEADLINE - $(date +%s) ))
+  if [ "$BOUND_LEFT" -gt 0 ]; then
+    "$@" &
+    BOUND_JOB=$!
+    { sleep "$BOUND_LEFT"; kill -9 "$BOUND_JOB"; } >/dev/null 2>&1 &
+    BOUND_WATCH=$!
+    # Each wait's stderr is dropped: it is where bash reports a job a signal ended.
+    wait "$BOUND_JOB" 2>/dev/null
+    BOUND_STATUS=$?
+    kill "$BOUND_WATCH" 2>/dev/null
+    wait "$BOUND_WATCH" 2>/dev/null
+    [ "$BOUND_STATUS" -ne 137 ] && return "$BOUND_STATUS"
+  fi
+  printf 'BLOCKED: a read in %s outran the hook deadline: a fifo where git or the hook expects a file holds it.\\n' \\
+    "$WORKTREE" >&2
+  return 124
+}
 safe_git() {
-  GIT_DIR="$GIT_ADMIN" GIT_COMMON_DIR="$GIT_COMMON" GIT_WORK_TREE="$WORKTREE" \\
+  bounded env GIT_DIR="$GIT_ADMIN" GIT_COMMON_DIR="$GIT_COMMON" GIT_WORK_TREE="$WORKTREE" \\
     git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"
 }
 unset CDPATH
 pinned_worktree() {
   if ! { [ -f "$WORKTREE/.git" ] && [ ! -L "$WORKTREE/.git" ] &&
-    [ "$(head -c ${POINTER_MAX_BYTES} -- "$WORKTREE/.git")" = "gitdir: $GIT_ADMIN" ] &&
+    [ "$(bounded head -c ${POINTER_MAX_BYTES} -- "$WORKTREE/.git")" = "gitdir: $GIT_ADMIN" ] &&
     [ "$(cd -P -- "$GIT_ADMIN" && pwd -P)" = "$GIT_ADMIN" ] &&
     [ -f "$GIT_ADMIN/commondir" ] && [ ! -L "$GIT_ADMIN/commondir" ] &&
-    [ "$(cd -P -- "$GIT_ADMIN" && cd -P -- "$(head -c ${POINTER_MAX_BYTES} commondir)" && pwd -P)" = "$GIT_COMMON" ]
+    [ "$(cd -P -- "$GIT_ADMIN" && cd -P -- "$(bounded head -c ${POINTER_MAX_BYTES} commondir)" && pwd -P)" = "$GIT_COMMON" ]
   } 2>/dev/null; then
     printf 'BLOCKED: %s/.git or its commondir no longer names %s; no git runs in this worktree until both are restored.\\n' \\
       "$WORKTREE" "$GIT_ADMIN" >&2
@@ -402,7 +438,7 @@ pinned_worktree() {
 merge_of_target() {
   HEAD_FILE=$(safe_git -C "$WORKTREE" rev-parse --path-format=absolute --git-path MERGE_HEAD 2>/dev/null) || return 1
   [ -f "$HEAD_FILE" ] || return 1
-  MERGING=$(head -c 66 -- "$HEAD_FILE") || return 1
+  MERGING=$(bounded head -c 66 -- "$HEAD_FILE") || return 1
   case "$MERGING" in *[!0-9a-f]*) return 1 ;; esac
   [ \${#MERGING} -eq 40 ] || [ \${#MERGING} -eq 64 ] || return 1
   TIP=$(safe_git -C "$WORKTREE" rev-parse -q --verify 'main-worktree/HEAD^{commit}' 2>/dev/null) || return 1
@@ -742,9 +778,12 @@ out_of_scope() {
            *)
              # Only a regular file is read: opening a fifo or a device would block past
              # the hook timeout, which fails open, and a symlink would read its target.
+             # One swapped in after the test is read under the deadline. wc names the
+             # file after its size, and the path starts at the worktree's first slash.
              if [ -f "$WORKTREE/$FILE" ] && [ ! -L "$WORKTREE/$FILE" ]; then
-               SIZE=$(( $(wc -c < "$WORKTREE/$FILE") ))
-               if [ "$SIZE" -gt ${RECHECK_HASH_MAX_BYTES} ]; then SUM=large-$SIZE
+               SIZE=$(bounded wc -c -- "$WORKTREE/$FILE" 2>/dev/null) && SIZE=$(( \${SIZE%%/*} )) || SIZE=
+               if [ -z "$SIZE" ]; then SUM=unreadable
+               elif [ "$SIZE" -gt ${RECHECK_HASH_MAX_BYTES} ]; then SUM=large-$SIZE
                else
                  SUM=$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null) || SUM=unreadable
                fi
@@ -800,6 +839,24 @@ function buildEventHookScript(input: CompileInput): string {
 # payload as one JSONL line tagged with the session id.
 jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '${input.eventsFile}'
 `;
+}
+
+/**
+ * The served code graph's `mcp.json`, its git pinned to the dirs pup trusts for
+ * the checkout it serves (decision 117). The server's `git status` runs outside
+ * the sandbox for the window's whole life, so unpinned it follows a gitfile or
+ * `commondir` the session rewrote after the launch into a repo whose clean
+ * filter it chose. These are the dirs the launch's check verified before it
+ * handed the file over: a check that fails withholds it. No system config
+ * either, which pup never checks and a Homebrew git keeps in a prefix the
+ * operator owns.
+ */
+function servedGraphConfig(binary: string, git: WorktreeGitEnv): string {
+  const config = JSON.parse(codegraphMcpConfig(binary, git.GIT_WORK_TREE)) as {
+    mcpServers: { codegraph: { env: Record<string, string> } };
+  };
+  Object.assign(config.mcpServers.codegraph.env, git, { GIT_CONFIG_NOSYSTEM: '1' });
+  return `${JSON.stringify(config, null, 2)}\n`;
 }
 
 /**
@@ -907,9 +964,7 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
     // hash — as much of the session's environment as its hooks are. Attribution,
     // not detection: nothing re-reads the compiled dir to verify it. Absent when
     // the operator has no codegraph, and the launch passes no flag at all.
-    ...(input.codegraphBinary
-      ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.worktreePath) }
-      : {}),
+    ...(input.codegraphBinary ? { 'mcp.json': servedGraphConfig(input.codegraphBinary, git) } : {}),
     'hooks/scope-enforce.sh': buildScopeHookScript(input, git),
     'hooks/bash-guard.sh': buildBashGuardScript(),
     'hooks/bash-recheck.sh': buildBashRecheckScript(input, git),
@@ -1158,9 +1213,15 @@ export function compileConductorProfile(
     'settings.json': `${JSON.stringify(settings, null, 2)}\n`,
     // Pinned to the private checkout, never to `repoPath`, and compiled for the
     // same reason a session's is: which binary serves the conductor's graph is
-    // recorded in its profile hash (decision 51).
+    // recorded in its profile hash (decision 51). Its git is pinned to the
+    // checkout's admin dir, which `refreshConductorCheckout` verifies.
     ...(input.codegraphBinary
-      ? { 'mcp.json': codegraphMcpConfig(input.codegraphBinary, input.checkoutPath) }
+      ? {
+          'mcp.json': servedGraphConfig(
+            input.codegraphBinary,
+            worktreeGitEnv(input.repoPath, input.checkoutPath),
+          ),
+        }
       : {}),
     'hooks/edit-block.sh': buildEditBlockScript(),
     'hooks/bash-guard.sh': buildBashGuardScript(),

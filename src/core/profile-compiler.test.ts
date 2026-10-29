@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -16,6 +17,8 @@ import { loadCustomAdapter } from '../adapters/custom.adapter.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { verifiedWorktreeGitEnv } from './git-diff.client.js';
+import { HOOK_TIMEOUT_SECONDS } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 import type { CompileInput, SessionId, TaskId, TaskSpec } from './types/profile.types.js';
@@ -62,6 +65,14 @@ function runHook(
     encoding: 'utf8',
   });
   return { status: result.status, stderr: result.stderr };
+}
+
+/** The `key=value` pairs an environment hands git as command-scope config. */
+function commandScopeConfig(env: Record<string, string>): string[] {
+  return Array.from(
+    { length: Number(env.GIT_CONFIG_COUNT) },
+    (_, index) => `${env[`GIT_CONFIG_KEY_${index}`]}=${env[`GIT_CONFIG_VALUE_${index}`]}`,
+  );
 }
 
 describe('compileProfile', () => {
@@ -353,6 +364,22 @@ describe('compileProfile with a code graph (decision 51)', () => {
     expect(config.mcpServers.codegraph.args).toContain('/repo/.worktrees/s-1');
   });
 
+  // The server's git runs outside the sandbox for the whole session (decision 117).
+  it("pins the served graph's git to the worktree's admin and common dirs", () => {
+    const compiled = ProfileCompiler.compileProfile(withGraph);
+
+    const served = JSON.parse(compiled.files['mcp.json'] as string).mcpServers.codegraph.env;
+    expect(served).toMatchObject({
+      GIT_DIR: '/repo/.git/worktrees/s-1',
+      GIT_COMMON_DIR: '/repo/.git',
+      GIT_WORK_TREE: '/repo/.worktrees/s-1',
+      GIT_CONFIG_NOSYSTEM: '1',
+    });
+    expect(commandScopeConfig(served)).toEqual(
+      expect.arrayContaining(['core.hooksPath=/dev/null', 'diff.ignoreSubmodules=all']),
+    );
+  });
+
   it('tells the session what the graph answers and to reach for it before reading files', () => {
     const compiled = ProfileCompiler.compileProfile(withGraph);
 
@@ -485,11 +512,11 @@ describe('generated bash re-check (decision 63)', () => {
    * null status. A UTF-8 locale, as a session's shell usually has, which the
    * script must not depend on.
    */
-  function run(payload: object, env: NodeJS.ProcessEnv = {}) {
+  function run(payload: object, env: NodeJS.ProcessEnv = {}, timeout = 4_000) {
     return spawnSync('/bin/sh', [join(root, 'compiled/hooks/bash-recheck.sh')], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
-      timeout: 4_000,
+      timeout,
       env: {
         ...GIT_ENV,
         LANG: 'en_US.UTF-8',
@@ -652,7 +679,11 @@ describe('generated bash re-check (decision 63)', () => {
   it('refuses when git fails or is missing, and never blocks the call before it', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin);
-    for (const tool of ['jq', 'cat', 'tr', 'grep', 'head', 'mktemp', 'rm', 'mkdir', 'mv', 'wc']) {
+    // date, sleep and env bound the hook's reads in time (decision 117).
+    for (const tool of [
+      ...['jq', 'cat', 'tr', 'grep', 'head', 'mktemp', 'rm', 'mkdir', 'mv', 'wc'],
+      ...['date', 'sleep', 'env'],
+    ]) {
       const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
       spawnSync('ln', ['-s', found.stdout.trim(), join(bin, tool)]);
     }
@@ -668,6 +699,53 @@ describe('generated bash re-check (decision 63)', () => {
     expect(failing.status).toBe(2);
     expect(failing.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
   });
+
+  // The shared config is the session's to write (decision 41's exposure), and git
+  // opens what an include names before it runs any command. The test's timeout
+  // sits well past the hook's, so a hook that blocks reads as slow or null.
+  it('refuses within the hook timeout while the repo config includes a fifo', () => {
+    const fifo = join(root, 'included');
+    spawnSync('mkfifo', [fifo]);
+    spawnSync('git', ['config', 'include.path', fifo], { cwd: repo, env: GIT_ENV });
+
+    const started = Date.now();
+    const result = run(
+      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01fifo', tool_input: { command: 'x' } },
+      {},
+      15_000,
+    );
+    expect(result.status).toBe(2);
+    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    expect(result.stderr).toContain('outran the hook deadline');
+    expect(result.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
+  }, 30_000);
+
+  // The swap lands between the regular-file test and the read: a wc on the hook's
+  // PATH turns the written file into a fifo, then reads it as the real one.
+  it('refuses within the hook timeout a write swapped for a fifo mid-check', () => {
+    const written = join(worktree, 'src/cli/index.ts');
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' });
+    writeFileSync(
+      join(bin, 'wc'),
+      `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${written}' ]; then rm -f "$last" && mkfifo "$last"; fi\nexec ${realWc.stdout.trim()} "$@"\n`,
+      { mode: 0o755 },
+    );
+    expect(hook('PreToolUse', 'x', 'toolu_01wc').status).toBe(0);
+    writeFileSync(written, 'pwned\n');
+
+    const started = Date.now();
+    const result = run(
+      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01wc', tool_input: { command: 'x' } },
+      { PATH: `${bin}:${process.env.PATH}` },
+      15_000,
+    );
+    expect(lstatSync(written).isFIFO()).toBe(true);
+    expect(result.status).toBe(2);
+    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    expect(violations().map((v) => v.path)).toEqual(['src/cli/index.ts']);
+  }, 30_000);
 
   it('lets the call run but refuses after it when its scratch dir cannot be made', () => {
     writeFileSync(join(root, 'compiled/bash-snapshots'), 'a file where the directory goes');
@@ -933,12 +1011,17 @@ describe('generated hooks over a merge of the target', () => {
     git(repo, 'worktree', 'add', '-q', '-b', 'pup/s-1', worktree, 'main');
   });
 
-  function runScript(script: string, payload: object) {
+  function runScript(
+    script: string,
+    payload: object,
+    env: NodeJS.ProcessEnv = {},
+    timeout = 4_000,
+  ) {
     return spawnSync('/bin/sh', [join(root, 'compiled/hooks', script)], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
-      timeout: 4_000,
-      env: { ...GIT_ENV, PUP_SESSION_ID: 's-1' },
+      timeout,
+      env: { ...GIT_ENV, PUP_SESSION_ID: 's-1', ...env },
     });
   }
 
@@ -1145,6 +1228,70 @@ describe('generated hooks over a merge of the target', () => {
       expect(edit('src/cli/decoy.ts', block, 'one main').status).toBe(2);
       expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
     });
+
+    /**
+     * The resolving Edit's scope hook, timed. The test's own timeout sits well past
+     * the hook's, so a hook that blocks reads as a slow or null status rather than
+     * as the test's kill passing for a refusal (decision 117).
+     */
+    function timedResolvingEdit(env: NodeJS.ProcessEnv = {}) {
+      const started = Date.now();
+      const result = runScript(
+        'scope-enforce.sh',
+        {
+          tool_name: 'Edit',
+          tool_input: {
+            file_path: join(worktree, 'src/cli/decoy.ts'),
+            old_string: block,
+            new_string: 'one main',
+          },
+        },
+        env,
+        15_000,
+      );
+      return { ...result, elapsed: Date.now() - started };
+    }
+
+    // The swap lands between the hook's `-f` test and its read: a head on the
+    // hook's PATH turns MERGE_HEAD into a fifo, then reads it as the real one.
+    it('refuses the resolving Edit within the hook timeout once MERGE_HEAD turns into a fifo mid-check', () => {
+      bash('git merge main');
+      expect(timedResolvingEdit().status).toBe(0);
+      const headFile = git(
+        worktree,
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-path',
+        'MERGE_HEAD',
+      ).stdout.trim();
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      const realHead = spawnSync('/bin/sh', ['-c', 'command -v head'], { encoding: 'utf8' });
+      writeFileSync(
+        join(bin, 'head'),
+        `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${headFile}' ]; then rm -f "$last" && mkfifo "$last"; fi\nexec ${realHead.stdout.trim()} "$@"\n`,
+        { mode: 0o755 },
+      );
+
+      const result = timedResolvingEdit({ PATH: `${bin}:${process.env.PATH}` });
+      expect(lstatSync(headFile).isFIFO()).toBe(true);
+      expect(result.status).toBe(2);
+      expect(result.elapsed).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+      expect(result.stderr).toContain('outran the hook deadline');
+    }, 30_000);
+
+    // The shared config is the session's to write (decision 41's exposure), and
+    // git opens what an include names before it runs any command.
+    it('refuses the resolving Edit within the hook timeout while the repo config includes a fifo', () => {
+      bash('git merge main');
+      const fifo = join(root, 'included');
+      spawnSync('mkfifo', [fifo]);
+      git(repo, 'config', 'include.path', fifo);
+
+      const result = timedResolvingEdit();
+      expect(result.status).toBe(2);
+      expect(result.elapsed).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    }, 30_000);
 
     // The hook runs outside the sandbox, the gitfile is writable inside it, and
     // git that followed it would read another repo's config (decision 101).
@@ -1684,6 +1831,56 @@ describe('compileConductorProfile', () => {
       expect(config.mcpServers.codegraph.command).toBe('/opt/node/bin/codegraph');
       expect(config.mcpServers.codegraph.args).toContain('/state/conductor/checkout');
       expect(config.mcpServers.codegraph.args).not.toContain('/repo');
+    });
+
+    // Its `git status` runs outside the sandbox for the conductor's whole life,
+    // and a session can rewrite the checkout's `commondir` and `index` (decision 117).
+    it("pins the served graph's git to the checkout's verified admin dir", () => {
+      const root = tempDir('pup-conductor-graph-');
+      const repo = join(root, 'repo');
+      const checkout = join(root, 'state/conductor/checkout');
+      mkdirSync(repo);
+      // No inherited GIT_*: under the pre-commit hook GIT_INDEX_FILE names the real index.
+      const env = {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+        ),
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null',
+      };
+      for (const args of [
+        ['init', '-q', '-b', 'main'],
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@t',
+          'commit',
+          '-q',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
+        ['worktree', 'add', '-q', '--detach', checkout, 'main'],
+      ]) {
+        spawnSync('git', args, { cwd: repo, env });
+      }
+      const compiled = ProfileCompiler.compileConductorProfile({
+        ...withGraph,
+        repoPath: repo,
+        checkoutPath: checkout,
+      });
+
+      const served = JSON.parse(compiled.files['mcp.json'] as string).mcpServers.codegraph.env;
+      expect(served).toMatchObject({
+        ...verifiedWorktreeGitEnv(repo, checkout),
+        GIT_CONFIG_NOSYSTEM: '1',
+      });
+      expect(served.GIT_WORK_TREE).toBe(checkout);
+      expect(commandScopeConfig(served)).toEqual(
+        expect.arrayContaining(['core.hooksPath=/dev/null', 'core.fsmonitor=']),
+      );
+      expect(served.CLAUDE_CODE_MESSAGING_TOKEN).toBe('');
     });
 
     // It is told the graph is a snapshot of a pristine copy, not the tree it

@@ -1,6 +1,7 @@
 # 0063. Every Bash call is re-checked against the worktree after it runs (2026-09-21)
 
 - Status: accepted
+- Amended by: [0117](0117-the-worktree-hooks-reads-run-under-a-deadline.md)
 
 63. **Every Bash call is re-checked against the worktree after it runs (2026-09-21).** Seen live
     on 2026-09-17 in session t-mtni8c6t. `src/cli/no-adapter-guard.utils.ts` and its test were

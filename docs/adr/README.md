@@ -138,6 +138,7 @@ for the cross-references the text states, then the decision itself.
 - [0113. Pup's git pins `core.bigFileThreshold`, a diff's path argument is a literal pathspec, and the gate's hunk and numstat reads pin their inter-hunk context, diff algorithm and rename detection (2026-10-27).](0113-pup-s-git-pins-core-bigfilethreshold-a-diff.md) (accepted)
 - [0114. The gate's per-file git reads pin `core.precomposeUnicode` off (2026-10-27).](0114-the-gate-s-per-file-git-reads-pin-core-precomposeunicode.md) (accepted)
 - [0116. Code is laid out in per-area folders with string enums, and tests mirror `src/` under `test/unit` (2026-10-28).](0116-code-layout-string-enums-and-a-mirrored-test-tree.md) (accepted)
+- [0117. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)](0117-the-worktree-hooks-reads-run-under-a-deadline.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes
