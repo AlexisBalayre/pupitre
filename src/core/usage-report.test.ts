@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 
 import { transcriptDir } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
@@ -59,6 +59,14 @@ function toolResult(id: string, atMs: number, chars: number): string {
   });
 }
 
+function toolResultBlocks(id: string, atMs: number, content: unknown[]): string {
+  return JSON.stringify({
+    type: 'user',
+    timestamp: new Date(atMs).toISOString(),
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content }] },
+  });
+}
+
 function prompt(text: string, atMs: number, entrypoint = 'cli'): string {
   return JSON.stringify({
     type: 'user',
@@ -78,7 +86,7 @@ describe('buildUsageReport', () => {
   }
 
   function report(sinceMs = T0 - HOUR): ReturnType<typeof buildUsageReport> {
-    return buildUsageReport(db, REPO, { since: new Date(sinceMs), claudeDir });
+    return buildUsageReport(db, REPO, { since: new Date(sinceMs), claudeDirs: [claudeDir] });
   }
 
   beforeEach(() => {
@@ -161,6 +169,79 @@ describe('buildUsageReport', () => {
       // first requests: 40003 and 20003
       firstRequestFloor: 20_003,
     });
+  });
+
+  it('takes the floor only from a transcript that began in the window, and counts a gap across its edge', () => {
+    const dir = transcriptDir(`${REPO}/.worktrees/w1`, claudeDir);
+    write(dir, 'old.jsonl', [
+      assistant('r0', T0 - 3 * HOUR, 'claude-opus-5-5', 'high', { input: 3, write: 10_000 }),
+      // a mid-session request of 150k opens the window; two idle hours lie behind it
+      assistant('r1', T0, 'claude-opus-5-5', 'high', { input: 3, write: 150_000 }),
+    ]);
+    write(dir, 'new.jsonl', [
+      assistant('r1', T0, 'claude-opus-5-5', 'high', { input: 3, write: 20_000 }),
+    ]);
+
+    const [row] = report().rows;
+
+    expect(row).toMatchObject({ calls: 2, firstRequestFloor: 20_003, recaches: 1 });
+    expect(row?.recachedTokens).toBe(150_000);
+  });
+
+  it('sizes a tool result by its text blocks, not by an image payload', () => {
+    write(transcriptDir(`${REPO}/.worktrees/w1`, claudeDir), 'a.jsonl', [
+      assistant('r1', T0, 'claude-opus-5-5', 'high', { input: 1 }, { id: 't1', name: 'Read' }),
+      toolResultBlocks('t1', T0 + 1000, [
+        { type: 'text', text: 'x'.repeat(40) },
+        { type: 'image', source: { type: 'base64', data: 'A'.repeat(270_000) } },
+      ]),
+      assistant('r2', T0 + 2000, 'claude-opus-5-5', 'high', { input: 1 }),
+    ]);
+
+    expect(report().toolCarry).toEqual([
+      { tool: 'Read', results: 1, tokens: 10, carriedTokens: 10 },
+    ]);
+  });
+
+  it('reads every config dir it is given', () => {
+    const other = mkdtempSync(join(tmpdir(), 'pup-usage-other-'));
+    onTestFinished(() => rmSync(other, { recursive: true, force: true }));
+    write(transcriptDir(`${REPO}/.worktrees/w1`, claudeDir), 'a.jsonl', [
+      assistant('r1', T0, 'claude-opus-5-5', 'high', { input: 1 }),
+    ]);
+    write(transcriptDir(REPO, other), 'b.jsonl', [
+      prompt('hello', T0),
+      assistant('r1', T0, 'claude-opus-5-5', 'high', { input: 1 }),
+    ]);
+
+    const result = buildUsageReport(db, REPO, {
+      since: new Date(T0 - HOUR),
+      claudeDirs: [claudeDir, other, claudeDir],
+    });
+
+    expect(result.byClass.map((c) => c.class).sort()).toEqual(['console', 'worker']);
+  });
+
+  it('scrubs control characters from the model, effort and tool names it prints', () => {
+    write(transcriptDir(`${REPO}/.worktrees/w1`, claudeDir), 'a.jsonl', [
+      assistant(
+        'r1',
+        T0,
+        'claude-evil\u001b[2J-5',
+        'hi\u009bgh',
+        { input: 1 },
+        { id: 't1', name: 'Ba\u001b]0;x\u0007sh' },
+      ),
+      toolResult('t1', T0 + 1000, 40),
+      assistant('r2', T0 + 2000, 'claude-evil\u001b[2J-5', 'hi\u009bgh', { input: 1 }),
+    ]);
+
+    const text = formatUsageReport(report());
+
+    expect(text).toContain('claude-evil [2J-5 / hi gh');
+    expect(text).toContain('Ba ]0;x sh');
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting none reaches the logs
+    expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
   });
 
   it('counts one call per request id and reads only the window', () => {

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import { transcriptDir } from '../claude/session-runtime.service.js';
 import { listSessions } from './session.repository.js';
 
@@ -73,7 +74,8 @@ interface UsageReport {
 
 interface UsageOptions {
   since: Date;
-  claudeDir?: string;
+  /** Every Claude config dir a window of the project may have written to; `~/.claude` when omitted. */
+  claudeDirs?: string[];
 }
 
 interface Call {
@@ -128,6 +130,7 @@ interface ContentBlock {
   name?: string;
   tool_use_id?: string;
   content?: unknown;
+  text?: unknown;
 }
 
 function contextOf(call: Call): number {
@@ -177,8 +180,12 @@ function blocksOf(content: unknown): ContentBlock[] {
 
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
+  // Text only: an image or document block carries a base64 payload the API bills far below its length.
   return blocksOf(content)
-    .map((block) => (typeof block.content === 'string' ? block.content : JSON.stringify(block)))
+    .map((block) => {
+      if (typeof block.content === 'string') return block.content;
+      return typeof block.text === 'string' ? block.text : '';
+    })
     .join('');
 }
 
@@ -204,6 +211,8 @@ function parseCall(entry: TranscriptEntry, at: number): Call | undefined {
 
 interface ReadTranscript {
   calls: Call[];
+  /** The last call before the window, when the transcript began before it. */
+  before: Call | undefined;
   conductor: boolean;
   headless: boolean;
   toolResults: ToolResult[];
@@ -211,6 +220,7 @@ interface ReadTranscript {
 
 interface ScanState {
   calls: Map<string, Call>;
+  before: Call | undefined;
   toolNames: Map<string, string>;
   pending: { tool: string; tokens: number; callsBefore: number }[];
   conductor: boolean;
@@ -246,6 +256,12 @@ function noteAssistant(state: ScanState, entry: ScanEntry, at: number): void {
   if (call && key) state.calls.set(key, call);
 }
 
+/** A call before the window is not counted, but it dates the transcript's start and the gap to its first counted call. */
+function noteBefore(state: ScanState, entry: ScanEntry, at: number): void {
+  const call = entry.type === 'assistant' ? parseCall(entry, at) : undefined;
+  if (call && (!state.before || at >= state.before.at)) state.before = call;
+}
+
 function noteToolResults(state: ScanState, entry: ScanEntry): void {
   for (const block of blocksOf(entry.message?.content)) {
     if (block.type !== 'tool_result') continue;
@@ -262,8 +278,9 @@ function scanLine(state: ScanState, line: string, sinceMs: number): void {
   if (!entry) return;
   noteOrigin(state, entry);
   const at = Date.parse(entry.timestamp ?? '');
-  if (Number.isNaN(at) || at < sinceMs) return;
-  if (entry.type === 'assistant') noteAssistant(state, entry, at);
+  if (Number.isNaN(at)) return;
+  if (at < sinceMs) noteBefore(state, entry, at);
+  else if (entry.type === 'assistant') noteAssistant(state, entry, at);
   else if (entry.type === 'user') noteToolResults(state, entry);
 }
 
@@ -281,6 +298,7 @@ function readTranscript(file: string, sinceMs: number): ReadTranscript | undefin
   }
   const state: ScanState = {
     calls: new Map(),
+    before: undefined,
     toolNames: new Map(),
     pending: [],
     conductor: false,
@@ -291,6 +309,7 @@ function readTranscript(file: string, sinceMs: number): ReadTranscript | undefin
   const total = state.calls.size;
   return {
     calls: [...state.calls.values()],
+    before: state.before,
     conductor: state.conductor,
     headless: state.headless,
     toolResults: state.pending.map((p) => ({
@@ -349,15 +368,16 @@ function workerDirsOf(db: Database, repoPath: string, claudeDir: string): Set<st
  * directory, its workers' in one directory per worktree, and subagents' under
  * a `subagents/` folder of whichever session spawned them.
  */
-function sourcesOf(db: Database, repoPath: string, claudeDir: string): Source[] {
-  const root = transcriptDir(repoPath, claudeDir);
+function sourcesOf(db: Database, repoPath: string, claudeDirs: string[]): Source[] {
   const sources: Source[] = [];
   const addDir = (dir: string, klass: UsageClass): void => {
     for (const file of jsonlIn(dir)) sources.push({ file, class: klass });
     for (const file of subagentFiles(dir)) sources.push({ file, class: UsageClass.Subagent });
   };
-  for (const dir of workerDirsOf(db, repoPath, claudeDir)) addDir(dir, UsageClass.Worker);
-  addDir(root, UsageClass.Console);
+  for (const claudeDir of claudeDirs) {
+    for (const dir of workerDirsOf(db, repoPath, claudeDir)) addDir(dir, UsageClass.Worker);
+    addDir(transcriptDir(repoPath, claudeDir), UsageClass.Console);
+  }
   return sources;
 }
 
@@ -392,13 +412,14 @@ function recachedTokens(call: Call, previous: Call | undefined): number {
   return written > call.read ? written : 0;
 }
 
-function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, calls: Call[]): void {
-  const ordered = [...calls].sort((a, b) => a.at - b.at);
+function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: ReadTranscript): void {
+  const ordered = [...read.calls].sort((a, b) => a.at - b.at);
   for (const [index, call] of ordered.entries()) {
     const bucket = bucketFor(buckets, klass, call);
     bucket.calls.push(call);
-    if (index === 0) bucket.floors.push(contextOf(call));
-    const again = recachedTokens(call, ordered[index - 1]);
+    // Only a transcript that began inside the window has its first request in it.
+    if (index === 0 && !read.before) bucket.floors.push(contextOf(call));
+    const again = recachedTokens(call, index === 0 ? read.before : ordered[index - 1]);
     if (again > 0) {
       bucket.recaches += 1;
       bucket.recachedTokens += again;
@@ -473,14 +494,14 @@ function unpricedModelsOf(buckets: Bucket[]): string[] {
 }
 
 export function buildUsageReport(db: Database, repoPath: string, opts: UsageOptions): UsageReport {
-  const claudeDir = opts.claudeDir ?? join(homedir(), '.claude');
+  const claudeDirs = [...new Set(opts.claudeDirs ?? [join(homedir(), '.claude')])];
   const sinceMs = opts.since.getTime();
   const buckets = new Map<string, Bucket>();
   const carry = new Map<string, ToolCarry>();
-  for (const source of sourcesOf(db, repoPath, claudeDir)) {
+  for (const source of sourcesOf(db, repoPath, claudeDirs)) {
     const read = readTranscript(source.file, sinceMs);
     if (!read || read.calls.length === 0) continue;
-    addCalls(buckets, classOf(source, read), read.calls);
+    addCalls(buckets, classOf(source, read), read);
     addToolCarry(carry, read.toolResults);
   }
   const all = [...buckets.values()];
@@ -506,7 +527,7 @@ function tokens(n: number): string {
 
 function formatRow(row: UsageRow): string[] {
   return [
-    `  ${row.model} / ${row.effort}: ${row.calls} calls, ${usd(row.cost)} (${pct(row.costShare)})`,
+    `  ${sanitizeReason(row.model)} / ${sanitizeReason(row.effort)}: ${row.calls} calls, ${usd(row.cost)} (${pct(row.costShare)})`,
     `    cache hit ${pct(row.cacheHitRate)}; cost split read ${pct(row.cacheReadCostShare)}, write ${pct(row.cacheWriteCostShare)}, output ${pct(row.outputCostShare)}`,
     `    context median ${tokens(row.medianContext)}, p90 ${tokens(row.p90Context)}, first-request floor ${tokens(row.firstRequestFloor)}`,
     `    re-caches after >1h idle: ${row.recaches} (${tokens(row.recachedTokens)} written)`,
@@ -520,14 +541,17 @@ function formatCarry(carry: ToolCarry[]): string[] {
     'Tool output carried (estimated tokens, tokens x later calls):',
     ...carry.map(
       (t) =>
-        `  ${t.tool}: ${t.results} results, ${tokens(t.tokens)}, carried ${tokens(t.carriedTokens)}`,
+        `  ${sanitizeReason(t.tool)}: ${t.results} results, ${tokens(t.tokens)}, carried ${tokens(t.carriedTokens)}`,
     ),
   ];
 }
 
 function formatUnpriced(models: string[]): string[] {
   if (models.length === 0) return [];
-  return ['', `Unpriced (counted at $0, add to MODEL_PRICES): ${models.join(', ')}`];
+  return [
+    '',
+    `Unpriced (counted at $0, add to MODEL_PRICES): ${models.map(sanitizeReason).join(', ')}`,
+  ];
 }
 
 export function formatUsageReport(report: UsageReport): string {

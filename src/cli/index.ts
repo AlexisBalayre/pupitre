@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { constants as osConstants, tmpdir } from 'node:os';
+import { homedir, constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
@@ -2505,7 +2505,12 @@ export function buildProgram(): Command {
           `--since needs a date such as 2026-10-21, not "${sanitizeReason(opts.since ?? '')}".`,
         );
       }
-      const report = buildUsageReport(db, repoPath, { since });
+      // Workers and the conductor write under the dir the project's windows run
+      // on; the console under the operator shell's own.
+      const userDir = configDirOrRefuse(repoPath);
+      if (userDir === undefined) return;
+      const claudeDirs = [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
+      const report = buildUsageReport(db, repoPath, { since, claudeDirs });
       console.log(opts.json ? JSON.stringify(report, null, 2) : formatUsageReport(report));
     });
 
