@@ -1,0 +1,277 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-29T08:19:57.413Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40840619927",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40840619927",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7e7f202f040cca91e4f68fa1a08e89e6a8ac964a",
+  "source": "pr",
+  "pr_number": 206,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "507-531",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`formatUsageReport` prints `model`, `effort` and tool names from session-writable transcript files with no sanitizing, so a session can inject terminal escape sequences into the operator's `pup usage` output.",
+      "body": "**Transcript strings reach the operator's terminal without sanitizing.** Every string in the text report comes straight from a `.jsonl` file: `entry.message.model`, `entry.effort` and the `name` of a `tool_use` block. Nothing validates them at parse time:\n\n- `parseCall` rejects only a missing model or one that starts with `<`.\n- `effort` is `entry.effort ?? 'unknown'`.\n- Tool names are stored as-is.\n\nThey are then interpolated into the output and printed with `console.log` (`src/cli/index.ts:2509`):\n\n```ts\n`  ${row.model} / ${row.effort}: ${row.calls} calls, ...`   // formatRow\n`  ${t.tool}: ${t.results} results, ...`                     // formatCarry\n`Unpriced (counted at $0, add to MODEL_PRICES): ${models.join(', ')}` // formatUnpriced\n```\n\n**This breaks a premise decision 67 relied on.** Decision 67 accepts that \"a session writes its own transcript directory, so the newest `.jsonl` there is whatever it put there\". It accepts that only because \"the file's content never reaches a surface\". `pup usage` is the first reader that puts file content on a surface.\n\n**Decision 68's rule applies, and its scan can't see these prints.** Decision 68 requires that \"every named field a `console.log` interpolates is sanitized where it prints, whatever its provenance\". Its source scan reads only `src/cli/index.ts`, and these fields are interpolated in core, so the rule has to be followed by hand here.\n\n**How a worker reaches it.** A worker can drop a `.jsonl` into its own transcript directory, or into a sibling directory that matches the `.worktrees-` prefix `workerDirsOf` scans. A line in that file can carry cursor-move or OSC escapes in `model`, `effort` or a tool name, and those can repaint the report the operator sets budgets from. `--json` is safe because `JSON.stringify` escapes control characters.\n\n**Fix.** Use `sanitizeReason` from `../adapters/capability.utils.js`, as `debt.service.ts` and `fleet.service.ts` already do. Wrap `row.model`, `row.effort`, `t.tool` and the unpriced list with it, and add a test that plants a `\\u001b` in a fixture and asserts none reaches the logs.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7e7f202f040cca91e4f68fa1a08e89e6a8ac964a/src/core/usage-report.service.ts#L507-L531",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "476",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup usage` always reads `~/.claude/projects`. When a project records `CLAUDE_CONFIG_DIR` through `--session-env` (decision 106), its sessions and conductor write transcripts somewhere else, so the report shows no worker or conductor usage.",
+      "body": "**The report never reads where sessions write when `--session-env` names a config dir.** It resolves the Claude dir to the home default, and the CLI never passes one:\n\n```ts\nconst claudeDir = opts.claudeDir ?? join(homedir(), '.claude');\n```\n```ts\nconst report = buildUsageReport(db, repoPath, { since }); // src/cli/index.ts:2508\n```\n\nEvery session and conductor window runs on `claudeUserDir(repoPath)` (`src/claude/session-runtime.service.ts:425-433`). That function returns the launching shell's `CLAUDE_CONFIG_DIR` when `--session-env` names it, and the docs call it \"where the window's `.claude.json` and transcripts live\". ADR 0106 says this covers every window, \"the conductor's included\".\n\n**What goes wrong.** Take a project initialised with `--session-env CLAUDE_CONFIG_DIR`. `pup usage` reports the worker and conductor classes as empty or close to $0, and nothing warns that a directory went unread. That is the quiet skew ADR 0122 avoids elsewhere, for example by naming unpriced models.\n\n**Not covered by the precedent.** The dashboard's older readers also rely on the `~/.claude` default, but ADR 0106 lists that as debt still owed, not as a scope decision. New code shouldn't copy it.\n\n**Fix.** Read worker and conductor dirs from `claudeUserDir(repoPath)`. For example, pass `claudeDir: claudeUserDir(repoPath)` from the CLI, or make it the default. Console and utility transcripts follow the operator shell's own `CLAUDE_CONFIG_DIR`, so they may sit in a second dir that also needs scanning. `claudeUserDir` creates the directory and can throw `ConfigDirRefusedError`, so check that is acceptable for a read-only command.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7e7f202f040cca91e4f68fa1a08e89e6a8ac964a/src/core/usage-report.service.ts#L475-L481",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "395-407",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The first-request floor uses each transcript's first call inside the --since window, not the transcript's first request. Any session that started before the window adds a mid-session context size to the floor median.",
+      "body": "**The floor takes the first call in the window, not the transcript's first request.** ADR 0122 defines the floor as \"the median of each transcript's first request\". But `scanLine` drops every entry before `sinceMs` (`if (Number.isNaN(at) || at < sinceMs) return;`, L265) before any call is recorded. `addCalls` then takes the floor from `index === 0` of the calls that are left:\n\n```ts\nconst ordered = [...calls].sort((a, b) => a.at - b.at);\nfor (const [index, call] of ordered.entries()) {\n  ...\n  if (index === 0) bucket.floors.push(contextOf(call));\n  const again = recachedTokens(call, ordered[index - 1]);\n```\n\nNo mtime or start-time check keeps a transcript that spans the window edge out of the report.\n\n**Failing input.** Take a conductor or console transcript that started 8 days ago and is still in use. With the default 7-day window, its first in-window call might have 150k context, and that value becomes its \"first-request floor\". The conductor row often has only one or a few transcripts, so its floor is mostly that mid-session number. `noteOrigin` already runs before the filter (\"whatever the window\") so that classing uses the real start. The floor needs the same care.\n\n**The same cause hides re-caches.** The first in-window call has no `previous`, so an idle gap of more than an hour across the window edge is never counted as a re-cache.\n\n**Fix.** Track whether the transcript's real first assistant call falls inside the window, and push a floor only in that case. Seed `previous` with the last call before the window.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7e7f202f040cca91e4f68fa1a08e89e6a8ac964a/src/core/usage-report.service.ts#L395-L407",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "178-183",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Tool-output carry sizes a non-string tool_result by the length of JSON.stringify(block). An image result (a Read of a PNG, stored as base64 in the transcript) is counted at its base64 length divided by 4, which overstates it by 10-100x and puts Read at the top of the carry table.",
+      "body": "**Image tool results are counted by their base64 length.** `noteToolResults` sizes each result as `Math.ceil(textOf(block.content).length / CHARS_PER_TOKEN)` (L254). When the content is an array, `textOf` stringifies every inner block that has no string `content`:\n\n```ts\nreturn blocksOf(content)\n  .map((block) => (typeof block.content === 'string' ? block.content : JSON.stringify(block)))\n  .join('');\n```\n\n**Images.** A `tool_result` image item has the shape `{type:'image', source:{type:'base64', data:'<base64>'}}`. Stringifying it counts the whole payload at 4 characters per token. That this is how Claude Code stores images rests on pinned-version knowledge, hence medium confidence.\n\n**Failing input.** A Read of a 200 KB screenshot is about 270 KB of base64, which the code counts as about 67k tokens. The API bills about 1.5k for it. The figure is then multiplied by every later call (`carriedTokens += result.tokens * result.callsAfter`). One early screenshot in a 100-call session adds about 6.7M carried tokens to `Read`, so the table points at the wrong tool.\n\n**Text blocks.** `{type:'text', text}` items are also inflated by the JSON wrapper and escaping, by less but consistently.\n\n**Tests.** The current tests use only string content, so none of this path is covered.\n\n**The suggestion below.** It counts only text and treats image and document blocks as 0. That is a small undercount instead of a large overcount. A fixed per-image estimate would be closer, if that matters. It also keeps the `# Pupitre conductor ` detection in `noteOrigin` working.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7e7f202f040cca91e4f68fa1a08e89e6a8ac964a/src/core/usage-report.service.ts#L178-L183",
+      "suggestion": "function textOf(content: unknown): string {\n  if (typeof content === 'string') return content;\n  return blocksOf(content)\n    .map((block) => {\n      if (typeof block.content === 'string') return block.content;\n      const text = (block as { text?: unknown }).text;\n      return typeof text === 'string' ? text : '';\n    })\n    .join('');\n}"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2502",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`new Date('2026-10-21')` means UTC midnight under ECMAScript date-only parsing, while `new Date('2026-10-21T00:00')` means local time. In UTC-7, `--since 2026-10-21` actually starts at 17:00 local on 10-20, and the form the refusal message suggests is exactly the one that behaves this way. Either document that the window is UTC or parse date-only input as local midnight.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "398-400",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The floor goes only into the bucket of the transcript's first call. If a transcript switches model or effort partway (for example with /model), the later model/effort row has no floors and prints 'first-request floor 0' instead of saying there is none.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "296-300",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Carry multiplies each result by every later call in the transcript (callsAfter = total - callsBefore). Compaction or /clear is not taken into account, so in a long conductor or console transcript a result removed at compaction keeps adding carry for every call after it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": "41-48",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test checks a dollar figure or a cost-split share. Every fixture puts all writes in ephemeral_1h, so the 5m multiplier and the no-split fallback (write5m = cache_creation_input_tokens) never run. The 'costShare sums to 1' assertion holds for any positive cost function, so the cost math could be wrong and the tests would still pass.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "336",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`workerDirsOf` turns every sessions-table `worktree_path` into a directory without first refusing an empty string. `transcriptDir('')` comes out as `~/.claude/projects` itself, which breaks the \"one segment under projects\" rule that decision 67 records as the reason this derivation is safe.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2502",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 7-day default window for --since is report logic set in the thin CLI layer (`new Date(Date.now() - 7 * 86_400_000)`). buildUsageReport makes `since` required, so the core service has no default of its own and any other caller would need its own copy of the policy. The default could live in UsageOptions (`since?: Date`) next to the claudeDir default the service already applies (`opts.claudeDir ?? join(homedir(), '.claude')`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "163-165, 221, 424",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Unclear names and a pointless split: `sum(parts)` adds up a `CostParts` while `total(values)` adds up an array, so the generic names hide which one does what. `ScanEntry = TranscriptEntry & { entrypoint?: string }` is a separate type with no second user; the field can go straight on `TranscriptEntry`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test is colocated and named `usage-report.test.ts`. The rule puts it at `test/unit/core/usage-report-service.test.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "14-20",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `UsageClass` string enum is declared inline in the service file, not in an `enums/` file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "40-131, 142-147, 205-231, 327-330",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "About 14 `interface`/`type` declarations are inline in a `*.service.ts` file. They include `UsageReport`, `UsageRow`, `UsageOptions`, `Call`, `Bucket` and `ToolCarry`. Several are reused across functions or appear in the exported signatures `buildUsageReport` and `formatUsageReport`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "22-38",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`MODEL_PRICES`, the cache multipliers, `IDLE_RECACHE_MS` and `CHARS_PER_TOKEN` are named but declared in the service file. The rule puts them in the area's `*.constants.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md",
+      "line": "31",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0122 says sessions and the conductor are \"refused the way `pup audit` refuses them\", but `pup audit` refuses only sessions; this command refuses both, which is the stated intent, so the comparison is inaccurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md",
+      "line": "19",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR says a transcript is the conductor's when its first prompt \"opens with\" `# Pupitre conductor`, but the code matches that string anywhere in the first user message, with a trailing space.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "8-12",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The file-header comment restates the ADR and the command's purpose, so it is noise.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "364",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `classOf` doc is slightly inaccurate. It says \"the others tell themselves apart by how they started\", but worker transcripts keep the class of the directory they came from, and only checkout transcripts are told apart (utility, conductor or console).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "106-325",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new core service parses Claude Code's transcript format itself (JSONL usage fields, requestId dedup, the `sdk-cli` entrypoint, the `<session>/subagents/` layout). `src/claude/transcript.service.ts` already owns that format, so the knowledge now lives in two modules.",
+      "refutation": "AGENTS.md's boundary rule names tmux, hooks and `claude -p`, the mechanisms that drive a live Claude Code process. Reading `.jsonl` files from disk is not one of them, and the service gets its path derivation through `src/claude/` (`transcriptDir`). Neither ADR 0002 nor ADR 0122 says which module must own transcript parsing. `src/claude/transcript.service.ts` exports only the narrow `latestContextTokens`, with no reusable parser, and the requestId, sdk-cli and subagents logic appears only in the new file. A shared reader is a reasonable design preference, but no written rule requires it."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.5688561,
+  "duration_ms": 335322,
+  "num_turns": 20,
+  "tokens": {
+    "input": 12,
+    "output": 22946,
+    "cache_read": 288876,
+    "cache_creation": 79477,
+    "total": 391311
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 180,
+      "output": 81907,
+      "cache_read": 2356217,
+      "cache_creation": 378439,
+      "cost_usd": 4.2407294
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 8596,
+      "cache_read": 272767,
+      "cache_creation": 85932,
+      "cost_usd": 0.3281267
+    }
+  ],
+  "permission_denials": []
+}
