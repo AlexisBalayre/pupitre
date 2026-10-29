@@ -1,0 +1,304 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-29T18:14:46.659Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40927904331",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40927904331",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c05759ab13e436f7207e3e4ae9bb3654773e6747",
+  "source": "pr",
+  "pr_number": 202,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/ui/debt.component.tsx",
+      "line": "27-39",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the debt block gets its minimum of 2 rows and there are 2 or more overdue entries, it shows a bare `+N more` with no OVERDUE line above it. The stale radar has the same problem with OVERLAP.",
+      "body": "**Concern.** When `maxLines = 2` (the `sectionShare` floor), `clip(overdueDebt, Math.max(maxLines - 1, 1))` becomes `clip(items, 1)`. `clip` saves its last slot for the `+N more` line (`items.slice(0, Math.max(max - 1, 0))`), so 2 or more items give `shown = []`. The block then draws only:\n\n```\n+5 more\n5 open debt entries\n```\n\nThe word \"overdue\" no longer appears anywhere. The count line says \"open\", and `App` gives the block no heading. The only hint left is the red colour, yet the component's own docs call overdue debt the section that is loud whenever it has anything. You hit this with a single project on a terminal of about 20 rows or fewer (the viewport tests' 16- and 20-row cases render it), and with a 3-project fleet even at 40 rows (`floor(7/3) = 2`).\n\n```tsx\n{hidden > 0 ? (\n  <Text color=\"red\" wrap=\"truncate-end\">{`${lead}${moreLine(hidden).trim()}`}</Text>\n) : null}\n```\n\n`radar.component.tsx` has the same problem (cause at L27, drawn at L41) when the radar is stale and has 2 or more overlaps: `+N more` followed by `conflict radar off …`, and no `OVERLAP` row.\n\n**Fix.** Name what the more line hides, so a block cut down to one line still says what it holds: `${lead}+${hidden} more overdue debt` here, and `${lead}+${hidden} more overlaps` in Radar. Before this PR the alert's wording was always on screen.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c05759ab13e436f7207e3e4ae9bb3654773e6747/src/cli/ui/debt.component.tsx#L27-L39",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/header.component.tsx",
+      "line": "28-35",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The header's conductor row now truncates instead of wrapping, so on terminals of 102 columns or fewer the 75-char `(attach: tmux -L pup-conductor-… attach -t '=…:')` command is cut and can't be pasted. `A`, `pup attach` and `pup status` still offer it; consider giving it its own counted row or noting the loss in ADR 0121.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "163-167",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The table's single `+N more` line is always drawn below the window, but `total - windowSize` also counts rows hidden above it. Once the cursor scrolls down, the blocked/stalled live sessions sorted to the top drop out of view, and the only sign of them is a line that suggests more rows below (raised in an earlier round, still present).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "109-113",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "If there are no live sessions but some finished ones (`fixedRows` = 2) and `tableLines` is 2 or 3, then `Math.max(tableLines - fixedRows - 1, 1)` forces a 1-row window. The table then draws fixedRows + 1 + the `+N more` line, which is 1-2 rows over its budget, so the frame reaches the terminal height. With debt, radar, a baseline header, a status line and a prompt this happens up to about 19 rows, slightly above the roughly-16-row floor ADR 0121 concedes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-terminal-size.hook.ts",
+      "line": "9-12",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`stdout.rows ?? Number.POSITIVE_INFINITY` does not catch a TTY that reports 0x0 (a pty whose size has not been set yet). `body` becomes 0 and the table shrinks to a 1-row window, and `columns - 2` goes negative, so `wrapLines` breaks the y/n question one character per row (raised in an earlier round, still present).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/merge-log.component.tsx",
+      "line": "18-22",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`App` counts the merge pane's title (`pup merge <id> --pr (done — Enter or Esc closes)`, about 56 chars) and its `waiting for the first stage …` line as one row each, but neither has `wrap=\"truncate-end\"`. Below about 60 columns (inner width is columns - 4) they wrap into rows the count did not see (raised in an earlier round, still present).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.utils.ts",
+      "line": "63-66",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`windowStart` keeps the cursor centred, so once the cursor is past half a window every ↓ shifts the window by one row, even when the cursor is still well inside it. ADR 0121 says \"moving the cursor past its edge scrolls it\". Either the doc or the function should change; the frame height is unaffected.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/footer.component.tsx",
+      "line": "31-35",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The conductor's read-only reason (151 characters, from `uiReadOnlyReason`) now truncates at 78–98 columns, cutting the 'merge, respawn and unblock are the operator's' part that the footer docstring says is shown ('told why').",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "205-214",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The detail-pane test still passes if Enter does nothing: at 24 rows the window already shows only t-plan0 and t-plan1, and s-live0-1 is a visible table row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "105-124",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'keeps long header, prompt and read-only lines to one row each' never opens a prompt (read-only mode cannot open one), so the input prompt's new `wrap=\"truncate-start\"` is not exercised anywhere.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-components.test.ts",
+      "line": "604-615",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The long-question prompt test renders at Ink's 100-column default with `width: 60`, so `truncate-end` never fires. The row-count and `<= 60` checks only restate `wrapLines`, which `promptLines` and `Prompt` both call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "97-108",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "App works out how many rows the Debt and Radar blocks take by repeating their render rules, so a change to either block's layout also needs an edit in App (Shotgun Surgery). For the prompt, the same PR puts the counter next to the component instead (`promptLines` beside `Prompt`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/debt.component.tsx",
+      "line": "17",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `maxLines = Number.POSITIVE_INFINITY` (Debt, Radar) and `liveCount = sessions.length` (Sessions) defaults are optional props whose only production caller (App) always passes them. They loosen the contract, so a later caller that forgets the budget compiles and quietly brings back the full-height frame this PR exists to prevent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "34-75",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The height tests never turn on several of the lines `App` counts by hand, so the ADR's claim that this test \"catches the drift\" is untrue for those lines.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "216-235",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`wrapLines` was added in 3496bfa and is only tested indirectly. No question in any test has a word longer than its width, so the `while (rest.length > max)` hard-cut branch is never run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "180-192",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The scroll test moves the window entirely past the live sessions (cursor 36, 6 live) but never asserts that `no live sessions` stays hidden. That is exactly the case the new `liveCount` prop exists for.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "89",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "viewport.test.ts flushes renders with a single `setTimeout(resolve, 0)` at lines 89, 132, 186 and 209, while controls.test.ts:128-138 already has a documented `settled()` helper warning that one turn is only enough on an unloaded machine; reuse it to avoid flaky tests.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.utils.ts",
+      "line": "10",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`clip<T>` uses a bare `T` generic; docs/conventions/general.md §Type safety (line 95) says 'Generics are descriptive — `TConfig`, `TResponse`. Never bare `T` / `U`.'",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "82-96",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The layout thresholds are inline literals. These are the 4 blocks of margin, the `/ 4` section cap, the floor `2` passed twice to `sectionShare`, and the `1 + 3` merge-pane chrome. general.md §No hardcoded values (line 104) says 'Thresholds, timeouts, tool names, path fragments — none are inlined at the use site. They go in the area's `*.constants.ts` as a named export with a JSDoc line'. `CONFIRM_HINT` in `prompt.component.tsx` line 5 is a module-level literal in a component file, not in a constants file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md",
+      "line": "11",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"The frame is at most one row short of the terminal\" reads backwards: `body = rows - 1 - chrome` makes it at least one row shorter than the terminal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "75-78",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment \"Lines the frame spends before any list\" is wrong: the prompt, footer and merge pane render after the lists; what `chrome` holds is the lines that cannot shrink.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md",
+      "line": "25",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"A list that was cut ends in a `+N more` line\" isn't true for the debt block, whose `+N more` line comes before the `N open debt entries` count line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "323",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The worker-model prompt label was shortened to \"worker model (blank for the default)\", dropping that it is the model the conductor launches sessions on; neither the ADR nor a comment says why.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.7458955000000014,
+  "duration_ms": 354841,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 13760,
+    "cache_read": 270899,
+    "cache_creation": 73345,
+    "total": 358016
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 142,
+      "output": 69929,
+      "cache_read": 2272751,
+      "cache_creation": 292022,
+      "cost_usd": 3.5338432000000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 6010,
+      "cache_read": 130538,
+      "cache_creation": 55545,
+      "cost_usd": 0.21205230000000003
+    }
+  ],
+  "permission_denials": []
+}
