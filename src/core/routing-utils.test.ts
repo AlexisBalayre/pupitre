@@ -5,6 +5,7 @@ import {
   asTier,
   CRITICAL_AREAS,
   climbFrom,
+  fixRoundFailure,
   globsIntersect,
   nextRung,
   routeFor,
@@ -158,7 +159,6 @@ describe('windowFailure', () => {
   it('names the first failure of the window', () => {
     expect(windowFailure([steered, rejected, died])).toBe('gate-rejection');
     expect(windowFailure([died, rejected])).toBe('turn-death');
-    expect(windowFailure([regated])).toBe('ci-fix-round');
   });
 
   it('is nothing for a window that ran into nothing', () => {
@@ -166,6 +166,12 @@ describe('windowFailure', () => {
     expect(windowFailure([steered, { type: 'gate_result', from: 'running', to: 'merged' }])).toBe(
       undefined,
     );
+  });
+
+  // A reviewer's finding is no failure of capability: only a repeat climbs, by fixRoundFailure.
+  it('takes no re-gate after a CI fix round for a failure', () => {
+    expect(windowFailure([regated])).toBeUndefined();
+    expect(windowFailure([regated, died])).toBe('turn-death');
   });
 
   it('counts only what came after the newest respawn', () => {
@@ -185,6 +191,51 @@ describe('windowFailure', () => {
     expect(windowFailure([rejected, respawned], true)).toBe('stall');
     expect(windowFailure([died], true)).toBe('turn-death');
     expect(windowFailure([steered], false)).toBeUndefined();
+  });
+});
+
+describe('fixRoundFailure', () => {
+  const round = (...threads: string[]): SessionEvent => ({
+    type: 'other',
+    eventType: 'fix_round',
+    fields: { threads },
+  });
+  const opened = (delivered: boolean): SessionEvent => ({
+    type: 'other',
+    eventType: 'respawn',
+    fields: { delivered },
+  });
+  const merge: SessionEvent = { type: 'merge', files: [] };
+
+  it('is nothing on a first round, whatever its threads', () => {
+    expect(fixRoundFailure([merge], ['T1'])).toBeUndefined();
+    expect(fixRoundFailure([steered, merge, regated], ['T1', 'T2'])).toBeUndefined();
+  });
+
+  it('names a thread the round the newest merge ended was handed and left open', () => {
+    const first = [merge, round('T1', 'T2'), opened(true), regated, merge];
+    expect(fixRoundFailure(first, ['T3', 'T2'])).toBe('repeat-fix-round');
+    expect(fixRoundFailure(first, ['T3'])).toBeUndefined();
+    expect(fixRoundFailure([...first, round('T3'), opened(true), merge], ['T1'])).toBeUndefined();
+  });
+
+  // Its kickoff never landed, so no window was handed its threads.
+  it('passes over a round undone before its window opened', () => {
+    const undone = [merge, round('T1'), opened(false), merge];
+    expect(fixRoundFailure(undone, ['T1'])).toBeUndefined();
+    const retried = [merge, round('T1'), opened(true), merge, round('T1'), opened(false)];
+    expect(fixRoundFailure(retried, ['T1'])).toBe('repeat-fix-round');
+  });
+
+  // The killed round's window recorded the climb when its kickoff landed.
+  it('climbs no further on the retry of a round whose window opened since the merge', () => {
+    const killed = [merge, round('T1'), opened(true), merge, round('T1'), opened(true)];
+    expect(fixRoundFailure(killed, ['T1'])).toBeUndefined();
+  });
+
+  it('reads torn thread ids as none', () => {
+    const torn: SessionEvent = { type: 'other', eventType: 'fix_round', fields: { threads: 'T1' } };
+    expect(fixRoundFailure([merge, torn, opened(true), merge], ['T1'])).toBeUndefined();
   });
 });
 
@@ -226,10 +277,10 @@ describe('climbFrom', () => {
   });
 
   it('marks a failure on the top rung as reached, standing on the top rung', () => {
-    expect(climbFrom('critical', window('critical', 1, 'stall'), 'ci-fix-round')).toEqual({
+    expect(climbFrom('critical', window('critical', 1, 'stall'), 'repeat-fix-round')).toEqual({
       rung: 1,
       reason: 'stall',
-      topReached: 'ci-fix-round',
+      topReached: 'repeat-fix-round',
     });
   });
 });
@@ -269,7 +320,10 @@ describe('nextRung', () => {
       reason: 'gate-rejection',
     });
     expect(nextRung('standard', 2, 'stall')).toEqual({ rung: 3, reason: 'stall' });
-    expect(nextRung('critical', 0, 'ci-fix-round')).toEqual({ rung: 1, reason: 'ci-fix-round' });
+    expect(nextRung('critical', 0, 'repeat-fix-round')).toEqual({
+      rung: 1,
+      reason: 'repeat-fix-round',
+    });
   });
 
   it('stays on its rung with no failure, and after a block', () => {

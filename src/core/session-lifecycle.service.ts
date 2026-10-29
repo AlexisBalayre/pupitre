@@ -38,16 +38,25 @@ import {
   writeCompiledProfile,
 } from './profile-compiler.service.js';
 import { asStringArray } from './report-data.utils.js';
-import { asTier, type ClimbReason, climbFrom, routeFor, taskTier } from './routing.utils.js';
+import {
+  asTier,
+  type ClimbReason,
+  climbFrom,
+  fixRoundFailure,
+  routeFor,
+  taskTier,
+} from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
   currentFixRound,
+  decodeEvent,
   ensureProject,
   getSession,
   getTask,
   insertSession,
   insertTask,
+  listEvents,
   listSessions,
   listTaskSessions,
   readTaskSpec,
@@ -396,22 +405,24 @@ export function respawnRoute(
 }
 
 /**
- * The route a CI fix round's window runs on (decision 90): one rung above the
- * window that finished the work the review left threads on, the climb decision
- * 92 counts a fix round for, with an override kept or named as on a respawn.
- * The conductor runs `pup fix` too, and an override it names never lifts a
- * top-rung refusal, as on its launches.
+ * The route a CI fix round's window runs on (decision 90): the rung of the
+ * window before it, since a reviewer's finding is no failure, and one higher
+ * only when one of `openThreads`, the threads the round is handed, was handed
+ * to the round before it too (decision 92), with an override kept or named as
+ * on a respawn. The conductor runs `pup fix` too, and an override it names
+ * never lifts a top-rung refusal, as on its launches.
  */
 export function fixRoundRoute(
   db: Database,
   session: SessionRow,
+  openThreads: readonly string[],
   override: RouteOverride,
   overrideVia: 'operator' | 'conductor',
 ): SessionRoute {
   return sessionWindowRoute(
     db,
     session,
-    () => 'ci-fix-round',
+    () => fixRoundFailure(listEvents(db, session.id).map(decodeEvent), openThreads),
     override,
     overrideVia === 'operator',
   );

@@ -425,6 +425,23 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     effort: 'medium',
     override: false,
   });
+  /** A round before this one that was handed `threads`, opened its window and was gated again. */
+  const seedFinishedRound = (threads: string[]) => {
+    appendEvent(db, SESSION_ID, 'fix_round', {
+      prUrl: PR_URL,
+      head: pinned,
+      threads,
+      rejectBase: 0,
+    });
+    appendEvent(db, SESSION_ID, 'respawn', { delivered: true });
+    appendEvent(db, SESSION_ID, 'merge', {
+      branch: BRANCH,
+      sha: pinned,
+      target: 'main',
+      files: ['src/feature.ts'],
+      prUrl: PR_URL,
+    });
+  };
 
   it('hands the threads the review opened on the head to a fresh window in a restored worktree', async () => {
     await gateWithPr();
@@ -470,19 +487,19 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     expect(payloads('respawn')).toEqual([{ delivered: true }]);
     // By name only: the pane the gate recorded may be another window's by now.
     expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID]]);
-    // One rung up the ladder, for the CI fix round (decision 92).
-    const rung1 = LADDERS.standard[1];
+    // A first round stays on the rung its last window ran on (decision 92).
+    const rung0 = LADDERS.standard[0];
     expect(vi.mocked(launchSession).mock.calls[0]?.[0]).toMatchObject({
       sessionId: SESSION_ID,
       worktreePath: worktree,
       settingsPath: join(projectPaths(repo, stateBase).compiledDir(SESSION_ID), 'settings.json'),
-      route: { model: rung1?.model, effort: rung1?.effort },
+      route: { model: rung0?.model, effort: rung0?.effort },
       mcpConfigPath: undefined,
     });
     expect(getSession(db, SESSION_ID)).toMatchObject({
       tmux_target: '%9',
-      rung: 1,
-      rung_reason: 'ci-fix-round',
+      rung: 0,
+      rung_reason: null,
     });
     expect(vi.mocked(kickoff).mock.calls[0]?.[0]).toEqual({ sessionId: SESSION_ID, paneId: '%9' });
     const context = readFileSync(
@@ -898,9 +915,41 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     );
   });
 
-  it('refuses on the top rung unless the operator names a route', async () => {
+  // A reviewer's finding is no failure; one the round before left open is (decision 92).
+  it('climbs one rung for a round handed a thread the round before it left open', async () => {
+    seedPrMerge();
+    recordSessionRoute(db, SESSION_ID, routeAt(1));
+    seedFinishedRound(['PRRT_open']);
+    reviewOnGitHub({ threads: [...OPEN_THREAD, { id: 'PRRT_new', body: 'Another.' }] });
+
+    await fix();
+
+    const rung2 = LADDERS.standard[2];
+    expect(vi.mocked(launchSession).mock.calls[0]?.[0].route).toMatchObject({
+      model: rung2?.model,
+      effort: rung2?.effort,
+    });
+    expect(getSession(db, SESSION_ID)).toMatchObject({
+      rung: 2,
+      rung_reason: 'repeat-fix-round',
+    });
+  });
+
+  it('keeps a round on its rung when every thread is new', async () => {
+    seedPrMerge();
+    recordSessionRoute(db, SESSION_ID, routeAt(1));
+    seedFinishedRound(['PRRT_old']);
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await fix();
+
+    expect(getSession(db, SESSION_ID)).toMatchObject({ rung: 1, rung_reason: null });
+  });
+
+  it('refuses a repeat on the top rung unless the operator names a route', async () => {
     seedPrMerge();
     recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));
+    seedFinishedRound(['PRRT_open']);
     reviewOnGitHub({ threads: OPEN_THREAD });
 
     await expectRefusedUnwritten(/top rung .*`pup fix s1 --model <model> --effort <effort>`/);
@@ -1065,6 +1114,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     it('kills the window and takes the session back to merged, to be re-run', async () => {
       seedPrMerge();
       recordSessionRoute(db, SESSION_ID, routeAt(0));
+      seedFinishedRound(['PRRT_open']);
       reviewOnGitHub({ threads: OPEN_THREAD });
       vi.mocked(kickoff).mockReturnValueOnce(false);
 
@@ -1081,14 +1131,14 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         { from: 'merged', to: 'running', kind: 'fix-round' },
         { from: 'running', to: 'merged', kind: 'fix-round-killed' },
       ]);
-      expect(payloads('respawn')).toEqual([{ delivered: false }]);
-      // The route is left for the retry, which climbs once.
+      expect(payloads('respawn')).toEqual([{ delivered: true }, { delivered: false }]);
+      // The route is left for the retry, which climbs once for the repeat.
       expect(getSession(db, SESSION_ID)?.rung).toBe(0);
 
       await fix();
 
       expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', rung: 1 });
-      expect(payloads('fix_round')).toHaveLength(2);
+      expect(payloads('fix_round')).toHaveLength(3);
     });
 
     // A second kill would refuse merged -> killed and mask why the round failed.
