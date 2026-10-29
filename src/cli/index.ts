@@ -145,6 +145,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
+import { buildUsageReport, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -2485,6 +2486,27 @@ export function buildProgram(): Command {
         return;
       }
       printAuditOutcome(db, report, repoPath);
+    });
+  program
+    .command('usage')
+    .description('Report where the Claude usage went, from the project transcripts (read-only)')
+    .option('--since <date>', 'start of the window (default: 7 days ago)')
+    .option('--json', 'print the report as JSON')
+    .action((opts: { since?: string; json?: boolean }) => {
+      const { repoPath, db } = project();
+      // The transcripts hold every session's prompts and tool output, and the
+      // report is for the operator's budget, not for the fleet to steer by.
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup usage` is operator-only; sessions and the conductor cannot run it.');
+      }
+      const since = opts.since ? new Date(opts.since) : new Date(Date.now() - 7 * 86_400_000);
+      if (Number.isNaN(since.getTime())) {
+        return refuse(
+          `--since needs a date such as 2026-10-21, not "${sanitizeReason(opts.since ?? '')}".`,
+        );
+      }
+      const report = buildUsageReport(db, repoPath, { since });
+      console.log(opts.json ? JSON.stringify(report, null, 2) : formatUsageReport(report));
     });
 
   const session = program.command('session').description('Session-internal protocol commands');
