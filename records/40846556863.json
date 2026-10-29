@@ -1,0 +1,259 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-29T09:08:50.752Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40846556863",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40846556863",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cfedc4d545fcecb5fd1fcdb0cfae2e490a07713d",
+  "source": "pr",
+  "pr_number": 202,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/ui/prompt.component.tsx",
+      "line": "13-19",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`truncate-end` on the confirm prompt cuts the end of a long unblock reason. The reason, the `— unblock?` question and the y/n hint go with it. The code comment in `use-controls.hook.ts` says the operator must be shown the whole reason before unblocking.",
+      "body": "**The confirm prompt now cuts off the unblock reason, the question, and the y/n hint**\n\nThis PR makes the confirm prompt a single truncated row:\n```tsx\n<Text wrap=\"truncate-end\">\n  <Text color=\"yellow\">{prompt.question}</Text>\n  <Text dimColor> (y/n, Esc cancels)</Text>\n</Text>\n```\nThe `u` key builds its question from the stored block reason (`use-controls.hook.ts:409-416`):\n```ts\n// The reason first, and read from the store rather than typed by the\n// operator: unblocking is a claim that the block was addressed, and\n// nobody can make that claim about a reason they were never shown.\nquestion: `${blocked.id} was blocked: ${selectedBlockedReason(owner.deps, blocked.id)} — unblock?`,\n```\nSome block reasons are much longer than a terminal row:\n- `'re-steer failed — session unreachable'` makes the line about 90 characters.\n- The `SteerNotDeliveredError` messages (`session-runtime.service.ts:1024-1035`) are about 190-230 characters on their own.\n\nAt 80 columns the end of the line is cut, which removes the cause, `— unblock?` and `(y/n, Esc cancels)`. Nothing else on screen shows the reason:\n- The sessions row shows only `blocked (N rejections)`.\n- `DashboardSession` has no field for the reason.\n- The detail pane has no section for it.\n\nBefore this PR, Ink's default wrap showed the whole line.\n\nPossible fixes:\n- Keep `— unblock? (y/n, Esc cancels)` intact and truncate only the reason. For example, put the hint in its own `flexShrink={0}` `Text` inside a row `Box`.\n- Or let the confirm prompt wrap, and have `App` count its rows from `stdout.columns`.\n\nThe kill question is affected in a milder way: with its hint it is about 87 columns, so the hint is clipped at 80.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cfedc4d545fcecb5fd1fcdb0cfae2e490a07713d/src/cli/ui/prompt.component.tsx#L13-L19",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/radar.component.tsx",
+      "line": "41-43",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The stale-radar notice is not truncated. In a fleet it is about 70 columns wide, so on a narrower terminal it takes two rows while `App` counts one, and the frame reaches the terminal's height again.",
+      "body": "**The stale-radar notice can still wrap, which brings back the flicker**\n\n```tsx\n{radarStale ? (\n  <Text dimColor>{`${lead}conflict radar off — start it with \\`pup watch --start\\``}</Text>\n) : null}\n```\n`App` counts this line as one row (`app.component.tsx:97-100` adds `snapshot.radarStale ? 1 : 0` to `radarUsed`), but the line has no `wrap` setting. ADR 0121 says \"every line counted as one row is truncated … so a narrow terminal cannot add rows the count did not see\".\n\nThe notice shows for every project whose watcher has never run, because `radarStale` is `!beat || …` (`dashboard.service.ts:129`). In a fleet, the line is 68 characters with the 12-character project lead, plus 2 columns for the root `paddingX`. So it wraps below about 70 columns in a fleet, and below about 56 for a single project.\n\nWhen the table is windowed the frame is exactly `rows - 1` tall, so one wrapped row makes it `rows`. Ink then clears and redraws every 2 s, which is the flicker this PR fixes.\n\nExample: `pup ui --all` over two projects with no watcher and 30 planned tasks, in a 65-column tmux pane. The stale-radar test does not catch this because ink-testing-library renders at 100 columns.\n\n89411a5 truncated the header, prompt and read-only lines but missed this one.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cfedc4d545fcecb5fd1fcdb0cfae2e490a07713d/src/cli/ui/radar.component.tsx#L41-L43",
+      "suggestion": "      {radarStale ? (\n        <Text dimColor wrap=\"truncate-end\">\n          {`${lead}conflict radar off — start it with \\`pup watch --start\\``}\n        </Text>\n      ) : null}"
+    },
+    {
+      "file": "src/cli/ui/merge-log.component.tsx",
+      "line": "18-21",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The merge pane's title (`pup merge <id> --pr (done — Enter or Esc closes)`) is counted as one row in `App`'s `mergeLogLines` but has no `wrap`, so in a narrow pane (about 58 columns or fewer) it takes two rows and the frame reaches the terminal height; give it `wrap=\"truncate-end\"`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "155",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The table's `+N more` line is always drawn below the window, so with the cursor near the end of the list (every hidden row above) it reads as \"more below\"; split the count into above and below, or also mark the top.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-terminal-rows.hook.ts",
+      "line": "11-13",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`stdout.rows ?? Number.POSITIVE_INFINITY` only catches `undefined`. A TTY that reports 0 rows (e.g. `docker exec -t` before its first resize) collapses the table to one row plus `+N more`; `stdout.rows || Number.POSITIVE_INFINITY` would treat 0 as unknown.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "199-207",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "'puts the detail pane where the table was' passes even if Enter does nothing: at 24 rows `t-plan5` is never in the window and `s-live0-1` is already in the table. Assert `not.toContain('t-plan0')` and that the pane's own text (e.g. `(Esc closes)`) is present.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "126-135",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "'keeps a long prompt to one row' never truncates anything: the kill question plus its hint (~87 chars) fits ink-testing-library's 100-column frame, so removing `wrap=\"truncate-end\"` would still pass. The input prompt's `truncate-start` has no test at all.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "96-101",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The height sweep covers only one project with the conductor stopped. The baseline line, status line, merge log, `unreadable` stores and fleets of more than two projects are never rendered, so drift in those hand counts (which ADR 0121 relies on this test to catch) goes unnoticed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "204-223",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`viewport.utils.ts` says the tests pin it, but `sectionShare` and `usedLines` have no direct tests, `clip` lacks `max` 0/1 and empty-list cases, and `windowStart` is never tested with `total < size`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "14-60",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`DEPS` is character-identical to `dashboard-components.test.ts:34`, and `sessionAt`/`snapshot` re-implement the `sessionFixture`/`snapshotFixture` builders already in `dashboard-components.test.ts` and `controls.test.ts`; reuse their `Partial<>`-override shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "127",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`await new Promise((resolve) => setTimeout(resolve, 0))` is repeated inline at lines 87, 127, 174 and 197; a local `tick()` helper (or one shared with `controls.test.ts`) would name the flush once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "160-166",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'draws everything' assertion `not.toMatch(/\\+\\d+ more\\s*$/m)` only catches a `+N more` at end of line; plain `not.toMatch(/\\+\\d+ more/)` is stricter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.utils.ts",
+      "line": "16-18",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`moreLine` bakes in a two-space indent that `Debt` and `Radar` both `.trim()` away; only `App` uses the indent, so return the bare `+N more` and let `App` indent its own line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/sessions.component.tsx",
+      "line": "48-57",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `liveCount` prop gives `Sessions` a second source of truth only to keep \"no live sessions\" correct when windowed; `App` already computes `live.length === 0` for `fixedRows` and could draw that line itself.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "87-110",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "About 25 lines of windowing arithmetic (`tableLines`, `fixedRows`, `fits`, `windowSize`, `start`/`end`, the slices) sit inline in `App` beside `viewport.utils.ts`, so they can only be tested by rendering `App`; `debtShare` and `radarShare` are also the same call twice.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/viewport.test.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "New tests belong at `test/unit/<path under src>/` (docs/conventions/testing.md §Layout; ADR 0116 says new code follows it), e.g. `test/unit/cli/ui/viewport-utils.test.ts`; this file is colocated in `src/cli/ui/` like its older siblings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md",
+      "line": "11",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"The frame is at most one row short of the terminal\" reads backwards: `body = terminalRows - 1 - chrome` makes it at least one row short.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/app.component.tsx",
+      "line": "75-77",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment says these are \"Lines the frame spends before any list\", but the prompt, footer and merge pane render after the lists; \"outside the lists\" is accurate.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported that it did not read the component diffs (app, debt, footer, header, prompt, radar, sessions, use-controls), so conventions coverage of those production files is partial. Its review covered the test layout, the ADR format and file naming."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.9410266000000003,
+  "duration_ms": 305689,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 16176,
+    "cache_read": 267630,
+    "cache_creation": 63421,
+    "total": 347239
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 53163,
+      "cache_read": 1691927,
+      "cache_creation": 214132,
+      "cost_usd": 2.663000400000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 8902,
+      "cache_read": 216842,
+      "cache_creation": 66900,
+      "cost_usd": 0.2780262
+    }
+  ],
+  "permission_denials": []
+}
