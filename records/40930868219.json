@@ -1,0 +1,164 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-29T18:32:37.376Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40930868219",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40930868219",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8ff60499caa4394a6f5cb08f22737083b5c572bc",
+  "source": "pr",
+  "pr_number": 207,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "209-213",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When a killed round's retry fails to deliver its kickoff, the next retry stops climbing for the killed window's dead turn or gate rejection. The undelivered retry's `respawn {delivered:false}` event resets windowFailure, so the failure is lost.",
+      "body": "**A retry whose kickoff never landed hides the killed window's failure from the next retry.**\n\n`fixRoundFailure` passes the full event list to `windowFailure` once a round's window opened:\n\n```ts\n    } else if (event.type === 'other' && event.eventType === 'respawn') {\n      opened ||= handed && event.fields.delivered === true;\n    }\n  }\n  if (opened) return windowFailure(events);\n```\n\n`windowFailure` (line 178) clears its failure on every `respawn` event, whether or not it was delivered:\n\n```ts\nif (event.type === 'other' && event.eventType === 'respawn') failure = undefined;\n```\n\n`relaunchWorker` appends `respawn {delivered: false}` in its `finally` block when the kickoff never lands, then rolls the round back to `merged` with `fix-round-killed`. It records the route only after a delivered kickoff.\n\nHere is the sequence:\n1. Events so far: `merge, fix_round(T1), respawn(true), turn_died, gate_result{fix-round-killed}`.\n2. `pup fix` reads this as `turn-death` and plans a climb of one rung.\n3. Its kickoff never lands, which appends `respawn(false)` and `fix-round-killed`. No route is recorded, so the row stays on T1's rung.\n4. On the next `pup fix`, `opened` is still true, so `windowFailure` runs. It counts only the events after the undelivered `respawn(false)`, finds no failure, and returns `undefined`.\n5. That retry runs on T1's rung, and the climb for the dead turn is lost. A gate rejection in that window is lost the same way.\n\nThis contradicts ADR 0092's amendment, which says the retry \"climbs again only on a gate rejection or a dead turn that window ran into\". It also contradicts relaunchWorker's doc, which says an undone round's retry \"climbs no higher than the round would have\": here it climbs lower. A kickoff that fails because the window never became ready is most likely right after a dead turn, which is exactly this case. No test covers a delivered window followed by an undone retry and then another retry. Before this PR the climb was unconditional (`() => 'ci-fix-round'`), so the PR introduced this.\n\nAn undelivered respawn opened no window, so it should not mark where the window that ran begins.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8ff60499caa4394a6f5cb08f22737083b5c572bc/src/core/routing.utils.ts#L209-L213\nhttps://github.com/AlexisBalayre/pupitre/blob/8ff60499caa4394a6f5cb08f22737083b5c572bc/src/core/routing.utils.ts#L178",
+      "suggestion": "    } else if (event.type === 'other' && event.eventType === 'respawn') {\n      opened ||= handed && event.fields.delivered === true;\n    }\n  }\n  // An undelivered respawn opened no window, so it does not bound the one that ran.\n  const ran = events.filter(\n    (event) =>\n      !(event.type === 'other' && event.eventType === 'respawn' && event.fields.delivered !== true),\n  );\n  if (opened) return windowFailure(ran);"
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "203-206",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "If a no-round re-gate (merged to merged, after the PR head moved) comes between two fix rounds, the second round is not counted as a repeat and keeps its rung. That breaks the 'every round after the first on the PR is a repeat' rule.",
+      "body": "**A re-gate between rounds erases the repeat, so a top-rung session can skip the operator.**\n\n```ts\n    if (event.type === 'merge') {\n      repeats = opened;\n      handed = false;\n      opened = false;\n```\n\n`repeats` is recomputed at every `merge` event. `regateMerged` also writes a `merge` event (`recordMerge`, `src/core/regate.service.ts:224-226`). The operator is pointed at that re-gate whenever the PR head moves off the pin, for example after GitHub's \"Update branch\" or a hand push: `reviewVerdict` says \"Re-gate it with `pup merge <id> --pr` first\" (`ci-wait.service.ts:221-227`).\n\nHere is the sequence:\n1. `merge(M1), fix_round(T1), respawn(true), …, merge(M2)` sets `repeats = true`.\n2. The head moves.\n3. The re-gate writes `merge(M3)`, which sets `repeats = opened = false`.\n4. The second `pup fix` returns `undefined` and stays on its rung.\n\nBecause `nextRung` sets `topReached` only for a non-undefined failure, a top-rung session also takes that round without the operator's override. That defeats the second commit's stated purpose (\"so the top-rung refusal holds\").\n\nThe code matches the narrow clause in its docstring and ADR 0092 line 39 (\"follows a round the newest merge ended\"). But the ADR's stated consequence (\"every round after the first on the PR is a repeat, and a top-rung session takes one only on the operator's override\") and `skills/pup/SKILL.md` (\"every later round on the PR climbs one\") describe a per-PR rule this code does not deliver. Before this PR, the re-gate path always climbed.\n\nMaking `repeats` sticky once any round's window opened gives the per-PR rule. The `fixRoundFailure` docstring (line 189) and ADR 0092 line 39 should then say \"after any round a merge ended\". Add a regression test as well: `[merge, round('T1'), opened(true), merge, merge]` should return `'repeat-fix-round'`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8ff60499caa4394a6f5cb08f22737083b5c572bc/src/core/routing.utils.ts#L203-L206",
+      "suggestion": "    if (event.type === 'merge') {\n      repeats ||= opened;\n      handed = false;\n      opened = false;"
+    },
+    {
+      "file": "src/claude/model-ladder.constants.ts",
+      "line": "37-40",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The LADDERS JSDoc added by this PR still describes the superseded thread-matching rule (\"per CI fix round handed a thread the round before it left open\"); fixRoundFailure ignores threads and climbs for every round after one the newest merge ended.",
+      "body": "**This comment describes the rule the second commit replaced.**\n\n```ts\n * rung and climbs one per relaunch or respawn that follows a failure, and per\n * CI fix round handed a thread the round before it left open; past the last\n```\n\nThis wording comes from the first commit's thread-matching rule. The second commit (8ff6049) dropped that rule. `fixRoundFailure` (`src/core/routing.utils.ts:185-195`) now says \"A round after one the newest merge ended is a repeat, whatever its threads\". The amended ADR 0092 likewise says thread ids cannot tell a re-raised finding from a new one. A reader of `LADDERS` would conclude that a fix round with only new threads stays on its rung, but it climbs.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8ff60499caa4394a6f5cb08f22737083b5c572bc/src/claude/model-ladder.constants.ts#L37-L40",
+      "suggestion": " * Each tier's escalation ladder, cheapest first. A task starts on the first\n * rung and climbs one per relaunch or respawn that follows a failure, and per\n * CI fix round that follows one the newest merge ended; past the last one it\n * goes to the operator instead (decision 92)."
+    },
+    {
+      "file": "docs/adr/0092-pup-routes-every-window-s-model-and-effort.md",
+      "line": "26-49",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0092's landed text is rewritten in place (the CI-fix-round failure clause and the 'Today a merged task is claimed…' sentence are removed or edited), and the dated amendment doesn't name the PR. docs/adr/README.md says a later change appends a dated amendment with the PR and does not rewrite landed text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0090-pup-fix-session-hands-the-ci-review-s.md",
+      "line": "50, 147-148",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0090's landed text is rewritten in place without an amendment marker: the 'top rung' bullet and the 'an undone round climbs once on its retry, not twice' sentence. docs/adr/README.md says landed text is amended, not rewritten.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "196",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "fixRoundFailure returns `ClimbReason | 'blocked' | undefined`, but unlike windowFailure's JSDoc its own doc doesn't say what 'blocked' means (never climbs).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "697",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The top-rung refusal text says the round 'follows a round the gate already merged, or retries one that failed'. The code's condition is a round the newest merge ended, and a retry climbs only after a gate rejection or a dead turn.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "docs/adr/0090-pup-fix-session-hands-the-ci-review-s.md",
+      "line": "143",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADR 0090 still says `fixRoundRoute` climbs one rung for `ci-fix-round`, a reason that no longer exists in code. The PR's own amendment note right after it contradicts it.",
+      "refutation": "docs/adr/README.md says a landed decision 'does not rewrite the landed text'. Instead, an amendment is appended. Keeping the original sentence with an inline `*Amended by …:*` marker after it is the repo's established form (see ADRs 0017, 0036, 0027, 0008, 0074, 0097). Deleting the sentence, as proposed, would break that rule, and the marker already flags the clause as superseded."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The sonnet validator for the model-ladder.constants.ts finding said Bash refused its `git diff <merge_base>..HEAD -- <path>` call. It confirmed the finding from the files alone, so it did not check which commit wrote the comment. The orchestrator checked the diff and confirmed the comment is an added line."
+    }
+  ],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.0901326,
+  "duration_ms": 297051,
+  "num_turns": 16,
+  "tokens": {
+    "input": 10,
+    "output": 17011,
+    "cache_read": 209420,
+    "cache_creation": 52951,
+    "total": 279392
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 112,
+      "output": 53857,
+      "cache_read": 1740594,
+      "cache_creation": 233489,
+      "cost_usd": 2.752004800000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 9378,
+      "cache_read": 193258,
+      "cache_creation": 89980,
+      "cost_usd": 0.33812780000000003
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 77f96cfae30b211ac361f4005ed48339eb5a29d3..HEAD -- src/claude/model-ladder.constants.ts"
+    }
+  ]
+}
