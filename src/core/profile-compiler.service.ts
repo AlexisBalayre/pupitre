@@ -390,13 +390,34 @@ function buildContextMarkdown(
 function worktreeGitShell(git: WorktreeGitEnv): string {
   return `GIT_ADMIN='${git.GIT_DIR}'
 GIT_COMMON='${git.GIT_COMMON_DIR}'
-DEADLINE=$(( $(date +%s) + ${HOOK_READ_DEADLINE_SECONDS} ))
+# A clock that reads as no number leaves the deadline passed, so every read fails.
+DEADLINE=$(date +%s)
+case "$DEADLINE" in
+  ''|*[!0-9]*) DEADLINE=0 ;;
+  *) DEADLINE=$(( DEADLINE + ${HOOK_READ_DEADLINE_SECONDS} )) ;;
+esac
+# Sets BOUND_LEFT to the seconds left before the deadline; fails once none are.
+in_time() {
+  BOUND_NOW=$(date +%s)
+  case "$BOUND_NOW" in ''|*[!0-9]*) return 1 ;; esac
+  BOUND_LEFT=$(( DEADLINE - BOUND_NOW ))
+  [ "$BOUND_LEFT" -gt 0 ]
+}
 bounded() {
-  BOUND_LEFT=$(( DEADLINE - $(date +%s) ))
-  if [ "$BOUND_LEFT" -gt 0 ]; then
+  if in_time; then
     "$@" &
     BOUND_JOB=$!
-    { sleep "$BOUND_LEFT"; kill -9 "$BOUND_JOB"; } >/dev/null 2>&1 &
+    # Stopped early, the watcher kills its sleep too. A trap only sets a flag, so a
+    # signal before the sleep's pid is known is acted on once it is, and the sleep
+    # is killed with -9: a TERM there, between fork and exec, the trap would catch.
+    {
+      BOUND_STOP=
+      trap 'BOUND_STOP=1' TERM
+      sleep "$BOUND_LEFT" &
+      BOUND_SLEEP=$!
+      [ -z "$BOUND_STOP" ] && wait "$BOUND_SLEEP"
+      if [ -n "$BOUND_STOP" ]; then kill -9 "$BOUND_SLEEP"; else kill -9 "$BOUND_JOB"; fi
+    } >/dev/null 2>&1 &
     BOUND_WATCH=$!
     # Each wait's stderr is dropped: it is where bash reports a job a signal ended.
     wait "$BOUND_JOB" 2>/dev/null
@@ -725,8 +746,9 @@ trap 'rm -rf "$WORK"' EXIT
 ${worktreeGitShell(git)}
 
 # One line per dirty path outside this task's scope: "<fingerprint> <reason> <path>".
-# Returns 1 when git cannot be read and 2 when there are too many paths to check;
-# both refuse after the call. git names every path raw with -z; tr turns each
+# Returns 1 when git cannot be read, 2 when there are too many paths to check and
+# 3 when the deadline passes before every path is read; each refuses after the
+# call. git names every path raw with -z; tr turns each
 # newline inside a name into \\001 before NUL becomes the line separator, so a
 # record is always one line and a name is only ever quoted data, never split,
 # globbed or evaluated. Precedence is the scope hook's: .claude/, then scope-out,
@@ -759,6 +781,10 @@ out_of_scope() {
     tr '\\n\\000' '\\001\\n' < "$WORK/merged" > "$WORK/differs"
   fi
   while IFS= read -r ENTRY; do
+    # A path left unread past the deadline fails the whole check (3), never a
+    # fingerprint: one the snapshot before the call never reached either would
+    # read the same in both and pass however it changed (decision 124).
+    in_time || return 3
     CODE=\${ENTRY%"\${ENTRY#??}"}
     FILE=\${ENTRY#???}
     # Untracked and ignored paths are in no diff against a commit, so they never pass.
@@ -781,11 +807,16 @@ out_of_scope() {
              # One swapped in after the test is read under the deadline. wc names the
              # file after its size, and the path starts at the worktree's first slash.
              if [ -f "$WORKTREE/$FILE" ] && [ ! -L "$WORKTREE/$FILE" ]; then
-               SIZE=$(bounded wc -c -- "$WORKTREE/$FILE" 2>/dev/null) && SIZE=$(( \${SIZE%%/*} )) || SIZE=
+               if SIZE=$(bounded wc -c -- "$WORKTREE/$FILE" 2>/dev/null); then
+                 SIZE=$(( \${SIZE%%/*} ))
+               elif [ $? -eq 124 ]; then return 3
+               else SIZE=
+               fi
                if [ -z "$SIZE" ]; then SUM=unreadable
                elif [ "$SIZE" -gt ${RECHECK_HASH_MAX_BYTES} ]; then SUM=large-$SIZE
-               else
-                 SUM=$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null) || SUM=unreadable
+               elif SUM=$(safe_git -C "$WORKTREE" hash-object --no-filters -- "$FILE" 2>/dev/null); then :
+               elif [ $? -eq 124 ]; then return 3
+               else SUM=unreadable
                fi
              else SUM=special
              fi ;;
@@ -809,6 +840,9 @@ case $? in
   0) ;;
   2) printf 'SCOPE CHECK FAILED: over ${RECHECK_MAX_DIRTY_PATHS} dirty paths in the worktree to check after: %s\\n' "$CMD" >&2
      echo "Commit or clean the worktree; until then every Bash call is refused." >&2
+     exit 2 ;;
+  3) printf 'SCOPE CHECK FAILED: the check ran out of time before it read every dirty path after: %s\\n' "$CMD" >&2
+     echo "A fifo where a file should be, or dirty files too large to hash in time, holds it: remove them or commit." >&2
      exit 2 ;;
   *) printf 'SCOPE CHECK FAILED: could not read git status after: %s\\n' "$CMD" >&2; exit 2 ;;
 esac

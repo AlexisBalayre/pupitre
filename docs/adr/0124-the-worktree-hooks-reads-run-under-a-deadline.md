@@ -28,15 +28,31 @@
     deadline belongs to the hook, not to each call. A check of many paths therefore cannot
     spend it once per path, and after one blocked read every later one fails at once. Whole
     seconds put the kill between 3 and 4 seconds after the start, which leaves the hook a
-    second to refuse. Each refuses the way it refuses a git failure. The scope hook
-    refuses the conflict-resolution Edit. The re-check fails its snapshot before the call and
-    refuses after it ("could not read git status"). A dirty file whose read was killed is
-    fingerprinted `unreadable`, which makes it a new violation. The read guard fails open, as it
-    does for any pointer it cannot check. Bash prints a job a signal ended to the shell's
-    stderr, so both `wait`s drop theirs, and the watcher writes to `/dev/null` so no `sleep` it
-    leaves behind holds the hook's pipes. *Cost.* About 5 ms a call for the `date`, the `env`
-    exec and the watcher's `sleep`: the re-check over a clean worktree took a median 239 ms
-    against 207 ms unbounded, under a load average near 100. Not taken: perl's `alarm`,
+    second to refuse. A clock that reads as no number leaves the deadline passed, so every
+    read fails rather than the shell exiting on the arithmetic, which bash 3.2's `/bin/sh` does
+    with 127 and would fail open. Each hook refuses the way it refuses a git failure. The scope
+    hook refuses the conflict-resolution Edit. The re-check fails its snapshot before the call and
+    refuses after it ("could not read git status"). *The re-check's paths.* Past the deadline,
+    a dirty path the loop has not read fails the whole check, at the top of each record and on
+    a killed `wc` or `hash-object`, and the check after the call refuses with "the check ran
+    out of time". It is never fingerprinted `unreadable` instead. The check after the call
+    reports only lines the snapshot before it lacks, so a path neither snapshot reached in
+    time would read `unreadable` in both and pass however the call changed it (security review).
+    That needs no race: enough dirty files near the 64 MiB hashing cap sorting before an
+    out-of-scope file already dirty spend the deadline on every call. The loop also stops
+    forking there, where it would otherwise carry on past the hook timeout. A failure that is
+    not the deadline's, a file git cannot read, is still `unreadable`. The read guard fails
+    open, as it does for any pointer it cannot check. Bash prints a job a signal ended to the
+    shell's stderr, so both `wait`s drop theirs. The watcher writes to `/dev/null`, so its
+    `sleep` holds none of the hook's pipes, and a watcher stopped early kills its `sleep`
+    too. Its TERM trap only sets a flag, checked once the `sleep`'s pid is known and again after
+    the `wait`, and the `sleep` is killed with `-9`: a TERM between its fork and its exec reaches
+    a child still carrying the trap, which catches it and then sleeps the full time. Over 100
+    calls that return at once, 8 `sleep`s outlived a watcher killed without the trap, and 30
+    outlived one whose trap killed them with TERM. With `-9`, none did, under bash 3.2 and dash.
+    *Cost.* About 5 ms a call for the `date`,
+    the `env` exec and the watcher's `sleep`: the re-check over a clean worktree took a median
+    239 ms against 207 ms unbounded, under a load average near 100. Not taken: perl's `alarm`,
     a new runtime dependency for the hooks; a watchdog over the whole hook, which has no
     process group of its own to kill and whose shell defers a trap until its blocked child
     returns; GNU `timeout`, which macOS lacks.
@@ -62,15 +78,21 @@
     `.gitmodules` override still makes the served server's `status` run a child git in the
     submodule, which drops the pins, as it does for any git Claude Code runs after its
     startup (decision 101's submodule ceiling). The deadline bounds the time the hook takes,
-    not what a killed git had already done. A `sleep` per bounded call outlives the call, up
-    to the deadline, holding nothing.
+    not what a killed git had already done. Dirty files outside the scope that take longer than
+    the deadline to hash refuse every Bash call until they are committed or removed, as more
+    than 200 dirty paths do (decision 63).
     *Tests* (`profile-compiler.test.ts`). A `head` on the scope hook's PATH turns MERGE_HEAD into
     a fifo after the `-f` test and then reads it. The resolving Edit, which passes before the
     swap, is refused in under 5 seconds with the deadline line. An `include.path` in the repo
     config naming a fifo has the resolving Edit refused, and the re-check after a call refuse
     with the deadline line and "could not read git status", each in under 5 seconds. A `wc`
     on the re-check's PATH turns a dirty out-of-scope file into a fifo after the
-    regular-file test. The check is refused in under 5 seconds and records the violation.
+    regular-file test. The check is refused in under 5 seconds as out of time. Two
+    out-of-scope files are dirty before a call, and a `wc` that never returns on the first
+    spends the deadline in both checks before the second, which the call changes. The check
+    after it refuses as out of time, in under 5 seconds. That test, and the fifo `wc` one, fail
+    with the loop's deadline exits taken out. A `date` that prints nothing never blocks the
+    call and refuses after it.
     Each test runs its hook under a 15-second timeout, so without the deadline it fails slow
     or with a null status, never with the test's own kill read as a refusal. A session's
     `mcp.json` carries the three pins, `GIT_CONFIG_NOSYSTEM=1` and the command-scope config.

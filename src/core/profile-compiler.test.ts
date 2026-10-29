@@ -744,8 +744,60 @@ describe('generated bash re-check (decision 63)', () => {
     expect(lstatSync(written).isFIFO()).toBe(true);
     expect(result.status).toBe(2);
     expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
-    expect(violations().map((v) => v.path)).toEqual(['src/cli/index.ts']);
+    expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
   }, 30_000);
+
+  // Both snapshots run out before the out-of-scope file that was already dirty, so
+  // an unread path fingerprinted alike in each would pass however it changed. A wc
+  // that never returns on the path before it stands in for the slow hashing of
+  // many large files.
+  it('refuses rather than passes a dirty file both checks ran out of time before reading', () => {
+    const slow = join(worktree, 'src/cli/decoy.ts');
+    const target = join(worktree, 'src/cli/index.ts');
+    writeFileSync(slow, 'dirty before the call\n');
+    writeFileSync(target, 'dirty before the call\n');
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' });
+    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], { encoding: 'utf8' });
+    writeFileSync(
+      join(bin, 'wc'),
+      `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${slow}' ]; then exec ${realSleep.stdout.trim()} 30; fi\nexec ${realWc.stdout.trim()} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const slowed = { PATH: `${bin}:${process.env.PATH}` };
+    const payload = (phase: string) => ({
+      hook_event_name: phase,
+      tool_use_id: 'toolu_01late',
+      tool_input: { command: 'x' },
+    });
+
+    expect(run(payload('PreToolUse'), slowed, 15_000).status).toBe(0);
+    writeFileSync(target, 'changed by the call\n');
+    const started = Date.now();
+    const result = run(payload('PostToolUse'), slowed, 15_000);
+    expect(result.status).toBe(2);
+    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
+  }, 30_000);
+
+  it('refuses after the call, and never blocks it, when the clock reads as no number', () => {
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'date'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const clockless = { PATH: `${bin}:${process.env.PATH}` };
+    const payload = (phase: string) => ({
+      hook_event_name: phase,
+      tool_use_id: 'toolu_01clock',
+      tool_input: { command: 'x' },
+    });
+
+    expect(run(payload('PreToolUse'), clockless).status).toBe(0);
+    const result = run(payload('PostToolUse'), clockless);
+    // A shell that exited on the arithmetic would end 1 or 127, which fails open.
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('SCOPE CHECK FAILED');
+  });
 
   it('lets the call run but refuses after it when its scratch dir cannot be made', () => {
     writeFileSync(join(root, 'compiled/bash-snapshots'), 'a file where the directory goes');
