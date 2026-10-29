@@ -8,16 +8,21 @@
     frame), and only takes its incremental path under that line. `pup ui` re-reads every two
     seconds and the footer carries the read's timestamp, so a fleet with thirty planned tasks
     redrew and flickered the whole screen every two seconds.
-    *Rule.* The frame is at most one row short of the terminal. `useTerminalRows` reads the
-    height from Ink's stdout and re-reads it on `resize`, so a resize re-fits; a stream with no
-    height (a pipe) reads as unbounded and nothing is clipped. `App` counts what cannot shrink
-    (header, unreadable stores, the margins between blocks, prompt, footer, merge pane), and
-    the rest is the body. The debt and radar blocks are each held to a quarter of the body
-    (split evenly across projects, never under two lines each: a trailer for debt, the stale
-    notice for radar), and the session and backlog rows share what is left as one window around
-    the cursor. Every line counted as one row is truncated (`wrap="truncate-end"`, the input
-    prompt `truncate-start` so its cursor stays in view), never wrapped, so a narrow terminal
-    cannot add rows the count did not see. A list that
+    *Rule.* The frame is at most one row short of the terminal. `useTerminalSize` reads the
+    height and width from Ink's stdout and re-reads them on `resize`, so a resize re-fits; a
+    stream with no size (a pipe) reads as unbounded and nothing is clipped. `App` counts what
+    cannot shrink (header, unreadable stores, the margins between blocks, prompt, footer, merge
+    pane), and the rest is the body. The debt and radar blocks are each held to a quarter of the
+    body (split evenly across projects, never under two lines each: a trailer for debt, the
+    stale notice for radar), and the session and backlog rows share what is left as one window
+    around the cursor. Every line counted as one row is truncated (`wrap="truncate-end"`, the
+    input prompt `truncate-start` so its cursor stays in view), never wrapped, so a narrow
+    terminal cannot add rows the count did not see. The y/n question is the one exception: `u`
+    asks with the stored block reason, which nothing else on screen shows and which runs to two
+    hundred characters, and an operator cannot answer a question whose cause or `(y/n)` was cut
+    off. It is broken at spaces into rows of the terminal's width by `wrapLines`, each row drawn
+    truncated, and `App` counts the rows that function returns rather than leaving the breaks to
+    Ink's own wrap, which it could not see. A list that
     was cut ends in a `+N more` line that is counted in its budget. The window is a function
     of the cursor alone, so a refresh does not move it, and moving the cursor past its edge
     scrolls it. The detail pane still replaces the table.

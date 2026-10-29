@@ -34,8 +34,10 @@ export function Debt({
           {`${lead}OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`}
         </Text>
       ))}
-      {hidden > 0 ? <Text color="red">{`${lead}${moreLine(hidden).trim()}`}</Text> : null}
-      <Text dimColor>
+      {hidden > 0 ? (
+        <Text color="red" wrap="truncate-end">{`${lead}${moreLine(hidden).trim()}`}</Text>
+      ) : null}
+      <Text dimColor wrap="truncate-end">
         {`${lead}${openDebtCount} open debt ${openDebtCount === 1 ? 'entry' : 'entries'}`}
       </Text>
     </Box>

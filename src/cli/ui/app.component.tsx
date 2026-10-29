@@ -6,12 +6,12 @@ import { Detail } from './detail.component.js';
 import { Footer } from './footer.component.js';
 import { FleetHeader, Header } from './header.component.js';
 import { MergeLogPane } from './merge-log.component.js';
-import { Prompt } from './prompt.component.js';
+import { Prompt, promptLines } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
 import { type LiveRow, type PlannedRow, useControls } from './use-controls.hook.js';
 import { type DashboardReading, type ProjectReading, useSnapshot } from './use-snapshot.hook.js';
-import { useTerminalRows } from './use-terminal-rows.hook.js';
+import { useTerminalSize } from './use-terminal-size.hook.js';
 import { useTerminalStatus } from './use-terminal-status.hook.js';
 import { moreLine, sectionShare, usedLines, windowStart } from './viewport.utils.js';
 
@@ -62,7 +62,7 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
   const sessionCount = projects.reduce((sum, project) => sum + project.snapshot.sessions.length, 0);
   const projectColumn = (rows: { project: ProjectReading }[]) =>
     isFleet ? { projects: rows.map((row) => row.project.snapshot.projectId) } : {};
-  const terminalRows = useTerminalRows();
+  const terminal = useTerminalSize();
   const { cursor, prompt, mergeLog, detail, status } = useControls({
     projects,
     live,
@@ -74,15 +74,23 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
 
   // Lines the frame spends before any list: the header, the unreadable stores,
   // the four margins between blocks, the prompt, the footer and the merge pane.
-  // Each is one terminal row because each is truncated, never wrapped.
+  // Each is one terminal row because each is truncated, never wrapped, save the
+  // y/n question, which wraps into rows of its own that it counts here.
   const headerLines = isFleet || !only ? 1 + projects.length : only.snapshot.baseline ? 3 : 2;
   // The footer's two lines (hint or read-only reason, then the keys), and the status line over them.
   const footerLines = 2 + (status ? 1 : 0);
   const mergeLogLines = mergeLog ? 1 + 3 + Math.max(mergeLog.lines.length, 1) : 0;
+  // The root's padding takes a column each side.
+  const width = terminal.columns - 2;
   const chrome =
-    headerLines + unreadable.length + 4 + (prompt ? 1 : 0) + footerLines + mergeLogLines;
+    headerLines +
+    unreadable.length +
+    4 +
+    (prompt ? promptLines(prompt, width) : 0) +
+    footerLines +
+    mergeLogLines;
   // One row short of the terminal, because a frame as tall as it is already clears.
-  const body = Math.max(terminalRows - 1 - chrome, 0);
+  const body = Math.max(terminal.rows - 1 - chrome, 0);
   const sectionCap = Math.floor(body / 4);
   const debtShare = sectionShare(sectionCap, projects.length, 2);
   const radarShare = sectionShare(sectionCap, projects.length, 2);
@@ -152,7 +160,11 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
               {...projectColumn(visiblePlanned)}
               selectedIndex={cursor - live.length - plannedStart}
             />
-            {fits ? null : <Text dimColor>{moreLine(total - windowSize)}</Text>}
+            {fits ? null : (
+              <Text dimColor wrap="truncate-end">
+                {moreLine(total - windowSize)}
+              </Text>
+            )}
           </>
         )}
       </Box>
@@ -173,7 +185,7 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
         </Box>
       ) : null}
       <Box marginTop={1} flexDirection="column">
-        {prompt ? <Prompt prompt={prompt} /> : null}
+        {prompt ? <Prompt prompt={prompt} width={width} /> : null}
         <Footer
           refreshedAt={readAt.toISOString().slice(11, 19)}
           {...(status ? { status } : {})}

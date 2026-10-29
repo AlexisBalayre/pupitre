@@ -59,12 +59,12 @@ function snapshot(live: number, planned: number): DashboardSnapshot {
   };
 }
 
-/** The app on a terminal `rows` tall: the stream is told its height, then resized, as a real one is. */
+/** The app on a terminal `rows` tall: the stream is told its size, then resized, as a real one is. */
 async function renderAt(
   rows: number,
   live = 6,
   planned = 40,
-  options: { projects?: DashboardSnapshot[]; readOnlyReason?: string } = {},
+  options: { projects?: DashboardSnapshot[]; readOnlyReason?: string; columns?: number } = {},
 ) {
   const snapshots = options.projects ?? [snapshot(live, planned)];
   const instance = render(
@@ -77,11 +77,13 @@ async function renderAt(
       ...(options.readOnlyReason ? { readOnlyReason: options.readOnlyReason } : {}),
     }),
   );
-  await resize(instance, rows);
+  await resize(instance, rows, options.columns);
   return instance;
 }
 
-async function resize(instance: ReturnType<typeof render>, rows: number) {
+async function resize(instance: ReturnType<typeof render>, rows: number, columns = 100) {
+  // The test stream's `columns` is a getter on its prototype, so it is shadowed, not assigned.
+  Object.defineProperty(instance.stdout, 'columns', { value: columns, configurable: true });
   (instance.stdout as unknown as { rows: number }).rows = rows;
   instance.stdout.emit('resize');
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -121,20 +123,29 @@ describe('viewport', () => {
     instance.unmount();
   });
 
-  it('keeps a long prompt to one row', async () => {
-    const instance = await renderAt(24);
+  it.each([100, 40, 24])(
+    'counts the rows a y/n question wraps into at %i columns',
+    async (columns) => {
+      const instance = await renderAt(24, 6, 40, { columns });
 
-    instance.stdin.write('k');
-    await new Promise((resolve) => setTimeout(resolve, 0));
+      instance.stdin.write('k');
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(instance.lastFrame()).toContain('(y/n, Esc cancels)');
-    expect(heightOf(instance)).toBeLessThan(24);
-    instance.unmount();
-  });
+      expect(instance.lastFrame()).toContain('Esc cancels)');
+      expect(heightOf(instance)).toBeLessThan(24);
+      instance.unmount();
+    },
+  );
 
-  it.each([20, 24, 30])(
-    'keeps a stale radar over two projects under a %i-row terminal',
-    async (rows) => {
+  it.each([
+    [20, 100],
+    [24, 100],
+    [30, 100],
+    [24, 65],
+    [24, 40],
+  ])(
+    'keeps a stale radar over two projects under a %i-row, %i-column terminal',
+    async (rows, columns) => {
       const stale = (projectId: string) => ({
         ...snapshot(6, 40),
         projectId,
@@ -143,6 +154,7 @@ describe('viewport', () => {
       });
       const instance = await renderAt(rows, 6, 40, {
         projects: [stale('ab12cd34ef56'), stale('cd34ef56ab12')],
+        columns,
       });
 
       expect(heightOf(instance)).toBeLessThan(rows);

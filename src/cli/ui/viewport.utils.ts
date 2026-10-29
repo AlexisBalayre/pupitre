@@ -28,6 +28,34 @@ export function usedLines(natural: number[], share: number): number {
 }
 
 /**
+ * `text` broken at spaces into lines of at most `width` characters, a word
+ * longer than a line cut where the line ends. The lines are drawn one row each,
+ * truncated, so the count here is the count on screen: Ink's own wrap would
+ * decide its breaks where `App` cannot see them.
+ */
+export function wrapLines(text: string, width: number): string[] {
+  const max = Math.max(width, 1);
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    const joined = line === '' ? word : `${line} ${word}`;
+    if (joined.length <= max) {
+      line = joined;
+      continue;
+    }
+    if (line !== '') lines.push(line);
+    let rest = word;
+    while (rest.length > max) {
+      lines.push(rest.slice(0, max));
+      rest = rest.slice(max);
+    }
+    line = rest;
+  }
+  lines.push(line);
+  return lines;
+}
+
+/**
  * Where a window of `size` rows starts so the cursor is inside it, centred
  * where the list is long enough to let it be. Stateless on purpose: the same
  * cursor always draws the same window, so a refresh never moves the table.

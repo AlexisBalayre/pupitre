@@ -58,7 +58,11 @@ export function Sessions({
 }) {
   return (
     <Box flexDirection="column">
-      {liveCount === 0 ? <Text dimColor>no live sessions</Text> : null}
+      {liveCount === 0 ? (
+        <Text dimColor wrap="truncate-end">
+          no live sessions
+        </Text>
+      ) : null}
       {sessions.map((session, index) => {
         const project = projects?.[index];
         return (
@@ -72,7 +76,10 @@ export function Sessions({
         );
       })}
       {finishedCount > 0 ? (
-        <Text dimColor>{`  ${finishedCount} finished — \`pup status\` lists them`}</Text>
+        <Text
+          dimColor
+          wrap="truncate-end"
+        >{`  ${finishedCount} finished — \`pup status\` lists them`}</Text>
       ) : null}
     </Box>
   );

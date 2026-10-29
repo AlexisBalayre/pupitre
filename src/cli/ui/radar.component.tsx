@@ -37,9 +37,13 @@ export function Radar({
             (radarStale ? '  (stale)' : '')}
         </Text>
       ))}
-      {hidden > 0 ? <Text color="yellow">{`${lead}${moreLine(hidden).trim()}`}</Text> : null}
+      {hidden > 0 ? (
+        <Text color="yellow" wrap="truncate-end">{`${lead}${moreLine(hidden).trim()}`}</Text>
+      ) : null}
       {radarStale ? (
-        <Text dimColor>{`${lead}conflict radar off — start it with \`pup watch --start\``}</Text>
+        <Text dimColor wrap="truncate-end">
+          {`${lead}conflict radar off — start it with \`pup watch --start\``}
+        </Text>
       ) : null}
     </Box>
   );
