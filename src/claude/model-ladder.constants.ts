@@ -50,4 +50,4 @@ export const CONDUCTOR_ROUTE: ModelRoute = opus('high');
 export const UTILITY_ROUTE: ModelRoute = { model: HAIKU_MODEL, effort: 'low' };
 
 /** The effort the conductor runs its security-review subagent at, over gate, git, tmux and store diffs. */
-export const SECURITY_REVIEW_EFFORT = 'xhigh';
+export const SECURITY_REVIEW_EFFORT = 'high';
