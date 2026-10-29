@@ -211,12 +211,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
         `then run \`pup land ${id}\`. ${NOT_STARTED}`,
     );
   }
-  const route = routeOrRefuse(
-    db,
-    session,
-    threads.map((thread) => thread.id),
-    req,
-  );
+  const route = routeOrRefuse(db, session, req);
   const paths = projectPaths(req.repoPath, req.pathsBase);
   const recompiled = orNotStarted(() => recompileSessionProfile(db, req, session, paths));
   // Under the lock `pup merge` and `pup land` take, since both move the branch
@@ -686,26 +681,21 @@ function reviewVerdict(
 }
 
 /**
- * The fix round's route, on the rung before it unless it is handed a thread
- * the round before it left open (decision 92). A top-rung refusal is
+ * The fix round's route, on the rung before it unless it repeats a round or
+ * retries one that failed (decision 92). A top-rung refusal is
  * reworded for this command: the respawn the session's refusal names is for a
  * running window, and a merged session has none.
  */
-function routeOrRefuse(
-  db: Database,
-  session: SessionRow,
-  openThreads: readonly string[],
-  req: FixRoundRequest,
-): SessionRoute {
+function routeOrRefuse(db: Database, session: SessionRow, req: FixRoundRequest): SessionRoute {
   try {
-    return fixRoundRoute(db, session, openThreads, req.override ?? {}, req.overrideVia);
+    return fixRoundRoute(db, session, req.override ?? {}, req.overrideVia);
   } catch (error) {
     if (!(error instanceof TopRungReachedError)) throw error;
     const id = sanitizeReason(session.id);
     throw new Error(
-      `Session ${id}'s worker ran on the top rung of its ladder, and this round is handed a ` +
-        'thread the round before it left open, which climbs one, so pup does not start it ' +
-        "there. It is the operator's to decide: " +
+      `Session ${id}'s worker ran on the top rung of its ladder, and this round follows a ` +
+        'round the gate already merged, or retries one that failed, which climbs one, so pup ' +
+        "does not start it there. It is the operator's to decide: " +
         `\`pup fix ${id} --model <model> --effort <effort>\`, or fix the PR by hand. ` +
         NOT_STARTED,
     );

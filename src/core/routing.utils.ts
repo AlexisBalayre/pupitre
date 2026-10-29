@@ -184,33 +184,34 @@ export function windowFailure(
 
 /**
  * What a CI fix round's window climbs for, from the session's events oldest
- * first and the ids of the threads the round is handed (decision 92): only a
- * thread the round the newest merge ended was handed, and left open. A round
- * counts once its window opened, a `respawn` delivered after its `fix_round`,
- * so one `pup kill` undid before its kickoff landed was handed nothing. A
- * round whose window opened since the newest merge already recorded its climb,
- * so its retry after a kill climbs no further.
+ * first (decision 92). A round counts once its window opened, a `respawn`
+ * delivered after its `fix_round`, so one undone before its kickoff landed
+ * never ran. A round after one the newest merge ended is a repeat, whatever
+ * its threads: the review mints fresh thread ids on every head a round
+ * pushes, so a re-raised finding never shares one. The retry of a round whose
+ * window opened since the newest merge, and was killed, climbs on a rejection
+ * or a dead turn that window ran into, as a respawn of it would: its repeat
+ * climb is recorded already. A stall at that kill is not measured yet.
  */
 export function fixRoundFailure(
   events: readonly SessionEvent[],
-  openThreads: readonly string[],
-): ClimbReason | undefined {
-  let handed: unknown[] | undefined;
-  let opened: unknown[] | undefined;
-  let ended: unknown[] = [];
+): ClimbReason | 'blocked' | undefined {
+  let handed = false;
+  let opened = false;
+  let repeats = false;
   for (const event of events) {
     if (event.type === 'merge') {
-      ended = opened ?? [];
-      handed = undefined;
-      opened = undefined;
+      repeats = opened;
+      handed = false;
+      opened = false;
     } else if (event.type === 'other' && event.eventType === 'fix_round') {
-      handed = Array.isArray(event.fields.threads) ? event.fields.threads : [];
+      handed = true;
     } else if (event.type === 'other' && event.eventType === 'respawn') {
-      if (event.fields.delivered === true && handed) opened = handed;
+      opened ||= handed && event.fields.delivered === true;
     }
   }
-  if (opened) return undefined;
-  return openThreads.some((id) => ended.includes(id)) ? 'repeat-fix-round' : undefined;
+  if (opened) return windowFailure(events);
+  return repeats ? 'repeat-fix-round' : undefined;
 }
 
 /**

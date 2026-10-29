@@ -407,22 +407,21 @@ export function respawnRoute(
 /**
  * The route a CI fix round's window runs on (decision 90): the rung of the
  * window before it, since a reviewer's finding is no failure, and one higher
- * only when one of `openThreads`, the threads the round is handed, was handed
- * to the round before it too (decision 92), with an override kept or named as
+ * for a repeat round or the retry of a killed one that failed, as
+ * `fixRoundFailure` reads them (decision 92), with an override kept or named as
  * on a respawn. The conductor runs `pup fix` too, and an override it names
  * never lifts a top-rung refusal, as on its launches.
  */
 export function fixRoundRoute(
   db: Database,
   session: SessionRow,
-  openThreads: readonly string[],
   override: RouteOverride,
   overrideVia: 'operator' | 'conductor',
 ): SessionRoute {
   return sessionWindowRoute(
     db,
     session,
-    () => fixRoundFailure(listEvents(db, session.id).map(decodeEvent), openThreads),
+    () => fixRoundFailure(listEvents(db, session.id).map(decodeEvent)),
     override,
     overrideVia === 'operator',
   );

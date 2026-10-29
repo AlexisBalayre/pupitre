@@ -425,12 +425,15 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     effort: 'medium',
     override: false,
   });
-  /** A round before this one that was handed `threads`, opened its window and was gated again. */
-  const seedFinishedRound = (threads: string[]) => {
+  /**
+   * A round before this one that opened its window and was gated again: on an
+   * older head, so the review's threads now carry ids it never saw.
+   */
+  const seedFinishedRound = () => {
     appendEvent(db, SESSION_ID, 'fix_round', {
       prUrl: PR_URL,
-      head: pinned,
-      threads,
+      head: '1'.repeat(40),
+      threads: ['PRRT_round1'],
       rejectBase: 0,
     });
     appendEvent(db, SESSION_ID, 'respawn', { delivered: true });
@@ -915,12 +918,13 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     );
   });
 
-  // A reviewer's finding is no failure; one the round before left open is (decision 92).
-  it('climbs one rung for a round handed a thread the round before it left open', async () => {
+  // A reviewer's finding is no failure, but a second round is a repeat: the
+  // review mints new thread ids on every head a round pushes (decision 92).
+  it('climbs one rung for a second round, its threads new ids on a new head', async () => {
     seedPrMerge();
     recordSessionRoute(db, SESSION_ID, routeAt(1));
-    seedFinishedRound(['PRRT_open']);
-    reviewOnGitHub({ threads: [...OPEN_THREAD, { id: 'PRRT_new', body: 'Another.' }] });
+    seedFinishedRound();
+    reviewOnGitHub({ threads: OPEN_THREAD });
 
     await fix();
 
@@ -935,21 +939,10 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     });
   });
 
-  it('keeps a round on its rung when every thread is new', async () => {
-    seedPrMerge();
-    recordSessionRoute(db, SESSION_ID, routeAt(1));
-    seedFinishedRound(['PRRT_old']);
-    reviewOnGitHub({ threads: OPEN_THREAD });
-
-    await fix();
-
-    expect(getSession(db, SESSION_ID)).toMatchObject({ rung: 1, rung_reason: null });
-  });
-
   it('refuses a repeat on the top rung unless the operator names a route', async () => {
     seedPrMerge();
     recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));
-    seedFinishedRound(['PRRT_open']);
+    seedFinishedRound();
     reviewOnGitHub({ threads: OPEN_THREAD });
 
     await expectRefusedUnwritten(/top rung .*`pup fix s1 --model <model> --effort <effort>`/);
@@ -1114,7 +1107,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     it('kills the window and takes the session back to merged, to be re-run', async () => {
       seedPrMerge();
       recordSessionRoute(db, SESSION_ID, routeAt(0));
-      seedFinishedRound(['PRRT_open']);
+      seedFinishedRound();
       reviewOnGitHub({ threads: OPEN_THREAD });
       vi.mocked(kickoff).mockReturnValueOnce(false);
 

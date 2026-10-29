@@ -58,8 +58,8 @@ critical, anything else standard; `--tier` on `plan add|edit` overrides the rule
 marks it `*`. Standard climbs Sonnet 5.5 medium → Sonnet 5.5 high → Opus 5.5 high → Opus 5.5
 xhigh, critical Opus 5.5 high → Opus 5.5 xhigh, one rung per relaunch or respawn after a gate
 rejection, a dead turn or a stall; a blocked task never climbs. A CI fix round (`pup fix`) runs
-on the rung the session's last window ran on, and climbs one only when a thread it is handed was
-also handed to the round before it (`repeat-fix-round`). `pup status`,
+on the rung the session's last window ran on; every later round on the PR climbs one
+(`repeat-fix-round`). `pup status`,
 `pup ui` and the dashboard show each session's model, effort and rung. A failure on the top rung
 refuses the next launch or respawn and lists the task under Needs you as `top-rung`: re-plan it,
 or pass `--model` and `--effort` to `pup launch`, `pup respawn` or `pup kill --respawn`. An

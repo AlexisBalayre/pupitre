@@ -206,36 +206,37 @@ describe('fixRoundFailure', () => {
     fields: { delivered },
   });
   const merge: SessionEvent = { type: 'merge', files: [] };
+  const killed: SessionEvent = { type: 'gate_result', from: 'running', to: 'merged' };
 
-  it('is nothing on a first round, whatever its threads', () => {
-    expect(fixRoundFailure([merge], ['T1'])).toBeUndefined();
-    expect(fixRoundFailure([steered, merge, regated], ['T1', 'T2'])).toBeUndefined();
+  it('is nothing on a first round, whatever the window before it ran into', () => {
+    expect(fixRoundFailure([merge])).toBeUndefined();
+    expect(fixRoundFailure([steered, rejected, died, merge])).toBeUndefined();
   });
 
-  it('names a thread the round the newest merge ended was handed and left open', () => {
-    const first = [merge, round('T1', 'T2'), opened(true), regated, merge];
-    expect(fixRoundFailure(first, ['T3', 'T2'])).toBe('repeat-fix-round');
-    expect(fixRoundFailure(first, ['T3'])).toBeUndefined();
-    expect(fixRoundFailure([...first, round('T3'), opened(true), merge], ['T1'])).toBeUndefined();
+  // The review mints fresh thread ids on every head a round pushes, so a
+  // re-raised finding never shares one: the round itself is the repeat.
+  it('names a repeat for a round after one the newest merge ended, whatever its threads', () => {
+    const first = [merge, round('T1'), opened(true), regated, merge];
+    expect(fixRoundFailure(first)).toBe('repeat-fix-round');
+    expect(fixRoundFailure([...first, round('T2'), opened(true), regated, merge])).toBe(
+      'repeat-fix-round',
+    );
   });
 
-  // Its kickoff never landed, so no window was handed its threads.
+  // Its kickoff never landed, so it never ran.
   it('passes over a round undone before its window opened', () => {
-    const undone = [merge, round('T1'), opened(false), merge];
-    expect(fixRoundFailure(undone, ['T1'])).toBeUndefined();
-    const retried = [merge, round('T1'), opened(true), merge, round('T1'), opened(false)];
-    expect(fixRoundFailure(retried, ['T1'])).toBe('repeat-fix-round');
+    expect(fixRoundFailure([merge, round('T1'), opened(false), killed, merge])).toBeUndefined();
+    const retried = [merge, round('T1'), opened(true), merge, round('T2'), opened(false), killed];
+    expect(fixRoundFailure(retried)).toBe('repeat-fix-round');
   });
 
-  // The killed round's window recorded the climb when its kickoff landed.
-  it('climbs no further on the retry of a round whose window opened since the merge', () => {
-    const killed = [merge, round('T1'), opened(true), merge, round('T1'), opened(true)];
-    expect(fixRoundFailure(killed, ['T1'])).toBeUndefined();
-  });
-
-  it('reads torn thread ids as none', () => {
-    const torn: SessionEvent = { type: 'other', eventType: 'fix_round', fields: { threads: 'T1' } };
-    expect(fixRoundFailure([merge, torn, opened(true), merge], ['T1'])).toBeUndefined();
+  // Its window recorded the repeat climb when its kickoff landed.
+  it('climbs the retry of a killed round only on what its window ran into', () => {
+    const ran = [merge, round('T1'), opened(true), merge, round('T2'), opened(true)];
+    expect(fixRoundFailure([...ran, killed])).toBeUndefined();
+    expect(fixRoundFailure([...ran, rejected, killed])).toBe('gate-rejection');
+    expect(fixRoundFailure([...ran, died, killed])).toBe('turn-death');
+    expect(fixRoundFailure([merge, round('T1'), opened(true), died, killed])).toBe('turn-death');
   });
 });
 
