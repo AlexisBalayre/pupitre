@@ -1,0 +1,215 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-29T17:05:15.815Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "40915780721",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/40915780721",
+  "actor": "AlexisBalayre",
+  "commit_sha": "29c649ac4d853ad981211bcbc04144bec2c2c515",
+  "source": "pr",
+  "pr_number": 204,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1969-2009",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When an ADR-index-only rebase stops, the gate now waits out the whole script run (up to the stage timeout) and then runs `rebase --continue`. That command reads the stopped rebase's state files from the worktree's git admin dir. ADR 101 says the session can write that dir, and the session is still running during this window (decision 80; comments at L1051, L2056). The driver check before `--continue` reads only config and `info/attributes`, never that state. So whatever the state says to do runs in the gate's own process, outside the sandbox, with the operator's environment. Before this PR a stopped rebase was aborted right away and `--continue` never ran.",
+      "body": "**The gate's `rebase --continue` follows rebase state the session can write.**\n\nWhen an ADR-index-only rebase stop is resolved, `rebaseOntoTarget` waits for the whole sandboxed `scripts/adr-index.sh` run (up to `GATE_COMMAND_TIMEOUT_MS`). It then runs `git rebase --continue` outside the sandbox, with the operator's environment ([L1969-L2009](https://github.com/AlexisBalayre/pupitre/blob/29c649ac4d853ad981211bcbc04144bec2c2c515/src/core/merge-gate.service.ts#L1969-L2009)).\n\n`--continue` re-reads the stopped rebase's state from `GIT_DIR`, which here is `<common>/worktrees/<id>/rebase-merge/`. The session can write that admin dir (decision 101: its `commondir`, `index` and `config.worktree` live there). The session is also alive while the gate runs (decision 80; see the comments at [L1051](https://github.com/AlexisBalayre/pupitre/blob/29c649ac4d853ad981211bcbc04144bec2c2c515/src/core/merge-gate.service.ts#L1051) and [L2052-L2056](https://github.com/AlexisBalayre/pupitre/blob/29c649ac4d853ad981211bcbc04144bec2c2c515/src/core/merge-gate.service.ts#L2052-L2056)).\n\nSo a session that waits for `rebase-merge/` to appear can append `exec <cmd>` to `git-rebase-todo`, or edit option files such as `gpg_sign_opt`. The gate's `--continue` then runs that in pup's own process.\n\n- Nothing in `GIT_SAFE_CONFIG` disarms a todo line.\n- The only check before `--continue` is `assertNoArmedGitDrivers` ([L2000](https://github.com/AlexisBalayre/pupitre/blob/29c649ac4d853ad981211bcbc04144bec2c2c515/src/core/merge-gate.service.ts#L2000)). It reads config and `info/attributes`, never the rebase state.\n\nThis exposure is new with this PR. Before it, a stop was aborted at once and `--continue` never ran. `--abort` runs no todo commands, and the initial `git rebase <sha>` works from its in-memory todo.\n\nDecision 50 says pup's own git calls must never turn a write to the shared git dir into code run by pup. The check-then-run window it accepted was milliseconds. This one lasts the script's whole runtime, and it reopens at every stop the recursion resolves.\n\nPossible fixes:\n- Drop `--continue` and finish the remaining picks in plumbing, as `mergeTargetInto` already does with `merge-tree`/`commit-tree`.\n- At the least, before `--continue`, check that `git-rebase-todo` and the option files still hold exactly what the gate's own rebase wrote (for example, a snapshot taken at the stop and compared byte for byte), and refuse otherwise.\n\nEither way, ADR 0120's *Security review* section should then list the worktree's rebase state as a surface, alongside the scratch checkout.\n\n*(The claims about how git's sequencer reads its state files come from knowledge of the pinned git version, not from git's source.)*",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1675-1694",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`hashAdrIndex` opens `<checkout>/docs/adr/README.md` with `O_NOFOLLOW`, which only refuses a link at the last path component. A process the script leaves behind can swap `docs` or `docs/adr` for a link out of the checkout, and `hash-object -w` then stores that outside `README.md` in the object store before `aroundAdrIndex` refuses it. Gate children can already read almost everything, so the practical leak is small. But ADR 0120 promises that no swapped-in link can get a file stored, and nothing tests a swapped parent directory. Fixes: check the bytes in Node before `hash-object -w`, or open each path component with `O_NOFOLLOW`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1829-1839",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The check that the index is the only conflict reads only git's list of conflicted files. Some merge-ort conflicts make the merge unclean without adding an entry to that list, for example `CONFLICT (directory rename split)` or `CONFLICT (implicit dir rename)`. If one of them lands in the same merge as an ADR-index conflict, the gate commits git's best-guess tree as a clean merge, and the CONFLICT message never reaches the worker. Consider refusing when any `CONFLICT` message names a path other than docs/adr/README.md.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1752-1759",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`adr-index.sh` always ends its output with exactly one newline. So a merged README that ends right at `<!-- adr-index:end -->` with no trailing newline, or that has extra trailing blank lines, is refused with \"scripts/adr-index.sh changed docs/adr/README.md outside the adr-index markers\". The refusal is safe, but it blames the script when the input simply was not in canonical form.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1718-1720, 1780",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`regenerateAdrIndex` returns a bare string for two outcomes. `''` means \"not an ADR-index-only conflict\", and a non-empty string is a refusal already formatted as a suffix for the caller's message. Callers can only tell \"not applicable\" from \"refused\" by checking for the empty string. A tagged result such as `{kind: 'other'} | {kind: 'refused', reason} | {kind: 'resolved', blob, tree}` would make this explicit, and each caller would format its own line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1647, 1725-1732, 1762",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`aroundAdrIndex` returns an unnamed `[string, string]` pair, so the region merge works by position: it maps over `[0, 1]`, casts with `side[at] as string`, and compares results with `JSON.stringify(...) !== JSON.stringify([before, after])`. A `{ before, after }` shape plus a small `mergeRegion(base, ours, theirs)` would remove the casts and the JSON comparison.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1648, 1721",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This change adds two more copies of `const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };`, in `aroundAdrIndex` and `regenerateAdrIndex`, on top of the existing ones at L1271 and L1815. That is past the project's third-use point; one module-level `PIPED` constant would replace all four.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1722, 1980-1985",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On the rebase path, the `treeOf` callback rewrites the worktree index (`setIndex(ours)`) before `regenerateAdrIndex` runs any check. So every refused stop that looks like an ADR-index conflict has already had its index changed, and only the later `abort()` undoes it. The merge path's callback ignores its argument. Passing the tree in directly, with the rebase caller doing `setIndex`/`write-tree` itself, would keep that side effect next to its abort handling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4845-4872",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test \"hashes the README it checked, not a link swapped in after the check\" never asserts that the swap happened. If `hashAdrIndex` stopped calling `hash-object`, the hook would never fire and the test would still pass. Also, if `checkout` were still `''` when the hook fired, `join('', INDEX)` would delete the repo's real docs/adr/README.md. Fix: assert `ran('hash-object')` and `checkout !== ''`, or have the predicate return false until `checkout` is set.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4685, 4714, 4871",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The loop ``for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);`` is repeated in three tests, each right after `freshIndexAt(...)`, and it re-encodes the entry format `addDecision` writes. Move the assertion into `freshIndexAt`, or into one helper next to it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1640-1646",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `aroundAdrIndex` JSDoc lists its refusals (markers, replacement character) but leaves out the first one, the `ADR_INDEX_MAX_BYTES` size cap. `hashAdrIndex`'s JSDoc relies on that cap (\"which `aroundAdrIndex` then refuses unread\"). Add it to the list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4598-4600",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `describe('a conflict in the generated ADR index alone (decision 120)')` says \"Here rather than beside the plain rebase tests for `beforeGit` and `armBefore`\" without saying that the block sits here because it needs those helpers. State that outright, or drop the sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1971",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The rebase path has no `assertNoArmedGitDrivers` re-check right before the first `rebase <targetSha>`. The last check runs before the lock and the gh calls (L1055-1061), while the open-PR path re-checks right before `merge-tree`. A one-line re-check before the first `runGit(worktree, step, ...)` would give both paths the same check.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.3311993499999994,
+  "duration_ms": 735752,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 18471,
+    "cache_read": 294452,
+    "cache_creation": 85284,
+    "total": 398219
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 152,
+      "output": 114655,
+      "cache_read": 2412949,
+      "cache_creation": 432380,
+      "cost_usd": 5.194049800000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 7820,
+      "cache_read": 244553,
+      "cache_creation": 70004,
+      "cost_usd": 0.2777093
+    },
+    {
+      "model": "claude-opus-4-8",
+      "input": 8,
+      "output": 22482,
+      "cache_read": 236363,
+      "cache_creation": 28667,
+      "cost_usd": 0.85944025
+    }
+  ],
+  "permission_denials": []
+}
