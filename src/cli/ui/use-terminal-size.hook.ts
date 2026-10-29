@@ -1,7 +1,7 @@
 import { useStdout } from 'ink';
 import { useEffect, useState } from 'react';
 
-export interface TerminalSize {
+interface TerminalSize {
   rows: number;
   columns: number;
 }
