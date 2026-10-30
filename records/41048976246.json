@@ -1,0 +1,277 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T11:42:27.194Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41048976246",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41048976246",
+  "actor": "AlexisBalayre",
+  "commit_sha": "72e4d924a2745afb80c6d29eb2ff9c1dd3462932",
+  "source": "pr",
+  "pr_number": 204,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1780-1785",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "After the script runs, `regenerateAdrIndex` only checks that the text outside the markers is unchanged. It never checks that the index block was filled in. A `scripts/adr-index.sh` that exits 0 without rewriting the README would therefore pass, and the merge would commit an empty index, dropping both sides' lines. Consider refusing when the block is still empty while the merged tree holds decision files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4760",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Teardown of the scratch checkout is asserted only on the success path, and only for the root directory, not for the `.git/worktrees` registration. None of the refusal tests (script failed, changed outside markers, link/fifo left, ArmedGitDriverError) checks that the `pup-gate-adr-index-*` root and its registration are gone, so moving `dropGateCheckout` out of the `finally` would go unnoticed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4815-4835",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test merges an index where only one side changed text outside the markers (e.g. the branch edits the preamble and both sides add a decision) and checks that the edit survives. A regression to `return base` in the region merge would silently revert that side's preamble or tail edit, because the post-script check compares against the same wrong `[before, after]`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1775-1779",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test interrupts the ADR script child. If `error instanceof GateInterruptedError ? error : new AdrIndexRefused(...)` were changed to always wrap, an operator's Ctrl-C during regeneration would become a worker rejection and the suite would still pass. The existing decision-95 interrupt pattern (a sleeping child plus calling the SIGINT listeners) could cover it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1705-1707",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `regenerateAdrIndex` JSDoc says two sides that both changed a region outside the markers are refused \"as the plain merge refuses them\". The region merge is actually stricter than git: edits to different paragraphs of the preamble merge clean under git but are refused here. The behavior is fine; drop the \"as the plain merge refuses them\" comparison.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1651, 1731, 1832",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`const piped = { stdio: ['ignore', 'pipe', 'pipe'] as [...] }` is now declared in four functions (L1271, `aroundAdrIndex`, `regenerateAdrIndex`, `mergeTargetInto`), two of them added by this PR. That is past the third-use point; one module-level constant would replace all four.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1710-1785",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Raised before and still unchanged: `regenerateAdrIndex` returns `{ tree } | string`, where `''` means not applicable and a non-empty string is a pre-formatted refusal. It also compares `[string, string]` tuples with `JSON.stringify`. A tagged result and a `{ before, after }` shape would make both explicit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1717-1795",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`regenerateAdrIndex` is about 80 lines doing five jobs: classify the conflict, check for shared decision numbers, merge the regions, run the script in a scratch checkout, and verify and write the tree. The shared-number check and the region merge are pure and could be split out as named helpers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1842-1862",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`mergeTargetInto` now parses `merge-tree` stdout inline (`split('\\n')`, `listed.indexOf('')`), mixing conflict-list parsing into the merge flow. That parsing could live next to `ADR_INDEX_CONFLICT`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4686-4771",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Raised before and still present in the ADR-index tests: the happy path spells out `mergeOpenPr`'s body, `expectNoDriver` has one caller, the `(000${n}-d${n}.md) (accepted)` loop is repeated, and `const unchanged = (text) => text` duplicates `addDecision`'s default.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4750-4760",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`expect(cut).toHaveLength(2)` and the armed-smudge test's `expect(ran('read-tree')).toBe(false)` assert how many git calls ran or which subcommand ran, not the outcome, so a harmless internal reshuffle would break them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0079-git-safe-config-turns-off-signature-verification-not.md",
+      "line": "60-61",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `*Amended by decision 120:*` note has no date and no PR. docs/adr/README.md asks for an amendment section that is \"dated, with the PR\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0109-one-file-per-decision-under-docs-adr-numbered.md",
+      "line": "4",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "0109 gets only the `Amended by: [0120]` header line and no body note. A reader of 0109 is not told what decision 120 changes, unlike 0079, which got a note.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1610-1760",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Raised before and still present: the inline `class AdrIndexRefused extends Error {}` breaks general.md §Code layout's \"no inline error classes\" rule. The `ADR_*` constants, plus the literals `'pup-gate-adr-index-'` and `'pup merge: ADR index'`, sit in the service rather than merge-gate.constants.ts (§No hardcoded values). The `aroundAdrIndex` JSDoc summary is a noun phrase rather than an imperative verb phrase (§JSDoc).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1752-1754",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment `// The child writes the merged README too, under its own grants, ...` restates the `regenerateAdrIndex` and `hashAdrIndex` JSDoc, so it is a duplicate under AGENTS.md §Comments. Delete it or cut it to a clause the JSDoc lacks.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2060-2063",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rebase `catch` comment repeats the full WHY already given in the `regenerateAdrIndex` JSDoc and ADR 0120. A pointer such as `// ADR index conflicts stay the worker's on this path (decision 120).` would do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1656",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`// Text, marker, text, marker, text: the one shape the script rewrites.` narrates the split result the next lines show. Drop it, or replace it with the real WHY: the leading `\\n` is there so a begin marker on line 1 still matches `ADR_INDEX_MARKER`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0120-fresh-base-regenerates-a-conflicted-adr-index-in-the.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"(found on CI review)\" appears several times, along with \"A first cut checked that state…\": this is review-process history inside a decision record whose text already explains each constraint. Drop those asides.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1620-1660",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Raised before and still present: the `aroundAdrIndex` JSDoc says each part carries its joining newline (only `after` does) and leaves out the size-cap refusal. The \"(pupitre's is 25 KB)\" parenthetical on `ADR_INDEX_MAX_BYTES` will go stale. The test describe-block comment about `beforeGit`/`armBefore` still reads as if those helpers were under test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "429-481",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`filesTheRoundChanged` documents its merge-tree as \"as fresh-base merges it\" but returns an empty set on any conflict, including the ADR-index-only conflict fresh-base now resolves. A fix round on a decision-recording PR whose target added a decision therefore auto-resolves no threads. This behavior predates the PR, but the parity its doc claims no longer holds.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.835492700000003,
+  "duration_ms": 457149,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 16499,
+    "cache_read": 294414,
+    "cache_creation": 70246,
+    "total": 381171
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 148,
+      "output": 133550,
+      "cache_read": 3561987,
+      "cache_creation": 373217,
+      "cost_usd": 5.460812400000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 10358,
+      "cache_read": 215468,
+      "cache_creation": 99799,
+      "cost_usd": 0.3746803
+    }
+  ],
+  "permission_denials": []
+}
