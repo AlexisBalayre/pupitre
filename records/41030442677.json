@@ -1,0 +1,98 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T09:03:32.002Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41030442677",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41030442677",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a9195434b15638f3c21c858fce51acc2c3bcf128",
+  "source": "pr",
+  "pr_number": 210,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md",
+      "line": "37-39",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Saving paragraph's derived ratio does not follow from its inputs: 27/78 is about 1 in 3 and 142/597 about 1 in 4, not \"one turn in five to six\"; the counts are transcript mentions rather than turns, and the step from them to the ~100 status-read turns/day bound is not shown.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md",
+      "line": "42-43",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The net-saving arithmetic is only partly shown: 100 status reads minus 20-30 pushes gives 70-80, not 70, and the 50-100 range has no stated derivation (its upper bound equals the gross saving, implying zero push cost); show how the range is built or state one figure with its inputs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR number 0125 skips 0119-0124 in this tree; docs/adr/README.md says to take the highest NNNN on origin/main and increment it, so confirm 0119-0124 are taken on main (or by open PRs) before merge, otherwise renumber the filename, heading, body marker and index line.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.4526764,
+  "duration_ms": 59761,
+  "num_turns": 8,
+  "tokens": {
+    "input": 8,
+    "output": 3813,
+    "cache_read": 135134,
+    "cache_creation": 27901,
+    "total": 166856
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 3813,
+      "cache_read": 135134,
+      "cache_creation": 27901,
+      "cost_usd": 0.3265268
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 4172,
+      "cache_read": 86701,
+      "cache_creation": 30291,
+      "cost_usd": 0.1261496
+    }
+  ],
+  "permission_denials": []
+}
