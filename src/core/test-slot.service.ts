@@ -243,9 +243,14 @@ function release(path: string, token: string): void {
   }
 }
 
+type WaitSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
+
+/** The signals that end a wait: closing the terminal sends a SIGHUP. */
+const WAIT_SIGNALS: readonly WaitSignal[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
 /** A wait for a slot that an interrupt of pup's own ended: nothing ran. */
 export class SlotWaitInterruptedError extends Error {
-  constructor(readonly signal: 'SIGINT' | 'SIGTERM') {
+  constructor(readonly signal: WaitSignal) {
     super(`Interrupted by ${signal} while waiting for a test slot; nothing ran.`);
     this.name = 'SlotWaitInterruptedError';
   }
@@ -307,14 +312,16 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
   // A wait can be long, and the merge lock keeps node alive through a signal
   // (`withMergeLock`): with no child to forward it to, an interrupt has to
   // end the wait here, or a Ctrl-C does nothing until a slot frees.
-  let interrupted: 'SIGINT' | 'SIGTERM' | undefined;
+  let interrupted: WaitSignal | undefined;
   let wake: () => void = () => undefined;
-  const onSignal = (signal: 'SIGINT' | 'SIGTERM'): void => {
-    interrupted = signal;
-    wake();
-  };
-  process.on('SIGINT', onSignal);
-  process.on('SIGTERM', onSignal);
+  const listeners = WAIT_SIGNALS.map((signal) => {
+    const listener = (): void => {
+      interrupted = signal;
+      wake();
+    };
+    process.on(signal, listener);
+    return [signal, listener] as const;
+  });
   try {
     // Staged and renamed in, so no worker reads it empty and removes it as a dead gate's.
     if (waitFile) renameSync(stage(dir, record), waitFile);
@@ -345,8 +352,7 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
       });
     }
   } finally {
-    process.off('SIGINT', onSignal);
-    process.off('SIGTERM', onSignal);
+    for (const [signal, listener] of listeners) process.off(signal, listener);
     if (waitFile) {
       try {
         unlinkSync(waitFile);
