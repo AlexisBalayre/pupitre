@@ -39,6 +39,21 @@ instead (decisions 60, 61, addendum to decision 43).
   fork promoted), or this is a first record on a project whose sessions have already had the
   shared config to write. The only way to move it. Operator-only with the rest of `pup init`: it
   is the value a session's merge is held to (decisions 56, 64).
+- `pup intent new <title> | show <id> | list | accept <id>` — what the operator wants, written
+  before the work: one tracked file per intent, `docs/intent/NNNN-<slug>.md` in the repo, with a
+  `- Status:` line (`draft`, `accepted` or `closed`) and five sections — Problem, Outcome,
+  Constraints, Open questions, and What I must understand after review. `new` writes the
+  template as a draft numbered one past the highest id; `show` prints one, stripped of control
+  characters; `list` prints `<id>  <status>  <title>` per intent, and a file pup cannot parse as
+  `unreadable` with why. `accept` moves a draft to accepted only when its understanding section
+  holds two or three list items ending in `?`, and rewrites the status line alone. A file is read
+  as rendered: it needs exactly one status line, outside any code fence or HTML comment, and a
+  question in either does not count. An id is
+  exactly four digits, and the file is found by listing the directory, never by joining the id
+  into a path, so an id is never a path, a link or a control character. A linked intent file, or
+  a `docs` or `docs/intent` that is a link, is refused. `accept` is operator-only, refused to a
+  session and to the conductor; `new`, `show` and `list` are anyone's, and run against the main
+  checkout's `docs/intent/` even from a session's worktree (decision 126).
 - `pup plan add "<goal>" --scope <glob>...` — record a task with no session. `pup plan` lists the
   backlog; `pup plan drop <task>` removes one; `pup plan edit <task> [--goal|--scope|--accept]`
   rewrites one. A task is in the backlog until a session claims it (decision 40).
