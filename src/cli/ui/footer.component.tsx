@@ -28,7 +28,11 @@ export function Footer({
           {status.message}
         </Text>
       ) : null}
-      {readOnlyReason ? <Text color="yellow">{readOnlyReason}</Text> : null}
+      {readOnlyReason ? (
+        <Text color="yellow" wrap="truncate-end">
+          {readOnlyReason}
+        </Text>
+      ) : null}
       {/* Two lines rather than one: the whole set does not fit an eighty-column
           terminal, and a hint line that truncates hides the keys at its end. */}
       {readOnlyReason ? null : (
