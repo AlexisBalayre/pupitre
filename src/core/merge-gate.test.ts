@@ -4689,24 +4689,34 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         expect(sh(repo, 'git', 'config', '--list')).not.toMatch(/^merge\./m);
       };
 
-      it('rebases a branch never pushed, regenerating the index over the rebased tree', async () => {
+      /** The gate on the open PR `pushedOnce` left, which merges the target in. */
+      const mergeOpenPr = () =>
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      // A stop resolved here would go on with `--continue`, which reads back
+      // rebase state the live session can write.
+      it('keeps the plain refusal for a branch it rebases, running nothing across the stop', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
         addDecision(worktree, 2);
+        const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
         addDecision(repo, 3);
-        const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
 
         const outcome = await merge();
 
-        expect(outcome.status).toBe('merged');
-        expect(outcome.report.stages).toContainEqual(
-          expect.objectContaining({ stage: 'fresh-base', detail: 'auto-rebased onto main' }),
-        );
-        expect(sh(repo, 'git', 'rev-parse', 'main~1').trim()).toBe(targetSha);
-        const index = freshIndexAt('main');
-        for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
-        expect(readFileSync(join(repo, INDEX), 'utf8')).toBe(index);
-        expectNoDriver();
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toMatch(/^CONFLICT \(content\): Merge conflict in docs\/adr\/README\.md$/m);
+        expect(detail).not.toContain('was not regenerated');
+        // No tree was committed for a scratch checkout, and the rebase never went on.
+        expect(ran('commit-tree')).toBe(false);
+        expect(ran('--continue')).toBe(false);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+        expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
       });
 
       it('merges main into an open PR, regenerating the index over the merged tree', async () => {
@@ -4740,24 +4750,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       it('keeps the plain refusal when another file conflicts too', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
-        // In the decisions' own commits, so the one stop lists both paths.
+        await pushedOnce(worktree);
+        // Both sides change src/app.ts too.
         writeFileSync(join(worktree, 'src/app.ts'), 'export const app = 3;\n');
         addDecision(worktree, 2);
         writeFileSync(join(repo, 'src/app.ts'), 'export const app = 2;\n');
         addDecision(repo, 3);
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('rejected');
         const detail = outcome.report.stages.at(-1)?.detail ?? '';
-        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toContain('Auto-merge of main hit conflicts');
         expect(detail).not.toContain('was not regenerated');
         expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
 
       const unchanged = (text: string) => text;
-      // Each plant rides in the commit that adds the branch's decision, so it is
-      // in the one conflicted stop; main's is its own edit, if any.
+      // Each plant rides in the commit that adds the branch's decision; main's
+      // is its own edit, if any.
       it.each([
         [
           'a preamble both sides changed',
@@ -4780,17 +4791,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ])('refuses an index with %s, keeping the plain detail', async (_, plant, onMain, reason) => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
         addDecision(worktree, 2, plant);
         addDecision(repo, 3, onMain);
         const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('rejected');
         expect(outcome.report.stages.at(-1)).toMatchObject({
           stage: 'fresh-base',
           status: 'fail',
-          detail: expect.stringContaining('Auto-rebase onto main hit conflicts'),
+          detail: expect.stringContaining('Auto-merge of main hit conflicts'),
         });
         expect(outcome.report.stages.at(-1)?.detail).toContain(
           `docs/adr/README.md was not regenerated: ${reason}`,
@@ -4803,17 +4815,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       it('keeps the plain refusal for an index the branch made a link', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
         rmSync(join(worktree, INDEX));
         symlinkSync('/etc/passwd', join(worktree, INDEX));
         sh(worktree, 'git', 'add', '.');
         sh(worktree, 'git', 'commit', '-q', '-m', 'link the index');
         addDecision(repo, 3);
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('rejected');
         const detail = outcome.report.stages.at(-1)?.detail ?? '';
-        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toContain('Auto-merge of main hit conflicts');
         expect(detail).not.toContain('was not regenerated');
         expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
@@ -4821,7 +4834,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       it('refuses a script that changes the README outside the markers', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
-        // Before the decision, so the stop's tree holds it; the branch's own
+        await pushedOnce(worktree);
+        // Before the decision, so the merged tree holds it; the branch's own
         // run of it appends one line, the gate's run a second.
         writeFileSync(
           join(worktree, 'scripts/adr-index.sh'),
@@ -4830,7 +4844,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         addDecision(worktree, 2);
         addDecision(repo, 3);
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('rejected');
         expect(outcome.report.stages.at(-1)?.detail).toContain(
@@ -4845,6 +4859,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       ])('refuses a script that leaves %s where the README was', async (_, plant) => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
         // Only in the gate's checkout, so the branch's own run commits a file.
         writeFileSync(
           join(worktree, 'scripts/adr-index.sh'),
@@ -4853,7 +4868,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         addDecision(worktree, 2);
         addDecision(repo, 3);
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('rejected');
         expect(outcome.report.stages.at(-1)?.detail).toContain(
@@ -4867,6 +4882,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       it('hashes the README it checked, not a link swapped in after the check', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
+        const { bare } = await pushedOnce(worktree);
         addDecision(worktree, 2);
         addDecision(repo, 3);
         const secret = join(tempDir('pup-adr-secret-'), 'key');
@@ -4885,11 +4901,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           },
         );
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('merged');
         expect(() => sh(repo, 'git', 'cat-file', '-e', secretOid)).toThrow();
-        const index = freshIndexAt('main');
+        const index = freshIndexAt(sh(bare, 'git', 'rev-parse', BRANCH).trim());
         for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
       });
 
@@ -4900,6 +4916,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         async () => {
           seedAdr();
           const worktree = seedSession(db, repo, adrScope);
+          await pushedOnce(worktree);
           addDecision(worktree, 2);
           addDecision(repo, 3);
           const outside = join(tempDir('pup-adr-outside-'), 'rc');
@@ -4917,7 +4934,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
             },
           );
 
-          const outcome = await merge();
+          const outcome = await mergeOpenPr();
 
           expect(outcome.status).toBe('rejected');
           expect(outcome.report.stages.at(-1)?.detail).toContain(
@@ -4930,16 +4947,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       it('refuses a merged tree the script is missing from, naming its failure', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
         addDecision(worktree, 2);
         sh(worktree, 'git', 'rm', '-q', 'scripts/adr-index.sh');
         sh(worktree, 'git', 'commit', '-q', '--amend', '--no-edit');
         addDecision(repo, 3);
 
-        const outcome = await merge();
+        const outcome = await mergeOpenPr();
 
         expect(outcome.status).toBe('rejected');
         const detail = outcome.report.stages.at(-1)?.detail ?? '';
-        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toContain('Auto-merge of main hit conflicts');
         expect(detail).toContain(
           'docs/adr/README.md was not regenerated: scripts/adr-index.sh failed:',
         );
@@ -4949,6 +4967,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       it('refuses a smudge filter armed before the scratch checkout, running nothing', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
         addDecision(worktree, 2);
         addDecision(repo, 3);
         const marker = armBefore(
@@ -4956,160 +4975,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           'filter.pwn.smudge',
           'filter=pwn',
         );
-        // Disarmed before any check after the scratch checkout's, which throws:
-        // an abort tried past the error in flight would then go through.
-        let cut = false;
-        let checks = 0;
-        beforeGit(
-          (args) => {
-            cut ||= args.includes('commit-tree');
-            return cut && args.includes('--git-common-dir') && ++checks === 2;
-          },
-          () => {
-            sh(repo, 'git', 'config', '--unset', 'filter.pwn.smudge');
-            rmSync(join(repo, '.git', 'info', 'attributes'));
-          },
-        );
         const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
         const tip = sh(repo, 'git', 'rev-parse', BRANCH).trim();
         vi.mocked(execFileSync).mockClear();
 
-        await expect(merge()).rejects.toThrow(ArmedGitDriverError);
-        // Neither the scratch checkout nor a rebase abort checked a file out.
+        await expect(mergeOpenPr()).rejects.toThrow(ArmedGitDriverError);
+        // The scratch checkout checked no file out, and the branch took nothing.
         expect(existsSync(marker)).toBe(false);
-        expect(ran('--abort')).toBe(false);
-        expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
+        expect(ran('read-tree')).toBe(false);
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
         expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
-      });
-
-      it('throws a driver armed after the stop instead of a plain refusal', async () => {
-        seedAdr();
-        const worktree = seedSession(db, repo, adrScope);
-        addDecision(worktree, 2, (text) => text.replace('Preamble.', 'Branch preamble.'));
-        addDecision(repo, 3, (text) => text.replace('Preamble.', 'Main preamble.'));
-        // The stop's conflict listing; the refusal follows with no check of its own.
-        const marker = armBefore(
-          (args) => args.includes('ls-files') && args.includes('-u'),
-          'filter.pwn.smudge',
-          'filter=pwn',
-        );
-        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
-
-        await expect(merge()).rejects.toThrow(ArmedGitDriverError);
-        expect(existsSync(marker)).toBe(false);
-        expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
-        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
-      });
-
-      /** Where the worktree's stopped rebase keeps the state `--continue` reads back. */
-      const rebaseStateOf = (worktree: string): string =>
-        join(sh(worktree, 'git', 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge');
-      const continues = (): number =>
-        vi
-          .mocked(execFileSync)
-          .mock.calls.filter(([, callArgs]) =>
-            ((callArgs ?? []) as string[]).includes('--continue'),
-          ).length;
-      const execStep = (state: string, marker: string): void => {
-        writeFileSync(join(state, 'git-rebase-todo'), `exec touch '${marker}'\n`, { flag: 'a' });
-      };
-
-      // The second stop's state holds a file the first one's does not.
-      it('resolves each stop of a branch that records two decisions', async () => {
-        seedAdr();
-        const worktree = seedSession(db, repo, adrScope);
-        addDecision(worktree, 2);
-        addDecision(worktree, 4);
-        addDecision(repo, 3);
-        vi.mocked(execFileSync).mockClear();
-
-        const outcome = await merge();
-
-        expect(outcome.status).toBe('merged');
-        expect(continues()).toBe(2);
-        const index = freshIndexAt('main');
-        for (const n of [1, 2, 3, 4]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
-      });
-
-      // `--continue` reads the state back from the admin dir, which the session
-      // can write, and runs an `exec` step it finds in the todo.
-      it.each([
-        ['an exec step in its todo', execStep, 'has a todo step other than a pick'],
-        [
-          'an option file a plain rebase does not write',
-          (state: string) => writeFileSync(join(state, 'gpg_sign_opt'), '-Spwn\n'),
-          'holds gpg_sign_opt, which a plain rebase does not write',
-        ],
-        [
-          'another strategy',
-          (state: string) => writeFileSync(join(state, 'strategy'), 'resolve\n'),
-          'names a strategy other than ort',
-        ],
-        [
-          'a link',
-          (state: string) => {
-            rmSync(join(state, 'message'));
-            symlinkSync('/etc/passwd', join(state, 'message'));
-          },
-          'holds message as a link, a special file or one past the size cap',
-        ],
-      ])('refuses a stop whose state holds %s, running none of it', async (_, plant, reason) => {
-        seedAdr();
-        const worktree = seedSession(db, repo, adrScope);
-        addDecision(worktree, 2);
-        addDecision(repo, 3);
-        const state = rebaseStateOf(worktree);
-        const marker = join(tempDir('pup-rebase-state-'), 'ran');
-        // Right after the stop, before the gate reads anything of it.
-        beforeGit(
-          (args) => args.includes('ls-files') && args.includes('-u'),
-          () => plant(state, marker),
-        );
-        vi.mocked(execFileSync).mockClear();
-
-        const outcome = await merge();
-
-        expect(outcome.status).toBe('rejected');
-        const detail = outcome.report.stages.at(-1)?.detail ?? '';
-        expect(detail).toContain('Auto-rebase onto main hit conflicts');
-        expect(detail).toContain(
-          `docs/adr/README.md was not regenerated: the stopped rebase ${reason}.`,
-        );
-        expect(continues()).toBe(0);
-        expect(existsSync(marker)).toBe(false);
-      });
-
-      // The session is alive while the script runs, which is the window here.
-      it.each([
-        ['an exec step', execStep],
-        [
-          'another branch to finish on',
-          (state: string) => writeFileSync(join(state, 'head-name'), 'refs/heads/main\n'),
-        ],
-      ])('throws a stop given %s while the script ran, left stopped', async (_, plant) => {
-        seedAdr();
-        const worktree = seedSession(db, repo, adrScope);
-        addDecision(worktree, 2);
-        addDecision(repo, 3);
-        const state = rebaseStateOf(worktree);
-        const marker = join(tempDir('pup-rebase-state-'), 'ran');
-        // The README's hash, the gate's first git call after the script.
-        beforeGit(
-          (args) => args.includes('hash-object'),
-          () => plant(state, marker),
-        );
-        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
-        vi.mocked(execFileSync).mockClear();
-
-        await expect(merge()).rejects.toThrow(
-          'changed while the gate regenerated docs/adr/README.md',
-        );
-        expect(continues()).toBe(0);
-        expect(ran('--abort')).toBe(false);
-        expect(existsSync(marker)).toBe(false);
-        expect(sh(worktree, 'git', 'status')).toContain('rebase in progress');
-        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
     });
   });

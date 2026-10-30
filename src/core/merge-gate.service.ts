@@ -1638,89 +1638,6 @@ const ADR_INDEX_MARKER = new RegExp(`\n(${ADR_INDEX_BEGIN}|${ADR_INDEX_END})(?=\
 class AdrIndexRefused extends Error {}
 
 /**
- * What git 2.39.5 leaves in `rebase-merge/` when the gate's rebase stops on a
- * conflicted pick: the picks to come, their bookkeeping, and the strategy
- * `REBASE_STRATEGY` holds. Any other file is an option `--continue` would read
- * back (a signer, an autostash, refs to update), which the gate's rebase never
- * asked for.
- */
-const REBASE_STATE_FILES = new Set([
-  'author-script',
-  'done',
-  'drop_redundant_commits',
-  'end',
-  'git-rebase-todo',
-  'git-rebase-todo.backup',
-  'head-name',
-  'interactive',
-  'message',
-  'msgnum',
-  'no-reschedule-failed-exec',
-  'onto',
-  'orig-head',
-  'patch',
-  'reschedule-failed-exec',
-  'rewritten-list',
-  'stopped-sha',
-  'strategy',
-]);
-/**
- * The strategy the gate's rebase names in argv, and so the `strategy` file's
- * one text. Named, not left to `pull.twohead`: git's sequencer takes the first
- * value it reads, a session's local one before `GIT_SAFE_CONFIG`'s pin, and
- * runs any name but `ort` as `git merge-<name>`, a path into the worktree
- * included (decision 120, amending 79).
- */
-const REBASE_STRATEGY = 'ort';
-/** A todo step as the gate's rebase writes one, with `rebase.instructionFormat` pinned. */
-const REBASE_PICK = /^pick [0-9a-f]+(?: |$)/;
-
-/**
- * The state a rebase stopped in the worktree whose admin dir is `gitDir`
- * holds, every file of `rebase-merge/` by name with its text, which is what
- * `--continue` reads back and acts on. The session can write that directory
- * (decision 101), and `--continue` runs an `exec` step it finds in the todo
- * there, so the state is refused unless it is what the gate's own rebase
- * writes: regular files only, each one `REBASE_STATE_FILES` lists, a todo of
- * picks and comments, and no `rebase-apply/` beside it, which `--continue`
- * would take instead (decision 120).
- */
-function stoppedRebase(gitDir: string): string {
-  const refuse = (why: string): never => {
-    throw new AdrIndexRefused(`the stopped rebase ${why}`);
-  };
-  if (lstatSync(join(gitDir, 'rebase-apply'), { throwIfNoEntry: false })) {
-    refuse('has a rebase-apply directory beside it');
-  }
-  const dir = join(gitDir, 'rebase-merge');
-  if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
-    refuse('has no rebase-merge directory');
-  }
-  const state = readdirSync(dir)
-    .sort()
-    .map((name) => {
-      if (!REBASE_STATE_FILES.has(name)) {
-        refuse(`holds ${sanitizeReason(name)}, which a plain rebase does not write`);
-      }
-      let text: string;
-      try {
-        text = readPlainFile(join(dir, name), { followLinks: false });
-      } catch {
-        return refuse(`holds ${name} as a link, a special file or one past the size cap`);
-      }
-      if (name === 'strategy' && text !== `${REBASE_STRATEGY}\n`) {
-        refuse(`names a strategy other than ${REBASE_STRATEGY}`);
-      }
-      const steps = name === 'git-rebase-todo' ? text.split('\n') : [];
-      if (steps.some((step) => step.trim() && !step.startsWith('#') && !REBASE_PICK.test(step))) {
-        refuse('has a todo step other than a pick');
-      }
-      return [name, text];
-    });
-  return JSON.stringify(state);
-}
-
-/**
  * The ADR index blob `oid` as the text before its begin marker and after its
  * end marker, each with the newline that joins it to its marker. Refused when
  * the markers are not each one line, once, begin first, since then there is
@@ -1777,34 +1694,34 @@ function hashAdrIndex(repoPath: string, file: string): string {
 }
 
 /**
- * Resolve a conflict confined to the ADR index (decision 120). `conflicts` is
- * the conflict list `ADR_INDEX_CONFLICT` reads, and `treeOf` gives the merged
- * tree with our side's README in place, or refuses with `AdrIndexRefused`
- * what the merge's own state rules out. The text outside the markers merges
- * whole, region by region: a side that left one as the base takes the other's,
- * and two sides that both changed it are refused, as the plain merge refuses
- * them. The tree is committed (unreferenced) and cut into the gate's scratch
- * checkout, where the README becomes the merged text with an empty index and
- * `scripts/adr-index.sh` from that tree fills the index in. The script is the
- * branch's code, so it runs as a stage does, confined (decisions 28, 36), and
- * the README is written in the same child; what the script wrote is read back
- * by `hashAdrIndex` and its text outside the markers must be unchanged. The
- * checkout goes before this returns, so `measureBranch` cuts its own at the
- * same path. Returns the README's blob and the tree with it in place, or what
- * the refusal adds to its detail: nothing for a conflict list of another
- * shape, else why the index was not regenerated.
+ * Resolve a conflict confined to the ADR index (decision 120), on the merge
+ * path only: a rebase stopped on one would go on with `--continue`, which reads
+ * back rebase state the live session can write. `conflicts` is the conflict
+ * list `ADR_INDEX_CONFLICT` reads, and `merged` the tree `merge-tree` wrote with
+ * it, the README holding git's conflict markers. The text outside the markers
+ * merges whole, region by region: a side that left one as the base takes the
+ * other's, and two sides that both changed it are refused, as the plain merge
+ * refuses them. The tree is committed (unreferenced) and cut into the gate's
+ * scratch checkout, where the README becomes the merged text with an empty
+ * index and `scripts/adr-index.sh` from that tree fills the index in. The
+ * script is the branch's code, so it runs as a stage does, confined (decisions
+ * 28, 36), and the README is written in the same child; what the script wrote
+ * is read back by `hashAdrIndex` and its text outside the markers must be
+ * unchanged. The checkout goes before this returns, so `measureBranch` cuts its
+ * own at the same path. Returns the merged tree with the regenerated README in
+ * place, or what the refusal adds to its detail: nothing for a conflict list
+ * of another shape, else why the index was not regenerated.
  */
 async function regenerateAdrIndex(
   req: MergeRequest,
   checkoutDir: string,
   conflicts: string[],
-  treeOf: (ours: string) => string,
-): Promise<{ blob: string; tree: string } | string> {
+  merged: string,
+): Promise<{ tree: string } | string> {
   const sides = ADR_INDEX_CONFLICT.exec(conflicts.join('\0'));
   if (!sides) return '';
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   try {
-    const tree = treeOf(sides[2] as string);
     const cut = sides.slice(1).map((oid) => aroundAdrIndex(req.repoPath, oid));
     const [before, after] = [0, 1].map((at) => {
       const [base, ours, theirs] = cut.map((side) => side[at] as string);
@@ -1816,15 +1733,15 @@ async function regenerateAdrIndex(
     });
     const commit = runGit(
       req.repoPath,
-      ['commit-tree', '--no-gpg-sign', '-m', 'pup merge: ADR index', tree],
+      ['commit-tree', '--no-gpg-sign', '-m', 'pup merge: ADR index', merged],
       piped,
     ).trim();
     try {
       const git = cutGateCheckout(req.repoPath, checkoutDir, commit);
       try {
-        // The child writes the merged README too, under its own grants: a
-        // process an earlier stop's script left behind can swap the path for
-        // a link, which a write of the gate's would follow out of the checkout.
+        // The child writes the merged README too, under its own grants, so
+        // the gate opens no path in the checkout by name once it is cut: a
+        // link put there would aim a write of the gate's out of it.
         await runGateChild(
           'bash',
           ['-c', 'cat > "$1" && exec bash "$2"', 'bash', ADR_INDEX, ADR_INDEX_SCRIPT],
@@ -1854,7 +1771,7 @@ async function regenerateAdrIndex(
         ['update-index', '--cacheinfo', `100644,${blob},${ADR_INDEX}`],
         inCheckout,
       );
-      return { blob, tree: runGit(checkoutDir, ['write-tree'], inCheckout).trim() };
+      return { tree: runGit(checkoutDir, ['write-tree'], inCheckout).trim() };
     } finally {
       removeGateDir(checkoutDir);
       runGit(req.repoPath, ['worktree', 'prune']);
@@ -1919,7 +1836,7 @@ async function mergeTargetInto(
       req,
       checkoutDir,
       listed.slice(0, listed.indexOf('')),
-      () => conflicted as string,
+      conflicted as string,
     );
     if (typeof resolved === 'string') {
       return (
@@ -2014,109 +1931,6 @@ async function mergeTargetInto(
   return undefined;
 }
 
-/**
- * Rebase the worktree's branch onto `targetSha` (decision 8), in the worktree
- * and pinned (decision 101). A stop whose only conflict is the ADR index is
- * resolved as `mergeTargetInto` resolves one (decision 120): the index entry
- * takes our side for the tree the scratch checkout is cut from, then the
- * regenerated README, which `checkout-index` writes to the file, and the
- * rebase goes on with `:` as its editor, which git reads as none, in a call of
- * its own. That call acts on the todo and options the stop left in the admin
- * dir, which the live session can write while the script runs, so the state
- * `stoppedRebase` reads at the stop must still be there, unchanged, right
- * before it. Any other way out aborts the rebase, except past an armed driver:
- * the abort checks out every file the rebase changed, which runs it, so the
- * rebase is left stopped for the operator, as it is past a changed state,
- * which the abort reads too. A driver armed in flight is thrown as it was;
- * one the re-check finds is thrown after a refused stop, and never over
- * another error in flight. Returns the failure for the worker, or undefined
- * once the branch is rebased.
- */
-async function rebaseOntoTarget(
-  req: MergeRequest,
-  worktree: string,
-  worktreeEnv: WorktreeGitEnv,
-  target: string,
-  targetSha: string,
-  checkoutDir: string,
-  step = ['rebase', `--strategy=${REBASE_STRATEGY}`, targetSha],
-): Promise<string | undefined> {
-  const pinned = { env: { ...worktreeEnv } };
-  const setIndex = (blob: string): void => {
-    runGit(worktree, ['update-index', '--cacheinfo', `100644,${blob},${ADR_INDEX}`], pinned);
-  };
-  /** Swallowed: a driver armed since leaves the rebase stopped, and the error in flight stands. */
-  const abort = (): void => {
-    try {
-      assertNoArmedGitDrivers(worktree, worktreeEnv);
-      runGit(worktree, ['rebase', '--abort'], { ...pinned, stdio: 'pipe' });
-    } catch {
-      // nothing to abort — the rebase never started — or a driver is armed
-    }
-  };
-  let failure: unknown;
-  try {
-    runGit(worktree, step, { env: { ...worktreeEnv, GIT_EDITOR: ':' } });
-    return undefined;
-  } catch (error) {
-    failure = error;
-  }
-  let stopped: string | undefined;
-  try {
-    const unmerged = runGit(worktree, ['ls-files', '-u', '-z'], pinned).split('\0');
-    const resolved = await regenerateAdrIndex(
-      req,
-      checkoutDir,
-      unmerged.filter(Boolean),
-      (ours) => {
-        stopped = stoppedRebase(worktreeEnv.GIT_DIR);
-        setIndex(ours);
-        return runGit(worktree, ['write-tree'], pinned).trim();
-      },
-    );
-    if (typeof resolved === 'string') {
-      // Thrown, not swallowed: nothing else is in flight.
-      assertNoArmedGitDrivers(worktree, worktreeEnv);
-      abort();
-      const onto = sanitizeReason(target);
-      return (
-        `Auto-rebase onto ${onto} hit conflicts. Run ` +
-        `\`git rebase ${shellWord(`refs/heads/${onto}`)}\`, ` +
-        `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(failure)}${resolved}`
-      );
-    }
-    setIndex(resolved.blob);
-    // `checkout-index` runs a smudge filter on the file it writes.
-    assertNoArmedGitDrivers(worktree, worktreeEnv);
-    runGit(worktree, ['checkout-index', '-f', '--', ADR_INDEX], pinned);
-  } catch (error) {
-    if (!(error instanceof ArmedGitDriverError)) abort();
-    throw error;
-  }
-  // Last before `--continue` reads it back: the script ran since the stop, and
-  // the session alongside it (decision 80). The window left is a check's, as
-  // decision 50 accepts, not the script's run.
-  const now = (() => {
-    try {
-      return stoppedRebase(worktreeEnv.GIT_DIR);
-    } catch (error) {
-      if (error instanceof AdrIndexRefused) return undefined;
-      throw error;
-    }
-  })();
-  if (now === undefined || now !== stopped) {
-    throw new Error(
-      `The rebase stopped in ${worktree} changed while the gate regenerated ${ADR_INDEX}; ` +
-        '`git rebase --continue` did not run over it, and it is left stopped. Nothing was ' +
-        'merged. Treat a session that wrote it as compromised.',
-    );
-  }
-  return rebaseOntoTarget(req, worktree, worktreeEnv, target, targetSha, checkoutDir, [
-    'rebase',
-    '--continue',
-  ]);
-}
-
 async function gateAndMerge(
   db: Database,
   req: MergeRequest,
@@ -2197,29 +2011,59 @@ async function gateAndMerge(
         detail: `already based on ${target}`,
       }),
     );
-  } else {
-    const [refused, passed] = isPrBranch
-      ? [
-          await mergeTargetInto(
-            req,
-            worktree,
-            worktreeEnv,
-            session.branch,
-            target,
-            targetSha,
-            checkoutDir,
-          ),
-          `auto-merged ${target}`,
-        ]
-      : [
-          await rebaseOntoTarget(req, worktree, worktreeEnv, target, targetSha, checkoutDir),
-          `auto-rebased onto ${target}`,
-        ];
+  } else if (isPrBranch) {
+    const refused = await mergeTargetInto(
+      req,
+      worktree,
+      worktreeEnv,
+      session.branch,
+      target,
+      targetSha,
+      checkoutDir,
+    );
     if (refused) {
       stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
       return failed();
     }
-    stages.push(timedSince(started, { stage: 'fresh-base', status: 'pass', detail: passed }));
+    stages.push(
+      timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
+    );
+  } else {
+    try {
+      // The strategy named, not left to `pull.twohead`: git's sequencer takes
+      // the first value it reads, a session's local one before the `-c` pin,
+      // and runs any name but ort as `git merge-<name>`, a path into the
+      // worktree included (decision 120, amending 79).
+      runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
+      stages.push(
+        timedSince(started, {
+          stage: 'fresh-base',
+          status: 'pass',
+          detail: `auto-rebased onto ${target}`,
+        }),
+      );
+    } catch (error) {
+      // Every conflict goes back to the worker, the ADR index's included: the
+      // gate resolves that one only where it merges, since a resolved stop
+      // would go on through rebase state the live session can write (decision
+      // 120).
+      try {
+        runGit(worktree, ['rebase', '--abort'], pinned);
+      } catch {
+        // nothing to abort — the rebase never started
+      }
+      stages.push(
+        timedSince(started, {
+          stage: 'fresh-base',
+          status: 'fail',
+          detail:
+            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
+            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
+            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
+        }),
+      );
+      return failed();
+    }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
   // The rebase moves whatever the worktree has checked out, so a session that
