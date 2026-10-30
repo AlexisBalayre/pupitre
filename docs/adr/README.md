@@ -143,6 +143,7 @@ for the cross-references the text states, then the decision itself.
 - [0121. `pup ui` never draws a frame as tall as the terminal (2026-10-28).](0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md) (accepted)
 - [0124. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)](0124-the-worktree-hooks-reads-run-under-a-deadline.md) (accepted)
 - [0125. Claude Code mods do not register their hooks in a pup window, so conductor-worker messaging stays on tmux and `pup status` (2026-10-30)](0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md) (accepted)
+- [0126. An intent is a file under `docs/intent/` the operator alone accepts, once it names two or three questions they must answer after review (2026-10-30)](0126-an-intent-is-a-file-under-docs-intent-the.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes

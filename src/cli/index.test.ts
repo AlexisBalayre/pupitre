@@ -189,6 +189,7 @@ import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
+import { intentTemplate } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -3554,6 +3555,148 @@ describe('CLI commands', () => {
         '`pup brief edit` is operator-only.',
       ]);
       expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // Decision 126: intents under the repo's docs/intent/, accepted by the operator alone.
+  describe('intent', () => {
+    function writeIntent(repo: string, name: string, text: string): string {
+      const dir = join(repo, 'docs', 'intent');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, name), text);
+      return join(dir, name);
+    }
+
+    function draftWith(questions: string[]): string {
+      return `${intentTemplate('0001', 'Ship the gate')}\n${questions.join('\n')}\n`;
+    }
+
+    it('drafts intents and lists each one by id, status and title', () => {
+      const repo = initRepo();
+      useCwd(repo);
+
+      buildProgram().parse(['intent', 'new', 'Ship', 'the', 'gate'], { from: 'user' });
+      buildProgram().parse(['intent', 'new', 'Second one'], { from: 'user' });
+      buildProgram().parse(['intent', 'list'], { from: 'user' });
+
+      expect(logs[0]).toMatch(
+        /^Drafted \/.*\/docs\/intent\/0001-ship-the-gate\.md\. Fill it in, then run `pup intent accept 0001`\.$/,
+      );
+      expect(logs.slice(2)).toEqual([
+        `0001  ${'draft'.padEnd(10)}  Ship the gate`,
+        `0002  ${'draft'.padEnd(10)}  Second one`,
+      ]);
+      expect(readFileSync(join(repo, 'docs', 'intent', '0001-ship-the-gate.md'), 'utf8')).toBe(
+        intentTemplate('0001', 'Ship the gate'),
+      );
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('says so when there is no intent', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['intent', 'list'], { from: 'user' });
+
+      expect(logs).toEqual([
+        'No intents yet; `pup intent new <title>` drafts one in docs/intent/.',
+      ]);
+    });
+
+    // A title and a refusal both quote a file a session's shell can write.
+    it('lists a malformed intent as unreadable, and scrubs every title', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      writeIntent(repo, '0001-a.md', intentTemplate('0001', 'Ship\u009b2J the gate'));
+      writeIntent(repo, '0002-b.md', '# 0002. No status\n');
+
+      buildProgram().parse(['intent', 'list'], { from: 'user' });
+
+      expect(logs).toEqual([
+        `0001  ${'draft'.padEnd(10)}  Ship2J the gate`,
+        `0002  ${'unreadable'.padEnd(10)}  docs/intent/0002-b.md needs exactly one "- Status: draft|accepted|closed" line above its first section, outside any code fence or HTML comment.`,
+      ]);
+    });
+
+    it('shows an intent', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      writeIntent(repo, '0001-ship.md', draftWith(['- Why?']));
+
+      buildProgram().parse(['intent', 'show', '0001'], { from: 'user' });
+
+      expect(logs).toEqual([draftWith(['- Why?']).trimEnd()]);
+    });
+
+    it.each([['show'], ['accept']])('refuses an id that is a path on `intent %s`', (verb) => {
+      const repo = initRepo();
+      useCwd(repo);
+      writeIntent(repo, '0001-ship.md', draftWith(['- a?', '- b?']));
+
+      buildProgram().parse(['intent', verb, '../../0001'], { from: 'user' });
+
+      expect(errors).toEqual([
+        'An intent id is four digits, like 0001: never a path, a link or a name.',
+      ]);
+      expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('accepts a draft with two questions, and names them', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const path = writeIntent(
+        repo,
+        '0001-ship.md',
+        draftWith(['1. What does the gate pin?', '2. Why re-run it?']),
+      );
+
+      buildProgram().parse(['intent', 'accept', '0001'], { from: 'user' });
+
+      expect(logs).toEqual([
+        'Accepted intent 0001: Ship the gate.',
+        'After review, you must be able to answer:',
+        '  - What does the gate pin?',
+        '  - Why re-run it?',
+      ]);
+      expect(readFileSync(path, 'utf8')).toContain('\n- Status: accepted\n');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('refuses to accept a draft lacking two questions, and leaves it a draft', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const path = writeIntent(repo, '0001-ship.md', draftWith(['- Why?']));
+
+      buildProgram().parse(['intent', 'accept', '0001'], { from: 'user' });
+
+      expect(errors).toEqual([
+        'Intent 0001 has 1 question under "## What I must understand after review"; accepting it ' +
+          'takes 2 or 3, one list item each, ending in "?".',
+      ]);
+      expect(readFileSync(path, 'utf8')).toBe(draftWith(['- Why?']));
+      expect(process.exitCode).toBe(1);
+    });
+
+    // Drafting and reading are anyone's; accepting is the operator's word.
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s running `intent accept`, and lets it list', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const path = writeIntent(repo, '0001-ship.md', draftWith(['- a?', '- b?']));
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['intent', 'accept', '0001'], { from: 'user' });
+      buildProgram().parse(['intent', 'list'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup intent accept` is operator-only; the operator accepts an intent once they have read it.',
+      ]);
+      expect(logs).toEqual([`0001  ${'draft'.padEnd(10)}  Ship the gate`]);
+      expect(readFileSync(path, 'utf8')).toBe(draftWith(['- a?', '- b?']));
       expect(process.exitCode).toBe(1);
     });
   });
