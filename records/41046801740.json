@@ -1,0 +1,166 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T11:27:59.341Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41046801740",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41046801740",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7764b0e87fda6ee89d08ffa609be51758a75f2aa",
+  "source": "pr",
+  "pr_number": 208,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "436-439",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`safe_git status` takes git's optional `index.lock` and holds it while it collects the status. The deadline's `kill -9` cannot be caught, so git never deletes the lock. After that, the session's `git add`, `commit`, `checkout` and `merge`, and pup's own index writes in that worktree, fail until someone removes it.",
+      "body": "**A deadline kill of `git status` leaves a stale `index.lock` behind**\n\nEvery `safe_git` call now runs under `bounded`, and the watcher `kill -9`s the job at the deadline:\n\n```sh\nsafe_git() {\n  bounded env GIT_DIR=\"$GIT_ADMIN\" GIT_COMMON_DIR=\"$GIT_COMMON\" GIT_WORK_TREE=\"$WORKTREE\" \\\n    git ${GIT_SAFE_CONFIG...} \"$@\"\n}\n```\n\nThe re-check runs `safe_git -C \"$WORKTREE\" status --porcelain=v1 -z --untracked-files=all …` twice per call (lines 766-774). Nothing in the hook's environment turns off git's optional locks. The repo has no `GIT_OPTIONAL_LOCKS` or `--no-optional-locks` anywhere, and neither `GIT_SAFE_CONFIG` nor `WINDOW_GIT_CONFIG` sets them.\n\n`cmd_status` refreshes the index, then takes `$GIT_DIR/index.lock` (`repo_hold_locked_index`) before `wt_status_collect`. It only writes or rolls the lock back after the collect finishes. So the lock is held through the slow part: the untracked walk under `--untracked-files=all`. SIGKILL skips git's tempfile cleanup, so the lock stays.\n\nTwo ways to reach it:\n- **No adversary needed:** a large repo or a loaded machine (ADR 0124 measures at load average ~100) can push a plain `status` past a deadline that falls 2-4 s after the hook starts.\n- **On purpose:** a fifo planted as a subdirectory `.gitignore` blocks the untracked walk while the lock is held, so the kill leaves the lock every time.\n\nWhat follows: `<common>/worktrees/<id>/index.lock` stays. Every later index write in the worktree fails with `index.lock: File exists`. Later hook `status` runs just skip the optional lock, so nothing points at the cause. ADR 0124's ceiling (\"not what a killed git had already done\") doesn't name this effect. Before this PR nothing SIGKILLed git.\n\nThe hooks only read, so they never need the optional lock. `GIT_OPTIONAL_LOCKS=0` (git ≥ 2.15) also covers the short index refresh at the end of `git diff <MERGED>` (line 782).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7764b0e87fda6ee89d08ffa609be51758a75f2aa/src/core/profile-compiler.service.ts#L436-L439",
+      "suggestion": "safe_git() {\n  bounded env GIT_OPTIONAL_LOCKS=0 GIT_DIR=\"$GIT_ADMIN\" GIT_COMMON_DIR=\"$GIT_COMMON\" GIT_WORK_TREE=\"$WORKTREE\" \\\\\n    git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} \"$@\"\n}"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "786-823",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The re-check's 200-path cap (`RECHECK_MAX_DIRTY_PATHS`) was sized against the 5 s timeout. The loop now has a 2-4 s deadline, and each out-of-scope regular file adds a `date` plus two `bounded` calls (~5 ms each by ADR 0124's figure). So ~100-200 small out-of-scope dirty files that used to pass can now hit \"ran out of time\" on every call. The `3)` message would then blame a fifo or large files. Lower the cap, or measure near it and record the result.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "432",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`bounded`'s BLOCKED message always blames \"a fifo where git or the hook expects a file\", but it also fires when slow reads (e.g. hashing many dirty files) already spent the deadline; \"…outran the hook deadline.\" alone, or \"(a fifo, or too slow a read)\", would be accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "810-830",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The late-start deadline test has thin margins and needs `python3`. It allows ~0.4 s against `HOOK_TIMEOUT_SECONDS*1000 - 500`, and the decoy `wc` returns 0.3 s before a 3 s watcher's kill. Under load it can refuse early as out of time and still pass without exercising the late-start path it is named for. A fake `date` that advances per call would remove both problems.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "725-825, 1366-1378",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Four new tests each hand-build the same PATH shim: `mkdir bin`, look up the real tool via `command -v`, write a `for arg; do last=$arg; done … exec <real> \"$@\"` script, and prefix PATH. This is the third-plus use, so a `shimTool(name, bodyForPath)` helper is now warranted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "2020-2052",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conductor graph test sets up its repo with an inline `for (const args of [...])` git loop, a fourth repo-setup idiom in a file that already has `git(cwd, ...args)` helpers (lines 1070, 2147, 2358). Reuse one of those helpers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1310-1311",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new call-site comment \"Its git is pinned to the checkout's admin dir, which `refreshConductorCheckout` verifies\" restates the `servedGraphConfig` JSDoc (\"the dirs the launch's check verified before it handed the file over\"). general.md §Comments says to delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0124-the-worktree-hooks-reads-run-under-a-deadline.md",
+      "line": "108",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Subject-verb slip in the Tests paragraph: \"and the re-check after a call refuse with the deadline line\" should read \"refuses\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "430",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`bounded` treats any exit status of 137 as a deadline kill, so a command that exits 137 by itself would be reported as BLOCKED/124. This is unreachable for the `git`, `head` and `wc` it runs today.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.599360600000001,
+  "duration_ms": 684292,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 18411,
+    "cache_read": 447945,
+    "cache_creation": 68771,
+    "total": 535143
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 132,
+      "output": 119996,
+      "cache_read": 2811615,
+      "cache_creation": 377328,
+      "cost_usd": 5.0557240000000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 15544,
+      "cache_read": 391491,
+      "cache_creation": 139587,
+      "cost_usd": 0.5436366
+    }
+  ],
+  "permission_denials": []
+}
