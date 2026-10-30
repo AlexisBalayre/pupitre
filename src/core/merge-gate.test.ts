@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { loadavg, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -121,7 +122,7 @@ import {
   waitForLoad,
   withMergeLock,
 } from './merge-gate.service.js';
-import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
+import { GateInterruptedError, sandboxLabel, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -1840,6 +1841,28 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = await merge();
 
     // The stale branch forces the rebase path, so pre-rebase would have fired.
+    expect(outcome.status).toBe('merged');
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  // Git's sequencer takes the first `pull.twohead` it reads, the shared
+  // config's before the `-c` pin, and runs any strategy but ort as
+  // `git merge-<name>`, which a slash makes a path from the worktree.
+  it('rebases with ort whatever pull.twohead the session wrote, running none of its own', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const dir = tempDir('pup-twohead-');
+    const fired = join(dir, 'fired');
+    writeFileSync(join(dir, 'planted.sh'), `#!/bin/sh\ntouch '${fired}'\nexit 2\n`, {
+      mode: 0o755,
+    });
+    // Empty, so the worktree stays clean; the climb lands at the root.
+    mkdirSync(join(worktree, 'git-merge-'));
+    sh(repo, 'git', 'config', 'pull.twohead', `/..${'/..'.repeat(32)}${dir}/planted.sh`);
+
+    const outcome = await merge();
+
     expect(outcome.status).toBe('merged');
     expect(existsSync(fired)).toBe(false);
   });
@@ -4197,6 +4220,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         status: 'fail',
         detail: expect.stringContaining('Auto-merge of main hit conflicts'),
       });
+      // git's report a line each, as the worker reads it.
+      expect(outcome.report.stages.at(-1)?.detail).toMatch(
+        /^CONFLICT \(add\/add\): Merge conflict in src\/feature\.ts$/m,
+      );
       const steer = vi.mocked(steerPane).mock.calls[0]?.[1];
       expect(steer).toContain("`git merge 'refs/heads/main'`");
       expect(steer).not.toContain('rebase');
@@ -4606,6 +4633,403 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       expect(sh(bare, 'git', 'rev-list', '--merges', BRANCH).trim()).toBe('');
       expect(sh(bare, 'git', 'rev-parse', `${BRANCH}~1`).trim()).toBe(targetSha);
+    });
+
+    // Every task that records a decision adds a line to the generated index, so
+    // two branches that each add one conflict there and nowhere else. Here
+    // rather than beside the plain rebase tests for `beforeGit` and `armBefore`.
+    describe('a conflict in the generated ADR index alone (decision 120)', () => {
+      const ADR_SCRIPT = readFileSync(
+        fileURLToPath(new URL('../../scripts/adr-index.sh', import.meta.url)),
+        'utf8',
+      );
+      const INDEX = 'docs/adr/README.md';
+      const adrScope = { scopeIn: ['src/**', 'docs/adr/**'] };
+
+      /**
+       * Write decision `n` and regenerate the index with the real script, then
+       * commit both, with `plant` applied to the README in the same commit.
+       */
+      const addDecision = (dir: string, n: number, plant = (text: string) => text): void => {
+        writeFileSync(
+          join(dir, `docs/adr/000${n}-d${n}.md`),
+          `# 000${n}. D${n}\n\n- Status: accepted\n`,
+        );
+        sh(dir, 'bash', 'scripts/adr-index.sh');
+        writeFileSync(join(dir, INDEX), plant(readFileSync(join(dir, INDEX), 'utf8')));
+        // Not `.`: in the main checkout that would take the session's worktree as a gitlink.
+        sh(dir, 'git', 'add', 'docs', 'scripts', 'src');
+        sh(dir, 'git', 'commit', '-q', '-m', `decision ${n}`);
+      };
+
+      /** Main with the script and an index listing decision 1, before the session branches. */
+      const seedAdr = (): void => {
+        mkdirSync(join(repo, 'docs/adr'), { recursive: true });
+        mkdirSync(join(repo, 'scripts'));
+        writeFileSync(join(repo, 'scripts/adr-index.sh'), ADR_SCRIPT);
+        writeFileSync(
+          join(repo, INDEX),
+          '# Decisions\n\nPreamble.\n\n<!-- adr-index:begin -->\n<!-- adr-index:end -->\n\nTail.\n',
+        );
+        addDecision(repo, 1);
+      };
+
+      /** The index at `sha`, after `--check` (which throws when stale) passed on a checkout of it. */
+      const freshIndexAt = (sha: string): string => {
+        const dir = join(tempDir('pup-adr-check-'), 'checkout');
+        sh(repo, 'git', 'worktree', 'add', '-q', '--detach', dir, sha);
+        sh(dir, 'bash', 'scripts/adr-index.sh', '--check');
+        return readFileSync(join(dir, INDEX), 'utf8');
+      };
+
+      /** No attribute or driver resolved the conflict (decision 41). */
+      const expectNoDriver = (): void => {
+        expect(existsSync(join(repo, '.gitattributes'))).toBe(false);
+        expect(existsSync(join(repo, '.git', 'info', 'attributes'))).toBe(false);
+        expect(sh(repo, 'git', 'config', '--list')).not.toMatch(/^merge\./m);
+      };
+
+      /** The gate on the open PR `pushedOnce` left, which merges the target in. */
+      const mergeOpenPr = () =>
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      // A stop resolved here would go on with `--continue`, which reads back
+      // rebase state the live session can write.
+      it('keeps the plain refusal for a branch it rebases, running nothing across the stop', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+        addDecision(repo, 3);
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toMatch(/^CONFLICT \(content\): Merge conflict in docs\/adr\/README\.md$/m);
+        expect(detail).not.toContain('was not regenerated');
+        // No tree was committed for a scratch checkout, and the rebase never went on.
+        expect(ran('commit-tree')).toBe(false);
+        expect(ran('--continue')).toBe(false);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+        expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+      });
+
+      it('merges main into an open PR, regenerating the index over the merged tree', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        const { bare } = await pushedOnce(worktree);
+        addDecision(worktree, 2);
+        const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+        addDecision(repo, 3);
+        const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+        expect(outcome.status).toBe('merged');
+        expect(outcome.report.stages).toContainEqual(
+          expect.objectContaining({
+            stage: 'fresh-base',
+            status: 'pass',
+            detail: 'auto-merged main',
+          }),
+        );
+        const head = sh(bare, 'git', 'rev-parse', BRANCH).trim();
+        expect(
+          sh(bare, 'git', 'rev-list', '--parents', '-n', '1', BRANCH).trim().split(' '),
+        ).toEqual([head, tip, targetSha]);
+        const index = freshIndexAt(head);
+        for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
+        expectNoDriver();
+        // The script's checkout under a root of its own, gone before the stages
+        // cut theirs elsewhere: a process it left keeps its grant on that path.
+        // `--no-checkout` is the gate's cut, not `freshIndexAt`'s.
+        const cut = vi
+          .mocked(execFileSync)
+          .mock.calls.map(([, callArgs]) => (callArgs ?? []) as string[])
+          .filter((callArgs) => callArgs.includes('worktree') && callArgs.includes('--no-checkout'))
+          .map((callArgs) => callArgs.at(-2) as string);
+        expect(cut).toHaveLength(2);
+        expect(cut[0]).toMatch(/\/(pup-gate-adr-index-[^/]+)\/\1$/);
+        expect(cut[1]).toMatch(GATE_CHECKOUT);
+        expect(existsSync(dirname(cut[0] as string))).toBe(false);
+      });
+
+      // Each file merges clean under its own slug, so only their index lines
+      // conflict, and a regenerated index would land both.
+      it('refuses two decisions that share a number, cutting no checkout', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        addDecision(worktree, 2);
+        writeFileSync(
+          join(repo, 'docs/adr/0002-other.md'),
+          '# 0002. Other\n\n- Status: accepted\n',
+        );
+        sh(repo, 'bash', 'scripts/adr-index.sh');
+        sh(repo, 'git', 'add', 'docs');
+        sh(repo, 'git', 'commit', '-q', '-m', 'another decision 2');
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-merge of main hit conflicts');
+        expect(detail).toContain(
+          'docs/adr/README.md was not regenerated: two decisions share the number 0002 in docs/adr/.',
+        );
+        expect(ran('commit-tree')).toBe(false);
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      });
+
+      it('keeps the plain refusal when another file conflicts too', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        // Both sides change src/app.ts too.
+        writeFileSync(join(worktree, 'src/app.ts'), 'export const app = 3;\n');
+        addDecision(worktree, 2);
+        writeFileSync(join(repo, 'src/app.ts'), 'export const app = 2;\n');
+        addDecision(repo, 3);
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-merge of main hit conflicts');
+        expect(detail).not.toContain('was not regenerated');
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      });
+
+      const unchanged = (text: string) => text;
+      // Each plant rides in the commit that adds the branch's decision; main's
+      // is its own edit, if any.
+      it.each([
+        [
+          'a preamble both sides changed',
+          (text: string) => text.replace('Preamble.', 'Branch preamble.'),
+          (text: string) => text.replace('Preamble.', 'Main preamble.'),
+          'both sides changed docs/adr/README.md outside the adr-index markers',
+        ],
+        [
+          'a second begin marker',
+          (text: string) => `${text}<!-- adr-index:begin -->\n`,
+          unchanged,
+          'docs/adr/README.md is not UTF-8 text holding each adr-index marker once',
+        ],
+        [
+          'a file over the size cap',
+          (text: string) => `${text}${'x'.repeat(1024 * 1024)}\n`,
+          unchanged,
+          'docs/adr/README.md is over 1048576 bytes',
+        ],
+      ])('refuses an index with %s, keeping the plain detail', async (_, plant, onMain, reason) => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        addDecision(worktree, 2, plant);
+        addDecision(repo, 3, onMain);
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)).toMatchObject({
+          stage: 'fresh-base',
+          status: 'fail',
+          detail: expect.stringContaining('Auto-merge of main hit conflicts'),
+        });
+        expect(outcome.report.stages.at(-1)?.detail).toContain(
+          `docs/adr/README.md was not regenerated: ${reason}`,
+        );
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      });
+
+      // Not two added lines: the worker merges it, with nothing regenerated.
+      it('keeps the plain refusal for an index the branch made a link', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        rmSync(join(worktree, INDEX));
+        symlinkSync('/etc/passwd', join(worktree, INDEX));
+        sh(worktree, 'git', 'add', '.');
+        sh(worktree, 'git', 'commit', '-q', '-m', 'link the index');
+        addDecision(repo, 3);
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-merge of main hit conflicts');
+        expect(detail).not.toContain('was not regenerated');
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      });
+
+      it('refuses a script that changes the README outside the markers', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        // Before the decision, so the merged tree holds it; the branch's own
+        // run of it appends one line, the gate's run a second.
+        writeFileSync(
+          join(worktree, 'scripts/adr-index.sh'),
+          `${ADR_SCRIPT}\necho 'smuggled' >> "$README"\n`,
+        );
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)?.detail).toContain(
+          'scripts/adr-index.sh changed docs/adr/README.md outside the adr-index markers',
+        );
+      });
+
+      // A fifo would block a read that waited for a writer.
+      it.each([
+        ['a link', 'ln -s /dev/null "$README"'],
+        ['a fifo', 'mkfifo "$README"'],
+      ])('refuses a script that leaves %s where the README was', async (_, plant) => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        // Only in the gate's checkout, so the branch's own run commits a file.
+        writeFileSync(
+          join(worktree, 'scripts/adr-index.sh'),
+          `${ADR_SCRIPT}\ncase "$PWD" in *pup-gate-adr-index-*) rm "$README"; ${plant};; esac\n`,
+        );
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)?.detail).toContain(
+          'docs/adr/README.md was not regenerated: scripts/adr-index.sh left no regular file of ' +
+            'at most 1048576 bytes at docs/adr/README.md.',
+        );
+      });
+
+      // A process the script left in a session of its own outlives the run and
+      // can swap the path between any check and git's read of it.
+      it('hashes the README it checked, not a link swapped in after the check', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        const { bare } = await pushedOnce(worktree);
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+        const secret = join(tempDir('pup-adr-secret-'), 'key');
+        writeFileSync(secret, 'a file the sandbox denies\n');
+        const secretOid = sh(repo, 'git', 'hash-object', secret).trim();
+        let checkout = '';
+        beforeGit(
+          (args) => {
+            const cwd = args[args.indexOf('-C') + 1] ?? '';
+            if (cwd.includes('pup-gate-adr-index-')) checkout = cwd;
+            return args.includes('hash-object');
+          },
+          () => {
+            rmSync(join(checkout, INDEX));
+            symlinkSync(secret, join(checkout, INDEX));
+          },
+        );
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('merged');
+        expect(() => sh(repo, 'git', 'cat-file', '-e', secretOid)).toThrow();
+        const index = freshIndexAt(sh(bare, 'git', 'rev-parse', BRANCH).trim());
+        for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
+      });
+
+      // Asserts pup's own profile, so only where pup applied it rather than
+      // running inside an outer one, as under its own gate.
+      it.runIf(sandboxLabel() === 'sandbox-exec (macOS)')(
+        'writes the merged README under the sandbox, never through a link swapped in first',
+        async () => {
+          seedAdr();
+          const worktree = seedSession(db, repo, adrScope);
+          await pushedOnce(worktree);
+          addDecision(worktree, 2);
+          addDecision(repo, 3);
+          const outside = join(tempDir('pup-adr-outside-'), 'rc');
+          writeFileSync(outside, 'untouched\n');
+          let checkout = '';
+          // The checkout's link check, the last git call before the child runs.
+          beforeGit(
+            (args) => {
+              checkout = args[args.indexOf('-C') + 1] ?? '';
+              return checkout.includes('pup-gate-adr-index-') && args.includes('ls-tree');
+            },
+            () => {
+              rmSync(join(checkout, INDEX));
+              symlinkSync(outside, join(checkout, INDEX));
+            },
+          );
+
+          const outcome = await mergeOpenPr();
+
+          expect(outcome.status).toBe('rejected');
+          expect(outcome.report.stages.at(-1)?.detail).toContain(
+            'docs/adr/README.md was not regenerated: scripts/adr-index.sh failed:',
+          );
+          expect(readFileSync(outside, 'utf8')).toBe('untouched\n');
+        },
+      );
+
+      it('refuses a merged tree the script is missing from, naming its failure', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        addDecision(worktree, 2);
+        sh(worktree, 'git', 'rm', '-q', 'scripts/adr-index.sh');
+        sh(worktree, 'git', 'commit', '-q', '--amend', '--no-edit');
+        addDecision(repo, 3);
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-merge of main hit conflicts');
+        expect(detail).toContain(
+          'docs/adr/README.md was not regenerated: scripts/adr-index.sh failed:',
+        );
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      });
+
+      it('refuses a smudge filter armed before the scratch checkout, running nothing', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        addDecision(worktree, 2);
+        addDecision(repo, 3);
+        const marker = armBefore(
+          (args) => args.includes('commit-tree'),
+          'filter.pwn.smudge',
+          'filter=pwn',
+        );
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        const tip = sh(repo, 'git', 'rev-parse', BRANCH).trim();
+        vi.mocked(execFileSync).mockClear();
+
+        await expect(mergeOpenPr()).rejects.toThrow(ArmedGitDriverError);
+        // The scratch checkout checked no file out, and the branch took nothing.
+        expect(existsSync(marker)).toBe(false);
+        expect(ran('read-tree')).toBe(false);
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+        expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+      });
     });
   });
 
