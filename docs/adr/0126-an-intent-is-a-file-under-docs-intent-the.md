@@ -13,7 +13,12 @@
     Problem, Outcome, Constraints, Open questions, and What I must understand after review.
     pup reads meaning only from the status line and the last section. `pup intent new <title>`
     writes the template, numbered one past the highest id in the directory, with the first eight
-    words of the title as the slug, as an ADR file name has.
+    words of the title as the slug, as an ADR file name has. The operator, the conductor and any
+    session may run it against the same directory at once, and two titles give two file names, so
+    an exclusive create of the slugged name alone would let both take one id. The id is reserved
+    first: an id-only `NNNN.reserved` file created exclusively, then the listing is read again, the
+    intent written and the reservation removed. A holder sees every intent an earlier holder wrote;
+    a reservation left by a crash only skips its id, and is no intent file name, so never listed.
     *Accepting.* `pup intent accept <id>` moves a draft to accepted only when its understanding
     section holds two or three list items that end in `?`. Items outside a list, items that are no
     question, a list under another heading, and anything inside a code fence or an HTML comment

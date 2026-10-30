@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
 import { IntentStatus } from './intent.enums.js';
@@ -101,21 +101,32 @@ export function createIntent(repoPath: string, title: string): Intent {
   }
   if (!clean) throw new IntentRefusedError('An intent needs a title.');
   const dir = intentDir(repoPath, { create: true }) as string;
-  const next = Math.max(0, ...intentFiles(dir).map((file) => Number(file.id))) + 1;
-  if (next > 9999) {
-    throw new IntentRefusedError(`${INTENT_DIR}/ already holds intent 9999; no id is left.`);
+  const highest = () => Math.max(0, ...intentFiles(dir).map((file) => Number(file.id)));
+  // Two writers with different titles would each create their own slugged
+  // name, so the id itself is reserved: an id-only file created exclusively,
+  // held while the listing is checked again and the intent is written. A
+  // writer holding it sees every intent an earlier holder wrote, so no id is
+  // given twice. A reservation left by a crash only skips its id.
+  for (let next = highest() + 1; next <= 9999; next = Math.max(next, highest()) + 1) {
+    const id = String(next).padStart(4, '0');
+    const reservation = join(dir, `${id}.reserved`);
+    try {
+      writeFileSync(reservation, '', { flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      continue;
+    }
+    try {
+      if (intentFiles(dir).some((file) => file.id === id)) continue;
+      const path = join(dir, `${id}-${slug(clean)}.md`);
+      // Exclusive: a link planted at the name is never written through.
+      writeFileSync(path, intentTemplate(id, clean), { flag: 'wx' });
+      return loadIntent(path, id).intent;
+    } finally {
+      unlinkSync(reservation);
+    }
   }
-  const id = String(next).padStart(4, '0');
-  const path = join(dir, `${id}-${slug(clean)}.md`);
-  try {
-    // Exclusive: an intent another writer created first, or a link planted at
-    // the name, is never written through.
-    writeFileSync(path, intentTemplate(id, clean), { flag: 'wx' });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    throw new IntentRefusedError(`${INTENT_DIR}/${id}-… appeared while creating it; run it again.`);
-  }
-  return loadIntent(path, id).intent;
+  throw new IntentRefusedError(`${INTENT_DIR}/ already holds intent 9999; no id is left.`);
 }
 
 /** The intent with this id, refused when the id is malformed or no single plain file holds it. */

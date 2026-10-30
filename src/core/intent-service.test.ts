@@ -66,6 +66,31 @@ describe('intents on disk', () => {
     }
   });
 
+  it('skips an id another writer holds, and leaves no reservation of its own', () => {
+    // A writer creating 0002 under another title holds its id reserved.
+    const repo = repoWith({
+      '0001-first.md': intentTemplate('0001', 'First'),
+      '0002.reserved': '',
+    });
+
+    const created = createIntent(repo, 'Mine');
+
+    expect(created.id).toBe('0003');
+    expect(readdirSync(join(repo, INTENT_DIR)).sort()).toEqual([
+      '0001-first.md',
+      '0002.reserved',
+      '0003-mine.md',
+    ]);
+    expect(listIntents(repo).map((entry) => entry.id)).toEqual(['0001', '0003']);
+  });
+
+  it('refuses a new intent once 9999 is taken, creating nothing', () => {
+    const repo = repoWith({ '9999-last.md': intentTemplate('9999', 'Last') });
+
+    expect(() => createIntent(repo, 'One more')).toThrow('no id is left');
+    expect(readdirSync(join(repo, INTENT_DIR))).toEqual(['9999-last.md']);
+  });
+
   it('cuts the slug to eight words, and names a title with none `intent`', () => {
     const repo = tempDir('pup-intent-');
 
