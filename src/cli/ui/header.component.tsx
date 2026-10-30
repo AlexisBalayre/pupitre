@@ -19,13 +19,13 @@ export function Header({
   const { baseline, conductor } = snapshot;
   return (
     <Box flexDirection="column">
-      <Text>
+      <Text wrap="truncate-end">
         <Text bold>pupitre</Text>
         <Text> {snapshot.projectId} </Text>
         {/* `--project <id>` can name a store a session planted (decision 29). */}
         <Text dimColor>{sanitizeReason(snapshot.repoPath)}</Text>
       </Text>
-      <Text>
+      <Text wrap="truncate-end">
         <Text color={conductor.running ? 'green' : 'gray'}>
           conductor {conductor.running ? 'running' : 'down'}
         </Text>
@@ -34,7 +34,7 @@ export function Header({
         ) : null}
       </Text>
       {baseline ? (
-        <Text dimColor>
+        <Text dimColor wrap="truncate-end">
           baseline {baseline.capturedAt}
           {baseline.coverageRatio === undefined
             ? ''
