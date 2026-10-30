@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scopeInFiles } from './task-spec.utils.js';
 
-describe('scopeInFiles (decision 126)', () => {
+describe('scopeInFiles (decision 128)', () => {
   const tracked = [
     'src/core/land.service.ts',
     'src/core/land.test.ts',
@@ -30,15 +30,22 @@ describe('scopeInFiles (decision 126)', () => {
     ]);
   });
 
-  it('names each glob no editable file matches as one to create, and ignores blank globs', () => {
+  it('names a glob that matches no tracked path as one to create, and ignores blank globs', () => {
     expect(
-      scopeInFiles(tracked, {
-        scopeIn: ['src/core/land.ts', ' ', 'src/core/legacy/*.ts', 'src/core/land.test.ts'],
-        scopeOut: ['src/core/legacy/**'],
-      }),
+      scopeInFiles(tracked, { scopeIn: ['src/core/land.ts', ' ', 'src/core/land.test.ts'] }),
     ).toEqual({
       files: ['src/core/land.test.ts'],
-      toCreate: ['src/core/land.ts', 'src/core/legacy/*.ts'],
+      toCreate: ['src/core/land.ts'],
     });
+  });
+
+  // The hook would refuse what it names, so it is neither listed nor offered for creation.
+  it('never offers for creation a glob only protected or scope-out paths answer', () => {
+    expect(
+      scopeInFiles(tracked, {
+        scopeIn: ['src/core/legacy/*.ts', 'src/core/legacy/new.ts', '.claude/**', '.claude/new.md'],
+        scopeOut: ['src/core/legacy/**'],
+      }),
+    ).toEqual({ files: [], toCreate: [] });
   });
 });

@@ -1,3 +1,4 @@
+import { globToRegExp } from './glob.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { scopedPaths } from './scope-audit.utils.js';
 import type { TaskSpec } from './types/profile.types.js';
@@ -37,21 +38,35 @@ export function assertPlannableSpec(task: TaskSpec): void {
 export interface ScopeInFiles {
   /** Tracked files the task may edit, in `tracked`'s order. */
   files: string[];
-  /** Scope-in globs no editable tracked file matches: files the task is to create. */
+  /** Scope-in globs that match no tracked path and name an editable one: files to create. */
   toCreate: string[];
 }
 
 /**
  * The tracked files a task's scope-in matches, read with the gate's own
  * precedence (`scopedPaths`), so the kickoff never names a file the session
- * could not commit: a protected path or one scope-out takes back (decision 126).
+ * could not commit: a protected path or one scope-out takes back (decision 128).
+ * A glob is to be created only when it matches no tracked path at all, before
+ * that precedence, and its own text is not refused by it: a glob whose files
+ * are all protected or under scope-out names nothing the session may add.
+ * One regex pass over `tracked`, which git's output bound caps.
  */
 export function scopeInFiles(
   tracked: string[],
   task: Pick<TaskSpec, 'scopeIn' | 'scopeOut'>,
 ): ScopeInFiles {
   const scopeIn = task.scopeIn.filter((glob) => glob.trim());
-  const files = scopedPaths(tracked, scopeIn, task.scopeOut);
-  const toCreate = scopeIn.filter((glob) => scopedPaths(files, [glob], task.scopeOut).length === 0);
+  const inRes = scopeIn.map(globToRegExp);
+  const matched = new Set<number>();
+  const candidates = tracked.filter((path) => {
+    const hits = inRes.flatMap((re, index) => (re.test(path) ? [index] : []));
+    for (const index of hits) matched.add(index);
+    return hits.length > 0;
+  });
+  const files = scopedPaths(candidates, scopeIn, task.scopeOut);
+  // A glob's text matches its own pattern, so the gate's rule reads it as a path.
+  const toCreate = scopeIn.filter(
+    (glob, index) => !matched.has(index) && scopedPaths([glob], [glob], task.scopeOut).length > 0,
+  );
   return { files, toCreate };
 }
