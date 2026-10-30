@@ -809,7 +809,7 @@ describe('generated bash re-check (decision 63)', () => {
       `#!/bin/sh
 for arg; do last=$arg; done
 if [ "$last" = '${slow}' ]; then
-  python3 -c 'import os, sys, time; time.sleep(max(0, os.stat(sys.argv[1]).st_mtime + float(sys.argv[2]) - time.time()))' '${clock}' ${deadline - 0.2}
+  python3 -c 'import os, sys, time; time.sleep(max(0, os.stat(sys.argv[1]).st_mtime + float(sys.argv[2]) - time.time()))' '${clock}' ${deadline - 0.3}
   echo ${1000 + deadline - 1} > '${clock}'
 elif [ "$last" = '${target}' ]; then
   echo ${1000 + deadline} > '${clock}'

@@ -17,7 +17,7 @@
     while it stayed (reproduced on Apple Git 2.39.5: `status`, `rev-parse` and `ls-files`
     block, while `config --file` reads no include).
     *One deadline per hook.* The shared shell (`worktreeGitShell`) records a deadline when the
-    hook starts, `HOOK_READ_DEADLINE_SECONDS` (the hook timeout less one) of `date +%s`.
+    hook starts, `HOOK_READ_DEADLINE_SECONDS` (the hook timeout less two) of `date +%s`.
     `bounded` runs a command in the background, with a watcher that `kill -9`s it once the
     deadline passes. A killed command, or one asked for after the deadline, fails with a
     `BLOCKED: a read in <worktree> outran the hook deadline` line. Every `safe_git` call goes
@@ -27,8 +27,13 @@
     process that blocks, and a command substitution around it sees its output close. The
     deadline belongs to the hook, not to each call. A check of many paths therefore cannot
     spend it once per path, and after one blocked read every later one fails at once. Whole
-    seconds put the kill between 3 and 4 seconds after the start, which leaves the hook a
-    second to refuse. A clock that reads as no number leaves the deadline passed, so every
+    seconds move the kill up to a second either side of the deadline. The deadline is recorded
+    rounded down, and a read sleeps its whole seconds left from wherever in a second it starts,
+    so one that starts late in the deadline's last second runs nearly a second past it. The
+    hook timeout less one therefore let the kill land at the timeout itself, which a session
+    reaches without a race by choosing the dirty files ahead of the read (CI review). Less two
+    puts it between 2 and 4 seconds after the start, which leaves the hook a second to
+    refuse. A clock that reads as no number leaves the deadline passed, so every
     read fails rather than the shell exiting on the arithmetic, which bash 3.2's `/bin/sh` does
     with 127 and would fail open. Each hook refuses the way it refuses a git failure. The scope
     hook refuses the conflict-resolution Edit. The re-check fails its snapshot before the call and
@@ -92,7 +97,11 @@
     spends the deadline in both checks before the second, which the call changes. The check
     after it refuses as out of time, in under 5 seconds. That test, and the fifo `wc` one, fail
     with the loop's deadline exits taken out. A `date` that prints nothing never blocks the
-    call and refuses after it.
+    call and refuses after it. A `date` whose seconds turn as the hook records its deadline,
+    and a `wc` on the first of two dirty files that returns 0.3 seconds before the deadline's
+    last second ends, start a `wc` that never returns on the second one with a second still
+    to sleep. The check refuses as out of time with more than half a second of the hook
+    timeout left: about 4.1 seconds, against 5.0 with the hook timeout less one.
     Each test runs its hook under a 15-second timeout, so without the deadline it fails slow
     or with a null status, never with the test's own kill read as a refusal. A session's
     `mcp.json` carries the three pins, `GIT_CONFIG_NOSYSTEM=1` and the command-scope config.
