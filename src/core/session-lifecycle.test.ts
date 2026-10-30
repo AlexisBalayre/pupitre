@@ -1236,23 +1236,59 @@ describe('launchTask model routing (decision 92)', () => {
     });
   });
 
-  // A CI fix round is the climb decision 92 counts for `pup fix` (decision 90).
-  it('climbs a fix round one rung, and only the operator lifts the top rung', () => {
+  /** A fix round that opened its window and was gated again. */
+  const finishedRound = (sessionId: string) => {
+    appendEvent(db, sessionId, 'fix_round', {
+      prUrl: 'u',
+      head: 'h',
+      threads: ['T1'],
+      rejectBase: 0,
+    });
+    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+  };
+
+  // A reviewer's finding is no failure: a first fix round keeps its rung, and
+  // only a round after one the gate merged again climbs (decision 92).
+  it('keeps a first fix round on its rung, and climbs a repeat one', () => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const sessionId = launch();
     const session = () => getSession(db, sessionId) as SessionRow;
-    const named = { model: 'claude-opus-5-5', effort: 'max' };
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+
+    expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
+      tier: 'standard',
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      override: false,
+    });
+
+    finishedRound(sessionId);
 
     expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
       tier: 'standard',
       rung: 1,
       model: 'claude-sonnet-5-5',
       effort: 'high',
-      reason: 'ci-fix-round',
+      reason: 'repeat-fix-round',
       override: false,
     });
+  });
 
+  it('refuses a repeat fix round on the top rung, which only the operator lifts', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const sessionId = launch();
+    const session = () => getSession(db, sessionId) as SessionRow;
+    const named = { model: 'claude-opus-5-5', effort: 'max' };
     db.prepare('UPDATE sessions SET rung = 3 WHERE id = ?').run(sessionId);
+
+    expect(fixRoundRoute(db, session(), {}, 'operator')).toMatchObject({ rung: 3 });
+
+    finishedRound(sessionId);
+    // A re-gate after the head moved does not undo the repeat.
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+
     expect(() => fixRoundRoute(db, session(), {}, 'operator')).toThrow(TopRungReachedError);
     expect(() => fixRoundRoute(db, session(), named, 'conductor')).toThrow(TopRungReachedError);
     expect(fixRoundRoute(db, session(), named, 'operator')).toMatchObject({

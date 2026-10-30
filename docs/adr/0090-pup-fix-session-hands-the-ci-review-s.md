@@ -47,7 +47,7 @@
     - no open thread, which is either a status that reads clean (read the PR before the merge
       click, then `pup land`), or a review that opened no thread without reaching a clean verdict
       (read the PR);
-    - the top rung of its ladder.
+    - a round that climbs (decision 92) on the top rung of its ladder.
     The review bot is the claude-review poster, which writes with the job's `github.token`, so
     GraphQL names it `{__typename: Bot, login: github-actions}`. Only that author's reviews,
     threads and status count; a user who took the login is a `User`.
@@ -141,11 +141,13 @@
     section, and a `respawn {delivered}` event marks where this window starts for its own later
     climb.
     `fixRoundRoute` climbs one rung for `ci-fix-round`, the reason decision 92 reserved for this
-    command. An override the session kept, or one named here, applies as on a respawn. Only the
+    command. *Amended by decision 92's 2026-10-29 amendment:* a round stays on the rung the
+    session's last window ran on, and climbs one, as `repeat-fix-round`, when it follows any round
+    a merge ended. An override the session kept, or one named here, applies as on a respawn. Only the
     operator's named override lifts a top-rung refusal, never the conductor's, and at the top the
     refusal names `pup fix <id> --model <model> --effort <effort>` or fixing the PR by hand. The
-    route is recorded only after the kickoff lands, so an undone round climbs once on its retry,
-    not twice. A launch that throws, or a kickoff that is refused or never lands, is undone through
+    route is recorded only after the kickoff lands, so an undone round's retry climbs no higher
+    than the round would have. A launch that throws, or a kickoff that is refused or never lands, is undone through
     `pup kill`'s own path, below: the window is killed, `tmux_target` cleared, and the session
     takes the edge back to `merged` with `gate_result {kind: fix-round-killed}`. A `pup kill`
     during the kickoff wait has taken it there already, so the undo then only kills the new pane.
