@@ -74,6 +74,15 @@ describe('the Health sheet', () => {
     );
   }
 
+  /** `pup land` bringing a `--pr` session's work onto the target at `at`. */
+  function land(sessionId: string, at: string, prUrl = PR): void {
+    appendEvent(db, sessionId, 'landed', { sha: 'a'.repeat(40), target: 'main', prUrl });
+    db.prepare("UPDATE events SET created_at = ? WHERE session_id = ? AND type = 'landed'").run(
+      at,
+      sessionId,
+    );
+  }
+
   /** The `points` of every polyline in the chart titled `title`, one string per line. */
   function lines(page: string, title: string): string[] {
     const chart = new RegExp(`<title>${title}: [^<]*</title>(.*?)</svg>`).exec(page)?.[1] ?? '';
@@ -93,7 +102,9 @@ describe('the Health sheet', () => {
     capture('2026-10-01T00:00:00.000Z', { dead: 4, lines: 100, ratio: 0.8 });
     capture('2026-10-03T00:00:00.000Z', { dead: 4, lines: 120, ratio: 0.82 });
     capture('2026-10-05T00:00:00.000Z', { dead: 2, lines: 120, ratio: 0.82 });
-    merge('s-a', '2026-10-02 00:00:00', PR);
+    // Its PR opened on 10-01; its work reached main, and the axis, when it landed.
+    merge('s-a', '2026-10-01 06:00:00', PR);
+    land('s-a', '2026-10-02 00:00:00');
     // Re-gated after a fix round: still one merge, at the first.
     merge('s-b', '2026-10-04 00:00:00', undefined, 1);
 
@@ -149,8 +160,10 @@ describe('the Health sheet', () => {
     capture('2026-10-07T00:00:00.000Z', { dead: 3, lines: 110, ratio: 0.9 });
     capture('2026-10-09T00:00:00.000Z', { dead: 3, lines: 110, ratio: 0.9 });
     merge('s-early', '2026-10-02 00:00:00', PR);
+    land('s-early', '2026-10-02 00:00:00');
     merge('s-late', '2026-10-06 00:00:00');
     merge('s-gap', '2026-10-04 00:00:00', 'https://evil.example/x');
+    land('s-gap', '2026-10-04 00:00:00', 'https://evil.example/x');
 
     const page = render();
     const rows = [...page.matchAll(/<tr><td>([^<]*)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g)];
@@ -170,12 +183,39 @@ describe('the Health sheet', () => {
     expect(page).not.toMatch(/<a href="(?!https:\/\/github\.com\/o\/r\/pull\/7")/);
   });
 
+  it('places a pull request at its land, not its opening, and leaves one not landed off the sheet', () => {
+    capture('2026-10-01T00:00:00.000Z', { dead: 0, lines: 100 });
+    capture('2026-10-03T00:00:00.000Z', { dead: 2, lines: 100 });
+    capture('2026-10-05T00:00:00.000Z', { dead: 2, lines: 150 });
+    // Both PRs open before the first move; B's lands first, then A's after it.
+    merge('s-a', '2026-10-02 00:00:00', PR);
+    merge('s-b', '2026-10-02 01:00:00', PR);
+    merge('s-open', '2026-10-02 02:00:00', PR);
+    land('s-b', '2026-10-02 12:00:00');
+    land('s-a', '2026-10-04 00:00:00');
+
+    const page = render();
+    const rows = [...page.matchAll(/<tr><td>([^<]*)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g)];
+
+    expect(rows.map(([, at]) => at)).toEqual(['2026-10-03 00:00', '2026-10-05 00:00']);
+    expect(rows[0]?.[3]).toContain('<span class="sid">s-b</span>');
+    expect(rows[0]?.[3]).not.toContain('s-a');
+    expect(rows[1]?.[3]).toContain('<span class="sid">s-a</span>');
+    expect(rows[1]?.[3]).not.toContain('s-b');
+    expect(page).toContain('<title>s-b merged 2026-10-02 12:00');
+    expect(page).toContain('<title>s-a merged 2026-10-04 00:00');
+    expect(page).not.toContain('s-open');
+    expect(page).toContain('2 merged, oldest first');
+  });
+
   it('escapes the session ids and PR urls it shows, markup and control characters alike', () => {
     const evil = '<img src=x onerror=alert(1)>\u001b[31m\u009b2J‮';
     capture('2026-10-01T00:00:00.000Z', { lines: 1 });
     capture(`2026-10-02T00:00:00.000Z${evil}`, { lines: 2 });
     merge('s-pr', '2026-10-01 12:00:00', `${PR}${evil}`);
+    land('s-pr', '2026-10-01 12:00:00');
     merge(`s-${evil}`, '2026-10-01 13:00:00', evil);
+    land(`s-${evil}`, '2026-10-01 13:00:00');
 
     const page = render();
 

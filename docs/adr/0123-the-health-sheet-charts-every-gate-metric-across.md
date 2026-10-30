@@ -12,8 +12,12 @@
      the CSP, nothing loaded from elsewhere.
      *What it reads.* Every `baseline_history` row (`listBaselineHistory`), each through
      `captureDebt`, now on the repository since two sheets read it, and `debtFigures`; and each
-     session's first `merge` event, one grouped query ordered by its time, since a fix round's
-     re-gate records another (decision 98). The metrics are the ones `debtFigures` reads, coverage,
+     session's first `merge` event, one grouped query, since a fix round's re-gate records another
+     (decision 98). A merge is placed when its work reached the target: a local one at its `merge`
+     event, a `--pr` one, whose `merge` event is written when the PR opens, at its first `landed`
+     event, since `pup land` brings the code in and its audit takes the snapshot that reflects it
+     (decision 84). A PR not landed yet is left off the sheet: it has moved no figure, and placing
+     it at its opening would credit the next move to work that is not on the target. The metrics are the ones `debtFigures` reads, coverage,
      unused exports and duplicated lines, in one `GATE_METRICS` list the Overview's tiles share;
      a figure added there gets a chart here. A stage records pass, fail or skip and a duration,
      no gate figure, so it is not charted. A capture whose time does not parse has no place on the
@@ -34,8 +38,8 @@
      measured that figure comparably, so a gap hides no change. A move's size is its change over
      the larger of its two values, so a count and a ratio rank on one scale and a figure leaving
      zero counts in full; a capture ranks by its largest move, a tie going to the newer. The table
-     lists the ten largest with every figure that moved, and names the sessions whose first merge
-     falls after the earliest capture compared with and at or before this one, newest first, five
+     lists the ten largest with every figure that moved, and names the sessions whose merge is
+     placed after the earliest capture compared with and at or before this one, newest first, five
      at most then how many more. Captures are taken by `pup init` and `pup audit`, not at each
      merge (decision 38), so the table names every merge in the window rather than claiming one
      cause; a window with none says no pup merge fell between the two snapshots.
@@ -51,7 +55,9 @@
      escapes a marker's label, draws a series measured nowhere as a frame, and draws no NaN for
      non-finite values or a non-finite marker time. In `web-dashboard-health.test.ts`, an empty
      store shows a hint per section and no SVG; three snapshots and two merges draw the expected
-     points and markers, the PR'd merge a link and a re-gated session one merge; a gap and a rule
+     points and markers, the PR'd merge a link at its land and a re-gated session one merge; two
+     PRs landed out of the order they opened in are each named in the window of the snapshot after
+     its land, and one not landed appears nowhere; a gap and a rule
      change break the line; the moves table ranks a figure leaving zero above a 10% rise, compares
      across a gap, and names the sessions in each window; markup, C0/C1 controls and U+202E planted
      in session ids, PR urls and a capture time reach the page escaped or not at all. In

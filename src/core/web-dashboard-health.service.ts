@@ -33,6 +33,7 @@ interface HealthCapture {
 
 /** A session's first merge, the one that landed its work. */
 interface HealthMerge {
+  /** When its work reached the target: the merge, or for a pull request its first `landed` event. */
   at: number;
   label: string;
   /** The session id, or `UNMINTED_LABEL` for one outside the minted shape. */
@@ -60,7 +61,7 @@ interface Movement {
   moves: Move[];
   /** The largest relative change among its moves. */
   size: number;
-  /** The sessions whose first merge falls after the earliest `since` and at or before the capture. */
+  /** The sessions whose merge is placed after the earliest `since` and at or before the capture. */
   merged: HealthMerge[];
 }
 
@@ -75,8 +76,10 @@ function timeLabel(at: number): string {
 
 /**
  * Every capture oldest first, and every session's first merge, the one that
- * landed it: a fix round's re-gate records another (decision 98). A capture
- * whose time does not parse has no place on the axis and is left out.
+ * landed it: a fix round's re-gate records another (decision 98). Each merge
+ * is placed when its work reached the target, so a pull request's at its
+ * first `landed` event, oldest first. A capture or merge whose time does not
+ * parse has no place on the axis and is left out.
  */
 export function readHealthSheet(db: Database, repoPath: string): HealthView {
   const captures = listBaselineHistory(db, projectId(repoPath)).flatMap((row) => {
@@ -96,16 +99,26 @@ export function readHealthSheet(db: Database, repoPath: string): HealthView {
   });
   const rows = db
     .prepare(
-      `SELECT session_id, type, payload, created_at FROM events WHERE id IN
+      `SELECT m.session_id, m.type, m.payload, m.created_at,
+         (SELECT l.created_at FROM events l WHERE l.type = 'landed' AND l.session_id = m.session_id
+            ORDER BY l.id LIMIT 1) AS landed_at
+       FROM events m WHERE m.id IN
          (SELECT MIN(id) FROM events WHERE type = 'merge' AND session_id IS NOT NULL GROUP BY session_id)
-       ORDER BY created_at, id`,
+       ORDER BY m.id`,
     )
-    .all() as (Pick<EventRow, 'type' | 'payload' | 'created_at'> & { session_id: string })[];
+    .all() as (Pick<EventRow, 'type' | 'payload' | 'created_at'> & {
+    session_id: string;
+    landed_at: string | null;
+  })[];
   const merges = rows.flatMap((row) => {
-    const at = Date.parse(toIsoUtc(row.created_at));
-    if (Number.isNaN(at)) return [];
     const event = decodeEvent(row);
     const prUrl = event.type === 'merge' ? event.prUrl : undefined;
+    // A `--pr` merge opened a pull request; its work reaches the target, and the
+    // audit's next snapshot, only at `pup land`. One not landed yet is left out.
+    const when = prUrl === undefined ? row.created_at : row.landed_at;
+    if (when === null) return [];
+    const at = Date.parse(toIsoUtc(when));
+    if (Number.isNaN(at)) return [];
     return [
       {
         at,
@@ -115,7 +128,8 @@ export function readHealthSheet(db: Database, repoPath: string): HealthView {
       },
     ];
   });
-  return { captures, merges };
+  // Stable, so two merges at one instant keep the order they were recorded in.
+  return { captures, merges: merges.sort((a, b) => a.at - b.at) };
 }
 
 /**
