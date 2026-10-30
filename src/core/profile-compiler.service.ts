@@ -964,8 +964,9 @@ function conductorModelsSection(workerModel: string | undefined, commonDir: stri
     'the tier, and `pup plan add|edit --tier critical|standard` sets one when the risk is not ' +
     'in the paths. Each tier has a ladder, cheapest first — standard: ' +
     `${ladderText(LADDERS.standard)}; critical: ${ladderText(LADDERS.critical)} — and a ` +
-    'relaunch or respawn after a gate rejection, a CI fix round, a stall or a dead turn ' +
-    'climbs one rung. A blocked task never climbs. ' +
+    'relaunch or respawn after a gate rejection, a stall or a dead turn climbs one rung. ' +
+    "A CI fix round runs on the rung the session's last window ran on; every later round " +
+    'on the same PR climbs one. A blocked task never climbs. ' +
     (workerModel
       ? `The operator fixed every session's model to ${workerModel}; each launch records it ` +
         'as an override, which never lifts the top-rung refusal: only the operator does. '
