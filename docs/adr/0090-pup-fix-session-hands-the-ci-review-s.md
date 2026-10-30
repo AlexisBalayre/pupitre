@@ -142,8 +142,8 @@
     climb.
     `fixRoundRoute` climbs one rung for `ci-fix-round`, the reason decision 92 reserved for this
     command. *Amended by decision 92's 2026-10-29 amendment:* a round stays on the rung the
-    session's last window ran on, and climbs one, as `repeat-fix-round`, when it follows a round
-    the newest merge ended. An override the session kept, or one named here, applies as on a respawn. Only the
+    session's last window ran on, and climbs one, as `repeat-fix-round`, when it follows any round
+    a merge ended. An override the session kept, or one named here, applies as on a respawn. Only the
     operator's named override lifts a top-rung refusal, never the conductor's, and at the top the
     refusal names `pup fix <id> --model <model> --effort <effort>` or fixing the PR by hand. The
     route is recorded only after the kickoff lands, so an undone round's retry climbs no higher

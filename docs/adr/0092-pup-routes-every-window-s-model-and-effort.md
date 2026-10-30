@@ -36,12 +36,14 @@
     is not a capability failure. A re-gate from `merged` to `merged` (decision 86) is no failure,
     so a relaunch or respawn after one stays on its rung, and `pup fix` (decision 90) opens its
     window on the rung the session's last window ran on. A round climbs one rung, recorded as
-    `repeat-fix-round`, when it follows a round the newest merge ended: that round's worker
-    answered and was gated, and the review still left threads open. Thread ids cannot tell a
+    `repeat-fix-round`, when it follows any round a merge ended, however often the PR was
+    re-gated since (decision 86): that round's worker answered and was gated, and the review
+    still left threads open. Thread ids cannot tell a
     re-raised finding from a new one, since the review mints fresh ones on every head a round
     pushes, so every round after the first on the PR is a repeat, and a top-rung session takes
-    one only on the operator's override. A round counts once its window opened (a delivered
-    `respawn` after its `fix_round`), so one undone before its kickoff landed never ran. The
+    one only on the operator's override. A round counts once its window opened (the first
+    `respawn` after its `fix_round` delivered), so one undone before its kickoff landed never
+    ran, and its undelivered `respawn` does not mark where a window starts. The
     retry of a round whose window opened since the newest merge, and was killed, has its repeat
     climb recorded already, and climbs again only on a gate rejection or a dead turn that window
     ran into, as a respawn of it would. A stall at that kill is not measured yet: the kill takes
@@ -88,8 +90,9 @@
     utility carries a Fable model or `max`. A relaunch after a rejection, a dead turn and a stall
     at the kill each climb once and record the reason. A re-gate is no failure; a first fix round
     keeps its rung whatever the window before it ran into, and a second climbs once even when its
-    threads are new ids on a new head, also on the retry of an undone round. The retry of a
-    killed round climbs on its window's rejection or dead turn, and on nothing else. A busy kill, a kill from awaiting-review
+    threads are new ids on a new head, also on the retry of an undone round and after a re-gate.
+    The retry of a killed round climbs on its window's rejection or dead turn, and on nothing
+    else, also after a retry undone in between. A busy kill, a kill from awaiting-review
     and a block do not climb. A respawn climbs after a rejection, once only after a dead turn, and
     after a stall on a hard respawn. A top-rung respawn is refused with the window untouched, and
     an override named now passes the top; a kept one, or the conductor's `--worker-model`, never

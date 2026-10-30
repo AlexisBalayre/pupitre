@@ -1286,6 +1286,8 @@ describe('launchTask model routing (decision 92)', () => {
     expect(fixRoundRoute(db, session(), {}, 'operator')).toMatchObject({ rung: 3 });
 
     finishedRound(sessionId);
+    // A re-gate after the head moved does not undo the repeat.
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
 
     expect(() => fixRoundRoute(db, session(), {}, 'operator')).toThrow(TopRungReachedError);
     expect(() => fixRoundRoute(db, session(), named, 'conductor')).toThrow(TopRungReachedError);

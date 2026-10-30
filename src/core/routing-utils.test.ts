@@ -215,10 +215,14 @@ describe('fixRoundFailure', () => {
 
   // The review mints fresh thread ids on every head a round pushes, so a
   // re-raised finding never shares one: the round itself is the repeat.
-  it('names a repeat for a round after one the newest merge ended, whatever its threads', () => {
+  it('names a repeat for a round after any one a merge ended, whatever its threads', () => {
     const first = [merge, round('T1'), opened(true), regated, merge];
     expect(fixRoundFailure(first)).toBe('repeat-fix-round');
     expect(fixRoundFailure([...first, round('T2'), opened(true), regated, merge])).toBe(
+      'repeat-fix-round',
+    );
+    // A re-gate after the head moved ends no round, and undoes no repeat.
+    expect(fixRoundFailure([merge, round('T1'), opened(true), merge, merge])).toBe(
       'repeat-fix-round',
     );
   });
@@ -237,6 +241,21 @@ describe('fixRoundFailure', () => {
     expect(fixRoundFailure([...ran, rejected, killed])).toBe('gate-rejection');
     expect(fixRoundFailure([...ran, died, killed])).toBe('turn-death');
     expect(fixRoundFailure([merge, round('T1'), opened(true), died, killed])).toBe('turn-death');
+  });
+
+  // The undone retry stored no route, so the next one still answers the window that ran.
+  it('keeps the failure of a killed round across a retry undone before its window opened', () => {
+    const undone = [round('T1'), opened(false), killed];
+    const ran = [merge, round('T1'), opened(true)];
+    expect(fixRoundFailure([...ran, died, killed, ...undone])).toBe('turn-death');
+    expect(fixRoundFailure([...ran, rejected, killed, ...undone])).toBe('gate-rejection');
+  });
+
+  // A `pup respawn` opens its window and stores its climb even when its kickoff never lands.
+  it('counts only what came after a respawn of the round, delivered or not', () => {
+    const ran = [merge, round('T1'), opened(true), died];
+    expect(fixRoundFailure([...ran, opened(false), killed])).toBeUndefined();
+    expect(fixRoundFailure([...ran, opened(false), rejected, killed])).toBe('gate-rejection');
   });
 });
 
