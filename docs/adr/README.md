@@ -140,6 +140,7 @@ for the cross-references the text states, then the decision itself.
 - [0116. Code is laid out in per-area folders with string enums, and tests mirror `src/` under `test/unit` (2026-10-28).](0116-code-layout-string-enums-and-a-mirrored-test-tree.md) (accepted)
 - [0118. The conductor's security review runs a general-purpose subagent on Opus at high, which runs the pinned diff and no other git, within ten turns (2026-10-28, amends 92)](0118-the-conductor-s-security-review-runs-a-general-purpose.md) (accepted)
 - [0121. `pup ui` never draws a frame as tall as the terminal (2026-10-28).](0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md) (accepted)
+- [0125. Claude Code mods do not register their hooks in a pup window, so conductor-worker messaging stays on tmux and `pup status` (2026-10-30)](0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes
