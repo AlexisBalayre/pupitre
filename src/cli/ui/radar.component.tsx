@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import { clip, moreLine } from './viewport.utils.js';
+import { clip } from './viewport.utils.js';
 
 /**
  * The watcher's conflict radar: live sessions whose diffs touch the same file
@@ -37,8 +37,10 @@ export function Radar({
             (radarStale ? '  (stale)' : '')}
         </Text>
       ))}
+      {/* Named, not a bare `+N more`: on a stale radar at its two-line floor no
+          OVERLAP row is left to say what was cut. */}
       {hidden > 0 ? (
-        <Text color="yellow" wrap="truncate-end">{`${lead}${moreLine(hidden).trim()}`}</Text>
+        <Text color="yellow" wrap="truncate-end">{`${lead}+${hidden} more overlaps`}</Text>
       ) : null}
       {radarStale ? (
         <Text dimColor wrap="truncate-end">

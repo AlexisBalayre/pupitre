@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import { clip, moreLine } from './viewport.utils.js';
+import { clip } from './viewport.utils.js';
 
 /**
  * The ledger's overdue entries, each with the condition someone accepted it
@@ -34,8 +34,10 @@ export function Debt({
           {`${lead}OVERDUE DEBT #${entry.id}  ${entry.description}  (review by: ${entry.reviewBy})`}
         </Text>
       ))}
+      {/* Named, not a bare `+N more`: at the two-line floor it is the only line
+          left to say the block is overdue debt. */}
       {hidden > 0 ? (
-        <Text color="red" wrap="truncate-end">{`${lead}${moreLine(hidden).trim()}`}</Text>
+        <Text color="red" wrap="truncate-end">{`${lead}+${hidden} more overdue debt`}</Text>
       ) : null}
       <Text dimColor wrap="truncate-end">
         {`${lead}${openDebtCount} open debt ${openDebtCount === 1 ? 'entry' : 'entries'}`}

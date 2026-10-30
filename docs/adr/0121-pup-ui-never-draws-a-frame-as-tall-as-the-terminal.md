@@ -23,7 +23,9 @@
     off. It is broken at spaces into rows of the terminal's width by `wrapLines`, each row drawn
     truncated, and `App` counts the rows that function returns rather than leaving the breaks to
     Ink's own wrap, which it could not see. A list that
-    was cut ends in a `+N more` line that is counted in its budget. The window is a function
+    was cut ends in a `+N more` line that is counted in its budget. The debt and radar blocks'
+    line names what it hides (`+N more overdue debt`, `+N more overlaps`): at the two-line floor
+    it can be the only line left to say what the block holds. The window is a function
     of the cursor alone, so a refresh does not move it, and moving the cursor past its edge
     scrolls it. The detail pane still replaces the table.
     *Known limits.* The line counts are kept by hand beside the components, so a component

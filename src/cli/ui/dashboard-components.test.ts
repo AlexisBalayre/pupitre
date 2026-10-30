@@ -375,6 +375,18 @@ describe('dashboard components', () => {
       expect(frame).toContain('3 open debt entries');
     });
 
+    it('still says overdue when held to two lines', () => {
+      const frame = frameOf(
+        createElement(Debt, {
+          overdueDebt: ['1', '2', '3'].map((id) => ({ id, description: 'd', reviewBy: 'r' })),
+          openDebtCount: 3,
+          maxLines: 2,
+        }),
+      );
+
+      expect(frame).toBe('+3 more overdue debt\n3 open debt entries');
+    });
+
     it('renders nothing when the ledger is clean', () => {
       expect(frameOf(createElement(Debt, { overdueDebt: [], openDebtCount: 0 }))).toBe('');
     });
@@ -391,6 +403,18 @@ describe('dashboard components', () => {
 
       expect(frame).toContain('OVERLAP  s-a-1 <-> s-b-1  src/a.ts (+1 more)  (stale)');
       expect(frame).toContain('conflict radar off');
+    });
+
+    it('still says overlaps when a stale radar is held to two lines', () => {
+      const frame = frameOf(
+        createElement(Radar, {
+          overlaps: ['a', 'b'].map((id) => ({ sessionA: `s-${id}`, sessionB: 's-z', files: [] })),
+          radarStale: true,
+          maxLines: 2,
+        }),
+      );
+
+      expect(frame.split('\n')[0]).toBe('+2 more overlaps');
     });
 
     it('renders nothing when the radar is live and finds no overlap', () => {
