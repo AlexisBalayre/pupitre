@@ -1,0 +1,217 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T14:41:57.773Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41073242415",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41073242415",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0c62860ce8c8b901f1b6e2a3e5325ad10e42f0d5",
+  "source": "pr",
+  "pr_number": 212,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "97-117",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The sheet places each session at its first `merge` event, but for a `--pr` session that event records the PR being opened. The snapshot that measures its work is taken later, by `pup land`'s audit, after the `landed` event. So the moves table credits the wrong snapshot, and the markers show sessions whose PR is still unmerged as merged.",
+      "body": "**Merges are placed when the PR opens, not when the work lands, so moves are credited to the wrong session in `--pr` mode**\n\n`readHealthSheet` uses each session's first `merge` event as the moment its work arrived. `movements` then credits a snapshot with every merge in `(since, capture.at]`.\n\nWith `pup merge --pr`, which the conductor always uses (ADR 0075), `recordMerge` writes the `merge` event when the gate opens the PR (`src/core/merge-gate.service.ts`, around L2128-2142 and L2202). The code reaches the target later, in `pup land`. `landSession` writes a `landed` event (`src/core/land.service.ts` L214) and only then calls `auditProject(...)` (L226). That reaches `persistBaseline`, the one place that appends a `baseline_history` row (`src/core/init.service.ts` L345-373). The local merge path does not append history: it only calls `saveProjectBaseline`. So in PR mode, the snapshot that reflects a session's work always comes after its `landed` time, not its `merge` time.\n\nA realistic case with two parallel sessions:\n- 10:00: A is gated with `--pr`, so a `merge` event is written.\n- 10:05: B is gated with `--pr`.\n- 11:00: B's PR merges first and `pup land B` takes snapshot C1. C1's window covers both 10:00 and 10:05, so the table names A too, though A's code is not on main.\n- 12:00: `pup land A` takes snapshot C2, which carries A's change. C2's window `(C1, C2]` holds no `merge` event, so the row reads \"no pup merge between the two snapshots\" for the change A caused.\n\nThe dashed markers (`mergeMarker`, L189) and the Merges list (L276) have the same problem: they show a session as merged when its PR opened, including PRs that never land. ADR 0123 does not cover PR mode or `pup land`. The tests insert only `merge` events and no `landed` event, so they never reach this case.\n\nOne possible fix: place a session at its first `landed` event when its merge carried a `prUrl`, and at its first `merge` otherwise. A PR-mode session with no `landed` event yet would then be left off the axis and out of the windows, or shown as open. The ADR wording (\"each session's first `merge` event\") would need the same change.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0c62860ce8c8b901f1b6e2a3e5325ad10e42f0d5/src/core/web-dashboard-health.service.ts#L97-L117",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-sheet.utils.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This `.utils.ts` file now imports the runtime value `PR_URL` from `./dashboard.service.js`, which `docs/conventions/naming.md` forbids (\"utils: Pure functions only. Cannot import service…\"). It also makes the pure `chart.utils.ts`, which imports this file for `escapeHtml`, load the whole dashboard/Claude runtime graph. Moving `PR_URL` into a `*.constants.ts` file fixes both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "241-245, 280-289",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The x axis is scaled over captures and merge markers, but the end labels sit at the first and last capture. When merges run past the snapshots, the last capture's right-anchored label can land near the left edge and get clipped or overlap the first label, and the axis's far end gets no time label.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "162, 248-252, 273-279",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A metric that never changes falls back to `span = 1` and is drawn on the plot floor. Since `timeLineChart` prints no y scale or value labels, a steady non-zero metric (e.g. 12 unused exports) looks like a steady zero unless you hover or read the figcaption.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "121-127",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `comparable()` copies the decision-39 duplication-rule check that `web-dashboard-overview.service.ts:165-166` already writes inline. It could sit next to `GATE_METRICS` in `web-dashboard-sheet.utils.ts` as one predicate that both sheets call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "240",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`movesSection` recovers the metric with `GATE_METRICS.find(...)` plus an `as` cast that hides the possible `undefined`. Storing the metric entry in `Move` itself, instead of only its `key`, removes both the lookup and the cast.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "238",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`timeLineChart` repeats `lineChart`'s plot box literal `{ left: 8, top: 16, width: WIDTH - 16, height: PLOT_HEIGHT - 44 }`. One shared `PLOT_BOX` constant next to `PLOT_HEIGHT` would stop the two charts drifting apart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "256-261",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The marker hand-writes the same `<a target=\"_blank\" rel=\"noopener noreferrer\">` markup as `textOrPrLink`, and `mergeMarker` re-runs `PR_URL.test`. The rule \"only a PR-shaped url becomes a link, always with noreferrer\" now lives in two places that could drift apart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md",
+      "line": "3-4",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0123 declares `Amends: [0098]`, but 0098 gains no `- Amended by: [0123]` back-link. `docs/adr/README.md` asks for both directions, and sibling ADRs (0002, 0035, 0047, 0092) carry theirs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "219",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The moves-table header \"Merged since the snapshot before\" (and the hint \"no pup merge between the two snapshots\") is imprecise across a gap. The window opens at the earliest capture compared with, as the ADR says, so a header like \"Merged since the snapshot compared with\" would be accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "278",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `scale` JSDoc says \"Where a value falls in a box\", but `scale` takes `from` and `length`, not a box; the wording is left over from the `points` doc it was extracted from.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "400",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"The first and last captures name the axis's ends\" is inaccurate when merge markers extend the axis past the captures, and otherwise mostly restates the code. Delete it, or reduce it to the lone-capture point.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "203",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "With no merges, the lead copy reads \"the dashed rules are the 0 merges, each naming its session\", although no rules are drawn, and a session is named only on hover. Say \"no merge yet\" when there are none.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/report.service.ts",
+      "line": "66-67",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`report.service.ts` still has an inline copy of the `captureDebt` logic this PR exports from `baseline-history.repository.ts`; a follow-up could replace it with `captureDebt(row)`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.5409936000000015,
+  "duration_ms": 206213,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 16459,
+    "cache_read": 184861,
+    "cache_creation": 69427,
+    "total": 270757
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 136,
+      "output": 53066,
+      "cache_read": 1894286,
+      "cache_creation": 300492,
+      "cost_usd": 3.1514622000000014
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 9142,
+      "cache_read": 502764,
+      "cache_creation": 99110,
+      "cost_usd": 0.3895314
+    }
+  ],
+  "permission_denials": []
+}
