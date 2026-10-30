@@ -1612,6 +1612,9 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
  * as armed drivers.
  */
 const ADR_INDEX = 'docs/adr/README.md';
+const ADR_DIR = 'docs/adr/';
+/** A decision file as the script lists one, `[0-9][0-9][0-9][0-9]-*.md`, its number captured. */
+const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/;
 const ADR_INDEX_SCRIPT = 'scripts/adr-index.sh';
 const ADR_INDEX_BEGIN = '<!-- adr-index:begin -->';
 const ADR_INDEX_END = '<!-- adr-index:end -->';
@@ -1701,20 +1704,25 @@ function hashAdrIndex(repoPath: string, file: string): string {
  * it, the README holding git's conflict markers. The text outside the markers
  * merges whole, region by region: a side that left one as the base takes the
  * other's, and two sides that both changed it are refused, as the plain merge
- * refuses them. The tree is committed (unreferenced) and cut into the gate's
- * scratch checkout, where the README becomes the merged text with an empty
+ * refuses them. Two decision files that share a number merge clean under
+ * their own slugs, so the merged tree is refused when it holds such a pair:
+ * the hand merge would show the worker both lines, a regenerated index would
+ * land both. The tree is committed (unreferenced) and cut into a scratch
+ * checkout of its own, where the README becomes the merged text with an empty
  * index and `scripts/adr-index.sh` from that tree fills the index in. The
  * script is the branch's code, so it runs as a stage does, confined (decisions
  * 28, 36), and the README is written in the same child; what the script wrote
  * is read back by `hashAdrIndex` and its text outside the markers must be
- * unchanged. The checkout goes before this returns, so `measureBranch` cuts its
- * own at the same path. Returns the merged tree with the regenerated README in
- * place, or what the refusal adds to its detail: nothing for a conflict list
- * of another shape, else why the index was not regenerated.
+ * unchanged. The checkout and its root go before this returns, and no later
+ * stage cuts at either: a process the script left in a session of its own
+ * keeps the child's grant on the checkout's path, and could put a link there
+ * for the next checkout cut at it to write through. Returns the merged tree
+ * with the regenerated README in place, or what the refusal adds to its
+ * detail: nothing for a conflict list of another shape, else why the index
+ * was not regenerated.
  */
 async function regenerateAdrIndex(
   req: MergeRequest,
-  checkoutDir: string,
   conflicts: string[],
   merged: string,
 ): Promise<{ tree: string } | string> {
@@ -1722,6 +1730,12 @@ async function regenerateAdrIndex(
   if (!sides) return '';
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   try {
+    const numbers = runGit(req.repoPath, ['ls-tree', '-z', '--name-only', merged, ADR_DIR], piped)
+      .split('\0')
+      .map((path) => ADR_DECISION.exec(path)?.[1])
+      .filter((number) => number !== undefined);
+    const shared = numbers.find((number, at) => numbers.indexOf(number) !== at);
+    if (shared) throw new AdrIndexRefused(`two decisions share the number ${shared} in ${ADR_DIR}`);
     const cut = sides.slice(1).map((oid) => aroundAdrIndex(req.repoPath, oid));
     const [before, after] = [0, 1].map((at) => {
       const [base, ours, theirs] = cut.map((side) => side[at] as string);
@@ -1736,7 +1750,11 @@ async function regenerateAdrIndex(
       ['commit-tree', '--no-gpg-sign', '-m', 'pup merge: ADR index', merged],
       piped,
     ).trim();
+    // Private and unguessable as the stages' root is, and named after itself
+    // for the same reason: the admin dir `worktree add` names is its own.
+    const root = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-adr-index-'));
     try {
+      const checkoutDir = join(root, basename(root));
       const git = cutGateCheckout(req.repoPath, checkoutDir, commit);
       try {
         // The child writes the merged README too, under its own grants, so
@@ -1773,8 +1791,7 @@ async function regenerateAdrIndex(
       );
       return { tree: runGit(checkoutDir, ['write-tree'], inCheckout).trim() };
     } finally {
-      removeGateDir(checkoutDir);
-      runGit(req.repoPath, ['worktree', 'prune']);
+      dropGateCheckout(req.repoPath, root);
     }
   } catch (error) {
     if (!(error instanceof AdrIndexRefused)) throw error;
@@ -1798,7 +1815,7 @@ async function regenerateAdrIndex(
  * file, and before the `read-tree`, which runs a smudge filter on every file it
  * writes, as they are before the fast-forward: the last check ran before the gh
  * calls and the lock (decision 50). A conflict in the ADR index alone is
- * resolved in the gate's scratch checkout (decision 120). Returns the failure
+ * resolved in a scratch checkout of its own (decision 120). Returns the failure
  * for the worker, or undefined once the branch holds the merge.
  */
 async function mergeTargetInto(
@@ -1808,7 +1825,6 @@ async function mergeTargetInto(
   branch: string,
   target: string,
   targetSha: string,
-  checkoutDir: string,
 ): Promise<string | undefined> {
   const { repoPath } = req;
   const branchRef = `refs/heads/${branch}`;
@@ -1834,7 +1850,6 @@ async function mergeTargetInto(
     const [conflicted, ...listed] = String((error as { stdout?: unknown }).stdout).split('\n');
     const resolved = await regenerateAdrIndex(
       req,
-      checkoutDir,
       listed.slice(0, listed.indexOf('')),
       conflicted as string,
     );
@@ -2019,7 +2034,6 @@ async function gateAndMerge(
       session.branch,
       target,
       targetSha,
-      checkoutDir,
     );
     if (refused) {
       stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));

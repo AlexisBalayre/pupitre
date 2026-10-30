@@ -4727,6 +4727,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
         addDecision(repo, 3);
         const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
 
         const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
@@ -4745,6 +4746,48 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         const index = freshIndexAt(head);
         for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
         expectNoDriver();
+        // The script's checkout under a root of its own, gone before the stages
+        // cut theirs elsewhere: a process it left keeps its grant on that path.
+        // `--no-checkout` is the gate's cut, not `freshIndexAt`'s.
+        const cut = vi
+          .mocked(execFileSync)
+          .mock.calls.map(([, callArgs]) => (callArgs ?? []) as string[])
+          .filter((callArgs) => callArgs.includes('worktree') && callArgs.includes('--no-checkout'))
+          .map((callArgs) => callArgs.at(-2) as string);
+        expect(cut).toHaveLength(2);
+        expect(cut[0]).toMatch(/\/(pup-gate-adr-index-[^/]+)\/\1$/);
+        expect(cut[1]).toMatch(GATE_CHECKOUT);
+        expect(existsSync(dirname(cut[0] as string))).toBe(false);
+      });
+
+      // Each file merges clean under its own slug, so only their index lines
+      // conflict, and a regenerated index would land both.
+      it('refuses two decisions that share a number, cutting no checkout', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        await pushedOnce(worktree);
+        addDecision(worktree, 2);
+        writeFileSync(
+          join(repo, 'docs/adr/0002-other.md'),
+          '# 0002. Other\n\n- Status: accepted\n',
+        );
+        sh(repo, 'bash', 'scripts/adr-index.sh');
+        sh(repo, 'git', 'add', 'docs');
+        sh(repo, 'git', 'commit', '-q', '-m', 'another decision 2');
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await mergeOpenPr();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-merge of main hit conflicts');
+        expect(detail).toContain(
+          'docs/adr/README.md was not regenerated: two decisions share the number 0002 in docs/adr/.',
+        );
+        expect(ran('commit-tree')).toBe(false);
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
       });
 
       it('keeps the plain refusal when another file conflicts too', async () => {
@@ -4863,7 +4906,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         // Only in the gate's checkout, so the branch's own run commits a file.
         writeFileSync(
           join(worktree, 'scripts/adr-index.sh'),
-          `${ADR_SCRIPT}\ncase "$PWD" in *pup-gate-checkout-*) rm "$README"; ${plant};; esac\n`,
+          `${ADR_SCRIPT}\ncase "$PWD" in *pup-gate-adr-index-*) rm "$README"; ${plant};; esac\n`,
         );
         addDecision(worktree, 2);
         addDecision(repo, 3);
@@ -4892,7 +4935,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         beforeGit(
           (args) => {
             const cwd = args[args.indexOf('-C') + 1] ?? '';
-            if (cwd.includes('pup-gate-checkout-')) checkout = cwd;
+            if (cwd.includes('pup-gate-adr-index-')) checkout = cwd;
             return args.includes('hash-object');
           },
           () => {
@@ -4926,7 +4969,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           beforeGit(
             (args) => {
               checkout = args[args.indexOf('-C') + 1] ?? '';
-              return checkout.includes('pup-gate-checkout-') && args.includes('ls-tree');
+              return checkout.includes('pup-gate-adr-index-') && args.includes('ls-tree');
             },
             () => {
               rmSync(join(checkout, INDEX));
