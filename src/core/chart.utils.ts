@@ -25,6 +25,8 @@ export const CHART_CSS = `  figure.chart { margin: 4px 0 0; }
   figure.chart .line { fill: none; stroke: var(--debt-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
   figure.chart .dot { fill: var(--debt-1); stroke: var(--surface); stroke-width: 2; }
   figure.chart .base { stroke: var(--baseline); stroke-width: 1; }
+  figure.chart .marker { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }
+  figure.chart .hit { stroke: transparent; stroke-width: 8; }
   figure.chart .axis { fill: var(--muted); font: 11px system-ui, -apple-system, sans-serif; }
   figure.chart .value { fill: var(--ink-2); font: 11px system-ui, -apple-system, sans-serif; }
   figure.chart figcaption { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
@@ -55,19 +57,21 @@ const drawable = (value: number): number => (Number.isFinite(value) ? Math.max(0
  */
 function figure(
   className: string,
-  { title, format = plain }: ChartOptions,
-  data: ChartDatum[],
+  title: string,
+  figures: string,
   height: number,
   width: number,
   marks: string,
 ): string {
-  const figures = data.map((d) => `${d.label} ${format(d.value)}`).join(' · ');
   return (
     `<figure class="${className}"><svg viewBox="0 0 ${width} ${height}" role="img">` +
     `<title>${escapeHtml(`${title}: ${figures}`)}</title>${marks}</svg>` +
     `<figcaption>${escapeHtml(`${title}: ${figures}`)}</figcaption></figure>`
   );
 }
+
+const figuresOf = (data: ChartDatum[], format: (value: number) => string = plain): string =>
+  data.map((d) => `${d.label} ${format(d.value)}`).join(' · ');
 
 /** Two decimals at most, so a coordinate does not carry float noise into the page. */
 const at = (n: number): string => String(Math.round(n * 100) / 100);
@@ -113,7 +117,14 @@ export function barChart(
         `<text class="value" x="${at(labelWidth + w + 4)}" y="${at(y + 15)}">${escapeHtml(format(d.value))}</text></g>`
       );
     });
-    return figure('chart', options, data, data.length * ROW_HEIGHT, WIDTH, marks.join(''));
+    return figure(
+      'chart',
+      options.title,
+      figuresOf(data, format),
+      data.length * ROW_HEIGHT,
+      WIDTH,
+      marks.join(''),
+    );
   }
   const top = 16;
   const base = PLOT_BASE;
@@ -128,29 +139,36 @@ export function barChart(
       `<text class="axis" x="${at(i * slot + slot / 2)}" y="${PLOT_HEIGHT - 4}" text-anchor="middle">${escapeHtml(d.label)}</text></g>`
     );
   });
-  return plotted(options, data, marks.join(''));
+  return plotted(options.title, figuresOf(data, format), marks.join(''));
 }
 
-/** The frame the columns and the line share: full width, a fixed height, the baseline under the marks. */
-function plotted(options: ChartOptions, data: ChartDatum[], marks: string): string {
+/** The frame the columns and the lines share: full width, a fixed height, the baseline under the marks. */
+function plotted(title: string, figures: string, marks: string): string {
   const baseline = `<line class="base" x1="0" x2="${WIDTH}" y1="${PLOT_BASE}" y2="${PLOT_BASE}"/>`;
-  return figure('chart', options, data, PLOT_HEIGHT, WIDTH, `${baseline}${marks}`);
+  return figure('chart', title, figures, PLOT_HEIGHT, WIDTH, `${baseline}${marks}`);
+}
+
+type Box = { left: number; top: number; width: number; height: number };
+
+/**
+ * Where a value falls in a box, scaled between the finite values' own min and
+ * max. Reduced, not spread: a spread of a long series overflows the call stack.
+ */
+function scale(values: number[], from: number, length: number): (value: number) => number {
+  const finite = values.filter((value) => Number.isFinite(value));
+  const min = finite.reduce((least, value) => Math.min(least, value), finite[0] ?? 0);
+  const max = finite.reduce((most, value) => Math.max(most, value), finite[0] ?? 0);
+  // Halved, so two finite extremes (±1e308) cannot overflow the span to Infinity.
+  const span = max / 2 - min / 2 || 1;
+  return (value) => from + ((value / 2 - min / 2) / span) * length;
 }
 
 /** Where each value falls in a box, x evenly spaced, y scaled between the series' own min and max. */
-function points(
-  values: number[],
-  box: { left: number; top: number; width: number; height: number },
-): [number, number][] {
+function points(values: number[], box: Box): [number, number][] {
   const finite = values.map((value) => (Number.isFinite(value) ? value : 0));
-  const min = Math.min(...finite);
-  // Halved, so two finite extremes (±1e308) cannot overflow the span to Infinity.
-  const span = Math.max(...finite) / 2 - min / 2 || 1;
+  const y = scale(finite, box.top + box.height, -box.height);
   const step = values.length > 1 ? box.width / (values.length - 1) : 0;
-  return finite.map((value, i) => [
-    box.left + i * step,
-    box.top + box.height - ((value / 2 - min / 2) / span) * box.height,
-  ]);
+  return finite.map((value, i) => [box.left + i * step, y(value)]);
 }
 
 const polyline = (coords: [number, number][]): string =>
@@ -179,7 +197,104 @@ export function lineChart(data: ChartDatum[], options: ChartOptions): string {
       `<text class="axis" x="${at(x)}" y="${PLOT_HEIGHT - 4}" text-anchor="${anchor}">${escapeHtml(d.label)}</text></g>`
     );
   });
-  return plotted(options, data, `${polyline(coords)}${marks.join('')}`);
+  return plotted(options.title, figuresOf(data, format), `${polyline(coords)}${marks.join('')}`);
+}
+
+/** One capture on a time axis; a `value` left undefined is a capture that did not measure it. */
+export interface TimeDatum {
+  /** Milliseconds since the epoch. */
+  at: number;
+  label: string;
+  value: number | undefined;
+  /** Not comparable with the value before it (counted under another rule): the line breaks here too. */
+  breakBefore?: boolean;
+}
+
+/** Something that happened at a moment, marked across the plot: a merge. */
+export interface TimeMarker {
+  at: number;
+  /** Its hover, naming it. */
+  label: string;
+  /** Where it links to, when it does; the caller vouches for the url's shape. */
+  href?: string;
+}
+
+/**
+ * A line over captures placed by when they were taken, scaled to its own
+ * range. A capture that left the figure unmeasured breaks the line rather than
+ * drawing a zero, so does one marked `breakBefore`; every measured capture is a
+ * dot with its own `<title>`, so one standing alone between two gaps still
+ * shows. Each marker is a dashed rule across the plot at its moment, its label
+ * the hover, a link when it has an `href`. The axis spans every capture and
+ * every marker; the figure line carries every capture, an unmeasured one said
+ * in words.
+ */
+export function timeLineChart(
+  data: TimeDatum[],
+  markers: TimeMarker[],
+  options: ChartOptions,
+): string {
+  const format = options.format ?? plain;
+  const box: Box = { left: 8, top: 16, width: WIDTH - 16, height: PLOT_HEIGHT - 44 };
+  const placed = data.filter((d) => Number.isFinite(d.at));
+  const shown = markers.filter((m) => Number.isFinite(m.at));
+  const x = scale(
+    [...placed, ...shown].map((p) => p.at),
+    box.left,
+    box.width,
+  );
+  const measured = (d: TimeDatum): d is TimeDatum & { value: number } =>
+    d.value !== undefined && Number.isFinite(d.value);
+  const y = scale(
+    placed.filter(measured).map((d) => d.value),
+    box.top + box.height,
+    -box.height,
+  );
+
+  const rules = shown.map((m) => {
+    const line = (className: string): string =>
+      `<line class="${className}" x1="${at(x(m.at))}" x2="${at(x(m.at))}" y1="${box.top - 8}" y2="${PLOT_BASE}"/>`;
+    const mark = `<title>${escapeHtml(m.label)}</title>${line('marker')}${line('hit')}`;
+    return m.href === undefined
+      ? `<g>${mark}</g>`
+      : `<a href="${escapeHtml(m.href)}" target="_blank" rel="noopener noreferrer">${mark}</a>`;
+  });
+  const segments: [number, number][][] = [];
+  let open: [number, number][] = [];
+  for (const d of placed) {
+    if (!measured(d) || d.breakBefore) {
+      segments.push(open);
+      open = [];
+    }
+    if (measured(d)) open.push([x(d.at), y(d.value)]);
+  }
+  segments.push(open);
+  const lines = segments.filter((segment) => segment.length > 1).map(polyline);
+  const dots = placed
+    .filter(measured)
+    .map(
+      (d) =>
+        `<g><title>${escapeHtml(`${d.label}: ${format(d.value)}`)}</title>` +
+        `<circle class="dot" cx="${at(x(d.at))}" cy="${at(y(d.value))}" r="3"/></g>`,
+    );
+  // The first and last captures name the axis's ends, once each.
+  const first = placed[0];
+  const last = placed.at(-1);
+  const ends = [first, ...(last !== first ? [last] : [])].flatMap((d, i) =>
+    d === undefined
+      ? []
+      : [
+          `<text class="axis" x="${at(x(d.at))}" y="${PLOT_HEIGHT - 4}" text-anchor="${i === 0 ? 'start' : 'end'}">${escapeHtml(d.label)}</text>`,
+        ],
+  );
+  const figures = data
+    .map((d) => `${d.label} ${measured(d) ? format(d.value) : 'not measured'}`)
+    .join(' · ');
+  return plotted(
+    options.title,
+    figures,
+    `${rules.join('')}${lines.join('')}${dots.join('')}${ends.join('')}`,
+  );
 }
 
 /** A line small enough to sit in a figure tile: no axis, the last value dotted. */
@@ -192,5 +307,12 @@ export function sparkline(data: ChartDatum[], options: ChartOptions): string {
   );
   const last = coords.at(-1);
   const dot = last ? `<circle class="dot" cx="${at(last[0])}" cy="${at(last[1])}" r="3"/>` : '';
-  return figure('chart spark', options, data, height, width, `${polyline(coords)}${dot}`);
+  return figure(
+    'chart spark',
+    options.title,
+    figuresOf(data, options.format),
+    height,
+    width,
+    `${polyline(coords)}${dot}`,
+  );
 }

@@ -458,6 +458,7 @@ describe('startWebDashboard', () => {
       const token = address().searchParams.get('token');
       for (const [sheet, title] of [
         ['overview', 'Overview'],
+        ['health', 'Health'],
         ['debt', 'Debt'],
       ]) {
         const reply = await get(sheetUrl(sheet as string));
@@ -465,6 +466,7 @@ describe('startWebDashboard', () => {
         expect(reply.status).toBe(200);
         expect(reply.body).toContain(`<title>pup dashboard — ${title}</title>`);
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=overview"`);
+        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=health"`);
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=debt"`);
         expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
       }
@@ -472,13 +474,14 @@ describe('startWebDashboard', () => {
     });
 
     it('refuses a sheet it does not have, and a sheet without the token', async () => {
-      expect((await get(sheetUrl('health'))).status).toBe(404);
+      expect((await get(sheetUrl('tasks'))).status).toBe(404);
       expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
     });
 
     it('renders every sheet on an empty store with a one-line hint for each chart', async () => {
       const overview = (await get(dashboard.url)).body;
       const debt = (await get(sheetUrl('debt'))).body;
+      const health = (await get(sheetUrl('health'))).body;
 
       expect(overview).not.toContain('<svg');
       expect(overview).toContain('No goal yet — `pup brief edit` writes the Destination.');
@@ -487,6 +490,8 @@ describe('startWebDashboard', () => {
       expect(overview).toContain('not measured — `pup init` measures it');
       expect(debt).not.toContain('<svg');
       expect(debt).toContain('No open debt — nothing to pay down.');
+      expect(health).not.toContain('<svg');
+      expect(health).toContain('No snapshot yet — `pup init` captures the first.');
     });
 
     it("leads the Overview with the brief's Destination", async () => {

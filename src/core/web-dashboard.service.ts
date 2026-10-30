@@ -7,6 +7,7 @@ import { CHART_CSS } from './chart.utils.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { readDebtSheet, renderDebtSheet } from './web-dashboard-debt.service.js';
+import { readHealthSheet, renderHealthSheet } from './web-dashboard-health.service.js';
 import { readOverview, renderOverview } from './web-dashboard-overview.service.js';
 import { escapeHtml, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
 
@@ -51,9 +52,14 @@ export async function startWebDashboard(
 
   const render = (sheet: SheetName): string => {
     const now = Date.now();
-    return sheet === 'debt'
-      ? renderDebtSheet(readDebtSheet(db, repoPath, now))
-      : renderOverview(readOverview(db, repoPath, now), hrefOf('debt'));
+    switch (sheet) {
+      case 'debt':
+        return renderDebtSheet(readDebtSheet(db, repoPath, now));
+      case 'health':
+        return renderHealthSheet(readHealthSheet(db, repoPath));
+      case 'overview':
+        return renderOverview(readOverview(db, repoPath, now), hrefOf('debt'));
+    }
   };
   const send = (stream: ServerResponse, body: string): void => {
     stream.write(`data: ${JSON.stringify(body)}\n\n`);
@@ -149,7 +155,11 @@ export async function startWebDashboard(
   };
 }
 
-const SHEET_TITLES: Record<SheetName, string> = { overview: 'Overview', debt: 'Debt' };
+const SHEET_TITLES: Record<SheetName, string> = {
+  overview: 'Overview',
+  health: 'Health',
+  debt: 'Debt',
+};
 
 /** The sheet a request names, Overview when it names none, undefined for a name no sheet has. */
 function sheetOf(url: URL): SheetName | undefined {
@@ -235,6 +245,10 @@ ${CHART_CSS}
   .more { margin-top: 8px; font-size: 12px; }
   ol.paydown { padding-left: 20px; }
   details summary { cursor: pointer; color: var(--ink-2); }
+  table.moves { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.moves th { text-align: left; color: var(--muted); font-weight: 600; }
+  table.moves th, table.moves td { padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  table.moves td .hint { margin: 0; }
   header .live { margin-left: auto; color: var(--muted); font-size: 12px; }
   ul.rows { list-style: none; padding: 0; }
   ul.rows > li {

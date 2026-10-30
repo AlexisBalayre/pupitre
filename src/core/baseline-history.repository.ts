@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import { parseJsonOr } from './report-data.utils.js';
 import type { BaselineStageResult, DebtBaseline } from './types/init.types.js';
 
 export interface BaselineHistoryRow {
@@ -95,4 +96,9 @@ export function listRecentBaselineHistory(
     )
     .all(projectId, limit) as BaselineHistoryRow[];
   return newestFirst.reverse();
+}
+
+/** A capture's debt column, undefined when nothing measured debt then or it does not parse. */
+export function captureDebt(row: BaselineHistoryRow): DebtBaseline | undefined {
+  return row.debt === null ? undefined : parseJsonOr<DebtBaseline | undefined>(row.debt, undefined);
 }

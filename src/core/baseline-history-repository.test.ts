@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   appendBaselineHistory,
   baselineHistoryAsOf,
+  captureDebt,
   hasBaselineHistoryEntry,
   listBaselineHistory,
   listRecentBaselineHistory,
@@ -114,6 +115,19 @@ describe('baseline history repository', () => {
     expect(listRecentBaselineHistory(db, 'proj-1', 2).map((r) => r.captured_at)).toEqual([
       '2026-08-03T10:00:00.000Z',
       '2026-08-04T10:00:00.000Z',
+    ]);
+  });
+
+  it("reads a capture's debt back, and none when it measured none or does not parse", () => {
+    appendBaselineHistory(db, historyInput({ debt: { duplicatedLines: 184 } }));
+    appendBaselineHistory(db, historyInput());
+    appendBaselineHistory(db, historyInput());
+    db.prepare("UPDATE baseline_history SET debt = 'not json' WHERE id = 3").run();
+
+    expect(listBaselineHistory(db, 'proj-1').map(captureDebt)).toEqual([
+      { duplicatedLines: 184 },
+      undefined,
+      undefined,
     ]);
   });
 });
