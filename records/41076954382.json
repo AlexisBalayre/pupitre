@@ -1,0 +1,222 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T15:07:17.845Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41076954382",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41076954382",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ef1ad3977a84244e06b9bc9cdb1e236c9cbff7a0",
+  "source": "pr",
+  "pr_number": 213,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "103-117",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Two concurrent `pup intent new` calls with different titles can both take the same NNNN. The `wx` flag only catches a clash on the exact same file name, so both files are written, and from then on `show` and `accept` refuse that id.",
+      "body": "`createIntent` picks the next id from a single directory listing, then creates the file exclusively under a name that **includes the slug**:\n\n```ts\nconst next = Math.max(0, ...intentFiles(dir).map((file) => Number(file.id))) + 1;\n...\nconst path = join(dir, `${id}-${slug(clean)}.md`);\n...\nwriteFileSync(path, intentTemplate(id, clean), { flag: 'wx' });\n```\n\n`wx` (`O_EXCL`) only fails when the *same file name* exists. If two writers list the directory before either writes (ADR 0126 lets the operator, the conductor and any session run `new` against the same main-checkout `docs/intent/`), and their titles differ, one writes `0005-alpha.md`, the other `0005-beta.md`, and both succeed. The `EEXIST` branch (\"appeared while creating it; run it again\"), which exists for exactly this race, never fires.\n\nAfterwards `intentPath` refuses id 0005 for both `show` and `accept` (`Intent 0005 has 2 files ...; keep one`), `list` shows two entries with the same id, and recovery needs a rename *plus* an edit of the `# NNNN.` title line, since `loadIntent` rejects a title id that doesn't match the file name. ADR 0126 does not accept this race.\n\nPossible fixes: after the `wx` write, re-list and, if another file shares the id, unlink yours and retry with the next id; or reserve the id itself exclusively (an id-only name) before writing the slugged file.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/ef1ad3977a84244e06b9bc9cdb1e236c9cbff7a0/src/core/intent.service.ts#L103-L117",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "295-319",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "visibleLines only hides HTML comments that start a line, so a comment opened after a tag inside an HTML block (`<div><!--`) hides a `- Status: accepted` line on GitHub but not from pup. A `* Status: draft` bullet then shows draft on GitHub while pup parses accepted, which breaks ADR 0126's 'never a forged status' guarantee.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "244-250",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A UTF-8 BOM is not removed, so a hand-edited intent saved with one shows as `unreadable` (\"does not open with `# NNNN. <title>`\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "63",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fence regexes were copied from `brief.service.ts`, but the level-2 heading parser was rewritten and behaves differently: `SECTION_HEADING = /^ {0,3}## (.*)$/` rejects a tab after `##` and keeps a closing `#` run that brief's `headingTitle` strips, so `## What I must understand after review ##` is never the understanding section here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "103, 177, 225",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`intentDir(repoPath, { create = false } = {})` always returns `string | undefined`, even though `create: true` never returns undefined, which forces `as string` casts at L103 and L225; an overload or a separate `ensureIntentDir` would state the contract instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.types.ts",
+      "line": "1-21",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`intent.types.ts` sits flat in `src/core/`, but `docs/conventions/general.md` puts exported types under `src/core/types/`, where all 18 sibling `*.types.ts` files live; move it to `src/core/types/intent.types.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.enums.ts",
+      "line": "1-10",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`intent.enums.ts` and `intent.errors.ts` sit flat in `src/core/` though `general.md` puts enums in `enums/` and errors in `errors/` (flat `*.errors.ts` precedent exists and ADR 0126 discloses the placement).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent-service.test.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`intent-service.test.ts` is colocated in `src/core/` while `testing.md` wants unit tests under `test/unit/core/` (that folder doesn't exist yet and ADR 0126 discloses the placement).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0126-an-intent-is-a-file-under-docs-intent-the.md",
+      "line": "47",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR gives the file pattern as `^NNNN-[a-z0-9-]+\\.md$`, but `INTENT_FILE` is `^([0-9]{4})-[a-z0-9]+(?:-[a-z0-9]+)*\\.md$`, which rejects doubled, leading or trailing hyphens; a file like `0001-a--b.md` matches the ADR but is ignored by the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0126-an-intent-is-a-file-under-docs-intent-the.md",
+      "line": "60-62",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR says `createIntent`, `readIntent`, `listIntents`, `acceptIntent` and `intentTemplate` each take the repo path, but `intentTemplate(id, title)` takes none.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0126-an-intent-is-a-file-under-docs-intent-the.md",
+      "line": "60-80",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR's *Interface for part 2*, *Layout* and *Tests* paragraphs restate export names, file placement and per-case test counts (\"six\", \"eleven\", \"eight ways\") that rot on any refactor; trim them to the WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "42-56",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `pup intent` entry runs ~15 lines repeating ADR 0126's parsing and path rules where sibling entries cite the decision for mechanics, and its wrapping is ragged (\"An id is\" breaks early).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1380-1390",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment above `intent show`'s `console.log(readIntent(...))` repeats that core strips control characters keeping newline and tab, which `Intent.text`'s JSDoc in `intent.types.ts` already states; delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1400-1404",
+      "area": "security",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`pup intent accept`'s operator-only check relies on the caller's env vars and current directory, the same as brief, conductor, watch and debt close. A session that leaves its worktree and unsets PUP_SESSION_ID and PUP_CONDUCTOR passes as the operator, and any shell can set `- Status: accepted` by hand. Both are documented limits (decision 27's ceiling in ADRs 0042, 0044 and 0047; ADR 0126 'Who' and 'Part 2 must not trust a status it did not write').",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "Reviewer reported reading the persisted `gh pr diff` output only to ~line 720, leaving the tail of src/core/intent-service.test.ts and src/core/intent.enums.ts unread by that instance."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6139311999999997,
+  "duration_ms": 266311,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 15287,
+    "cache_read": 259980,
+    "cache_creation": 53165,
+    "total": 328444
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 134,
+      "output": 70010,
+      "cache_read": 1770579,
+      "cache_creation": 284344,
+      "cost_usd": 3.3360668
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 7493,
+      "cache_read": 258939,
+      "cache_creation": 70797,
+      "cost_usd": 0.2778644
+    }
+  ],
+  "permission_denials": []
+}
