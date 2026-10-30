@@ -35,8 +35,9 @@ const opus = (effort: string): ModelRoute => ({ model: OPUS_MODEL, effort });
 
 /**
  * Each tier's escalation ladder, cheapest first. A task starts on the first
- * rung and climbs one per relaunch or respawn that follows a failure; past the
- * last one it goes to the operator instead (decision 92).
+ * rung and climbs one per relaunch or respawn that follows a failure, and per
+ * CI fix round that follows one a merge ended; past the last one it goes to
+ * the operator instead (decision 92).
  */
 export const LADDERS: Readonly<Record<Tier, readonly ModelRoute[]>> = {
   standard: [sonnet('medium'), sonnet('high'), opus('high'), opus('xhigh')],

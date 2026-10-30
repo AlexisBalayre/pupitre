@@ -97,7 +97,7 @@ export interface DashboardRoute {
   /** The rung counted from 1, out of `rungs`, the length of the tier's ladder. */
   rung: number;
   rungs: number;
-  /** Why the rung last climbed: `gate-rejection`, `ci-fix-round`, `turn-death` or `stall`. */
+  /** Why the rung last climbed: `gate-rejection`, `repeat-fix-round`, `turn-death` or `stall`. */
   reason?: string;
   /** An explicit `--model`/`--effort` chose the model or effort over the rung's. */
   override: boolean;

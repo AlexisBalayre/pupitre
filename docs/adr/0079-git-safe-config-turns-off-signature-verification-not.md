@@ -1,6 +1,7 @@
 # 0079. `GIT_SAFE_CONFIG` turns off signature verification, not only signing, and `-z` listings are no longer trimmed (2026-10-06)
 
 - Status: accepted
+- Amended by: [0120](0120-fresh-base-regenerates-a-conflicted-adr-index-in-the.md)
 
 79. **`GIT_SAFE_CONFIG` turns off signature verification, not only signing, and `-z` listings
     are no longer trimmed (2026-10-06).** Both from the security review of decision 73's PR.
@@ -56,3 +57,5 @@
     terminator leaves one empty tail that the existing empty-field filters already drop. A
     test adds ` a.ts` on a branch and expects it whole from both listings and its two lines
     from `gitDiffAddedLines`.
+    *Amended by decision 120:* git's sequencer takes the first `pull.twohead` it reads, a
+    session's before the pin, so the gate's rebase names `--strategy=ort` in argv.

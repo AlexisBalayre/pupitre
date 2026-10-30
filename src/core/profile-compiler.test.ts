@@ -1882,6 +1882,12 @@ describe('compileConductorProfile', () => {
         'claude-opus-5-5 xhigh; critical: claude-opus-5-5 high → claude-opus-5-5 xhigh',
     );
     expect(context).toContain('`pup plan add|edit --tier critical|standard`');
+    expect(context).toContain(
+      'after a gate rejection, a stall or a dead turn climbs one rung. ' +
+        "A CI fix round runs on the rung the session's last window ran on; every later round " +
+        'on the same PR climbs one.',
+    );
+    expect(context).not.toContain('a CI fix round, a stall');
     expect(context).toContain('A launch refused at the top rung of its ladder');
     expect(context).toContain(
       'before `pup merge <session-id> --pr` on a session whose diff touches the gate, git, ' +

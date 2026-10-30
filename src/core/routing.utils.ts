@@ -148,16 +148,15 @@ export function globsIntersect(left: string, right: string): boolean {
   return false;
 }
 
-/** What a window ran into that climbs its task one rung at the next relaunch or respawn (decision 92). */
-export type ClimbReason = 'gate-rejection' | 'ci-fix-round' | 'turn-death' | 'stall';
+/**
+ * What a window ran into that climbs its task one rung at the next relaunch or
+ * respawn, or at the next CI fix round for `repeat-fix-round` (decision 92).
+ */
+export type ClimbReason = 'gate-rejection' | 'repeat-fix-round' | 'turn-death' | 'stall';
 
 function failureOf(event: SessionEvent): ClimbReason | undefined {
   if (event.type === 'turn_died') return 'turn-death';
-  if (event.type !== 'gate_result') return undefined;
-  if (event.to === 'rejected') return 'gate-rejection';
-  // A re-gate is logged as a transition from `merged` onto `merged`: the CI
-  // fix round it measured (decision 86).
-  return event.from === 'merged' && event.to === 'merged' ? 'ci-fix-round' : undefined;
+  return event.type === 'gate_result' && event.to === 'rejected' ? 'gate-rejection' : undefined;
 }
 
 /**
@@ -167,7 +166,8 @@ function failureOf(event: SessionEvent): ClimbReason | undefined {
  * The first failure wins, and a window that was stalled when it ended, which
  * no event records, ran into a stall after everything its events name. A
  * block wins over all of them: a task the gate parked is the operator's, and
- * never climbs.
+ * never climbs. A re-gate after a CI fix round is no failure: a reviewer's
+ * finding is not one of capability.
  */
 export function windowFailure(
   events: readonly SessionEvent[],
@@ -180,6 +180,46 @@ export function windowFailure(
     else if (failure !== 'blocked') failure ??= failureOf(event);
   }
   return failure ?? (stalledAtEnd ? 'stall' : undefined);
+}
+
+/**
+ * What a CI fix round's window climbs for, from the session's events oldest
+ * first (decision 92). A round counts once its window opened, the first
+ * `respawn` after its `fix_round` delivered, so one undone before its kickoff
+ * landed never ran, and its `respawn` bounds no window. A round after any one
+ * a merge ended is a repeat, whatever its threads and however often the PR
+ * was re-gated since: the review mints fresh thread ids on every head a round
+ * pushes, so a re-raised finding never shares one. The retry of a round whose
+ * window opened since the newest merge, and was killed, climbs on a rejection
+ * or a dead turn that window ran into, as a respawn of it would: its repeat
+ * climb is recorded already. A stall at that kill is not measured yet.
+ */
+export function fixRoundFailure(
+  events: readonly SessionEvent[],
+): ClimbReason | 'blocked' | undefined {
+  let handed = false;
+  let opened = false;
+  let repeats = false;
+  const ran: SessionEvent[] = [];
+  for (const event of events) {
+    if (event.type === 'merge') {
+      repeats ||= opened;
+      handed = false;
+      opened = false;
+    } else if (event.type === 'other' && event.eventType === 'fix_round') {
+      handed = true;
+    } else if (event.type === 'other' && event.eventType === 'respawn' && handed) {
+      // The round's own kickoff. One that never landed was rolled back with no
+      // route stored, unlike a `pup respawn`'s, so the window before it is
+      // still the one that ran.
+      handed = false;
+      if (event.fields.delivered !== true) continue;
+      opened = true;
+    }
+    ran.push(event);
+  }
+  if (opened) return windowFailure(ran);
+  return repeats ? 'repeat-fix-round' : undefined;
 }
 
 /**
