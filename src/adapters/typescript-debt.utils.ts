@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import type { DeadExport, DuplicateBlock, DuplicationReport } from './types/adapter.types.js';
 import { DUPLICATION_WINDOW_LINES } from './typescript-debt.constants.js';
-import { isTestFile, resolveImport } from './typescript-source.utils.js';
+import { isTestFile, type PathAliases, resolveImport } from './typescript-source.utils.js';
 
 function parse(file: string, content: string): ts.SourceFile {
   const kind =
@@ -24,6 +24,7 @@ function collectUsage(
   file: string,
   source: ts.SourceFile,
   fileSet: Set<string>,
+  aliases: PathAliases,
   marks: UsageMarks,
 ): void {
   for (const statement of source.statements) {
@@ -31,8 +32,8 @@ function collectUsage(
     if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) {
       specifier = statement.moduleSpecifier;
     }
-    if (!specifier || !ts.isStringLiteral(specifier) || !specifier.text.startsWith('.')) continue;
-    const resolved = resolveImport(file, specifier.text, fileSet);
+    if (!specifier || !ts.isStringLiteral(specifier)) continue;
+    const resolved = resolveImport(file, specifier.text, fileSet, aliases);
     if (!resolved) continue;
 
     if (ts.isImportDeclaration(statement)) {
@@ -101,19 +102,21 @@ function exportedNames(source: ts.SourceFile): string[] {
 /**
  * Exports no other file imports. Test files never contribute dead exports
  * (vitest is their consumer) but their imports still count as usage; entry
- * files (package.json main/bin/exports) are excluded the same way. Dynamic
- * `import()` is not tracked — baseline-relative gating absorbs the noise.
+ * files (package.json main/bin/exports) are excluded the same way. A bare
+ * specifier counts only through a tsconfig `paths` alias. Dynamic `import()`
+ * is not tracked — baseline-relative gating absorbs the noise.
  */
 export function findDeadExports(
   files: Record<string, string>,
   entryFiles: Set<string>,
+  aliases: PathAliases = new Map(),
 ): DeadExport[] {
   const fileSet = new Set(Object.keys(files));
   const marks: UsageMarks = { used: new Set(), fullyUsed: new Set() };
   const exportsByFile = new Map<string, string[]>();
   for (const file of [...fileSet].sort()) {
     const source = parse(file, files[file] as string);
-    collectUsage(file, source, fileSet, marks);
+    collectUsage(file, source, fileSet, aliases, marks);
     if (!entryFiles.has(file) && !isTestFile(file)) {
       exportsByFile.set(file, exportedNames(source));
     }
