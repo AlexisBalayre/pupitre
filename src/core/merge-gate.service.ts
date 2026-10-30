@@ -900,6 +900,15 @@ export async function withMergeLock<TResult>(
     // node's default disposition with the lock still on disk.
     try {
       dropMergeLock(lockPath, 'released', identity);
+    } catch (error) {
+      // Printed, never thrown: `fn` has done what it did, a merge or a land
+      // whose event a re-run refuses, and its result or error is what the
+      // caller acts on. A lock left in place names this pid, which a later run
+      // reclaims once this process has exited (decision 88).
+      console.error(
+        `Could not release ${lockPath}: ${failureSummary(error)}. A later run reclaims it once ` +
+          'this process has exited.',
+      );
     } finally {
       for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }

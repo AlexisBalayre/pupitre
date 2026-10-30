@@ -6172,6 +6172,43 @@ describe('withMergeLock', () => {
     );
   });
 
+  // What ran under the lock is done whatever the release does: a land's event
+  // already refuses a re-run, so its outcome must reach the caller (decision 88).
+  it.each([
+    ['result', () => 'landed', { value: 'landed' }],
+    [
+      'error',
+      () => {
+        throw new Error('audit failed');
+      },
+      { error: 'audit failed' },
+    ],
+  ])(
+    'keeps what ran under the lock, its %s, when the release throws',
+    async (_, after, expected) => {
+      const repo = lockedRepo();
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+      const before = signals.map((signal) => process.listeners(signal));
+
+      const outcome = await withMergeLock(repo, () => {
+        renameSync(lock, `${lock}.moved`);
+        return after();
+      }).then(
+        (value) => ({ value }),
+        (error: Error) => ({ error: error.message }),
+      );
+
+      expect(outcome).toEqual(expected);
+      expect(errors.mock.calls.flat()).toContainEqual(
+        expect.stringMatching(/^Could not release .*pup-merge\.lock: .*ENOENT/),
+      );
+      expect(signals.map((signal) => process.listeners(signal))).toEqual(before);
+    },
+  );
+
   describe('waiting for a live holder (decision 88)', () => {
     let repo: string;
     let errors: ReturnType<typeof vi.spyOn>;

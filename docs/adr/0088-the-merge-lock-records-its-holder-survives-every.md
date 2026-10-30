@@ -60,15 +60,32 @@
       driver may have been armed during the wait. Gated on the stale plan, a second `pup merge`
       would fast-forward main for a session already rejected and then fail its `merged`
       transition, or record a merged session's merge and ratchet the baseline twice.
-    - `pup land` writes its `landed` event as the last step under the lock, and refuses under the
-      lock a session that has one. Before, the event came after the release and the audit, so a
-      second land waiting on the first's lock found the session still merged and landed it
-      again: a second audit, a second event, and every overlapping session steered twice. The
-      overlapping sessions are steered right after the release, before the audit: once the event
-      is written a re-run refuses and nothing else steers them (decision 99), so an audit that
-      threw first, on an interrupt, a missing adapter or a sandbox refusal, would leave them
-      unsteered for good. An audit that fails after both is `pup audit`'s to re-run, and
-      `pup land` refuses the landed session.
+    - `pup land` writes its `landed` event under the lock, after every ref move and the teardown,
+      and refuses under the lock a session that has one. Before, the event came after the release
+      and the audit, so a second land waiting on the first's lock found the session still merged
+      and landed it again: a second audit, a second event, and every overlapping session steered
+      twice. The overlapping sessions are steered right after the event, still under the lock and
+      before the audit: once the event is written a re-run refuses and nothing else steers them
+      (decision 99), so an audit that threw first, on an interrupt, a missing adapter or a sandbox
+      refusal, would leave them unsteered for good. An audit that fails after both is `pup
+      audit`'s to re-run, and `pup land` refuses the landed session.
+    - *The release and the land's audit (amended 2026-10-30).* A release that throws, a session
+      that renamed `.git/pup-merge.lock` away or a filesystem error, is printed (`Could not
+      release …`) and never replaces what the locked section returned or threw. It used to: the
+      throw from `finally` replaced the land's result after its event was written, so the steer,
+      then run after the release, never ran, and every re-run refused as already landed. A lock
+      the release left behind names this process, and a later run reclaims it once the process
+      has exited. The land's audit now runs under the lock too, after the steer. It ran after the
+      release, and the steer wakes the sessions most likely to be gated next: a gate could read
+      `projects.baseline` before the audit stored its refresh, and so judge its branch against
+      the target before the land, or ratchet its stale read over the refresh, a lost update. The
+      gate reads the baseline and ratchets it under the lock, so a gate now waits for the audit
+      and reads what it stored. The lock is held for the audit's build and suites as well, about
+      what a gate holds it for, so `pup merge` and `pup land` wait it out within
+      `MERGE_LOCK_WAIT_MS`, and `pup fix`, which does not wait, refuses during it. Making the
+      gate's read and ratchet a compare-and-set was the alternative: it stops the lost update
+      but not the stale read, which only a re-judge against the new baseline would fix. `pup
+      audit` still runs outside the lock, so an operator's audit can still race a gate's ratchet.
     - A gate asked to wait (`waitForLoad`) waits, before it takes its test slot and before the
       stages that run alongside its suites, until the 1-minute load average is under the
       machine's available parallelism, so the load it reads is not its own lint, typecheck and
@@ -117,12 +134,16 @@
     lock once it is released, printing one line; a merge that waited while the holder rejected
     and re-steered the session, or merged it, and one whose session was rejected between its plan
     and its take with no wait, refuse with main unmoved, no reject counted and no merge recorded;
-    of two lands of one session waiting on one lock, the second refuses under it with one
-    `landed` event; under a fake clock the wait takes the lock once it is released and refuses at
-    the timeout, leaving the holder its lock, waits out a pid written after the `mkdir`, and
-    refuses a lock still without one after a second; under a fake load source the load wait
-    returns at once under the ceiling, waits for the load to fall with one line, runs the tests
-    after its timeout with a one-line note, and on an interrupt rejects with
-    `GateInterruptedError` and leaves no listener; a failing post-merge worktree remove (a fake
-    git) still ratchets the baseline, keeps the worktree and its branch, and names it in the
-    outcome; the conductor context forbids the load loops and the lock hand-offs.
+    of two lands of one session waiting on one lock, the second refuses under it with one `landed`
+    event; a section whose lock is renamed away under it keeps its result, or its error, with the
+    release failure printed and no signal listener left; a land whose release throws still steers
+    an overlapping session once and returns its outcome, and a re-run refuses it; a gate started
+    during a land's audit runs once the audit has stored its refresh, judges against it and leaves
+    it stored; under a fake clock the wait takes the lock once it is released and refuses at the
+    timeout, leaving the holder its lock, waits out a pid written after the `mkdir`, and refuses a
+    lock still without one after a second; under a fake load source the load wait returns at once
+    under the ceiling, waits for the load to fall with one line, runs the tests after its timeout
+    with a one-line note, and on an interrupt rejects with `GateInterruptedError` and leaves no
+    listener; a failing post-merge worktree remove (a fake git) still ratchets the baseline, keeps
+    the worktree and its branch, and names it in the outcome; the conductor context forbids the
+    load loops and the lock hand-offs.

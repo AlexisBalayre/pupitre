@@ -22,5 +22,11 @@ export interface LandOutcome {
    * worktree on a branch that does not exist.
    */
   keptWorktree?: string;
+  /**
+   * The running sessions overlapping the landed PR that were not steered: the
+   * steer failed, or git could not read the branch to tell (decision 99).
+   * Absent when every one was steered. `reason` is store and git text.
+   */
+  unsteered?: { sessionId: string; reason: string }[];
   audit: AuditOutcome;
 }

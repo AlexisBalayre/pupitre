@@ -2213,6 +2213,12 @@ export function buildProgram(): Command {
           `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
         );
       }
+      for (const { sessionId, reason } of outcome.unsteered ?? []) {
+        console.log(
+          `Could not tell ${sanitizeReason(sessionId)} that ${target} moved: ` +
+            `${sanitizeReason(reason)}. Steer it to take ${target} in.`,
+        );
+      }
       printAuditOutcome(db, outcome.audit, repoPath);
     });
   program
