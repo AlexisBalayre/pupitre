@@ -1,0 +1,207 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T08:26:11.562Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41025301774",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41025301774",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fa685076115f196b795f62336e14e9a9ab372e3e",
+  "source": "pr",
+  "pr_number": 204,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1740-1777",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The branch's `scripts/adr-index.sh` runs sandboxed with `cwd: checkoutDir`, which grants writes on that subpath. A job the script starts in its own process group/session outlives the group kill and keeps that grant. `measureBranch` then cuts the stages' checkout at the same `checkoutDir` and runs unsandboxed `worktree add`, `read-tree -u` and `linkEnvironment` there before any stage. Decision 81 orders the linking first because no session code may yet have had write access to that path; this change breaks that assumption.",
+      "body": "**A process the ADR script leaves running can still write to the path the stages' checkout is cut at next.**\n\n`regenerateAdrIndex` runs the branch's `scripts/adr-index.sh` through `runGateChild` with `cwd: checkoutDir`. `gateInvocation` passes `cwd` as a writable grant, and `grantPath` keeps the last component, so the profile grants `(subpath \"<checkoutDir>\")`. That covers the path itself. `runGateChild` only kills the child's process group, and the `hashAdrIndex` JSDoc and ADR 0120 both say a `setsid` process \"outlives the run's kill\". Then the cleanup runs:\n\n```ts\n    } finally {\n      removeGateDir(checkoutDir);\n      runGit(req.repoPath, ['worktree', 'prune']);\n    }\n```\n\nAfter that, `measureBranch` calls `cutGateCheckout(req.repoPath, checkoutDir, sha)` at that same path (L2455), outside the sandbox, followed by `linkEnvironment` (L2467-2469).\n\n**Scenario (macOS, sandbox applied):**\n1. An open-PR branch triggers an ADR-index-only conflict, which is routine.\n2. Its `adr-index.sh` does the real regeneration and also leaves a `setsid` poller behind.\n3. Once `removeGateDir` empties `checkoutDir`, the poller runs `ln -s D \"$checkoutDir\"`, where `D` is an empty directory the operator can write and the sandbox denies (e.g. `~/Library/LaunchAgents`).\n4. `git worktree add` accepts the link to an empty directory.\n5. `verifiedWorktreeGitEnv` reads `.git` through the link and passes.\n6. The unsandboxed `read-tree -u` with `GIT_WORK_TREE=checkoutDir` writes the branch's whole tree into `D`.\n7. `refuseEscapingLinks` measures against `realpathSync(checkout)`, which is now `D`, so it doesn't object.\n\nA weaker variant races `linkEnvironment`'s `lstat` → `mkdir`/`symlink`.\n\nBefore this PR, no sandboxed child held a grant on `checkoutDir` before `measureBranch` cut it. ADR 0120's safeguard (\"nothing the gate does there after the cut may open a path by name\") covers only the README, not the stages' later re-cut.\n\nTwo links depend on Seatbelt and git behaviour that couldn't be run in this static review, hence medium confidence: that `subpath` matches the grant root itself, and that `worktree add` accepts a link to an empty directory.\n\n**Fix:** never reuse a path a sandboxed child was granted. Cut the ADR scratch checkout at a path of its own, either its own `mkdtempSync` root removed in the `finally`, or a distinct sibling under the run's root. Then amend ADR 0120 and the JSDoc line \"so `measureBranch` cuts its own at the same path\".\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fa685076115f196b795f62336e14e9a9ab372e3e/src/core/merge-gate.service.ts#L1740-L1777\nhttps://github.com/AlexisBalayre/pupitre/blob/fa685076115f196b795f62336e14e9a9ab372e3e/src/core/merge-gate.service.ts#L2455-L2469",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1721-1738",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Two branches that each add a decision under the same number (e.g. 0121-a.md and 0121-b.md) conflict only in the index. regenerateAdrIndex now merges them and the result passes `adr-index.sh --check`, so duplicate decision numbers land on main and the worker never sees the collision the old refusal showed them.",
+      "body": "**A decision-number collision now merges without anyone seeing it.**\n\nCONTRIBUTING.md has each decision take \"the next free number at the time it lands\". `.claude/skills/domain-modeling/DECISION-FORMAT.md` calls this \"precisely how two branches both claim the same number and conflict at merge time\". So parallel sessions cut from the same main usually pick the same number.\n\nUnder decision 109, the two files have different slugs (`0121-a.md`, `0121-b.md`) and merge cleanly. The only conflict is the two index lines, which is exactly the shape `ADR_INDEX_CONFLICT` accepts:\n\n```ts\nconst sides = ADR_INDEX_CONFLICT.exec(conflicts.join('\\0'));\nif (!sides) return '';\n...\nconst commit = runGit(\n  req.repoPath,\n  ['commit-tree', '--no-gpg-sign', '-m', 'pup merge: ADR index', merged],\n```\n\nNothing downstream refuses the duplicate:\n- `scripts/adr-index.sh` lists every `[0-9][0-9][0-9][0-9]-*.md` without checking numbers are unique.\n- `pnpm lint` only runs its `--check`.\n- ADR 0120's \"what still refuses\" list doesn't mention this case.\n\nSo main ends up with two decision 121s, and every \"decision 121\" citation becomes ambiguous. Before this PR, fresh-base refused, and the worker saw both `0121.` lines side by side in the hand merge. The PR's tests always use distinct numbers.\n\n**Fix:** before cutting the checkout, refuse when the merged tree holds two `docs/adr/NNNN-*.md` with the same `NNNN`. For example, run `git ls-tree --name-only <merged> docs/adr/`, take the `^docs/adr/(\\d{4})-` prefixes, and throw `AdrIndexRefused('two decisions share a number in docs/adr/')` if any repeats. Alternatively, make `adr-index.sh --check` fail on duplicates. Add a test and a line in ADR 0120's refusal list.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fa685076115f196b795f62336e14e9a9ab372e3e/src/core/merge-gate.service.ts#L1721-L1738",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1681-1690",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`openSync(file, O_RDONLY|O_NOFOLLOW|O_NONBLOCK)` in `hashAdrIndex` refuses a link only at the last component. The script can leave `docs` or `docs/adr` as a link to a directory the sandbox denies, and `hash-object -w` then stores that `README.md` in the object store before `aroundAdrIndex` judges it. This contradicts ADR 0120's claim; reading back inside the sandboxed child would close it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1721-1722, 1834-1839",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Index-only is decided from merge-tree's staged-entry list alone. merge-ort also reports some conflicts with exit 1 and no stage entries (implicit dir rename, directory rename split). Next to an ADR-index conflict, the gate then commits a merge git called unclean, with that rename silently not applied. Also require that the message section holds exactly one `CONFLICT (` line, naming docs/adr/README.md.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4857",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"a link\" case points at a device (`ln -s /dev/null \"$README\"`). Without `O_NOFOLLOW`, `fstat` would see a character device and `isFile()` would give the same refusal, so this case can't catch a dropped `O_NOFOLLOW`. Link to a regular file under the cap instead (e.g. `ln -s ../../scripts/adr-index.sh \"$README\"`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4786",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"huge file\" case only plants an oversized input blob, so only `aroundAdrIndex`'s `cat-file -s` cap is tested. `hashAdrIndex`'s `stat.size > ADR_INDEX_MAX_BYTES` branch, for a script that writes an oversized README, is never exercised.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1775-1778",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `finally { removeGateDir(checkoutDir); runGit(req.repoPath, ['worktree', 'prune']); }` in `regenerateAdrIndex` re-implements `dropGateCheckout(repoPath, root)` (line 1224), the documented teardown already used at line 984. Call `dropGateCheckout(req.repoPath, checkoutDir)` instead, so the removal-then-prune rule lives in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4731",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The happy-path test spells out `await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()))` in full, though the block defines `mergeOpenPr` (L4693) for exactly that call and the other 9 tests use it. Use `await mergeOpenPr()` here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4685-4690",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`expectNoDriver` has one caller (L4747, the happy-path test). It adds a named helper and a JSDoc line for three assertions, against AGENTS.md's no-abstraction-before-third-use rule. Inline it there and keep the decision-41 note as a one-line comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1640-1646",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `aroundAdrIndex` JSDoc says each part carries \"the newline that joins it to its marker\". Only `after` does: `before` has a leading sentinel `\\n` that the caller strips with `.slice(1)`. The JSDoc also leaves out the `ADR_INDEX_MAX_BYTES` size-cap refusal, which `hashAdrIndex`'s doc relies on.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1650-1655",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `aroundAdrIndex` JSDoc summary is a noun phrase (\"The ADR index blob `oid` as the text before…\"). docs/conventions/general.md §JSDoc asks for an imperative verb phrase, as its siblings `hashAdrIndex` (\"Write…\") and `regenerateAdrIndex` (\"Resolve…\") use. For example: \"Split the ADR index blob `oid` into the text around its marker block\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1621",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Far past any real index (pupitre's is 25 KB)\" hardcodes a size that grows with every decision. Drop the parenthetical and keep \"far past any real index\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "4638-4640",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The describe-block comment \"Here rather than beside the plain rebase tests for `beforeGit` and `armBefore`\" reads as if those helpers were under test. Say the block is nested here to share `beforeGit`/`armBefore`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.4166062,
+  "duration_ms": 557827,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 19973,
+    "cache_read": 270640,
+    "cache_creation": 88791,
+    "total": 379416
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 214,
+      "output": 135624,
+      "cache_read": 3758370,
+      "cache_creation": 478441,
+      "cost_usd": 6.123588000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 7515,
+      "cache_read": 244942,
+      "cache_creation": 77332,
+      "cost_usd": 0.2930182
+    }
+  ],
+  "permission_denials": []
+}
