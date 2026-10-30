@@ -1,0 +1,158 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T12:50:36.504Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41057560099",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41057560099",
+  "actor": "AlexisBalayre",
+  "commit_sha": "78badb809c84206340e5912332008a9e3daaef71",
+  "source": "pr",
+  "pr_number": 208,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "400-405",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "DEADLINE is recorded when `worktreeGitShell` runs, not when the hook starts, so the hook's prelude before it (`INPUT=$(cat)`, two `jq` parses of the payload, `mkdir`/`mktemp` in the re-check) is not counted. That time comes out of the one second the hook keeps to refuse: under CPU load a session causes, a planted blocking read could make the kill and refusal land past the 5 s fail-open timeout. Record DEADLINE as the first line of each of the three scripts so \"from its start\" holds literally.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "446-464",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In `pinned_worktree`, `2>/dev/null` swallows `bounded`'s \"outran the hook deadline\" line, so a deadline kill prints the wrong cause. Example: a fifo swapped in for `<common>/config` makes `git config --file` return 124, which falls through to the `config.worktree`/`extensions.worktreeConfig` message, and a pointer `head` killed inside the `{ … } 2>/dev/null` group prints \"no longer names\". The hook still refuses; only the message, and ADR 0124's claim that a killed command prints the BLOCKED deadline line, are wrong here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "509-516",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`run` gains a `timeout` parameter in this PR, but its JSDoc still says a fixed 4-second kill \"wins the race\" against the hook's budget. The new tests pass `15_000` so that the hook's own deadline wins instead. Say 4 s is the default and why the deadline tests raise it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "710-866",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Six new re-check tests skip the existing `hook(phase, command, id)` helper because it takes no `env`/`timeout`. They rebuild the same `{ hook_event_name, tool_use_id, tool_input: { command: 'x' } }` payload, four inline and two through copied `payload` closures, and four hand-roll the same `started`/elapsed timing. The merge suite already pulls that pattern into `timedResolvingEdit`, so extend `hook()` or add a matching `timedHook`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0063-every-bash-call-is-re-checked-against-the.md",
+      "line": null,
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 63's landed sentence (a swapped file \"between the regular-file test and the read can still hang the check\") is rewritten in place to cite decision 124's deadline. docs/adr/README.md L19-21 says a landed decision gets an appended, dated amendment section or a new decision linked through `Amends:`, and \"does not rewrite the landed text\". This is the same class as the 0101 rewrite the prior round reported.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0099-workers-share-files-and-collaborate-a-launch-overlapping.md",
+      "line": null,
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Decision 99's landed sentence (\"A fifo swapped in after the hook's `-f` test still blocks the read until the timeout; bounding … is owed\") is rewritten in place rather than amended. docs/adr/README.md L19-21 forbids rewriting landed text; append a dated amendment section instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "858-873",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "After `out_of_scope` returns 0 near the deadline, the violation report forks one `jq` per new line with no bound. Many out-of-scope decoy rewrites can push the hook past the 5 s timeout before the last (target) `scope_violation` is logged and before exit 2. Impact is low because the merge gate's scope audit still catches the change; a single `jq -R` pass over `$WORK/new` would bound it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/codegraph.client.ts",
+      "line": "89-101",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`servedGraphConfig` sets `GIT_CONFIG_NOSYSTEM=1` only for the served server. The indexer's git (`indexEnv`) reads the same tree from the same trusted dirs outside the sandbox and still reads the system config, so ADR 0124's reason for the flag (\"a file pup never checks\") applies to it too, unaddressed.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.938720400000001,
+  "duration_ms": 354198,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 15389,
+    "cache_read": 222109,
+    "cache_creation": 83119,
+    "total": 320627
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 118,
+      "output": 104731,
+      "cache_read": 1883343,
+      "cache_creation": 357186,
+      "cost_usd": 4.507047600000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 12547,
+      "cache_read": 330463,
+      "cache_creation": 109237,
+      "cost_usd": 0.4316728
+    }
+  ],
+  "permission_denials": []
+}
