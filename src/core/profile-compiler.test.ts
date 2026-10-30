@@ -782,6 +782,55 @@ describe('generated bash re-check (decision 63)', () => {
     expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
   }, 30_000);
 
+  // The clock is whole seconds, so a read that starts late in the deadline's last
+  // second still sleeps that whole second before it is killed. The date on the
+  // hook's PATH is a clock whose seconds turn as the hook records its deadline; a
+  // wc on the first dirty path returns just before the last of them ends, and one
+  // on the second never returns. Killed a second ahead of the hook timeout, the
+  // read leaves the refusal most of that second.
+  it('refuses with a second to spare a read that starts as the deadline ends', () => {
+    const slow = join(worktree, 'src/cli/decoy.ts');
+    const target = join(worktree, 'src/cli/index.ts');
+    writeFileSync(slow, 'dirty before the call\n');
+    writeFileSync(target, 'dirty before the call\n');
+    const clock = join(root, 'clock');
+    const deadline = ProfileCompiler.HOOK_READ_DEADLINE_SECONDS;
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' });
+    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], { encoding: 'utf8' });
+    writeFileSync(
+      join(bin, 'date'),
+      `#!/bin/sh\n[ -f '${clock}' ] || echo 1000 > '${clock}'\nexec cat '${clock}'\n`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(bin, 'wc'),
+      `#!/bin/sh
+for arg; do last=$arg; done
+if [ "$last" = '${slow}' ]; then
+  python3 -c 'import os, sys, time; time.sleep(max(0, os.stat(sys.argv[1]).st_mtime + float(sys.argv[2]) - time.time()))' '${clock}' ${deadline - 0.2}
+  echo ${1000 + deadline - 1} > '${clock}'
+elif [ "$last" = '${target}' ]; then
+  echo ${1000 + deadline} > '${clock}'
+  exec ${realSleep.stdout.trim()} 30
+fi
+exec ${realWc.stdout.trim()} "$@"
+`,
+      { mode: 0o755 },
+    );
+
+    const started = Date.now();
+    const result = run(
+      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01last', tool_input: { command: 'x' } },
+      { PATH: `${bin}:${process.env.PATH}` },
+      15_000,
+    );
+    expect(result.status).toBe(2);
+    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000 - 500);
+    expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
+  }, 30_000);
+
   it('refuses after the call, and never blocks it, when the clock reads as no number', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin);

@@ -46,11 +46,13 @@ const SHELL_UNSAFE_PATH = /['"\n`$\\]/;
 
 /**
  * How long a worktree hook's reads may run, from its start, in whole seconds
- * of `date +%s`: a read still running is killed by then at the latest, which
- * leaves the hook a second to refuse before the hook timeout, which fails
- * open (decision 124).
+ * of `date +%s`. Whole seconds move the kill up to a second either side of the
+ * deadline: the hook records it rounded down, and a read sleeps its whole
+ * seconds left from wherever in a second it starts. Two seconds short of the
+ * hook timeout, which fails open, a read still running is killed at least a
+ * second before it, the hook's second to refuse (decision 124).
  */
-const HOOK_READ_DEADLINE_SECONDS = HOOK_TIMEOUT_SECONDS - 1;
+export const HOOK_READ_DEADLINE_SECONDS = HOOK_TIMEOUT_SECONDS - 2;
 
 /**
  * Tools that open a screen pup cannot answer (decision 74). Skipping
