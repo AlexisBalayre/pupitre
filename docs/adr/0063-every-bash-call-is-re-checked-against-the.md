@@ -120,8 +120,8 @@
     fingerprinted `special`. Once one of these is dirty, a later rewrite of it is not noticed,
     and neither is a symlink pointed somewhere else; creating or deleting one still is. A file
     over 64 MiB rewritten at the same size is not noticed either. A file swapped for a fifo
-    between the regular-file test and the read can still hang the check, a race only a
-    concurrent process can win. Untracked output that is not
+    between the regular-file test and the read is read under the hook's deadline, which kills
+    the read and fails the check as out of time (decision 124). Untracked output that is not
     gitignored and falls outside the scope (a coverage report, a cache) is refused like a write,
     because `git add -A` would commit it. Only `.claude/` is read past ignore rules: an ignored
     file elsewhere is not committed, so the gate never sees it either. A call interrupted

@@ -91,8 +91,9 @@
     sits outside the worktree, where no check sees a write, and a huge one would run every later
     check past the timeout. A ref lookup by that name falls back to `refs/tags/MERGE_HEAD` and
     `refs/heads/MERGE_HEAD`, which any worktree can write, and would make every linked worktree
-    look mid-merge. A fifo swapped in after the hook's `-f` test still blocks the read until the
-    timeout; bounding the hooks' blocking reads in time is owed. Both hooks are best effort here, not a
+    look mid-merge. A fifo swapped in after the hook's `-f` test blocks the read only until the
+    hook's deadline kills it, which fails the check rather than running into the timeout
+    (decision 124). Both hooks are best effort here, not a
     guarantee: the session can move the target's branch with `update-ref` and write its own
     MERGE_HEAD file, so a commit it made can pass for the tip. The gate's scope audit, on the
     branch's own merge-base diff, is what holds. The Edit hook lets one kind of edit through
