@@ -549,6 +549,9 @@ describe('judgeDebt', () => {
     ]);
   });
 
+  const COMPLEXITY_PASS =
+    'no touched file rose by more than 15 decision points, and no new file holds more than 50';
+
   it.each<[string, StageCase]>([
     [
       'no adapter measures complexity',
@@ -573,8 +576,20 @@ describe('judgeDebt', () => {
         expected: {
           stage: 'complexity',
           status: 'pass',
-          detail: 'no touched file rose by more than 15 decision points',
+          detail: COMPLEXITY_PASS,
         },
+      },
+    ],
+    [
+      'a file the target holds rose by exactly the threshold',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/feature.ts', complexity: 2 }],
+            after: [{ file: 'src/feature.ts', complexity: 17 }],
+          },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -594,20 +609,65 @@ describe('judgeDebt', () => {
       },
     ],
     [
-      'a file the branch added counts its whole complexity as the rise',
+      'a file the branch added is not read as a rise from zero',
       {
         measured: {
           complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 20 }] },
         },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'a file the branch added holds exactly the cap',
+      {
+        measured: {
+          complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 50 }] },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'a file the branch added holds more than the cap',
+      {
+        measured: {
+          complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 51 }] },
+        },
         expected: {
           stage: 'complexity',
           status: 'flagged',
-          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+20)',
+          detail:
+            'complexity rose sharply in 1 touched file(s): src/feature.ts (new file, 51 decision points)',
         },
       },
     ],
   ])('complexity: %s', (_label, { measured, baseline, expected }) => {
     expect(stageOf(judge(measured, baseline), 'complexity')).toEqual(expected);
+  });
+
+  it('flags a risen file and an oversized new one together, each by its own points', () => {
+    const verdict = judge(
+      {
+        complexity: {
+          before: [{ file: 'src/old.ts', complexity: 10 }],
+          after: [
+            { file: 'src/old.ts', complexity: 30 },
+            { file: 'src/new.ts', complexity: 60 },
+            { file: 'src/small.ts', complexity: 20 },
+          ],
+        },
+      },
+      undefined,
+      ['src/old.ts', 'src/new.ts', 'src/small.ts'],
+    );
+
+    expect(stageOf(verdict, 'complexity')?.detail).toBe(
+      'complexity rose sharply in 2 touched file(s): ' +
+        'src/old.ts (+20), src/new.ts (new file, 60 decision points)',
+    );
+    expect(verdict.flags).toContainEqual({
+      description: `Complexity rise (+80 decision points) merged from session ${SESSION}`,
+      files: ['src/old.ts', 'src/new.ts'],
+    });
   });
 
   const COVERAGE_BAR: DebtBaseline = { coverageRatio: 0.8 };
