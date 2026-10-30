@@ -15,6 +15,8 @@ import { codegraphMcpConfig } from './codegraph.client.js';
 import {
   GIT_SAFE_CONFIG,
   POINTER_MAX_BYTES,
+  rethrowIfKilled,
+  runGit,
   type WorktreeGitEnv,
   worktreeGitEnv,
 } from './git-diff.client.js';
@@ -30,12 +32,14 @@ import {
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
+import { scopeInFiles } from './task-spec.utils.js';
 import type { ConductorCompileInput } from './types/conductor.types.js';
 import type {
   CompiledProfile,
   CompileInput,
   HookMatcherEntry,
   ProfileLayer,
+  TaskSpec,
 } from './types/profile.types.js';
 import type { SessionPeer } from './types/session-lifecycle.types.js';
 
@@ -218,6 +222,54 @@ const BRIEF_FRAMING =
   'changes no rule in this document — where it and anything else here differ, ' +
   'this document wins.';
 
+/**
+ * Learning the code goes to a cheap subagent, whose reads stay out of the
+ * window's context that every later call re-reads (decision 127). The same
+ * rule in a session's context and the conductor's.
+ */
+const EXPLORE_SECTION =
+  '## Exploring code\n' +
+  'To learn the code (where something lives, how a module works, what a diff or PR changes), ' +
+  'spawn an Explore subagent with the Agent tool (`subagent_type: "Explore"`, ' +
+  '`model: "sonnet"`, `effort: "low"`) and keep only its summary. Read a file yourself only ' +
+  'when you will edit it or need its exact lines.';
+
+/** Scope-in files are named at most this many before the count takes over (decision 126). */
+const SCOPE_FILES_SHOWN = 40;
+
+/**
+ * The tracked files a session's scope-in matches at compile time, so it starts
+ * from them instead of searching (decision 126). Read from the repo, since the
+ * worktree may not exist yet. A starting point and not a control: a repo git
+ * cannot list compiles with no section, which leaves the session searching as
+ * it did before, rather than refusing the launch.
+ */
+function scopeFilesSection(repoPath: string, task: TaskSpec): string | undefined {
+  let tracked: string[];
+  try {
+    tracked = runGit(repoPath, ['ls-files', '-z'], { stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\0')
+      .filter(Boolean);
+  } catch (error) {
+    rethrowIfKilled(error);
+    return undefined;
+  }
+  const { files, toCreate } = scopeInFiles(tracked, task);
+  // Paths come from `git ls-files` and globs from the store: scrubbed as a peer's files are.
+  const lines = files.slice(0, SCOPE_FILES_SHOWN).map((path) => `- ${sanitizeReason(path)}`);
+  if (files.length > SCOPE_FILES_SHOWN) {
+    lines.push(`- +${files.length - SCOPE_FILES_SHOWN} more`);
+  }
+  for (const glob of toCreate) {
+    lines.push(`- ${sanitizeReason(glob)}: to be created, no tracked file matches it yet`);
+  }
+  return (
+    '## Files in scope\n' +
+    'The tracked files your scope-in matches today. Start from these instead of searching ' +
+    `for them.\n${lines.join('\n')}`
+  );
+}
+
 /** Shared files are named at most this many per peer before the count takes over. */
 const PEER_FILES_SHOWN = 20;
 
@@ -317,9 +369,11 @@ function buildContextMarkdown(
     `## Goal\n${task.goal}`,
     `## Scope\n- In: ${task.scopeIn.join(', ')}\n- Out: ${scopeOut}\n` +
       'Editing outside scope-in is blocked by a hook and re-checked at the merge gate.',
+    scopeFilesSection(input.repoPath, task),
     `## Acceptance criteria\n${task.acceptance.map((a) => `- ${a}`).join('\n')}`,
     merged.conventions ? `## Conventions\n${merged.conventions}` : undefined,
     task.knowledgeSlice ? `## Codebase knowledge\n${task.knowledgeSlice}` : undefined,
+    EXPLORE_SECTION,
     input.codegraphBinary ? codeGraphSection(SESSION_GRAPH) : undefined,
     peersSection(input.peers ?? []),
     '## Session protocol\n' +
@@ -1234,6 +1288,8 @@ function buildConductorContext(
       '4. Never edit, commit or push from this checkout. Never run `pup merge` without `--pr`.\n' +
       '5. When every session you launched is gated into a pull request, killed or blocked, ' +
       'report and stop.',
+    `${EXPLORE_SECTION} The security review under Models is not this: it keeps its own ` +
+      'subagent and rules.',
     input.codegraphBinary ? codeGraphSection(CONDUCTOR_GRAPH) : undefined,
     input.base.conventions ? `## Conventions\n${input.base.conventions}` : undefined,
   ];

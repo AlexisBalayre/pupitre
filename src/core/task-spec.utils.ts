@@ -1,4 +1,5 @@
 import { InvalidProfileError } from './profile.errors.js';
+import { scopedPaths } from './scope-audit.utils.js';
 import type { TaskSpec } from './types/profile.types.js';
 
 /** Control characters that must never reach a generated scope pattern file. */
@@ -30,4 +31,27 @@ export function assertPlannableSpec(task: TaskSpec): void {
       );
     }
   }
+}
+
+/** What a task's scope-in names among the tracked files, as its kickoff lists them. */
+export interface ScopeInFiles {
+  /** Tracked files the task may edit, in `tracked`'s order. */
+  files: string[];
+  /** Scope-in globs no editable tracked file matches: files the task is to create. */
+  toCreate: string[];
+}
+
+/**
+ * The tracked files a task's scope-in matches, read with the gate's own
+ * precedence (`scopedPaths`), so the kickoff never names a file the session
+ * could not commit: a protected path or one scope-out takes back (decision 126).
+ */
+export function scopeInFiles(
+  tracked: string[],
+  task: Pick<TaskSpec, 'scopeIn' | 'scopeOut'>,
+): ScopeInFiles {
+  const scopeIn = task.scopeIn.filter((glob) => glob.trim());
+  const files = scopedPaths(tracked, scopeIn, task.scopeOut);
+  const toCreate = scopeIn.filter((glob) => scopedPaths(files, [glob], task.scopeOut).length === 0);
+  return { files, toCreate };
 }

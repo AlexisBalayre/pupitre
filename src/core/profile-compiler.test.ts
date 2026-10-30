@@ -2496,3 +2496,135 @@ describe('source reads go through Read (decision 112)', () => {
     ).not.toContain('hooks/read-guard.sh');
   });
 });
+
+describe('the files a kickoff names (decision 126)', () => {
+  const GIT_ENV: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+
+  /** A repo whose index tracks `paths`; the listing reads the index, so no commit is needed. */
+  function repoTracking(paths: string[]): string {
+    const repo = tempDir('pup-scope-files-');
+    for (const path of paths) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), '');
+    }
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: GIT_ENV });
+    spawnSync('git', ['add', '-A'], { cwd: repo, env: GIT_ENV });
+    return repo;
+  }
+
+  function kickoff(repoPath: string, scopeIn: string[], scopeOut?: string[]): string {
+    return ProfileCompiler.compileProfile(
+      makeInput({ repoPath, task: { ...task, scopeIn, scopeOut } }),
+    ).contextMarkdown;
+  }
+
+  function filesSection(context: string): string {
+    const start = context.indexOf('## Files in scope');
+    expect(start).toBeGreaterThan(context.indexOf('## Scope'));
+    return context.slice(start, context.indexOf('\n\n', start));
+  }
+
+  it('lists the tracked files a scope-in glob matches, and no others', () => {
+    const repo = repoTracking([
+      'src/core/land.service.ts',
+      'src/core/land.test.ts',
+      'src/core/landing/inner.ts',
+      'src/core/island.ts',
+      'src/core/land.md',
+      'src/cli/land.ts',
+    ]);
+
+    expect(filesSection(kickoff(repo, ['src/core/land*.ts']))).toBe(
+      '## Files in scope\n' +
+        'The tracked files your scope-in matches today. Start from these instead of searching ' +
+        'for them.\n' +
+        '- src/core/land.service.ts\n' +
+        '- src/core/land.test.ts',
+    );
+  });
+
+  it('leaves out what scope-out takes back and the protected paths', () => {
+    const repo = repoTracking(['src/net/a.ts', 'src/net/legacy/b.ts', '.claude/settings.json']);
+
+    const section = filesSection(
+      kickoff(repo, ['src/net/**', '.claude/**'], ['src/net/legacy/**']),
+    );
+
+    expect(section).toContain('- src/net/a.ts');
+    expect(section).not.toContain('legacy');
+    expect(section).not.toContain('- .claude/settings.json');
+  });
+
+  it('lists a glob that matches nothing yet as a file to be created', () => {
+    const repo = repoTracking(['src/core/task-spec.utils.ts']);
+
+    const section = filesSection(
+      kickoff(repo, ['src/core/task-spec.utils.ts', 'src/core/task-spec*.test.ts']),
+    );
+
+    expect(section).toContain('- src/core/task-spec.utils.ts\n');
+    expect(section).toContain(
+      '- src/core/task-spec*.test.ts: to be created, no tracked file matches it yet',
+    );
+  });
+
+  it('shows the first 40 matches and counts the rest', () => {
+    const paths = Array.from({ length: 45 }, (_, i) => `src/m/f${String(i).padStart(2, '0')}.ts`);
+    const repo = repoTracking(paths);
+
+    const section = filesSection(kickoff(repo, ['src/m/**']));
+
+    expect(section).toContain(
+      paths
+        .slice(0, 40)
+        .map((path) => `- ${path}`)
+        .join('\n'),
+    );
+    expect(section).not.toContain(paths[40]);
+    expect(section.endsWith('\n- +5 more')).toBe(true);
+  });
+
+  // A starting point, not a control: no listing leaves the session searching
+  // as it did before, rather than refusing the launch.
+  it('compiles with no section when git cannot list the repo', () => {
+    const context = kickoff(tempDir('pup-not-a-repo-'), ['src/net/**']);
+
+    expect(context).not.toContain('## Files in scope');
+    expect(context).toContain('## Scope');
+  });
+});
+
+describe('exploration goes to a subagent (decision 127)', () => {
+  const rule =
+    'To learn the code (where something lives, how a module works, what a diff or PR changes), ' +
+    'spawn an Explore subagent with the Agent tool (`subagent_type: "Explore"`, ' +
+    '`model: "sonnet"`, `effort: "low"`) and keep only its summary. Read a file yourself only ' +
+    'when you will edit it or need its exact lines.';
+
+  it('puts the delegation rule in a worker context', () => {
+    expect(ProfileCompiler.compileProfile(makeInput()).contextMarkdown).toContain(
+      `## Exploring code\n${rule}`,
+    );
+  });
+
+  it('puts the delegation rule in the conductor context, and keeps the security review its own', () => {
+    const context = ProfileCompiler.compileConductorProfile({
+      base: { name: 'base' },
+      repoPath: '/repo',
+      projectId: 'proj-1',
+      conductorName: 'pup-conductor-proj-1',
+      userConfigHash: 'user-hash-a',
+      outDir: '/state/conductor/compiled',
+      checkoutPath: '/state/conductor/checkout',
+      maxSessions: 4,
+    }).contextMarkdown;
+
+    expect(context).toContain(`## Exploring code\n${rule}`);
+    expect(context).toContain('The security review under Models is not this');
+    expect(context).toContain('`subagent_type: "general-purpose"`, `model: "opus"`');
+  });
+});
