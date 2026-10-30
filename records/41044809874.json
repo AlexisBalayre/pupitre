@@ -1,0 +1,121 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-10-30T11:02:47.820Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41044809874",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41044809874",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9ef3fe5b453c8c088a34135929340ce950eb5672",
+  "source": "pr",
+  "pr_number": 211,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "2542-2546",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A SIGHUP during a worker's slot wait used to end `pup session test` by node's default (129 to a shell). It is now caught and exits with the fixed 130. The gate maps the same signal to 128 + signum (129), and ADR 0096:38 still says only \"Ctrl-C or SIGTERM during the wait ends it with exit 130\". The fix is to use `128 + osConstants.signals[error.signal]` here, as `fatalExitCode` does, and to add SIGHUP to ADR 0096.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "315-324",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The per-signal closures built inside `WAIT_SIGNALS.map(...)` (registering listeners as a side effect of `.map` and returning `[signal, listener] as const` tuples) are more than needed: Node passes the signal name to the listener, so the old shared `onSignal` typed with `WaitSignal` plus `for (const s of WAIT_SIGNALS) process.on(s, onSignal)` / `process.off` in `finally` would do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.test.ts",
+      "line": "259-277",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new SIGHUP test copies the setup, listener-diff and assertions of the existing SIGTERM wait test (lines 244-257); an `it.each(['SIGTERM', 'SIGHUP'])` would cover both without the copy, and the title's \"as on SIGINT\" names a signal that has no wait test of its own.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0088-the-merge-lock-records-its-holder-survives-every.md",
+      "line": "88-90",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new sentence about the slot wait listening for SIGHUP is a bare paragraph between the `The rules:` list and `Owed`, so it reads as a detached note; it states a rule of the decision and belongs as a `- ` bullet in the rules list like the merge-lock SIGHUP bullet at lines 18-19.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0088-the-merge-lock-records-its-holder-survives-every.md",
+      "line": "107",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR's `Tests:` paragraph mentions only the merge lock's SIGHUP listener test, not the new `test-slot.test.ts` test for the slot wait ending on SIGHUP.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3316451,
+  "duration_ms": 129962,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 6766,
+    "cache_read": 184151,
+    "cache_creation": 35683,
+    "total": 226610
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 19919,
+      "cache_read": 692753,
+      "cache_creation": 107386,
+      "cost_usd": 1.1811255999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 4445,
+      "cache_read": 102645,
+      "cache_creation": 38306,
+      "cost_usd": 0.15051949999999997
+    }
+  ],
+  "permission_denials": []
+}
