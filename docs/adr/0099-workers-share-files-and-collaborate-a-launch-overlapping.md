@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Amends: [0041](0041-a-launch-is-refused-when-its-scope-collides.md)
-- Amended by: [0104](0104-peer-joined-introductions-and-main-landed-notices-go.md)
+- Amended by: [0104](0104-peer-joined-introductions-and-main-landed-notices-go.md), [0124](0124-the-worktree-hooks-reads-run-under-a-deadline.md)
 
 99. **Workers share files and collaborate: a launch overlapping a live session is never refused,
     with no cap, and introduces the two (2026-10-18, supersedes decision 41's refusal).**
@@ -91,8 +91,9 @@
     sits outside the worktree, where no check sees a write, and a huge one would run every later
     check past the timeout. A ref lookup by that name falls back to `refs/tags/MERGE_HEAD` and
     `refs/heads/MERGE_HEAD`, which any worktree can write, and would make every linked worktree
-    look mid-merge. A fifo swapped in after the hook's `-f` test still blocks the read until the
-    timeout; bounding the hooks' blocking reads in time is owed. Both hooks are best effort here, not a
+    look mid-merge. A fifo swapped in after the hook's `-f` test blocks the read only until the
+    hook's deadline kills it, which fails the check rather than running into the timeout
+    (decision 124). Both hooks are best effort here, not a
     guarantee: the session can move the target's branch with `update-ref` and write its own
     MERGE_HEAD file, so a commit it made can pass for the tip. The gate's scope audit, on the
     branch's own merge-base diff, is what holds. The Edit hook lets one kind of edit through

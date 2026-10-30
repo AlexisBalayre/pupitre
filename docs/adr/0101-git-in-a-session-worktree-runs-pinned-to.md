@@ -1,6 +1,7 @@
 # 0101. Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18)
 
 - Status: accepted
+- Amended by: [0124](0124-the-worktree-hooks-reads-run-under-a-deadline.md)
 
 101. **Git in a session worktree runs pinned to the admin and common dirs pup trusts (2026-10-18).**
     Extends decision 50. A linked worktree finds its repo through two files: its `.git` gitfile
@@ -194,21 +195,18 @@
     pick another name, because a stale admin dir held it, is refused at launch, never followed;
     a conductor checkout whose admin dir is not `checkout` costs the conductor its graph until
     the checkout is deleted and re-cut, and a re-cut while `checkout` is still registered after
-    the prune is refused before the add. The served code graph server gets the git config but not
-    the pins: `codegraphMcpConfig` is handed no repo path, and the profile compiler, which has
-    one, is the follow-up. Its `git status` runs outside the sandbox for the whole session, so a
-    gitfile rewritten after the launch, or a gitlink planted with a `.gitmodules` override, still
-    reaches it, as it reaches any git Claude Code runs after its startup. The config disarms a
-    planted fsmonitor there, and no clean filter. The worst case is the conductor's: its server
-    runs `--path <checkout>` with unpinned `git status` for the conductor's whole life, so a
-    session that rewrites `<common>/worktrees/checkout/commondir` and that admin dir's `index`
-    toward a repo it armed with a `filter.<x>.clean` gets that filter run outside the sandbox.
-    That was already true on main before this change. Pinning the served server is a follow-up
-    task in the profile compiler. With `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
+    the prune is refused before the add. The served code graph server runs pinned since decision
+    124, to the dirs checked when `mcp.json` is handed over, and is never checked again: its `git
+    status` runs outside the sandbox for the window's whole life. A session that can write the shared config (decision 41's exposure) arms a
+    `filter.<x>.clean` that server runs, there or in `<admin dir>/config.worktree` once it turns
+    `extensions.worktreeConfig` on there after the check, and a gitlink planted with a
+    `.gitmodules` override still reaches it, as it reaches any git Claude Code runs after its
+    startup. With `all`, the hooks and the gate's worktree-clean stage no longer see a gitlink change. The
     gate's scope audit, on the branch's own diff, still does. A project that commits submodules
     gets no code graph.
     The shell check reads the gitfile with `head` after a `-f` test, so a fifo swapped in
-    between still blocks until the hook timeout, as decision 99's MERGE_HEAD read does. A
+    between blocks the read until the hook's deadline kills it (decision 124), as it does decision
+    99's MERGE_HEAD read. A
     session's own `pup session done` runs `runGit` with the GIT_DIR family scrubbed, inside the
     session's sandbox, where following its own pointers gains it nothing.
     Tests: a repointed gitfile and a rewritten commondir, each naming a repo whose clean filter
@@ -253,7 +251,7 @@
     admin dir's index gains a gitlink, or loses the shared half of a split index. Each fails
     with the snapshot taken out. An index swapped for a fifo is refused without blocking, and a
     split index whose shared half is a fifo stops at the timeout, which the test fails without. The served config carries the
-    git config and no pins. A launch over a row naming another repo's valid worktree opens
+    git config, and the pins since decision 124. A launch over a row naming another repo's valid worktree opens
     nothing, while the same worktree checks clean against its own repo. A conductor checkout
     whose `commondir` names an armed repo fires it under plain `ls-files`, and a start then
     fires nothing, indexes nothing and launches without a graph. `pup fix` with the extension

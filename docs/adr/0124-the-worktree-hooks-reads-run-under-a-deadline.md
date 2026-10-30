@@ -1,0 +1,135 @@
+# 0124. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)
+
+- Status: accepted
+- Amends: [0063](0063-every-bash-call-is-re-checked-against-the.md), [0099](0099-workers-share-files-and-collaborate-a-launch-overlapping.md), [0101](0101-git-in-a-session-worktree-runs-pinned-to.md)
+
+124. **The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29).**
+    Amends decisions 63, 99 and 101. The scope hook, the Bash re-check and the read guard run
+    outside the sandbox under Claude Code's 5-second hook timeout, which fails open. Some of
+    their reads open files the session can write, and opening a fifo blocks until a writer
+    comes, which none does. Three ceilings recorded this: decision 99's MERGE_HEAD read, which
+    a fifo swapped in after its `-f` test blocks; decision 101's `head` of the gitfile and the
+    `commondir` after the same test; and decision 63's read of a dirty file swapped for a fifo
+    after its regular-file test. A fourth was not recorded. git opens every file an
+    `include.path` or a matching `includeIf` names in the shared `<common>/config`, before it runs
+    any command, and that config is the session's to write (decision 41's exposure). A fifo
+    named there blocked every `safe_git` call, so the hooks failed open on every tool call
+    while it stayed (reproduced on Apple Git 2.39.5: `status`, `rev-parse` and `ls-files`
+    block, while `config --file` reads no include).
+    *One deadline per hook.* The shared shell (`worktreeGitShell`) records a deadline when the
+    hook starts, `HOOK_READ_DEADLINE_SECONDS` (the hook timeout less two) of `date +%s`.
+    `bounded` runs a command in the background, with a watcher that `kill -9`s it once the
+    deadline passes. A killed command, or one asked for after the deadline, fails with a
+    `BLOCKED: a read in <worktree> outran the hook deadline` line. Every `safe_git` call goes
+    through it, as `bounded env GIT_DIR=… git …`, and so does every read of a file the session can
+    write: the two pointer `head`s, MERGE_HEAD's `head`, and the re-check's `wc` of a dirty
+    file. The command is exec'd in place, never a shell function, so the kill reaches the
+    process that blocks, and a command substitution around it sees its output close, unless a
+    child of that process holds it (see the ceilings). The deadline belongs to the hook, not to each call. A check of many paths therefore cannot
+    spend it once per path, and after one blocked read every later one fails at once.
+    `safe_git` also sets `GIT_OPTIONAL_LOCKS=0`. `status` otherwise holds `index.lock` through
+    its untracked walk, which a fifo planted as a `.gitignore` blocks and a large worktree on a
+    loaded machine can outlast, and a `kill -9` skips git's cleanup. The lock then stayed, and
+    every later index write in the worktree failed on it (CI review). Whole
+    seconds move the kill up to a second either side of the deadline. The deadline is recorded
+    rounded down, and a read sleeps its whole seconds left from wherever in a second it starts,
+    so one that starts late in the deadline's last second runs nearly a second past it. The
+    hook timeout less one therefore let the kill land at the timeout itself, which a session
+    reaches without a race by choosing the dirty files ahead of the read (CI review). Less two
+    puts it between 2 and 4 seconds after the start, which leaves the hook a second to
+    refuse. A clock that reads as no number leaves the deadline passed, so every
+    read fails rather than the shell exiting on the arithmetic, which bash 3.2's `/bin/sh` does
+    with 127 and would fail open. Each hook refuses the way it refuses a git failure. The scope
+    hook refuses the conflict-resolution Edit. The re-check fails its snapshot before the call and
+    refuses after it ("could not read git status"). *The re-check's paths.* Past the deadline,
+    a dirty path the loop has not read fails the whole check, at the top of each record and on
+    a killed `wc` or `hash-object`, and the check after the call refuses with "the check ran
+    out of time". It is never fingerprinted `unreadable` instead. The check after the call
+    reports only lines the snapshot before it lacks, so a path neither snapshot reached in
+    time would read `unreadable` in both and pass however the call changed it (security review).
+    That needs no race: enough dirty files near the 64 MiB hashing cap sorting before an
+    out-of-scope file already dirty spend the deadline on every call. The loop also stops
+    forking there, where it would otherwise carry on past the hook timeout. A failure that is
+    not the deadline's, a file git cannot read, is still `unreadable`. The read guard fails
+    open, as it does for any pointer it cannot check. Bash prints a job a signal ended to the
+    shell's stderr, so both `wait`s drop theirs. The watcher writes to `/dev/null`, so its
+    `sleep` holds none of the hook's pipes, and a watcher stopped early kills its `sleep`
+    too. Its TERM trap only sets a flag, checked once the `sleep`'s pid is known and again after
+    the `wait`, and the `sleep` is killed with `-9`: a TERM between its fork and its exec reaches
+    a child still carrying the trap, which catches it and then sleeps the full time. Over 100
+    calls that return at once, 8 `sleep`s outlived a watcher killed without the trap, and 30
+    outlived one whose trap killed them with TERM. With `-9`, none did, under bash 3.2 and dash.
+    *Cost.* About 5 ms a call for the `date`,
+    the `env` exec and the watcher's `sleep`: the re-check over a clean worktree took a median
+    239 ms against 207 ms unbounded, under a load average near 100. Not taken: perl's `alarm`,
+    a new runtime dependency for the hooks; a watchdog over the whole hook, which has no
+    process group of its own to kill and whose shell defers a trap until its blocked child
+    returns; GNU `timeout`, which macOS lacks.
+    *The served code graph's git runs pinned.* Decision 101 left the server Claude Code spawns
+    from `mcp.json` with the git config but not the pins, since `codegraphMcpConfig` has no repo
+    path. Its `git status` runs outside the sandbox for the window's whole life. For the
+    conductor, whose server runs `--path <checkout>` for as long as the conductor does, a
+    session that rewrote `<common>/worktrees/checkout/commondir` and that admin dir's `index`
+    toward a repo with an armed `filter.<x>.clean` got the filter run outside the sandbox. The
+    profile compiler has both paths, so `servedGraphConfig` adds `worktreeGitEnv(repoPath,
+    <served dir>)` to the server's env, for a session's worktree and the conductor's checkout
+    alike, with `GIT_CONFIG_NOSYSTEM=1`. Those are the dirs the launch's
+    `verifiedWorktreeGitEnv`, or the conductor's `refreshConductorCheckout`, checks before
+    `mcp.json` is handed over: a check that fails withholds the file (decision 51). The system
+    config is a file pup never checks, and a Homebrew git keeps it in a prefix the operator
+    owns. The server's other env is unchanged: `GIT_SAFE_CONFIG` and the submodule pair as
+    command-scope config, telemetry off, the messaging credentials blanked. The compiler adds
+    the pins to the config `codegraphMcpConfig` returns, whose doc comment on `SERVED_ENV` in
+    `codegraph.client.ts` still says the pins are not there, for want of a path.
+    *Ceilings.* The store files the hooks read (`scope-in.pat`, `scope-out.pat`, the
+    snapshots) are not bounded. They sit where a session's shell can reach (decision 57), and
+    a session that can rewrite them can rewrite the hooks themselves. A gitlink planted with a
+    `.gitmodules` override still makes the served server's `status` run a child git in the
+    submodule, which drops the pins, as it does for any git Claude Code runs after its
+    startup (decision 101's submodule ceiling). What else the pins leave the served server is
+    restated in decision 101's ceilings. The deadline bounds the time the hook takes, not what a
+    killed git had already done. The refresh that ends the re-check's `diff` of the merged tip,
+    run when the diff met files whose stat changed but not their content, takes `index.lock`
+    whatever `GIT_OPTIONAL_LOCKS` says (it rewrites the index under it on Apple Git 2.39.5, and
+    git's master takes the lock there unconditionally). A kill while it rehashes those files
+    leaves the lock, as above. Nor does the deadline kill what git started: the kill reaches the job's
+    own pid, and a child git spawned, a clean filter, a promisor transport or a helper, lives on
+    with the pipes it inherited (conductor review). A `sleep` such a child leaves behind holds
+    the hook's stderr wherever the call keeps it, which keeps a runner that reads stderr to its
+    end waiting past the hook's exit, and a command substitution's pipe wherever git hands a
+    child its stdout. A session names such a child only through the shared config (decision
+    41's exposure), where the child already runs outside the sandbox with the operator's rights
+    and can rewrite the hooks themselves. An operator's own promisor remote's lazy fetch runs to
+    its end the same way. Killing the job's process group is not taken. `set -m`, the one way a
+    portable shell gives a job a group of its own, has dash move the hook into a group of its own
+    and hand the terminal's foreground group to each foreground command while it is on, taking it
+    from Claude Code (reproduced under a pty; bash 3.2 leaves both alone). macOS has no
+    `setsid`, and a hostile child leaves the group with its own `setsid()` anyway. A read the
+    kernel holds in an uninterruptible sleep, as a hung network filesystem does, ignores the
+    `kill -9` until the call returns, and the hook's `wait` on it, which nothing bounds, runs to
+    the hook timeout, which fails open (conductor review). Dirty files outside the scope that take longer than
+    the deadline to hash refuse every Bash call until they are committed or removed, as more
+    than 200 dirty paths do (decision 63).
+    *Tests* (`profile-compiler.test.ts`). A `head` on the scope hook's PATH turns MERGE_HEAD into
+    a fifo after the `-f` test and then reads it. The resolving Edit, which passes before the
+    swap, is refused in under 5 seconds with the deadline line. An `include.path` in the repo
+    config naming a fifo has the resolving Edit refused, and the re-check after a call refuse
+    with the deadline line and "could not read git status", each in under 5 seconds. A fifo
+    planted as a `.gitignore` in the worktree has the re-check refuse with the deadline line and
+    leave no `index.lock` in the admin dir, which it left without `GIT_OPTIONAL_LOCKS=0`. A `wc`
+    on the re-check's PATH turns a dirty out-of-scope file into a fifo after the
+    regular-file test. The check is refused in under 5 seconds as out of time. Two
+    out-of-scope files are dirty before a call, and a `wc` that never returns on the first
+    spends the deadline in both checks before the second, which the call changes. The check
+    after it refuses as out of time, in under 5 seconds. That test, and the fifo `wc` one, fail
+    with the loop's deadline exits taken out. A `date` that prints nothing never blocks the
+    call and refuses after it. A `date` whose seconds turn as the hook records its deadline,
+    and a `wc` on the first of two dirty files that returns 0.3 seconds before the deadline's
+    last second ends, start a `wc` that never returns on the second one with a second still
+    to sleep. The check refuses as out of time with more than half a second of the hook
+    timeout left: about 4.1 seconds, against 5.0 with the hook timeout less one.
+    Each test runs its hook under a 15-second timeout, so without the deadline it fails slow
+    or with a null status, never with the test's own kill read as a refusal. A session's
+    `mcp.json` carries the three pins, `GIT_CONFIG_NOSYSTEM=1` and the command-scope config.
+    The conductor's, compiled over a real repo and checkout, carries exactly the dirs
+    `verifiedWorktreeGitEnv` returns for that checkout.
