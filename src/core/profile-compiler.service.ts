@@ -387,7 +387,8 @@ function buildContextMarkdown(
  * config, blocks the open forever, and the hook timeout it would otherwise run
  * into fails open. The deadline is the hook's, not the call's, so a check of
  * many paths cannot spend it once per path. The command is exec'd in place,
- * never a shell function, so the kill reaches the process that blocks.
+ * never a shell function, so the kill reaches the process that blocks, though
+ * not a child it started (decision 124's ceilings).
  */
 function worktreeGitShell(git: WorktreeGitEnv): string {
   return `GIT_ADMIN='${git.GIT_DIR}'

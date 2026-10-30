@@ -24,8 +24,8 @@
     through it, as `bounded env GIT_DIR=… git …`, and so does every read of a file the session can
     write: the two pointer `head`s, MERGE_HEAD's `head`, and the re-check's `wc` of a dirty
     file. The command is exec'd in place, never a shell function, so the kill reaches the
-    process that blocks, and a command substitution around it sees its output close. The
-    deadline belongs to the hook, not to each call. A check of many paths therefore cannot
+    process that blocks, and a command substitution around it sees its output close, unless a
+    child of that process holds it (see the ceilings). The deadline belongs to the hook, not to each call. A check of many paths therefore cannot
     spend it once per path, and after one blocked read every later one fails at once. Whole
     seconds move the kill up to a second either side of the deadline. The deadline is recorded
     rounded down, and a read sleeps its whole seconds left from wherever in a second it starts,
@@ -82,8 +82,24 @@
     a session that can rewrite them can rewrite the hooks themselves. A gitlink planted with a
     `.gitmodules` override still makes the served server's `status` run a child git in the
     submodule, which drops the pins, as it does for any git Claude Code runs after its
-    startup (decision 101's submodule ceiling). The deadline bounds the time the hook takes,
-    not what a killed git had already done. Dirty files outside the scope that take longer than
+    startup (decision 101's submodule ceiling). What else the pins leave the served server is
+    restated in decision 101's ceilings. The deadline bounds the time the hook takes, not what a
+    killed git had already done. Nor does it kill what git started: the kill reaches the job's
+    own pid, and a child git spawned, a clean filter, a promisor transport or a helper, lives on
+    with the pipes it inherited (conductor review). A `sleep` such a child leaves behind holds
+    the hook's stderr wherever the call keeps it, which keeps a runner that reads stderr to its
+    end waiting past the hook's exit, and a command substitution's pipe wherever git hands a
+    child its stdout. A session names such a child only through the shared config (decision
+    41's exposure), where the child already runs outside the sandbox with the operator's rights
+    and can rewrite the hooks themselves. An operator's own promisor remote's lazy fetch runs to
+    its end the same way. Killing the job's process group is not taken. `set -m`, the one way a
+    portable shell gives a job a group of its own, has dash move the hook into a group of its own
+    and hand the terminal's foreground group to each foreground command while it is on, taking it
+    from Claude Code (reproduced under a pty; bash 3.2 leaves both alone). macOS has no
+    `setsid`, and a hostile child leaves the group with its own `setsid()` anyway. A read the
+    kernel holds in an uninterruptible sleep, as a hung network filesystem does, ignores the
+    `kill -9` until the call returns, and the hook's `wait` on it, which nothing bounds, runs to
+    the hook timeout, which fails open (conductor review). Dirty files outside the scope that take longer than
     the deadline to hash refuse every Bash call until they are committed or removed, as more
     than 200 dirty paths do (decision 63).
     *Tests* (`profile-compiler.test.ts`). A `head` on the scope hook's PATH turns MERGE_HEAD into
