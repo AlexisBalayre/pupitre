@@ -26,7 +26,11 @@
     file. The command is exec'd in place, never a shell function, so the kill reaches the
     process that blocks, and a command substitution around it sees its output close, unless a
     child of that process holds it (see the ceilings). The deadline belongs to the hook, not to each call. A check of many paths therefore cannot
-    spend it once per path, and after one blocked read every later one fails at once. Whole
+    spend it once per path, and after one blocked read every later one fails at once.
+    `safe_git` also sets `GIT_OPTIONAL_LOCKS=0`. `status` otherwise holds `index.lock` through
+    its untracked walk, which a fifo planted as a `.gitignore` blocks and a large worktree on a
+    loaded machine can outlast, and a `kill -9` skips git's cleanup. The lock then stayed, and
+    every later index write in the worktree failed on it (CI review). Whole
     seconds move the kill up to a second either side of the deadline. The deadline is recorded
     rounded down, and a read sleeps its whole seconds left from wherever in a second it starts,
     so one that starts late in the deadline's last second runs nearly a second past it. The
@@ -84,7 +88,11 @@
     submodule, which drops the pins, as it does for any git Claude Code runs after its
     startup (decision 101's submodule ceiling). What else the pins leave the served server is
     restated in decision 101's ceilings. The deadline bounds the time the hook takes, not what a
-    killed git had already done. Nor does it kill what git started: the kill reaches the job's
+    killed git had already done. The refresh that ends the re-check's `diff` of the merged tip,
+    run when the diff met files whose stat changed but not their content, takes `index.lock`
+    whatever `GIT_OPTIONAL_LOCKS` says (it rewrites the index under it on Apple Git 2.39.5, and
+    git's master takes the lock there unconditionally). A kill while it rehashes those files
+    leaves the lock, as above. Nor does the deadline kill what git started: the kill reaches the job's
     own pid, and a child git spawned, a clean filter, a promisor transport or a helper, lives on
     with the pipes it inherited (conductor review). A `sleep` such a child leaves behind holds
     the hook's stderr wherever the call keeps it, which keeps a runner that reads stderr to its
@@ -106,7 +114,9 @@
     a fifo after the `-f` test and then reads it. The resolving Edit, which passes before the
     swap, is refused in under 5 seconds with the deadline line. An `include.path` in the repo
     config naming a fifo has the resolving Edit refused, and the re-check after a call refuse
-    with the deadline line and "could not read git status", each in under 5 seconds. A `wc`
+    with the deadline line and "could not read git status", each in under 5 seconds. A fifo
+    planted as a `.gitignore` in the worktree has the re-check refuse with the deadline line and
+    leave no `index.lock` in the admin dir, which it left without `GIT_OPTIONAL_LOCKS=0`. A `wc`
     on the re-check's PATH turns a dirty out-of-scope file into a fifo after the
     regular-file test. The check is refused in under 5 seconds as out of time. Two
     out-of-scope files are dirty before a call, and a `wc` that never returns on the first

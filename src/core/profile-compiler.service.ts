@@ -388,7 +388,11 @@ function buildContextMarkdown(
  * into fails open. The deadline is the hook's, not the call's, so a check of
  * many paths cannot spend it once per path. The command is exec'd in place,
  * never a shell function, so the kill reaches the process that blocks, though
- * not a child it started (decision 124's ceilings).
+ * not a child it started (decision 124's ceilings). `safe_git` takes no optional
+ * lock: `status` would hold `index.lock` through its untracked walk, and a kill
+ * skips git's cleanup, leaving it for every later index write to fail on. The
+ * refresh that ends a `diff` takes it whatever `GIT_OPTIONAL_LOCKS` says (decision
+ * 124's ceilings).
  */
 function worktreeGitShell(git: WorktreeGitEnv): string {
   return `GIT_ADMIN='${git.GIT_DIR}'
@@ -434,7 +438,7 @@ bounded() {
   return 124
 }
 safe_git() {
-  bounded env GIT_DIR="$GIT_ADMIN" GIT_COMMON_DIR="$GIT_COMMON" GIT_WORK_TREE="$WORKTREE" \\
+  bounded env GIT_OPTIONAL_LOCKS=0 GIT_DIR="$GIT_ADMIN" GIT_COMMON_DIR="$GIT_COMMON" GIT_WORK_TREE="$WORKTREE" \\
     git ${GIT_SAFE_CONFIG.map((arg) => `'${arg}'`).join(' ')} "$@"
 }
 unset CDPATH

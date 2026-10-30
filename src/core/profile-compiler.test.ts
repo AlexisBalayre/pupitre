@@ -721,6 +721,22 @@ describe('generated bash re-check (decision 63)', () => {
     expect(result.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
   }, 30_000);
 
+  // git status holds the index's lock, an optional one, through its untracked walk,
+  // and a kill skips git's cleanup, so every later index write in the worktree
+  // would fail on the lock left behind. A fifo as a .gitignore blocks that walk.
+  it('leaves no index lock behind when the deadline kills git status', () => {
+    spawnSync('mkfifo', [join(worktree, 'src/net/.gitignore')]);
+
+    const result = run(
+      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01lock', tool_input: { command: 'x' } },
+      {},
+      15_000,
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('outran the hook deadline');
+    expect(existsSync(join(repo, '.git/worktrees/s-1/index.lock'))).toBe(false);
+  }, 30_000);
+
   // The swap lands between the regular-file test and the read: a wc on the hook's
   // PATH turns the written file into a fifo, then reads it as the real one.
   it('refuses within the hook timeout a write swapped for a fifo mid-check', () => {
