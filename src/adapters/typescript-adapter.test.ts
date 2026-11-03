@@ -404,7 +404,12 @@ describe('typescriptAdapter.deadCode', () => {
       { file: 'src/a.ts', exportName: 'viaAlias' },
       { file: 'src/b.ts', exportName: 'b' },
     ];
-    for (const tsconfig of [undefined, '{ "compilerOptions": { "strict": true } }', '{ "compil']) {
+    for (const tsconfig of [
+      undefined,
+      '{ "compilerOptions": { "strict": true } }',
+      '{ "compil',
+      '{ "compilerOptions": { "paths": { "@src/*": "./src/*" } } }',
+    ]) {
       const files = tsconfig === undefined ? tree : { ...tree, 'tsconfig.json': tsconfig };
 
       expect(typescriptAdapter.deadCode?.(localContext(makeTree(files)))).toEqual(dead);

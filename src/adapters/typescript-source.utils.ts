@@ -80,23 +80,19 @@ export type PathAliases = Map<string, string[]>;
 /**
  * The `paths` of a root `tsconfig.json`'s text. `extends` is not followed, and
  * text TypeScript cannot parse yields no aliases, which is today's relative-only
- * resolution.
+ * resolution. A `paths` or `baseUrl` of a shape tsc rejects throws, and the
+ * caller falls back to no aliases.
  */
 export function parsePathAliases(tsconfigText: string): PathAliases {
-  const aliases: PathAliases = new Map();
   const { config, error } = ts.parseConfigFileTextToJson('tsconfig.json', tsconfigText);
-  const options = error ? undefined : config?.compilerOptions;
-  const paths = options?.paths;
-  if (!paths || typeof paths !== 'object' || Array.isArray(paths)) return aliases;
-  const baseUrl = typeof options.baseUrl === 'string' ? options.baseUrl : '.';
-  for (const [pattern, targets] of Object.entries(paths)) {
-    if (!Array.isArray(targets)) continue;
-    aliases.set(
+  if (error) return new Map();
+  const { baseUrl = '.', paths = {} } = config.compilerOptions ?? {};
+  return new Map(
+    Object.entries(paths).map(([pattern, targets]) => [
       pattern,
-      targets.filter((t): t is string => typeof t === 'string').map((t) => join(baseUrl, t)),
-    );
-  }
-  return aliases;
+      (targets as string[]).map((t) => join(baseUrl, t)),
+    ]),
+  );
 }
 
 /**
@@ -106,24 +102,24 @@ export function parsePathAliases(tsconfigText: string): PathAliases {
  */
 function aliasTargets(specifier: string, aliases: PathAliases): string[] {
   const exact = aliases.get(specifier);
-  if (exact && !specifier.includes('*')) return exact;
-  let best: { prefix: string; matched: string; targets: string[] } | undefined;
-  for (const [pattern, targets] of aliases) {
+  if (exact) return exact;
+  const longestPrefixFirst = [...aliases].sort(([a], [b]) => b.indexOf('*') - a.indexOf('*'));
+  for (const [pattern, targets] of longestPrefixFirst) {
     const star = pattern.indexOf('*');
-    if (star === -1) continue;
     const prefix = pattern.slice(0, star);
     const suffix = pattern.slice(star + 1);
     if (
-      specifier.length >= prefix.length + suffix.length &&
-      specifier.startsWith(prefix) &&
-      specifier.endsWith(suffix) &&
-      (!best || prefix.length > best.prefix.length)
+      star === -1 ||
+      specifier.length < prefix.length + suffix.length ||
+      !specifier.startsWith(prefix) ||
+      !specifier.endsWith(suffix)
     ) {
-      const matched = specifier.slice(prefix.length, specifier.length - suffix.length);
-      best = { prefix, matched, targets };
+      continue;
     }
+    const matched = specifier.slice(prefix.length, specifier.length - suffix.length);
+    return targets.map((t) => t.replace('*', matched));
   }
-  return best ? best.targets.map((t) => t.replace('*', best.matched)) : [];
+  return [];
 }
 
 /**
@@ -141,14 +137,10 @@ export function resolveImport(
   files: Set<string>,
   aliases: PathAliases = new Map(),
 ): string | undefined {
-  if (!specifier.startsWith('.')) {
-    for (const target of aliasTargets(specifier, aliases)) {
-      const resolved = resolveFile(normalize(target), files);
-      if (resolved) return resolved;
-    }
-    return undefined;
-  }
-  return resolveFile(normalize(join(dirname(fromFile), specifier)), files);
+  const targets = specifier.startsWith('.')
+    ? [join(dirname(fromFile), specifier)]
+    : aliasTargets(specifier, aliases);
+  return targets.map((t) => resolveFile(normalize(t), files)).find((f) => f !== undefined);
 }
 
 function resolveFile(base: string, files: Set<string>): string | undefined {

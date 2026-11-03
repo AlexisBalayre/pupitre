@@ -20,19 +20,28 @@
     `nestedPackageDirs`, which read `configPath` because their answer exempts files. An alias
     exempts nothing: it can only point an import at a repo file, which a relative import from
     the same file can already reach, and `resolveFile` refuses a target that climbs out of the
-    repo. Taking the session's tsconfig therefore opens no hiding place. Taking the trusted one would make the branch that introduces an alias read
-    its own alias imports as unresolved and fail its own gate.
+    repo. Taking the session's tsconfig therefore opens no hiding place. Taking the trusted one
+    would make the branch that introduces an alias read its own alias imports as unresolved and
+    fail its own gate.
     *Ceilings.* `extends` is not followed. Only the root `tsconfig.json` is read, not a
     `tsconfig.*.json` or a nested one. `baseUrl` alone does not make bare specifiers resolve.
     `depGraph` still makes edges from relative imports only, so the code map does not show
-    alias edges yet. A missing, unreadable or unparseable tsconfig, or one without `paths`,
-    yields no aliases, which is exactly the old relative-only behaviour, and a test asserts it.
+    alias edges yet. A missing, unreadable or unparseable tsconfig, one without `paths`, or one
+    whose `paths` has a shape tsc rejects (an array, a string substitution) yields no aliases,
+    which is exactly the old relative-only behaviour, and a test asserts it. The malformed
+    shapes are not checked one by one: `parsePathAliases` throws on them and `deadCode`'s
+    reader treats any throw as no aliases.
     Each of these misses in the safe direction: an alias import goes unresolved, and an
     export looks deader than it is.
     *No re-stamp.* This repo's tsconfig declares no `paths`, so today's dead-export count is
     unchanged, and dead exports are compared as sets with no rule id (decision 58). As decision
     39 learned, the gate cannot validate its own change: this branch's merge runs main's adapter.
-    Five mutants were each run against the three adapter test files and restored from a backup
+    Mutants were each run against the three adapter test files and restored from a backup
     copy, and each failed at least one test. They were: reading aliases from `configPath`;
-    dropping them in `collectUsage`; resolving a bare specifier as a relative one; taking the
-    first matching wildcard instead of the longest prefix; and ignoring `baseUrl`.
+    dropping them in `collectUsage`; resolving a bare specifier as a relative one; not sorting
+    wildcards longest prefix first; ignoring `baseUrl`; keeping a partly parsed tsconfig's
+    aliases; and matching a wildcard whose prefix and suffix overlap in the specifier.
+    *Complexity.* The first cut added 20 decision points to `typescript-source.utils.ts`, and
+    the gate refused it at its +15 limit. The resolution now shares one path between the
+    relative and alias cases. It takes the first wildcard after a longest-prefix sort, not a
+    running best, and it leaves shapes tsc rejects to throw. That brings the delta to +9.

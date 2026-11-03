@@ -29,8 +29,16 @@ describe('parsePathAliases', () => {
 
   it('yields no aliases for a tsconfig without paths or one TypeScript cannot parse', () => {
     expect(parsePathAliases('{ "compilerOptions": { "strict": true } }').size).toBe(0);
-    expect(parsePathAliases('{ "compilerOptions": { "paths": ').size).toBe(0);
-    expect(parsePathAliases('{ "compilerOptions": { "paths": ["src/*"] } }').size).toBe(0);
+    expect(parsePathAliases('{}').size).toBe(0);
+    expect(parsePathAliases('{ "compilerOptions": { "paths": { "@a/*": ["src/*"] }').size).toBe(0);
+  });
+
+  it('throws on paths of a shape tsc rejects', () => {
+    expect(() => parsePathAliases('{ "compilerOptions": { "paths": ["src/*"] } }')).toThrow();
+    expect(() =>
+      parsePathAliases('{ "compilerOptions": { "paths": { "@a/*": "src/*" } } }'),
+    ).toThrow();
+    expect(() => parsePathAliases('{ "compilerOptions": { "paths": { "@a/*": [1] } } }')).toThrow();
   });
 });
 
@@ -58,6 +66,12 @@ describe('resolveImport', () => {
     expect(resolveImport('x.ts', '@src/ui/c.js', files, aliases)).toBe('src/ui/c.tsx');
     expect(resolveImport('x.ts', '@ui', files, aliases)).toBe('src/ui/c.tsx');
     expect(resolveImport('x.ts', 'typescript', files, aliases)).toBeUndefined();
+  });
+
+  it('matches no wildcard whose prefix and suffix overlap in the specifier', () => {
+    const aliases = new Map([['a*a', ['src/*']]]);
+
+    expect(resolveImport('x.ts', 'a', new Set(['src/index.ts']), aliases)).toBeUndefined();
   });
 
   it('tries each substitution in order and keeps an alias inside the repo', () => {
