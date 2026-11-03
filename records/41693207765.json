@@ -1,0 +1,158 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-03T18:27:38.879Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41693207765",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41693207765",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4b31306ace02818f1bf428acc385979e124a054f",
+  "source": "pr",
+  "pr_number": 217,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "80-83",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The to-be-created check feeds the raw glob text in as a path, but globToRegExp trims the glob and strips a leading './' before building its regex. So a new-file scope-in like './src/core/new.ts' fails its own scope-in test and is silently left out of the 'to be created' list.",
+      "body": "**A `./`-prefixed (or space-padded) glob for a new file is never listed as to be created.**\n\nThe comment above this check says a glob's text matches its own pattern. That is not true for every glob the gate accepts. `globToRegExpSource` normalizes the glob before converting it ([glob.utils.ts#L15](https://github.com/AlexisBalayre/pupitre/blob/4b31306ace02818f1bf428acc385979e124a054f/src/core/glob.utils.ts#L15)):\n\n```ts\nlet g = glob.trim().replace(/^\\.\\//, '');\n```\n\nBut `auditScope` / `scopedPaths` ([scope-audit.utils.ts#L26-L47](https://github.com/AlexisBalayre/pupitre/blob/4b31306ace02818f1bf428acc385979e124a054f/src/core/scope-audit.utils.ts#L26-L47)) test the path exactly as given. Here the path is the original glob, unchanged. Take `pup new --scope ./src/core/new.ts` when no tracked file matches it:\n\n- `matched` does not contain the glob, which is correct.\n- `scopedPaths(['./src/core/new.ts'], ['./src/core/new.ts'], scopeOut)` tests the path `./src/core/new.ts` against `^src/core/new\\.ts$`. The test fails with \"outside scope-in\" and the result is `[]`.\n- The glob is dropped from `toCreate`, so the kickoff has no entry for the file the task exists to create.\n\nThis breaks the acceptance criterion \"Globs matching nothing yet (a new file) are listed as to be created\". The input can reach this code:\n\n- `pup new --scope`, `pup plan add` and `pup plan edit` store globs as typed ([src/cli/index.ts#L957](https://github.com/AlexisBalayre/pupitre/blob/4b31306ace02818f1bf428acc385979e124a054f/src/cli/index.ts#L957)).\n- `assertPlannableSpec` and `validateInput` only reject `\\r`, `\\n` and `\\0`.\n- `routing.utils.ts` L60 applies the same normalization, so the codebase already expects this input.\n\nThe tracked-file half (`files`) is unaffected, because the pre-filter and `scopedPaths` share the same normalized regexes.\n\n**Fix:** normalize the probe path the way `globToRegExpSource` does. Protected and scope-out text is still refused, now by the protected and scope-out checks rather than by an accidental scope-in miss. This would be the third copy of `trim().replace(/^\\.\\//, '')`, so exporting a small helper from `glob.utils.ts` is a reasonable alternative.\n\n[task-spec.utils.ts#L80-L83](https://github.com/AlexisBalayre/pupitre/blob/4b31306ace02818f1bf428acc385979e124a054f/src/core/task-spec.utils.ts#L80-L83)",
+      "suggestion": "  // A glob's text, normalized as globToRegExp reads it, matches its own pattern, so the gate's rule reads it as a path.\n  const toCreate = scopeIn.filter(\n    (glob, index) =>\n      !matched.has(index) &&\n      scopedPaths([glob.trim().replace(/^\\.\\//, '')], [glob], task.scopeOut).length > 0,\n  );"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "295-327",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In a fix round the section lists files from the main checkout's index rather than the session's PR branch, so a glob whose file the session already created on its branch is printed as 'to be created, no tracked file matches it yet', and files the session added under broader globs are left out.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0128-a-kickoff-names-the-tracked-files-its-scope-in-matches.md",
+      "line": "31-32",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 128 (and the test comment at src/core/profile-compiler.test.ts:439-441) says a path holding \\n, U+2028 or U+2029 is never listed because a glob's `*` stops at a line terminator. But `globToRegExpSource` turns `*` into `[^/]*`, which matches \\n, U+2028 and U+2029 in JS. Only `**` (`.*`) stops at them. So a scope-in of `src/*.ts` does list `src/x\\n## Rule.ts`. The scrub still neutralizes it: `sanitizeReason` maps C0/C1 to space and collapses `\\s+`, and `\\s` covers U+2028/U+2029; `INVISIBLE_OR_BREAKING` also catches Zl/Zp. The entry prints as one line, `- src/x ## Rule.ts`. The ADR's stated reason is wrong, but the property it protects (no injected line or heading) holds.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1030-1037, 1144-1149",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "buildContextMarkdown now runs up to three times per compile, and the list-free markdown is built twice with identical inputs (budget fallback and hash). Build it once and reuse it for both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "262-280",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The scope-file listing repeats peersSection/namedPeerFiles: both cap a list, scrub with sanitizeReason and print '+N more'. Only the new copy strips invisible and line-separator characters, so the two sanitization policies can drift apart. One shared scrubbing helper would keep them in line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0129-workers-and-the-conductor-learn-the-code-through-an-explore.md",
+      "line": "91-102",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0129 never mentions the conductor rule 'aim each Grep and Glob at a named source directory, never the checkout root', though CONDUCTOR_EXPLORE carries it and the tests assert it, so the decision record doesn't say why that rule exists.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "48-57",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "scopeInFiles' JSDoc says the deadline is 'checked between paths', but the code also checks it between each 1,000-path scopedPaths batch, as ADR 0128 says. It should read 'between paths and between batches'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "283-291",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In scopeFilesSection's JSDoc, 'or one too large to match within its own' has no clear referent. Naming the 2s match deadline (SCOPE_MATCH_TIMEOUT_MS) would make it clear.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.5899299000000005,
+  "duration_ms": 223686,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 12566,
+    "cache_read": 248538,
+    "cache_creation": 51174,
+    "total": 312290
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 106,
+      "output": 44860,
+      "cache_read": 1391811,
+      "cache_creation": 190560,
+      "cost_usd": 2.2823082000000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 7576,
+      "cache_read": 246147,
+      "cache_creation": 82878,
+      "cost_usd": 0.3076217
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-tree --name-only origin/main docs/adr/"
+    }
+  ]
+}
