@@ -256,6 +256,26 @@ describe('withTestSlot (decision 96)', () => {
     await Promise.all([first.settled, second.settled]);
   });
 
+  it('ends its wait on a hangup as on SIGINT, taking no slot and leaving none behind', async () => {
+    const log: string[] = [];
+    const first = run('worker', 's1', log);
+    const second = run('worker', 's2', log);
+    await tick();
+    const before = process.listeners('SIGHUP');
+    const worker = run('worker', 's3', log);
+    await tick();
+    const [listener] = process.listeners('SIGHUP').filter((fn) => !before.includes(fn));
+    (listener as NodeJS.SignalsListener)('SIGHUP');
+
+    await expect(worker.settled).rejects.toEqual(new SlotWaitInterruptedError('SIGHUP'));
+    expect(process.listeners('SIGHUP')).toEqual(before);
+    expect(log).toEqual(['s1', 's2']);
+    expect(readdirSync(dir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+    for (const held of [first, second]) held.end();
+    await Promise.all([first.settled, second.settled]);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   it('names the gate a worker waits behind', async () => {
     const log: string[] = [];
     const gatesSeen: SlotHolder[][] = [];

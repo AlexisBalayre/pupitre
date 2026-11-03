@@ -1,6 +1,7 @@
 # 0109. One file per decision under docs/adr/, numbered as before, with a generated index (2026-10-27)
 
 - Status: accepted
+- Amended by: [0120](0120-fresh-base-regenerates-a-conflicted-adr-index-in-the.md)
 
 109. **One file per decision under `docs/adr/`, numbered as before, with a generated index
     (2026-10-27).**

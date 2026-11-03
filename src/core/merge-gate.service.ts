@@ -1,9 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readlinkSync,
   realpathSync,
@@ -1114,12 +1118,14 @@ function sessionMark(db: Database, sessionId: string): string {
  * sandbox in the moment between the add and the read, or plant
  * `config.worktree` there. `GIT_WORK_TREE` also does what `--work-tree` did,
  * outranking a `core.worktree` in the shared config that would aim the writes
- * elsewhere.
+ * elsewhere. Returns those pins, for a caller that runs git in the checkout.
  */
-function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): WorktreeGitEnv {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
+  const git = checkoutPinned(repoPath, dir, sha);
+  refuseEscapingLinks(dir, sha, git);
+  return git;
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -1598,6 +1604,202 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
 }
 
 /**
+ * The generated ADR index (decision 109). Every task that records a decision
+ * adds its line between the markers, so two branches that each add one
+ * conflict there and nowhere else. Fresh-base resolves that conflict, and only
+ * that one, by running the index's own script over the merged tree (decision
+ * 120). A path, not a git attribute or merge driver: decision 41 treats those
+ * as armed drivers.
+ */
+const ADR_INDEX = 'docs/adr/README.md';
+const ADR_DIR = 'docs/adr/';
+/** A decision file as the script lists one, `[0-9][0-9][0-9][0-9]-*.md`, its number captured. */
+const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/;
+const ADR_INDEX_SCRIPT = 'scripts/adr-index.sh';
+const ADR_INDEX_BEGIN = '<!-- adr-index:begin -->';
+const ADR_INDEX_END = '<!-- adr-index:end -->';
+/** Far past any real index (pupitre's is 25 KB): a larger side is refused unread. */
+const ADR_INDEX_MAX_BYTES = 1024 * 1024;
+/**
+ * A conflict list, its `<mode> <oid> <stage>\t<path>` entries joined by NUL,
+ * whose one conflicted path is the index, a regular file on all three sides;
+ * the groups are the three blobs. `merge-tree` lists entries a line each
+ * without `-z`, and C-quotes a path holding a newline, tab or quote there, so a
+ * line is one entry and a quoted path never matches. Any other shape (another
+ * path, a link, a side that added or deleted the index) is not two added
+ * lines, and keeps the plain refusal.
+ */
+const ADR_INDEX_CONFLICT = new RegExp(
+  `^${[1, 2, 3]
+    .map((stage) => `100644 ([0-9a-f]+) ${stage}\t${ADR_INDEX.replaceAll('.', '\\.')}`)
+    .join('\0')}$`,
+);
+/** A marker as the script counts one, a whole line, captured so a split keeps it. */
+const ADR_INDEX_MARKER = new RegExp(`\n(${ADR_INDEX_BEGIN}|${ADR_INDEX_END})(?=\n|$)`);
+
+/** Why the ADR index stays the worker's to merge; `regenerateAdrIndex` reports it. */
+class AdrIndexRefused extends Error {}
+
+/**
+ * The ADR index blob `oid` as the text before its begin marker and after its
+ * end marker, each with the newline that joins it to its marker. Refused when
+ * the markers are not each one line, once, begin first, since then there is
+ * no one block to regenerate, and when git decoded the text with a
+ * replacement character, so equal text here means equal bytes.
+ */
+function aroundAdrIndex(repoPath: string, oid: string): [string, string] {
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  if (Number(runGit(repoPath, ['cat-file', '-s', oid], piped)) > ADR_INDEX_MAX_BYTES) {
+    throw new AdrIndexRefused(`${ADR_INDEX} is over ${ADR_INDEX_MAX_BYTES} bytes`);
+  }
+  const text = runGit(repoPath, ['cat-file', 'blob', oid], piped);
+  // Text, marker, text, marker, text: the one shape the script rewrites.
+  const parts = `\n${text}`.split(ADR_INDEX_MARKER);
+  const markers = parts.filter((_, at) => at % 2 === 1).join('\n');
+  if (text.includes('�') || markers !== `${ADR_INDEX_BEGIN}\n${ADR_INDEX_END}`) {
+    throw new AdrIndexRefused(
+      `${ADR_INDEX} is not UTF-8 text holding each adr-index marker once, as a line, begin first`,
+    );
+  }
+  return [parts[0] as string, parts[4] as string];
+}
+
+/**
+ * Write the README the script left at `file` as a blob, through a descriptor
+ * opened without following a link or blocking on a fifo, and checked to be a
+ * regular file under the cap. A process the script started in a session of its
+ * own outlives the run's kill and can still swap the path, so git reads the
+ * checked descriptor as its stdin and never opens the path: a link swapped in
+ * after the check would have it read a file the sandbox denies and store it
+ * where gate children read (decisions 36, 120). Git reads the size it finds
+ * itself, so a file grown past the cap after the check stores only bytes the
+ * process wrote, which `aroundAdrIndex` then refuses unread.
+ */
+function hashAdrIndex(repoPath: string, file: string): string {
+  const refusal =
+    `${ADR_INDEX_SCRIPT} left no regular file of at most ${ADR_INDEX_MAX_BYTES} bytes ` +
+    `at ${ADR_INDEX}`;
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    throw new AdrIndexRefused(refusal);
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > ADR_INDEX_MAX_BYTES) throw new AdrIndexRefused(refusal);
+    return runGit(repoPath, ['hash-object', '-w', '--no-filters', '--stdin'], {
+      stdio: [fd, 'pipe', 'pipe'],
+    }).trim();
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Resolve a conflict confined to the ADR index (decision 120), on the merge
+ * path only: a rebase stopped on one would go on with `--continue`, which reads
+ * back rebase state the live session can write. `conflicts` is the conflict
+ * list `ADR_INDEX_CONFLICT` reads, and `merged` the tree `merge-tree` wrote with
+ * it, the README holding git's conflict markers. The text outside the markers
+ * merges whole, region by region: a side that left one as the base takes the
+ * other's, and two sides that both changed it are refused, as the plain merge
+ * refuses them. Two decision files that share a number merge clean under
+ * their own slugs, so the merged tree is refused when it holds such a pair:
+ * the hand merge would show the worker both lines, a regenerated index would
+ * land both. The tree is committed (unreferenced) and cut into a scratch
+ * checkout of its own, where the README becomes the merged text with an empty
+ * index and `scripts/adr-index.sh` from that tree fills the index in. The
+ * script is the branch's code, so it runs as a stage does, confined (decisions
+ * 28, 36), and the README is written in the same child; what the script wrote
+ * is read back by `hashAdrIndex` and its text outside the markers must be
+ * unchanged. The checkout and its root go before this returns, and no later
+ * stage cuts at either: a process the script left in a session of its own
+ * keeps the child's grant on the checkout's path, and could put a link there
+ * for the next checkout cut at it to write through. Returns the merged tree
+ * with the regenerated README in place, or what the refusal adds to its
+ * detail: nothing for a conflict list of another shape, else why the index
+ * was not regenerated.
+ */
+async function regenerateAdrIndex(
+  req: MergeRequest,
+  conflicts: string[],
+  merged: string,
+): Promise<{ tree: string } | string> {
+  const sides = ADR_INDEX_CONFLICT.exec(conflicts.join('\0'));
+  if (!sides) return '';
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  try {
+    const numbers = runGit(req.repoPath, ['ls-tree', '-z', '--name-only', merged, ADR_DIR], piped)
+      .split('\0')
+      .map((path) => ADR_DECISION.exec(path)?.[1])
+      .filter((number) => number !== undefined);
+    const shared = numbers.find((number, at) => numbers.indexOf(number) !== at);
+    if (shared) throw new AdrIndexRefused(`two decisions share the number ${shared} in ${ADR_DIR}`);
+    const cut = sides.slice(1).map((oid) => aroundAdrIndex(req.repoPath, oid));
+    const [before, after] = [0, 1].map((at) => {
+      const [base, ours, theirs] = cut.map((side) => side[at] as string);
+      const changed = [...new Set([ours, theirs])].filter((side) => side !== base);
+      if (changed.length > 1) {
+        throw new AdrIndexRefused(`both sides changed ${ADR_INDEX} outside the adr-index markers`);
+      }
+      return [...changed, base][0] as string;
+    });
+    const commit = runGit(
+      req.repoPath,
+      ['commit-tree', '--no-gpg-sign', '-m', 'pup merge: ADR index', merged],
+      piped,
+    ).trim();
+    // Private and unguessable as the stages' root is, and named after itself
+    // for the same reason: the admin dir `worktree add` names is its own.
+    const root = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-adr-index-'));
+    try {
+      const checkoutDir = join(root, basename(root));
+      const git = cutGateCheckout(req.repoPath, checkoutDir, commit);
+      try {
+        // The child writes the merged README too, under its own grants, so
+        // the gate opens no path in the checkout by name once it is cut: a
+        // link put there would aim a write of the gate's out of it.
+        await runGateChild(
+          'bash',
+          ['-c', 'cat > "$1" && exec bash "$2"', 'bash', ADR_INDEX, ADR_INDEX_SCRIPT],
+          {
+            cwd: checkoutDir,
+            repoPath: req.repoPath,
+            gateEnv: req.gateEnv,
+            timeout: GATE_COMMAND_TIMEOUT_MS,
+            input: `${before}\n${ADR_INDEX_BEGIN}\n${ADR_INDEX_END}${after}`.slice(1),
+          },
+        );
+      } catch (error) {
+        throw error instanceof GateInterruptedError
+          ? error
+          : new AdrIndexRefused(`${ADR_INDEX_SCRIPT} failed:\n${commandFailureDetail(error)}`);
+      }
+      // Hashed before it is judged, so what is judged is what the merge takes.
+      const blob = hashAdrIndex(req.repoPath, join(checkoutDir, ADR_INDEX));
+      if (JSON.stringify(aroundAdrIndex(req.repoPath, blob)) !== JSON.stringify([before, after])) {
+        throw new AdrIndexRefused(
+          `${ADR_INDEX_SCRIPT} changed ${ADR_INDEX} outside the adr-index markers`,
+        );
+      }
+      const inCheckout = { env: { ...git }, ...piped };
+      runGit(
+        checkoutDir,
+        ['update-index', '--cacheinfo', `100644,${blob},${ADR_INDEX}`],
+        inCheckout,
+      );
+      return { tree: runGit(checkoutDir, ['write-tree'], inCheckout).trim() };
+    } finally {
+      dropGateCheckout(req.repoPath, root);
+    }
+  } catch (error) {
+    if (!(error instanceof AdrIndexRefused)) throw error;
+    return `\n${ADR_INDEX} was not regenerated: ${error.message}.`;
+  }
+}
+
+/**
  * Merge `targetSha` into the branch an open PR holds, in plumbing only
  * (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
  * commit, and a compare-and-swap moves the branch from the tip the merge read.
@@ -1612,17 +1814,19 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
  * again right before `merge-tree`, which runs a merge driver on a conflicted
  * file, and before the `read-tree`, which runs a smudge filter on every file it
  * writes, as they are before the fast-forward: the last check ran before the gh
- * calls and the lock (decision 50). Returns the failure for the worker, or
- * undefined once the branch holds the merge.
+ * calls and the lock (decision 50). A conflict in the ADR index alone is
+ * resolved in a scratch checkout of its own (decision 120). Returns the failure
+ * for the worker, or undefined once the branch holds the merge.
  */
-function mergeTargetInto(
-  repoPath: string,
+async function mergeTargetInto(
+  req: MergeRequest,
   worktree: string,
   worktreeEnv: WorktreeGitEnv,
   branch: string,
   target: string,
   targetSha: string,
-): string | undefined {
+): Promise<string | undefined> {
+  const { repoPath } = req;
   const branchRef = `refs/heads/${branch}`;
   const shown = sanitizeReason(target);
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
@@ -1640,11 +1844,23 @@ function mergeTargetInto(
     // 2.38, a missing object) is git failing to merge at all, which no worker
     // can resolve: thrown to the operator, with only objects written.
     if ((error as { status?: unknown }).status !== 1) throw error;
-    return (
-      `Auto-merge of ${shown} hit conflicts. Run ` +
-      `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
-      `resolve the conflicts, and commit the merge.\n${commandFailureDetail(error)}`
+    // The merged tree, then one entry per conflicted path and stage up to an
+    // empty line, then git's messages. Not `-z`, which would fuse the report
+    // the refusal hands the worker into one line.
+    const [conflicted, ...listed] = String((error as { stdout?: unknown }).stdout).split('\n');
+    const resolved = await regenerateAdrIndex(
+      req,
+      listed.slice(0, listed.indexOf('')),
+      conflicted as string,
     );
+    if (typeof resolved === 'string') {
+      return (
+        `Auto-merge of ${shown} hit conflicts. Run ` +
+        `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
+        `resolve the conflicts, and commit the merge.\n${commandFailureDetail(error)}${resolved}`
+      );
+    }
+    tree = resolved.tree;
   }
   const merged = runGit(
     repoPath,
@@ -1811,8 +2027,8 @@ async function gateAndMerge(
       }),
     );
   } else if (isPrBranch) {
-    const refused = mergeTargetInto(
-      req.repoPath,
+    const refused = await mergeTargetInto(
+      req,
       worktree,
       worktreeEnv,
       session.branch,
@@ -1828,7 +2044,11 @@ async function gateAndMerge(
     );
   } else {
     try {
-      runGit(worktree, ['rebase', targetSha], pinned);
+      // The strategy named, not left to `pull.twohead`: git's sequencer takes
+      // the first value it reads, a session's local one before the `-c` pin,
+      // and runs any name but ort as `git merge-<name>`, a path into the
+      // worktree included (decision 120, amending 79).
+      runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
@@ -1837,6 +2057,10 @@ async function gateAndMerge(
         }),
       );
     } catch (error) {
+      // Every conflict goes back to the worker, the ADR index's included: the
+      // gate resolves that one only where it merges, since a resolved stop
+      // would go on through rebase state the live session can write (decision
+      // 120).
       try {
         runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
