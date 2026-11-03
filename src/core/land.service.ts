@@ -31,7 +31,6 @@ import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
-import type { AuditOutcome } from './types/audit.types.js';
 import type { LandOutcome } from './types/land.types.js';
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };
@@ -225,21 +224,23 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         target,
         targetSha,
       );
+      // Said now, before the audit: a re-run refuses the landed session, and an
+      // audit that throws, or a kill or a timeout during it, would leave the
+      // outcome unreturned and these sessions named nowhere (decision 99).
+      const branch = sanitizeReason(target);
+      for (const { sessionId, reason } of unsteered) {
+        console.error(
+          `Could not tell ${sanitizeReason(sessionId)} that ${branch} moved: ` +
+            `${sanitizeReason(reason)}. Steer it to take ${branch} in.`,
+        );
+      }
       // Under the lock too: the steer wakes the sessions whose gates come next,
       // and a gate reads the baseline and ratchets it under this lock, so none
       // measures against the baseline before the land or writes over this
       // refresh (decision 88). The conductor may run this, so no human stands
       // between an observed regression and the bar: a regressed measurement is
       // reported and left for `pup audit`, which the operator runs (decision 84).
-      let audit: AuditOutcome;
-      try {
-        audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-      } catch (error) {
-        // No outcome reaches the CLI, and a re-run refuses the landed
-        // session: the sessions left unsteered are named now or never (decision 99).
-        for (const entry of unsteered) console.error(unsteeredLine(entry, target));
-        throw error;
-      }
+      const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
       return {
         prUrl,
         mergeCommit,
@@ -252,18 +253,6 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
-  );
-}
-
-/** What `pup land` prints for a session it could not steer, store and git text scrubbed (decision 99). */
-export function unsteeredLine(
-  { sessionId, reason }: NonNullable<LandOutcome['unsteered']>[number],
-  target: string,
-): string {
-  const branch = sanitizeReason(target);
-  return (
-    `Could not tell ${sanitizeReason(sessionId)} that ${branch} moved: ` +
-    `${sanitizeReason(reason)}. Steer it to take ${branch} in.`
   );
 }
 

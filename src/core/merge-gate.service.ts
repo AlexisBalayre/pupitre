@@ -871,8 +871,9 @@ export class MergeLockLostError<TResult = unknown> extends Error {
  * told whether the take waited: anything read before the wait may have changed
  * under the run that held the lock meanwhile. A lock found gone or replaced at
  * the release throws `MergeLockLostError` with `fn`'s result, or is printed
- * beside `fn`'s error; one that cannot be removed for any other reason is
- * printed and the result returned.
+ * beside `fn`'s error, whatever error the release met; only a lock still the
+ * take's own directory that cannot be removed is printed and the result
+ * returned.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
@@ -927,10 +928,19 @@ export async function withMergeLock<TResult>(
     try {
       return dropMergeLock(lockPath, 'released', taken);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      // A lock this run still holds: printed, never thrown, since `fn` has done
-      // what it did, and the lock left in place names this pid, which a later
-      // run reclaims once this process has exited (decision 88).
+      // Whatever failed, the lock counts as this run's only while the take's
+      // own directory is still at the path: one moved away, even with another
+      // run's lock now there, is lost, and so is one that cannot be read.
+      let now: LockIdentity | undefined;
+      try {
+        now = directoryIdentity(lockPath);
+      } catch {
+        now = undefined;
+      }
+      if (now?.dev !== taken.dev || now.ino !== taken.ino) return false;
+      // Printed, never thrown, since `fn` has done what it did, and the lock
+      // left in place names this pid, which a later run reclaims once this
+      // process has exited (decision 88).
       console.error(
         `Could not release ${lockPath}: ${failureSummary(error)}. A later run reclaims it once ` +
           'this process has exited.',

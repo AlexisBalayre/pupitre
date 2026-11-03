@@ -113,11 +113,7 @@ vi.mock('../core/merge-gate.service.js', async (importOriginal) => ({
   countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
-vi.mock('../core/land.service.js', async (importOriginal) => ({
-  landSession: vi.fn(),
-  // The real line, whose scrubbing the land tests assert.
-  unsteeredLine: (await importOriginal<typeof import('../core/land.service.js')>()).unsteeredLine,
-}));
+vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
 vi.mock('../core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
@@ -5837,28 +5833,6 @@ describe('CLI commands', () => {
       );
       expect(logs).toContain('Kept pup/s1: it holds commits main does not.');
       expect(logs).not.toContain('Removed the session worktree.');
-    });
-
-    // A failed steer is not recorded, so this line is the operator's only word
-    // of it (decision 99).
-    it('names each peer it could not steer on one scrubbed line, and lands with its audit', async () => {
-      useCwd(initRepoWithAdapter());
-      vi.mocked(landSession).mockResolvedValue({
-        ...landedOutcome(),
-        unsteered: [
-          { sessionId: 's2\u001b[2J', reason: 'Steer did not land:\n\u001b[31mbox absent' },
-        ],
-      });
-
-      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
-
-      const unsteered = logs.filter((line) => line.startsWith('Could not tell'));
-      expect(unsteered).toEqual([
-        'Could not tell s2 [2J that main moved: Steer did not land: [31mbox absent. Steer it to ' +
-          'take main in.',
-      ]);
-      expect(logs).toContain('No stored baseline yet — captured one now, like `pup init`.');
-      expect(process.exitCode).toBeUndefined();
     });
 
     // It ends on the audit, which runs children: refused before anything moves (decision 78).

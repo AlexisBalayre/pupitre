@@ -469,6 +469,36 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
     });
 
+    // A failed steer is not recorded, and a kill during the audit would lose the
+    // outcome: the line is printed, scrubbed, before the audit starts (decision 99).
+    it('prints each peer it could not steer on one scrubbed line before its audit, and lands', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementationOnce(() => {
+        throw new Error('tmux: server\n\u001b[2J exited');
+      });
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const actual =
+        await vi.importActual<typeof import('./audit.service.js')>('./audit.service.js');
+      let printedBeforeAudit: unknown[] = [];
+      vi.mocked(auditProject).mockImplementationOnce((...args) => {
+        printedBeforeAudit = errors.mock.calls.flat();
+        return actual.auditProject(...args);
+      });
+
+      try {
+        const outcome = await landMerged();
+
+        expect(printedBeforeAudit).toEqual([
+          'Could not tell s2 that main moved: tmux: server [2J exited. Steer it to take main in.',
+        ]);
+        expect(outcome.unsteered).toEqual([{ sessionId: 's2', reason: 'tmux: server [2J exited' }]);
+        expect(outcome.audit.heldOnRegression).toBe(false);
+      } finally {
+        errors.mockRestore();
+      }
+      expect(steerEvents('s2')).toEqual([]);
+    });
+
     it('reports no unsteered session when every overlapping one was steered', async () => {
       seedPeer('s2', 'src/feature.ts');
 

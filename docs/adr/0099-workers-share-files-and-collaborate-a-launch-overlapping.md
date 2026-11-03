@@ -124,8 +124,10 @@
     branch-and-tip conflict by hand and edit within that block. Either way the file differs from
     the target, and the gate's scope audit refuses it. A session the land could not steer, its
     steer failed or git could not read its branch, is carried on `LandOutcome.unsteered` with the
-    reason (amended 2026-10-30). `pup land` prints one line for each before its audit outcome,
-    the session id and the reason through `sanitizeReason`, and still exits as its audit says.
+    reason (amended 2026-10-30). The land prints one line for each to stderr, the session id and
+    the reason through `sanitizeReason`, right after the steer and before its audit starts, so a
+    failed or killed audit cannot lose them (decision 88), and `pup land` still exits as its
+    audit says.
     It is recorded nowhere: a `steer` event with `delivered: false` would be wrong, since the
     inbox reads any steer as the answer to an open question and `decodeEvent` drops `delivered`.
     That line is its only trace, so a peer whose land output nobody reads takes the target in at
@@ -136,8 +138,8 @@
     one sharing none gets nothing. The steer says rebase without an open PR and merge with one,
     and neither mentions a force-push. A refused paste records no steer, leaves the land done
     and names the peer on the outcome, as does a branch git cannot read; a land that steered
-    every peer names none. `pup land` prints one line per unsteered peer with its id and reason
-    scrubbed, and its audit outcome after. Any other steer error leaves the land done with its
+    every peer names none. The land prints one line per unsteered peer with its reason scrubbed,
+    before its audit starts. Any other steer error leaves the land done with its
     audit and the other sessions steered, while an interrupt during a steer still stops it. The
     steer scrubs the landed name, the target and the files, and shell-quotes a target holding
     `;`. In a real repo with a linked worktree, a `git merge main` stopped on a conflict, with

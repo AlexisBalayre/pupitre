@@ -62,7 +62,7 @@ import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
-import { landSession, unsteeredLine } from '../core/land.service.js';
+import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { MergeLockLostError, runMergeGate } from '../core/merge-gate.service.js';
@@ -2225,9 +2225,6 @@ export function buildProgram(): Command {
         console.log(
           `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
         );
-      }
-      for (const entry of outcome.unsteered ?? []) {
-        console.log(unsteeredLine(entry, outcome.target));
       }
       printAuditOutcome(db, outcome.audit, repoPath);
       if (lockLost !== undefined) refuseScrubbed(lockLost);
