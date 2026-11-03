@@ -640,6 +640,20 @@ describe('judgeDebt', () => {
         },
       },
     ],
+    [
+      // A ceiling, pinned (decision 127): the renamed file is new under its new
+      // path, so its 40-point rise is judged against the cap, not +15.
+      'a file the branch renamed and grew to the cap',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/legacy.ts', complexity: 10 }],
+            after: [{ file: 'src/feature.ts', complexity: 50 }],
+          },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
   ])('complexity: %s', (_label, { measured, baseline, expected }) => {
     expect(stageOf(judge(measured, baseline), 'complexity')).toEqual(expected);
   });
