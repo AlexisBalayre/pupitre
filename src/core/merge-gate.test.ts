@@ -6153,9 +6153,11 @@ describe('withMergeLock', () => {
       await expect(withMergeLock(repo, swap)).rejects.toThrow(MergeLockLostError);
 
       expect(readFileSync(join(elsewhere, 'pid'), 'utf8')).toBe('123\n');
-      expect(errors.mock.calls.flat().join('\n')).toMatch(
-        /pup-merge\.lock\.released-[0-9a-f]{16} is no longer the lock directory pup made/,
-      );
+      expect(readFileSync(join(lock, 'pid'), 'utf8')).toBe('123\n');
+      expect(readdirSync(join(repo, '.git')).sort()).toEqual([
+        'pup-merge.lock',
+        'pup-merge.lock.moved',
+      ]);
     });
 
     it('takes nothing when the swap lands between the mkdir and the pid write', async () => {
@@ -6246,24 +6248,24 @@ describe('withMergeLock', () => {
       );
     });
 
-    // A session that owns `.git` can move the lock aside, let another run take
-    // a fresh one, then make the release's rename fail with something other
-    // than ENOENT: still a lost lock, not a warning (decision 88).
-    it('fails on a lock replaced under it whose release meets another error', async () => {
-      const git = join(repo, '.git');
-      onTestFinished(() => chmodSync(git, 0o755));
-
+    // A session moves this run's lock away and another run takes a fresh one:
+    // that lock is live, and moving it aside on release would let a third run
+    // in beside the second. It stays where it is (decision 88).
+    it("fails on a lock another run took meanwhile, leaving that run's lock in place", async () => {
       const locked = withMergeLock(repo, () => {
         renameSync(lock, `${lock}.moved`);
         mkdirSync(lock);
         writeFileSync(join(lock, 'pid'), '123\n');
-        chmodSync(git, 0o555);
         return 'merged';
       });
 
       await expect(locked).rejects.toThrow(MergeLockLostError);
-      expect(errors.mock.calls.flat().join('\n')).not.toContain('Could not release');
       expect(readFileSync(join(lock, 'pid'), 'utf8')).toBe('123\n');
+      expect(readdirSync(join(repo, '.git')).sort()).toEqual([
+        'pup-merge.lock',
+        'pup-merge.lock.moved',
+      ]);
+      expect(errors.mock.calls.flat().join('\n')).not.toContain('Could not release');
     });
 
     it('returns the result of a lock it still holds but cannot move, and says so', async () => {

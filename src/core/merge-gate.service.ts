@@ -713,14 +713,20 @@ function removeLockDir(dir: string, identity: LockIdentity): boolean {
 /**
  * Move the lock directory aside under a fresh name, then remove it there, so
  * no reader ever finds the lock without its pid. A removal that fails leaves
- * only the aside directory, which no reader looks at. False when what was
- * moved aside is not `identity`, the directory the take made.
+ * only the aside directory, which no reader looks at. False, touching
+ * nothing, when the path no longer holds `identity`, the directory the take
+ * made: what is there may be another run's live lock, and moving it aside
+ * would let a third run in beside that one. A swap between the check and the
+ * rename is still moved aside, then found and left by `removeLockDir`
+ * (decision 88).
  */
 function dropMergeLock(
   lockPath: string,
   why: 'released' | 'reclaimed',
   identity: LockIdentity,
 ): boolean {
+  const now = directoryIdentity(lockPath);
+  if (now?.dev !== identity.dev || now.ino !== identity.ino) return false;
   const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
   renameSync(lockPath, aside);
   return removeLockDir(aside, identity);
@@ -846,8 +852,9 @@ export class MergeLockLostError<TResult = unknown> extends Error {
   constructor(lockPath: string, result: TResult) {
     super(
       `The merge lock at ${lockPath} was gone or replaced when this run released it, so another ` +
-        'merge or land may have run at the same time. Check the target branch and `pup status` ' +
-        'before the next merge, and treat a session that moved the lock as compromised.',
+        'merge or land may have run at the same time. Check the target branch and `pup status`, ' +
+        'and re-run `pup audit`, since a run alongside may have written over the stored ' +
+        'baseline, before the next merge; treat a session that moved the lock as compromised.',
     );
     this.name = 'MergeLockLostError';
     this.result = result;

@@ -69,7 +69,7 @@
       (decision 99), so an audit that threw first, on an interrupt, a missing adapter or a sandbox
       refusal, would leave them unsteered for good. An audit that fails after both is `pup
       audit`'s to re-run, and `pup land` refuses the landed session.
-    - *The release and the land's audit (amended 2026-10-30, and twice on 2026-11-03 after the
+    - *The release and the land's audit (amended 2026-10-30, and on 2026-11-03 after three
       security reviews).* A release used to throw from `finally` whatever went wrong, replacing
       what the locked section returned after the land's event was written: the steer, then run
       after the release, never ran, and every re-run refused as already landed. The release now
@@ -78,21 +78,25 @@
       found gone, no longer the directory the take made, or replaced by another run's while the
       rename aside fails with EACCES or EPERM (a session owns `.git` and can chmod it), or one
       whose path cannot be read, means a session moved it while the section ran, and another merge
-      or land could have taken a fresh lock and run alongside: mutual exclusion did not hold. That
-      throws `MergeLockLostError`, which carries the section's result; when the section threw
-      instead, its own error wins and the lost lock is printed beside it. `pup merge` and `pup
-      land` catch it, print the outcome as usual (the gate report and its merged line, or the
-      landed lines and the audit), then the lost-lock refusal, and exit non-zero, so a merge or
-      land made unprotected never reads as a clean success. Every other caller, `pup fix` among
-      them, fails on it as it did before. Any other release error, on the take's own directory
-      still in place, is printed (`Could not release …`) and the result returned: the lock left in
-      place names this process, and a later run reclaims it once the process has exited. The
-      holder is the directory's identity, not its pid file: a pid rewritten inside the lock this
-      run made never let another run take it. The land's audit now runs under the lock too, after
-      the steer. It ran after the release, and the steer wakes the sessions most likely to be
-      gated next: a gate could read `projects.baseline` before the audit stored its refresh, and
-      so judge its branch against the target before the land, or ratchet its stale read over the
-      refresh, a lost update. The gate reads the baseline and ratchets it under the lock, so a
+      or land could have taken a fresh lock and run alongside: mutual exclusion did not hold. The
+      release checks the identity before it renames anything: a lock path that holds something
+      else, perhaps another run's live lock taken meanwhile, is left in place, since moving it
+      aside would let a third run in beside that one. That throws `MergeLockLostError`, which
+      carries the section's result, and its message says to check the target and `pup status` and
+      to re-run `pup audit`, since a run alongside may have written over the stored baseline; when
+      the section threw instead, its own error wins and the lost lock is printed beside it. `pup
+      merge` and `pup land` catch it, print the outcome as usual (the gate report and its merged
+      line, or the landed lines and the audit), then the lost-lock refusal, and exit non-zero, so
+      a merge or land made unprotected never reads as a clean success. Every other caller, `pup
+      fix` among them, fails on it as it did before. Any other release error, on the take's own
+      directory still in place, is printed (`Could not release …`) and the result returned: the
+      lock left in place names this process, and a later run reclaims it once the process has
+      exited. The holder is the directory's identity, not its pid file: a pid rewritten inside the
+      lock this run made never let another run take it. The land's audit now runs under the lock
+      too, after the steer. It ran after the release, and the steer wakes the sessions most likely
+      to be gated next: a gate could read `projects.baseline` before the audit stored its refresh,
+      and so judge its branch against the target before the land, or ratchet its stale read over
+      the refresh, a lost update. The gate reads the baseline and ratchets it under the lock, so a
       gate now waits for the audit and reads what it stored. The lock is held for the audit's
       build and suites as well, about what a gate holds it for, so `pup merge` and `pup land` wait
       it out within `MERGE_LOCK_WAIT_MS`, and `pup fix`, which does not wait, refuses during it.
@@ -138,6 +142,9 @@
       reads it as never lost, though another run could have taken a fresh lock in between.
       Nothing on the path tells the two apart; a holder token the lock carries and every take
       checks would.
+    - The release's identity check and its rename are two calls: a lock swapped in between is
+      still moved aside, then found and left in the aside directory, and the lock path is empty
+      for a moment while the swapped-in holder runs on. Path-based fs calls cannot close it.
     Also from the decision 86 review (PR #150): `land.service.ts` imports `COMMIT_SHA` from
     `merge-gate.constants.ts`, and `merge-gate.service.ts` drops the re-export it kept for it
     (docs/conventions/general.md: no compatibility re-exports).
@@ -157,21 +164,21 @@
     two lands of one session waiting on one lock, the second refuses under it with one `landed`
     event; a section whose lock is renamed away under it fails with `MergeLockLostError` carrying
     its result, or keeps its own error with the lost lock printed, and one whose lock is swapped
-    for a link, or replaced by another run's lock while the release's rename meets EACCES, fails
-    the same way; a real gate whose lock is moved away mid-run fails with its whole merged outcome
-    on the error; a section whose release meets a filesystem error on a lock it still holds
-    returns its result, prints the error and leaves its pid in place; none leaves a signal
-    listener; a land whose lock is renamed away still steers an overlapping session once and
-    carries its outcome on the error, and a re-run refuses it; `pup merge` and `pup land` print
-    the merged or landed outcome, then the lost lock, and exit 1; a land prints each peer it could
-    not steer on one scrubbed line before its audit starts, and records no steer, and an audit
-    that throws after it leaves that line printed; a gate started during a land's audit runs once
-    the audit has stored its refresh, judges against it and leaves it stored; under a fake clock
-    the wait takes the lock once it is released and refuses at the timeout, leaving the holder its
-    lock, waits out a pid written after the `mkdir`, and refuses a lock still without one after a
-    second; under a fake load source the load wait returns at once under the ceiling, waits for
-    the load to fall with one line, runs the tests after its timeout with a one-line note, and on
-    an interrupt rejects with `GateInterruptedError` and leaves no listener; a failing post-merge
-    worktree remove (a fake git) still ratchets the baseline, keeps the worktree and its branch,
-    and names it in the outcome; the conductor context forbids the load loops and the lock
-    hand-offs.
+    for a link, or replaced by another run's lock, fails the same way, leaving that lock at the
+    lock path with nothing moved aside; a real gate whose lock is moved away mid-run fails with
+    its whole merged outcome on the error; a section whose release meets a filesystem error on a
+    lock it still holds returns its result, prints the error and leaves its pid in place; none
+    leaves a signal listener; a land whose lock is renamed away still steers an overlapping
+    session once and carries its outcome on the error, and a re-run refuses it; `pup merge` and
+    `pup land` print the merged or landed outcome, then the lost lock, and exit 1; a land prints
+    each peer it could not steer on one scrubbed line before its audit starts, and records no
+    steer, and an audit that throws after it leaves that line printed; a gate started during a
+    land's audit runs once the audit has stored its refresh, judges against it and leaves it
+    stored; under a fake clock the wait takes the lock once it is released and refuses at the
+    timeout, leaving the holder its lock, waits out a pid written after the `mkdir`, and refuses a
+    lock still without one after a second; under a fake load source the load wait returns at once
+    under the ceiling, waits for the load to fall with one line, runs the tests after its timeout
+    with a one-line note, and on an interrupt rejects with `GateInterruptedError` and leaves no
+    listener; a failing post-merge worktree remove (a fake git) still ratchets the baseline, keeps
+    the worktree and its branch, and names it in the outcome; the conductor context forbids the
+    load loops and the lock hand-offs.
