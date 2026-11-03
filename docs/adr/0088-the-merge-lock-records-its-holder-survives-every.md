@@ -138,10 +138,14 @@
       mid-reclaim and then two runs interleaving in a few syscalls.
     - The identity checks narrow the swap to the moment between a check and the call after it;
       path-based fs calls cannot close it.
-    - A lock renamed away and renamed back before the release keeps its inode, so the release
-      reads it as never lost, though another run could have taken a fresh lock in between.
-      Nothing on the path tells the two apart; a holder token the lock carries and every take
-      checks would.
+    - The dev and inode check misses two cases. A lock renamed away and renamed back before the
+      release keeps its inode, so the release reads it as never lost, though another run could
+      have taken a fresh lock in between. And a session can delete this run's lock and let
+      another run make a fresh one: on a filesystem that reuses freed inode numbers quickly
+      (ext4, tmpfs; APFS generally not), the fresh lock can get the same dev and inode, so this
+      run's release moves that live lock aside and reports success, and only the other run, at
+      its own release, finds its lock lost. Nothing on the path tells either apart; a holder
+      token the lock carries, checked by every take and by the release, closes both.
     - The release's identity check and its rename are two calls: a lock swapped in between is
       still moved aside, then found and left in the aside directory, and the lock path is empty
       for a moment while the swapped-in holder runs on. Path-based fs calls cannot close it.
