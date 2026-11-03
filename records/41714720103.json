@@ -1,0 +1,173 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-03T20:46:27.406Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41714720103",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41714720103",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fe05149ec1cb3a36f7fe97268fe8111e42d43fc2",
+  "source": "pr",
+  "pr_number": 206,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "2514",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`pup usage --json` prints worker-writable model, effort and tool names with DEL and C1 controls (such as U+009B CSI) still raw, because `JSON.stringify` only escapes U+0000–U+001F; the ADR says `--json` \"escapes them already\".",
+      "body": "**Concern.** ADR 0122 *Print* says the model, effort and tool names come from a file a worker can write. The text report scrubs each one with `sanitizeReason` (decision 68), and the ADR claims \"`--json` escapes them already\". That claim is only half true:\n\n- `JSON.stringify` escapes U+0000–U+001F, `\"` and `\\`.\n- It leaves DEL (U+007F) and the C1 range U+0080–U+009F as raw characters.\n- `sanitizeReason` deliberately strips `[\\u007f-\\u009f]` (`src/adapters/capability.utils.ts:78`). The PR's own test plants `'hi\\u009bgh'` as an effort to check exactly this, but only on the text path.\n\nNothing upstream sanitizes these values: `parseCall` copies `entry.message?.model` and `entry.effort` raw, `noteAssistant` stores the raw `block.name`, and `sanitizeReason` is only called inside `formatUsageReport`.\n\n**Exploit path.** A worker plants a line such as `{\"type\":\"assistant\",\"requestId\":\"r\",\"timestamp\":\"…\",\"effort\":\"x\\u009b2J…\",\"message\":{\"model\":\"claude-opus-5-5\",\"usage\":{}}}` in a `.jsonl` file in its own transcript directory. `workerDirsOf` adds that directory. When the operator runs `pup usage --json`, U+009B reaches their terminal as the UTF-8 bytes `C2 9B`. Terminals that treat UTF-8-encoded C1 as control (xterm by default, VTE) read it as CSI. That gives the same screen and title rewriting decision 68 closes for every other print site. Whether a terminal acts on C1 varies by terminal, hence medium confidence.\n\n```ts\nconsole.log(opts.json ? JSON.stringify(report, null, 2) : formatUsageReport(report));\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/fe05149ec1cb3a36f7fe97268fe8111e42d43fc2/src/cli/index.ts#L2514>\nADR claim: <https://github.com/AlexisBalayre/pupitre/blob/fe05149ec1cb3a36f7fe97268fe8111e42d43fc2/docs/adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md#L37-L45>\n\nThe fix below loses nothing. In `JSON.stringify` output, a non-ASCII character can only appear inside a string literal, so writing it as `\\uXXXX` is still valid JSON and parses back to the same value. A `--json` test that plants `\\u009b` would pin the fix.",
+      "suggestion": "    console.log(\n      opts.json\n        ? JSON.stringify(report, null, 2).replace(\n            /[\\u007f-\\u009f]/g,\n            (c) => `\\\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,\n          )\n        : formatUsageReport(report),\n    );"
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "497",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`new Set(opts.claudeDirs ...)` dedupes the config dirs by raw string. If `--session-env` does not name `CLAUDE_CONFIG_DIR` and the shell sets it to the default dir in another spelling (e.g. `CLAUDE_CONFIG_DIR=$HOME/.claude/` with a trailing slash), `claudeDirs` holds `~/.claude` twice. Every transcript is then scanned twice, and calls and cost come out doubled with no sign of it. Resolving each dir before deduping fixes the trailing-slash and relative-path cases (needs `resolve` from `node:path`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "384-389",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The utility class only exists for transcripts in the checkout's own directory. `classOf` returns `source.class` unchanged for any file found in a worktree directory. The decision-record `claude -p` (utility.service.ts:21, called from merge-gate.service.ts:2227) runs with no `cwd`, so it writes its transcript under whatever directory `pup merge` was run from. Run from inside a worktree, that headless Haiku call is counted as `worker`. Run from a subdirectory such as `/repo/src`, it is missed entirely. Applying the `headless -> Utility` check before the source-class shortcut fixes the first case.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "2189-2212",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'reads the transcripts of the config dir --session-env names' cannot tell whether `claudeUserDir` / `--session-env` is used at all. It stubs `CLAUDE_CONFIG_DIR=configDir`, so the second `claudeDirs` entry (`process.env.CLAUDE_CONFIG_DIR ?? ~/.claude`) is already `configDir`. The test still passes if you drop `saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR'])`, or drop `userDir` from `claudeDirs` (index.ts:2512). To pin the windows' dir, the test needs a case where the two entries differ.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2512",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup usage` works out the operator shell's config dir in the CLI layer (`process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')`). That copies a decision `src/claude/` already makes in `claudeUserDir`/`namedConfigDir` (session-runtime.service.ts:394-433). It also adds a third place that hard-codes `~/.claude`, next to `claudeUserDir` and the `transcriptDir` default. And it pulls `homedir` into a CLI that is meant to stay thin. This is Duplicated Code plus Claude-specific logic leaking out of the only module allowed to own it. A small exported helper in session-runtime.service.ts (for example `shellClaudeDir()`) next to `claudeUserDir` would keep both answers in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "76-79, 497",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`UsageOptions.claudeDirs` is optional and falls back to `[join(homedir(), '.claude')]`. No caller uses the fallback: the CLI (index.ts:2513) and both test call sites (usage-report.test.ts:89, :217) always pass `claudeDirs`. This is Speculative Generality. The fallback is the only reason the service imports `homedir`, and it repeats the `~/.claude` default that `src/claude/` owns. Making the field required removes the branch and the import.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2502",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The seven-day default for `--since` is written inline as `7 * 86_400_000`, against general.md §No hardcoded values (\"none are inlined at the use site\"). `DAY_MS` is already exported from `src/core/web-dashboard-sheet.utils.ts:24`. Name the default in a constants file and reuse `DAY_MS`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "456-458, 469-470",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The boolean fields `conductor`, `headless` (in `ReadTranscript` and `ScanState`) and `sawUser` (in `ScanState`) break the general.md rule that boolean names start with `is`/`has`/`should`/`can`. Rename them to `isConductor`, `isHeadless` and `hasSeenUser`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "575",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `subagentFiles` JSDoc says it returns \"Every `<session>/subagents/agent-*.jsonl`\". `jsonlIn` only filters on the `.jsonl` extension, so the code takes any `.jsonl` in that folder and the `agent-*` part of the doc overstates what it matches.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md",
+      "line": "51-54",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR's `*Tests.*` paragraph lists the fixtures and CLI refusal cases the tests cover. It will go stale as the tests change, and it already misses the relative-`CLAUDE_CONFIG_DIR` refusal and the `--session-env` config-dir case in `src/cli/index.test.ts`. Consider deleting it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.158606299999999,
+  "duration_ms": 298200,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 12281,
+    "cache_read": 183842,
+    "cache_creation": 62179,
+    "total": 258312
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 126,
+      "output": 53086,
+      "cache_read": 1605231,
+      "cache_creation": 260552,
+      "cost_usd": 2.872567199999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 7358,
+      "cache_read": 353361,
+      "cache_creation": 70822,
+      "cost_usd": 0.2860391
+    }
+  ],
+  "permission_denials": []
+}
