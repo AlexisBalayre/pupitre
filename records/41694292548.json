@@ -1,0 +1,141 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-03T18:36:52.156Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41694292548",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41694292548",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cbae1e307e7e66db61d933edde5481aa57f7cdcc",
+  "source": "pr",
+  "pr_number": 218,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "86-123",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`aliasTargets` re-sorts every alias for every bare import. The patterns come from the branch's own tsconfig, which can hold up to 1 MiB, so a small commit can block the gate's event loop for minutes to hours while it holds the merge lock.",
+      "body": "**A session-controlled tsconfig can stall the merge gate in-process while it holds the merge lock.**\n\n`readPathAliases(ctx.measurePath)` reads `paths` from the branch's committed `tsconfig.json`. The only size limit is `readPlainFile`'s 1 MiB cap, and `parsePathAliases` keeps every entry. Then, for each bare specifier that is not an exact key, `aliasTargets` copies and sorts the whole alias set and scans it linearly:\n\n```ts\nconst longestPrefixFirst = [...aliases].sort(([a], [b]) => b.indexOf('*') - a.indexOf('*'));\n```\n\n**What it costs.** Before this PR, `collectUsage` skipped every non-`.` specifier. Now each bare import costs O(P log P), where P is the number of alias patterns.\n- 1 MiB of `\"ab*c\":[\"x\"],` entries gives about 70k patterns, so each sort is about 1M comparator calls.\n- This repo already has several hundred bare imports (`vitest`, `node:*`, `typescript`, …).\n- `readSources` puts no cap on source size, so the branch can also add a file of `import 'x';` lines.\n- Together that is minutes to hours of synchronous work.\n\n**Why that matters.** `measureStaticDebt` runs in the gate process under the merge lock (`src/core/merge-gate.service.ts` ~L2581). `deadCode` is synchronous, so while it runs:\n- no stage timeout fires;\n- SIGINT is not forwarded;\n- every other session's merge waits.\n\n**Precedent.** The project has treated this class of problem as a defect before. `readPlainFile`'s JSDoc and decision 96 call it a defect when a session-replaceable file blocks the event loop \"and timeouts and interrupt forwarding with it\". Decisions 31 and 110 fixed CPU-bound stalls inside the merge lock caused by attacker-shaped input.\n\n**Suggested fix.** Bound the alias set in `parsePathAliases`, for example a small `MAX_PATH_ALIASES` that counts patterns plus substitutions. Over the cap, return no aliases, which per ADR 0130 is the safe direction. Also sort once at parse time instead of once per import. A Map keeps insertion order, so `aliasTargets` can then iterate `aliases` directly. Sorting once alone is not enough: the linear scan still costs O(P × imports), so the cap is what actually bounds the work.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cbae1e307e7e66db61d933edde5481aa57f7cdcc/src/adapters/typescript-source.utils.ts#L86-L123",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "120",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`t.replace('*', matched)` treats `$&`, `` $` ``, `$'` and `$$` in the matched part of the specifier as replacement patterns, where tsc uses the text literally. Use `t.replace('*', () => matched)`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "89-94",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "An absolute `baseUrl`, or a substitution that uses TS 5.5's `${configDir}` template, produces targets that never match a repo-relative file, so those aliases resolve nothing. The failure is in the safe direction, but ADR 0130's ceilings don't mention it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "78",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The exported type `PathAliases` is declared in a behavioural `.utils.ts` file. docs/conventions/general.md §Type separation puts exported types in `src/adapters/types/*.types.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-debt.utils.ts",
+      "line": "111",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `aliases = new Map()` default on `findDeadExports` serves only tests: the single production caller always passes aliases. Making it required (as `collectUsage` already is) follows AGENTS.md §Altitude.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "149-157",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In `readPathAliases`, the `existsSync` guard is redundant: the surrounding `try/catch` already returns no aliases when the read fails, and dropping the guard leaves a single fallback path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR's \"Mutants…\" and \"*Complexity.*\" paragraphs record one-off process history (mutant runs, \"+20\"/\"+9\" decision points) that will go stale. Cut them, or reduce them to the lasting design consequence.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2024978,
+  "duration_ms": 357678,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 9297,
+    "cache_read": 193797,
+    "cache_creation": 44412,
+    "total": 247516
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 84,
+      "output": 38972,
+      "cache_read": 1153064,
+      "cache_creation": 164056,
+      "cost_usd": 1.9639048000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 6525,
+      "cache_read": 170910,
+      "cache_creation": 62480,
+      "cost_usd": 0.23859300000000006
+    }
+  ],
+  "permission_denials": []
+}
