@@ -1,0 +1,222 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-03T18:41:35.927Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41695364512",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41695364512",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cbef853d8aaa7a4d5a8ad05ea74926126d4a3e45",
+  "source": "pr",
+  "pr_number": 219,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "842-862",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "MergeLockLostError is declared inline in merge-gate.service.ts beside withMergeLock, which throws it; conventions require Error subclasses in the area's *.errors.ts file (merge-gate.errors.ts already holds MergeLockHeldError).",
+      "body": "`MergeLockLostError` is declared inline in `merge-gate.service.ts`, beside `withMergeLock`, which throws it. `docs/conventions/general.md` (\"**No inline error classes.** An `Error` subclass is declared in the area's `errors/` folder, never beside the code that throws it.\") and `docs/conventions/naming.md` §Enums, types and errors require every `Error` subclass to live in the area's `*.errors.ts` file, never in a behavioural file.\n\n`src/core/merge-gate.errors.ts` already holds `MergeLockHeldError` and imports nothing from the service, so there is no cycle. Move the class, with its JSDoc, there and update the importers in `src/cli/index.ts`, `src/cli/index.test.ts`, `src/core/merge-gate.test.ts` and `src/core/land.test.ts`. Older inline classes elsewhere in `src/core` predate this change and are not a precedent.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cbef853d8aaa7a4d5a8ad05ea74926126d4a3e45/src/core/merge-gate.service.ts#L842-L862",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0088-the-merge-lock-records-its-holder-survives-every.md",
+      "line": "94-95",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 88 says a pid rewritten inside the lock never lets another run take it, but a session that writes a dead pid into a live lock lets a waiting run reclaim it and run alongside (exit 0); only the original holder detects it at release (exit 1), so reword to match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0084-pup-land-session-closes-the-github-half-of.md",
+      "line": "49-50",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 84 still says the land's audit runs outside the lock and a Ctrl-C there ends the land before it is recorded; after this PR the audit runs under the lock after the landed event, so the sentence is stale (88 lists 84 under Amends).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "268-270",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "LandOutcome.unsteered is read only by tests: the service prints the peers itself, and the CLI never reads the field, though steerOverlappingSessions' JSDoc says they are returned 'for pup land to print'; fix the JSDoc or drop the field and its spread.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "228-236",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The land service both formats and prints the unsteered lines (operator advice in core) and returns the same data on the outcome; the early print is justified by audit throws, but one channel would do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "619-623",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new test was inserted between an existing comment and its test, so 'steers before an audit that throws, which a re-run then refuses' lost its comment and the new test carries two stacked comments; move lines 619-620 back down above that test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "216-230",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Two adjacent comments before the steer and the unsteered print both explain that a re-run refuses once the landed event is written; trim the second to what only it says (a throw, kill or timeout during the audit would leave the peers named nowhere).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "694, 729, 947",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The identity comparison `now?.dev !== identity.dev || now.ino !== identity.ino` now appears three times (removeLockDir, dropMergeLock, release's catch); at third use a small same-directory helper over directoryIdentity is owed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "960-963",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "MergeLockLostError's generic is erased by instanceof, so both CLI sites cast `error.result as MergeOutcome/LandOutcome`, and withMergeLock builds a throwaway MergeLockLostError(lockPath, undefined) only for its message; a message function and an honest `unknown` result would be clearer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2093-2101, 2204-2208",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pup merge and pup land repeat the same lockLost/MergeLockLostError catch-cast-then-refuse pattern; two uses, so no helper yet, but worth extracting on a third.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "141-257",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The locked closure in landSession now holds fast-forward, teardown, event, steer, print and audit in one large inline arrow; the decision-88 ordering argues for keeping them together, but the post-event steps could be named.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "6271-6287",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The 'returns the result of a lock it still holds but cannot move' test relies on chmod 0o555 making renameSync fail with EACCES, which root ignores; guard it with it.skipIf(process.getuid?.() === 0) like the repo's other permission tests.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "220-238",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pup fix now gets MergeLockLostError when a session swaps the lock during its short section, after takeFixRoundEdge moved the session to running, so relaunchWorker never runs and the session is stranded windowless, with a message about merge/land and pup audit rather than the fix round.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0088-the-merge-lock-records-its-holder-survives-every.md",
+      "line": null,
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADRs 88 and 99 had landed, but the PR rewrites their existing text (bullets, Tests paragraphs, the 'not reported per peer yet' sentence) instead of appending amendments, and the amendments are dated without naming the PR, against docs/adr/README.md's amendment rule.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "correctness",
+      "description": "One `git diff ... -- src/cli/index.test.ts` call failed once with a sandbox error (bwrap: Can't get type of source .../.git/config.worktree.lock); succeeded on retry, no coverage lost."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6398866,
+  "duration_ms": 242756,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 15458,
+    "cache_read": 261428,
+    "cache_creation": 59940,
+    "total": 336838
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 152,
+      "output": 56978,
+      "cache_read": 2664592,
+      "cache_creation": 263473,
+      "cost_usd": 3.1702713999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 13234,
+      "cache_read": 456887,
+      "cache_creation": 116593,
+      "cost_usd": 0.4696152
+    }
+  ],
+  "permission_denials": []
+}
