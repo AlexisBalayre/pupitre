@@ -687,16 +687,16 @@ function directoryIdentity(path: string): LockIdentity | undefined {
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
- * could be another lock's (decision 88).
+ * could be another lock's (decision 88). False for such a directory.
  */
-function removeLockDir(dir: string, identity: LockIdentity): void {
+function removeLockDir(dir: string, identity: LockIdentity): boolean {
   const now = directoryIdentity(dir);
   if (now?.dev !== identity.dev || now.ino !== identity.ino) {
     console.error(
       `${dir} is no longer the lock directory pup made, so it was left as it is. Treat a ` +
         'session that replaced it as compromised.',
     );
-    return;
+    return false;
   }
   try {
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
@@ -707,21 +707,23 @@ function removeLockDir(dir: string, identity: LockIdentity): void {
         'trusted checkout.',
     );
   }
+  return true;
 }
 
 /**
  * Move the lock directory aside under a fresh name, then remove it there, so
  * no reader ever finds the lock without its pid. A removal that fails leaves
- * only the aside directory, which no reader looks at.
+ * only the aside directory, which no reader looks at. False when what was
+ * moved aside is not `identity`, the directory the take made.
  */
 function dropMergeLock(
   lockPath: string,
   why: 'released' | 'reclaimed',
   identity: LockIdentity,
-): void {
+): boolean {
   const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
   renameSync(lockPath, aside);
-  removeLockDir(aside, identity);
+  return removeLockDir(aside, identity);
 }
 
 /** Make `dir`; false when it already exists or cannot be made. */
@@ -832,6 +834,27 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
 }
 
 /**
+ * The merge lock was gone, or was another directory, when the run that took it
+ * released it: a session moved it while the section ran, and another merge or
+ * land could have taken a fresh one and run alongside. Carries what the
+ * section returned, which happened all the same, for the caller to report
+ * before it fails (decision 88).
+ */
+export class MergeLockLostError<TResult = unknown> extends Error {
+  readonly result: TResult;
+
+  constructor(lockPath: string, result: TResult) {
+    super(
+      `The merge lock at ${lockPath} was gone or replaced when this run released it, so another ` +
+        'merge or land may have run at the same time. Check the target branch and `pup status` ' +
+        'before the next merge, and treat a session that moved the lock as compromised.',
+    );
+    this.name = 'MergeLockLostError';
+    this.result = result;
+  }
+}
+
+/**
  * Run `fn` holding the merge lock, with node kept alive through a signal while
  * it does. A terminal Ctrl-C reaches node and a child git alike, and closing
  * the terminal sends both a SIGHUP: with no listener node's default
@@ -846,7 +869,10 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
  * line when the wait starts, and by default not at all (decision 88). `fn` is
  * told whether the take waited: anything read before the wait may have changed
- * under the run that held the lock meanwhile.
+ * under the run that held the lock meanwhile. A lock found gone or replaced at
+ * the release throws `MergeLockLostError` with `fn`'s result, or is printed
+ * beside `fn`'s error; one that cannot be removed for any other reason is
+ * printed and the result returned.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
@@ -893,26 +919,37 @@ export async function withMergeLock<TResult>(
   }
   const stayAlive = (): void => undefined;
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
-  try {
-    return await fn(waited);
-  } finally {
+  const taken = identity;
+  /** Release the lock; false when it was no longer the one this run took. */
+  const release = (): boolean => {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
-      dropMergeLock(lockPath, 'released', identity);
+      return dropMergeLock(lockPath, 'released', taken);
     } catch (error) {
-      // Printed, never thrown: `fn` has done what it did, a merge or a land
-      // whose event a re-run refuses, and its result or error is what the
-      // caller acts on. A lock left in place names this pid, which a later run
-      // reclaims once this process has exited (decision 88).
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      // A lock this run still holds: printed, never thrown, since `fn` has done
+      // what it did, and the lock left in place names this pid, which a later
+      // run reclaims once this process has exited (decision 88).
       console.error(
         `Could not release ${lockPath}: ${failureSummary(error)}. A later run reclaims it once ` +
           'this process has exited.',
       );
+      return true;
     } finally {
       for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }
+  };
+  let result: TResult;
+  try {
+    result = await fn(waited);
+  } catch (error) {
+    // The section's own error still wins; the lost lock is said beside it.
+    if (!release()) console.error(new MergeLockLostError(lockPath, undefined).message);
+    throw error;
   }
+  if (!release()) throw new MergeLockLostError(lockPath, result);
+  return result;
 }
 
 /** `result` with the wall time since `started`, which the report prints (decision 95). */

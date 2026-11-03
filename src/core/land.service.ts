@@ -31,6 +31,7 @@ import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
+import type { AuditOutcome } from './types/audit.types.js';
 import type { LandOutcome } from './types/land.types.js';
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };
@@ -136,9 +137,10 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   const mergeCommit = pr.mergeCommit;
 
-  const landed = await withMergeLock(
+  // Whole, so a `MergeLockLostError` carries the outcome the CLI prints.
+  return withMergeLock(
     req.repoPath,
-    async () => {
+    async (): Promise<LandOutcome> => {
       // `pup fix` takes the session out of merged under this lock, maybe while
       // GitHub was being read above; landing then would tear down its live round.
       const now = getSession(db, session.id)?.state;
@@ -229,8 +231,19 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       // refresh (decision 88). The conductor may run this, so no human stands
       // between an observed regression and the bar: a regressed measurement is
       // reported and left for `pup audit`, which the operator runs (decision 84).
-      const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
+      let audit: AuditOutcome;
+      try {
+        audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
+      } catch (error) {
+        // No outcome reaches the CLI, and a re-run refuses the landed
+        // session: the sessions left unsteered are named now or never (decision 99).
+        for (const entry of unsteered) console.error(unsteeredLine(entry, target));
+        throw error;
+      }
       return {
+        prUrl,
+        mergeCommit,
+        target,
         targetSha,
         fastForwarded,
         ...tornDown,
@@ -240,7 +253,18 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );
-  return { prUrl, mergeCommit, target, ...landed };
+}
+
+/** What `pup land` prints for a session it could not steer, store and git text scrubbed (decision 99). */
+export function unsteeredLine(
+  { sessionId, reason }: NonNullable<LandOutcome['unsteered']>[number],
+  target: string,
+): string {
+  const branch = sanitizeReason(target);
+  return (
+    `Could not tell ${sanitizeReason(sessionId)} that ${branch} moved: ` +
+    `${sanitizeReason(reason)}. Steer it to take ${branch} in.`
+  );
 }
 
 /**

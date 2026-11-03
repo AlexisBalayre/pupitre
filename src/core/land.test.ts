@@ -41,7 +41,7 @@ import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { MergeLockLostError, runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -477,10 +477,10 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(outcome.unsteered).toBeUndefined();
     });
 
-    // A session can rename the lock away under a land, and the release then
-    // throws after the event: a re-run refuses, so the steer and the outcome
-    // must survive it (decision 88).
-    it('steers once and reports the land when releasing the lock fails', async () => {
+    // A session can rename the lock away under a land: the release then finds
+    // it gone after the event, so the land happened but unprotected. A re-run
+    // refuses, so the steer and the outcome must survive it (decision 88).
+    it('steers once and carries the land on the error a lock moved away under it raises', async () => {
       seedPeer('s2', 'src/feature.ts');
       const lock = join(repo, '.git', 'pup-merge.lock');
       const actual =
@@ -489,19 +489,20 @@ describe('landSession', { timeout: 20_000 }, () => {
         renameSync(lock, `${lock}.moved`);
         return actual.auditProject(...args);
       });
-      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-      try {
-        const outcome = await landMerged();
+      const error = await landMerged().then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
 
-        expect(outcome).toMatchObject({ fastForwarded: true, removedWorktree: true });
-        expect(outcome.audit.heldOnRegression).toBe(false);
-        expect(errors.mock.calls.flat()).toContainEqual(
-          expect.stringMatching(/^Could not release .*pup-merge\.lock: /),
-        );
-      } finally {
-        errors.mockRestore();
-      }
+      expect(error).toBeInstanceOf(MergeLockLostError);
+      expect((error as MergeLockLostError<LandOutcome>).result).toMatchObject({
+        prUrl: PR_URL,
+        target: 'main',
+        fastForwarded: true,
+        removedWorktree: true,
+        audit: { heldOnRegression: false },
+      });
       expect(landedEvents()).toHaveLength(1);
       expect(steersTo('s2')).toHaveLength(1);
       await expect(land()).rejects.toThrow('has already landed');
@@ -587,6 +588,31 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     // Once the event is written a re-run refuses, so a steer left for after a
     // failed audit would never be sent (decision 88).
+    // No outcome reaches the CLI and a re-run refuses: the line is said now or
+    // never, and still no steer is recorded for it (decision 99).
+    it('names a peer it could not steer when the audit after it throws', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementationOnce(() => {
+        throw new SteerNotDeliveredError('s2', 10, 'box-absent');
+      });
+      vi.mocked(auditProject).mockRejectedValueOnce(new Error('sandbox refused'));
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        await expect(landMerged()).rejects.toThrow('sandbox refused');
+
+        expect(errors.mock.calls.flat()).toContainEqual(
+          expect.stringMatching(
+            /^Could not tell s2 that main moved: Steer to session s2 did not land: .*\. Steer it to take main in\.$/,
+          ),
+        );
+      } finally {
+        errors.mockRestore();
+      }
+      expect(landedEvents()).toHaveLength(1);
+      expect(steerEvents('s2')).toEqual([]);
+    });
+
     it('steers before an audit that throws, which a re-run then refuses', async () => {
       seedPeer('s2', 'src/feature.ts');
       vi.mocked(auditProject).mockRejectedValueOnce(new GateInterruptedError('SIGINT'));

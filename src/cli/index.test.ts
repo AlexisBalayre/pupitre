@@ -103,14 +103,21 @@ vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
   gitDiffPaths: vi.fn(() => []),
   gitDiffNumstat: vi.fn(() => []),
 }));
-vi.mock('../core/merge-gate.service.js', () => ({
+vi.mock('../core/merge-gate.service.js', async (importOriginal) => ({
+  // The real class, which the commands tell apart from every other refusal.
+  MergeLockLostError: (await importOriginal<typeof import('../core/merge-gate.service.js')>())
+    .MergeLockLostError,
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
   // are rows in a store and not real branches, so there is nothing to count.
   countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
-vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+vi.mock('../core/land.service.js', async (importOriginal) => ({
+  landSession: vi.fn(),
+  // The real line, whose scrubbing the land tests assert.
+  unsteeredLine: (await importOriginal<typeof import('../core/land.service.js')>()).unsteeredLine,
+}));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
 vi.mock('../core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
@@ -191,7 +198,7 @@ import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
 import { landSession } from '../core/land.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
-import { runMergeGate } from '../core/merge-gate.service.js';
+import { MergeLockLostError, runMergeGate } from '../core/merge-gate.service.js';
 import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
@@ -5867,6 +5874,27 @@ describe('CLI commands', () => {
       expect(landSession).not.toHaveBeenCalled();
     });
 
+    // Landed, and a re-run refuses it, but another run may have run alongside:
+    // reported as landed, then failed on the lost lock (decision 88).
+    it('reports a land made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', landedOutcome()),
+      );
+
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        `Landed s1: ${PR} merged as ${'a'.repeat(40)}; main fast-forwarded to ${'a'.repeat(40)}.`,
+      );
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
     it('prints a refusal on one line with its control characters gone', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockImplementation(() => {
@@ -6145,6 +6173,25 @@ describe('CLI commands', () => {
         expect(fatalExitCode(escaped)).toBe(code);
         expect(errors).toEqual([expect.stringContaining(`Interrupted by ${signal}`)]);
       });
+    });
+
+    // A lock moved away while the gate ran let another run in alongside it: the
+    // merge it made is reported, then the lost lock, and the run fails (decision 88).
+    it('reports a merge made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', mergedOutcome()),
+      );
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain('Merged s1; worktree and branch cleaned up.');
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     // The gate refuses before running a child (decision 78); the command turns
