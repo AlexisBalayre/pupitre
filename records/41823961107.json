@@ -1,0 +1,78 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T11:51:26.620Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41823961107",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41823961107",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7bfc75852dce1890274b5eb1c8daadd145359e78",
+  "source": "pr",
+  "pr_number": 221,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0021-debt-delta-three-soft-stages-with-a-merge.md",
+      "line": "4",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new `Amended by` link points to docs/adr/0127-the-complexity-stage-judges-a-new-file-on-its.md, which does not exist on this base commit or on the PR's tree, so the link is dead until PR #216 lands.",
+      "body": "The new back-reference points to `docs/adr/0127-the-complexity-stage-judges-a-new-file-on-its.md`, which doesn't exist on this PR's tree or on `main`. ADR 0127 is only on PR #216 (`pup/t-mvphic87`), which is still **open**. Nothing else under `docs/adr` mentions `0127`.\n\nThe file name matches #216's file exactly, and that ADR does say `Amends: [0021]`, so the link and its direction are correct. The only problem is order: if this PR merges before #216, `main` carries a dead link in an accepted ADR. Merge this after #216, or fold the line into #216.\n\n<https://github.com/AlexisBalayre/pupitre/blob/7bfc75852dce1890274b5eb1c8daadd145359e78/docs/adr/0021-debt-delta-three-soft-stages-with-a-merge.md#L4>",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5070603000000001,
+  "duration_ms": 115319,
+  "num_turns": 9,
+  "tokens": {
+    "input": 12,
+    "output": 3743,
+    "cache_read": 215017,
+    "cache_creation": 27974,
+    "total": 246746
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 3743,
+      "cache_read": 215017,
+      "cache_creation": 27974,
+      "cost_usd": 0.3417034
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 5364,
+      "cache_read": 211504,
+      "cache_creation": 36201,
+      "cost_usd": 0.1653569
+    }
+  ],
+  "permission_denials": []
+}
