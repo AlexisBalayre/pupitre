@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { barChart, lineChart, sparkline } from './chart.utils.js';
+import { barChart, lineChart, sparkline, timeLineChart } from './chart.utils.js';
 
 const WEEKS = [
   { label: '10-05', value: 2 },
@@ -13,6 +13,15 @@ describe('chart.utils', () => {
     ['a row bar chart', () => barChart(WEEKS, { title: 'Merges', layout: 'rows' })],
     ['a line chart', () => lineChart(WEEKS, { title: 'Merges' })],
     ['a sparkline', () => sparkline(WEEKS, { title: 'Merges' })],
+    [
+      'a time line chart',
+      () =>
+        timeLineChart(
+          WEEKS.map((week, i) => ({ ...week, at: i * 1000 })),
+          [],
+          { title: 'Merges' },
+        ),
+    ],
   ])('gives %s a title and a figure line carrying every value', (_case, draw) => {
     const svg = draw();
 
@@ -73,6 +82,11 @@ describe('chart.utils', () => {
       barChart(data, { title: 'Rows', layout: 'rows' }),
       lineChart(data, { title: 'Line' }),
       sparkline(data, { title: 'Spark' }),
+      timeLineChart(
+        data.map((d, i) => ({ ...d, at: values[i] ?? 0 })),
+        [{ at: Number.NaN, label: 'lost' }],
+        { title: 'Time' },
+      ),
     ].join('');
 
     expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
@@ -88,5 +102,41 @@ describe('chart.utils', () => {
 
     expect(svg).not.toContain('NaN');
     expect(svg.match(/<circle/g)).toHaveLength(1);
+  });
+
+  it('places a time series by when, breaks it at a gap rather than drawing a zero, and marks moments', () => {
+    const svg = timeLineChart(
+      [
+        { at: 0, label: 'a', value: 1 },
+        { at: 1000, label: 'b', value: 3 },
+        { at: 2000, label: 'c', value: undefined },
+        { at: 4000, label: 'd', value: 2 },
+        { at: 5000, label: 'e', value: 2, breakBefore: true },
+      ],
+      [
+        { at: 3000, label: 's-1 merged', href: 'https://github.com/o/r/pull/1' },
+        { at: 500, label: '<b>s-2</b>' },
+      ],
+      { title: 'Lines' },
+    );
+
+    expect(svg).toContain('<figcaption>Lines: a 1 · b 3 · c not measured · d 2 · e 2</figcaption>');
+    // Two lines: a to b, then d alone (a dot) after the gap, e alone after the break.
+    expect([...svg.matchAll(/<polyline class="line" points="([^"]*)"/g)].map(([, p]) => p)).toEqual(
+      ['8,112 116.8,16'],
+    );
+    expect(svg.match(/<circle/g)).toHaveLength(4);
+    expect(svg).toContain(
+      '<a href="https://github.com/o/r/pull/1" target="_blank" rel="noopener noreferrer"><title>s-1 merged</title><line class="marker" x1="334.4"',
+    );
+    expect(svg).toContain('<g><title>&lt;b&gt;s-2&lt;/b&gt;</title><line class="marker" x1="62.4"');
+    expect(svg).not.toContain('<b>');
+  });
+
+  it('draws a time series measured nowhere as a frame with no line', () => {
+    const svg = timeLineChart([{ at: 0, label: 'a', value: undefined }], [], { title: 'None' });
+
+    expect(svg).toContain('<figcaption>None: a not measured</figcaption>');
+    expect(svg).not.toMatch(/<polyline|<circle|NaN/);
   });
 });

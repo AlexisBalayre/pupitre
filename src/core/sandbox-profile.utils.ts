@@ -1,4 +1,11 @@
-import { existsSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  type Dirent,
+  existsSync,
+  lstatSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -53,6 +60,27 @@ function gitDenyRule(checkoutPath: string): string {
 }
 
 /**
+ * Where pup puts session worktrees in the operator's repo, which is the
+ * child's checkout under `pup init` and `pup audit`. Never writable from the
+ * child's own checkout: the walk below pins only the worktrees there when the
+ * profile is written, and pup adds more while a child runs, so a later
+ * `.worktrees/sN` could be moved into scratch, its `.git` pointer rewritten
+ * and moved back (decision 117). Denying every write, not only the unlink,
+ * also refuses a link planted at `.worktrees` or a name pup has yet to use.
+ * The match is case-insensitive on APFS, measured: `.WORKTREES` is refused too.
+ */
+const WORKTREES_DIRNAME = '.worktrees';
+
+/**
+ * No mount, remount or unmount. A volume mounted over `.worktrees/s1` or a
+ * checkout's `.git` swaps what pup's next git call reads with no unlink at all,
+ * and none of the write rules stop one: measured, a child mounted an HFS image
+ * inside its grant through `mount(2)` and `hdiutil attach`, and unmounted a
+ * volume under the blanket write deny. A gate child has no reason to do either.
+ */
+const MOUNT_DENY_RULE = '(deny file-mount file-mount-update file-unmount)';
+
+/**
  * Read-denied outright, and deliberately a fixed constant with no extension
  * mechanism: a per-repo or per-operator list is a channel a session can write
  * (the lesson decision 31 paid for with `python_files`), and the value of a
@@ -100,7 +128,8 @@ const PUPITRE_HOME = '.pupitre';
  *
  * The trailing denies are last on purpose: pup's own store, the profile file
  * itself, and each granted checkout's git directory stay unwritable even when
- * they sit inside a path the caller granted.
+ * they sit inside a path the caller granted, and the pinned paths stay where
+ * they are.
  */
 export function sandboxProfile(policy: {
   /** Absolute, symlink-resolved paths the child may write under. */
@@ -109,6 +138,10 @@ export function sandboxProfile(policy: {
   protectedPaths: string[];
   /** Checkout grants; `.git` is denied at any depth under each, and only these. */
   checkoutPaths: string[];
+  /** Never unlinked nor renamed, though a grant covers them; matched exactly. */
+  pinnedPaths: string[];
+  /** Nothing under these is unlinked or renamed: what a walk could not see into. */
+  sealedPaths: string[];
   /** The operator's home. Only the read denies key off it now. */
   home: string;
   /** Directory holding the generated profile; a writable one is a widened next run. */
@@ -130,6 +163,13 @@ export function sandboxProfile(policy: {
       ...policy.protectedPaths,
     ])})`,
     ...policy.checkoutPaths.map(gitDenyRule),
+    MOUNT_DENY_RULE,
+    // Bare, the rule would deny every unlink, so no pins means no rule.
+    ...(policy.pinnedPaths.length + policy.sealedPaths.length > 0
+      ? [
+          `(deny file-write-unlink${policy.pinnedPaths.map((path) => `\n  (literal "${escapeSbpl(path)}")`).join('')}${subpaths(policy.sealedPaths)})`,
+        ]
+      : []),
     '',
   ].join('\n');
 }
@@ -151,28 +191,137 @@ function escapeSbpl(value: string): string {
  * caller's grant. A repo a child makes in its own scratch is not the
  * repository being measured, and writing one is a legitimate toolchain move:
  * git dependencies clone into TMPDIR or the cache.
+ *
+ * Every grant's own name is pinned, and so is every directory above it: a
+ * grant covers its own name, so without the pin a child could move the
+ * checkout it runs in into its scratch, where no `.git` rule reaches, edit
+ * `.git/config` there and move it back (decision 117). An ancestor is pinned
+ * too because moving it moves the grant, whether or not another grant covers
+ * it. The one exemption is `outputPaths`, protected as checkouts are but with
+ * their own names left free: vitest removes its empty report directory after
+ * a failing run and the re-run makes it again (decision 108). Their
+ * ancestors stay pinned, and pup makes each one in a holder of its own. An
+ * output with a free name could carry a repo out from under every `.git`
+ * rule, so one that holds a `.git`, or a directory the walk cannot see into,
+ * is refused and no profile is written.
+ * Below a pinned checkout, every directory that leads to a nested `.git` is
+ * pinned as well: moved out, `.worktrees/s1` had its pointer file rewritten in
+ * scratch and came back aimed at a git dir the child wrote. What the walk
+ * cannot see into is sealed whole, and `.worktrees`, where pup adds more while
+ * the child runs, is not writable at all.
  */
 export function writeProfile(
   policyDir: string,
   writablePaths: string[],
   scratchPaths: string[] = [],
+  outputPaths: string[] = [],
 ): string {
   const profilePath = join(policyDir, 'gate-child.sb');
-  const checkouts = [...new Set(writablePaths.map(grantPath))];
+  const pinnedCheckouts = [...new Set(writablePaths.map(grantPath))];
+  const outputs = outputPaths.map(grantPath);
+  for (const output of outputs) {
+    const { pinned, sealed } = nestedRepoPaths(output);
+    if (pinned.length + sealed.length > 0) {
+      throw new Error(
+        `Refusing to grant ${output} as an output: it holds a .git, or a directory pup cannot read; an output is a fresh directory pup made.`,
+      );
+    }
+  }
+  const checkouts = [...new Set([...pinnedCheckouts, ...outputs])];
   const scratch = [...new Set(scratchPaths.map(grantPath))].filter(
     (path) => !checkouts.includes(path),
   );
+  const grants = [...checkouts, ...scratch];
+  const nested = pinnedCheckouts.map(nestedRepoPaths);
   writeFileSync(
     profilePath,
     sandboxProfile({
-      writablePaths: [...checkouts, ...scratch],
-      protectedPaths: checkouts.map((path) => join(path, GIT_DIRNAME)),
+      writablePaths: grants,
+      protectedPaths: [
+        ...checkouts.map((path) => join(path, GIT_DIRNAME)),
+        ...pinnedCheckouts.map((path) => join(path, WORKTREES_DIRNAME)),
+      ],
       checkoutPaths: checkouts,
+      pinnedPaths: [
+        ...new Set([
+          ...pinnedCheckouts,
+          ...scratch,
+          ...nested.flatMap(({ pinned }) => pinned),
+          ...grants.flatMap(ancestors),
+        ]),
+      ],
+      sealedPaths: [...new Set(nested.flatMap(({ sealed }) => sealed))],
       home: resolvePath(homedir()),
       policyDir,
     }),
   );
   return profilePath;
+}
+
+/** C0, DEL and C1: an SBPL string carries them raw, and no checkout needs one. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * At and below `root`: every directory that holds a `.git`, worktree pointer file or
+ * directory, or leads to one, to pin; and every directory the walk could not
+ * see into, to seal whole. Read afresh for each child: pup adds worktrees while
+ * other runs go on. Matched without case, as the APFS lookup git makes is.
+ * Nothing is followed: a link is not a directory here, and the root is only
+ * walked when it is a real directory.
+ *
+ * Unreadable is not empty. A child runs as the operator and may `chmod 000`
+ * any directory its grant covers, so an earlier child hid `.worktrees` from
+ * this walk and a later one made it readable again and moved `.worktrees/s1`,
+ * which no pin named. Pinning the unreadable directory alone is not enough
+ * for the same reason; sealing it keeps everything under it in place. A
+ * directory whose name holds a control character is not walked into either:
+ * its parent is sealed instead, so no such name reaches the profile. Nor is a
+ * directory on another device than the checkout's parent: a volume mounted
+ * over `.worktrees` would read as holding no `.git`, and could be gone again
+ * before the next child runs. A checkout that is itself a mount point is
+ * sealed whole.
+ *
+ * A loop rather than recursion, so depth costs no stack. A path past the
+ * system's limit fails to read and is sealed like any other.
+ */
+function nestedRepoPaths(root: string): { pinned: string[]; sealed: string[] } {
+  const holders: string[] = [];
+  const sealed: string[] = [];
+  if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) return { pinned: [], sealed };
+  const device = lstatSync(dirname(root)).dev;
+  const pending = [root];
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+    let entries: Dirent[] | undefined;
+    try {
+      if (lstatSync(dir).dev === device) entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      // Unreadable: sealed below, as another device is.
+    }
+    if (!entries) {
+      sealed.push(dir);
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.toLowerCase() === GIT_DIRNAME) holders.push(dir);
+      else if (entry.isDirectory()) {
+        if (CONTROL_CHARS.test(entry.name)) sealed.push(dir);
+        else pending.push(join(dir, entry.name));
+      }
+    }
+  }
+  // Each one and everything between it and the root, the root included:
+  // moving any of them moves it.
+  const pinned = [...holders, ...sealed].flatMap((dir) =>
+    [dir, ...ancestors(dir)].filter((path) => path === root || path.startsWith(`${root}/`)),
+  );
+  return { pinned, sealed };
+}
+
+/** Every directory above `path`, nearest first, the root included. */
+function ancestors(path: string): string[] {
+  const parent = dirname(path);
+  return parent === path ? [] : [parent, ...ancestors(parent)];
 }
 
 /**
