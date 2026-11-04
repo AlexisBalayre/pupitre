@@ -6,6 +6,7 @@ import { LADDERS } from '../claude/model-ladder.constants.js';
 import { attachCommand, conductorName, transcriptDir } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
+import { PR_URL } from './dashboard.constants.js';
 import { eventDetail } from './dashboard-events.utils.js';
 import type { SessionState } from './db.client.js';
 import { runGit } from './git-diff.client.js';
@@ -506,11 +507,6 @@ function stallReason(session: DashboardSession, stalledAgeMs: number): string {
  * without git because the name is about to be handed to git.
  */
 const PLAIN_BRANCH = /^(?!-)(?!.*\.\.)(?!.*@\{)[^\s~^:?*[\\=\p{Cc}\p{Cf}]+$/u;
-/**
- * A pull request and nothing else: the one url the inbox prints as the answer,
- * and the one string the web dashboard makes a link of (decision 91).
- */
-export const PR_URL = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
 /** The render loop is behind this call: a deep or planted history must not hold it. */
 const LANDED_CHECK_TIMEOUT_MS = 2_000;
 /**

@@ -1,7 +1,7 @@
 # 0091. `pup dashboard` serves a read-only live page on 127.0.0.1, behind a token minted per run, the UI-first surface (2026-10-16)
 
 - Status: accepted
-- Amended by: [0098](0098-pup-dashboard-is-a-set-of-sheets-figures.md)
+- Amended by: [0098](0098-pup-dashboard-is-a-set-of-sheets-figures.md), [0123](0123-the-health-sheet-charts-every-gate-metric-across.md)
 
 91. **`pup dashboard` serves a read-only live page on 127.0.0.1, behind a token minted per run,
     the UI-first surface (2026-10-16).**

@@ -143,6 +143,7 @@ for the cross-references the text states, then the decision itself.
 - [0120. Fresh-base regenerates a conflicted ADR index in the gate's scratch checkout (2026-10-28)](0120-fresh-base-regenerates-a-conflicted-adr-index-in-the.md) (accepted)
 - [0121. `pup ui` never draws a frame as tall as the terminal (2026-10-28).](0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md) (accepted)
 - [0122. `pup usage` reports where the Claude usage went, read from the transcripts (2026-10-28).](0122-pup-usage-reports-where-the-claude-usage-went-from-the.md) (accepted)
+- [0123. The Health sheet charts every gate metric across every snapshot, merges marked on the time axis (2026-10-29)](0123-the-health-sheet-charts-every-gate-metric-across.md) (accepted)
 - [0124. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)](0124-the-worktree-hooks-reads-run-under-a-deadline.md) (accepted)
 - [0125. Claude Code mods do not register their hooks in a pup window, so conductor-worker messaging stays on tmux and `pup status` (2026-10-30)](0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md) (accepted)
 - [0128. A kickoff names the tracked files its scope-in matches, at most 40, and the globs that match none as files to create (2026-10-30)](0128-a-kickoff-names-the-tracked-files-its-scope-in-matches.md) (accepted)
