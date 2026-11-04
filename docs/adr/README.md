@@ -146,6 +146,7 @@ for the cross-references the text states, then the decision itself.
 - [0123. The Health sheet charts every gate metric across every snapshot, merges marked on the time axis (2026-10-29)](0123-the-health-sheet-charts-every-gate-metric-across.md) (accepted)
 - [0124. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)](0124-the-worktree-hooks-reads-run-under-a-deadline.md) (accepted)
 - [0125. Claude Code mods do not register their hooks in a pup window, so conductor-worker messaging stays on tmux and `pup status` (2026-10-30)](0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md) (accepted)
+- [0126. An intent is a file under `docs/intent/` the operator alone accepts, once it names two or three questions they must answer after review (2026-10-30)](0126-an-intent-is-a-file-under-docs-intent-the.md) (accepted)
 - [0128. A kickoff names the tracked files its scope-in matches, at most 40, and the globs that match none as files to create (2026-10-30)](0128-a-kickoff-names-the-tracked-files-its-scope-in-matches.md) (accepted)
 - [0129. Workers and the conductor learn the code through an Explore subagent on Sonnet at low effort that runs no git or shell, and read a file only to edit it or for its exact lines (2026-10-30)](0129-workers-and-the-conductor-learn-the-code-through-an-explore.md) (accepted)
 <!-- adr-index:end -->
