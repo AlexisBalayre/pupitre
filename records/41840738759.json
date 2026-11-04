@@ -1,0 +1,133 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T13:48:24.764Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41840738759",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41840738759",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e9684760009548da6f7471c54729f37972c3baac",
+  "source": "pr",
+  "pr_number": 219,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "842-862",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`MergeLockLostError` is declared inline in `merge-gate.service.ts`, next to `withMergeLock`, which throws it. `general.md` (lines 37-38) says: \"**No inline error classes.** An `Error` subclass is declared in the area's `errors/` folder, never beside the code that throws it.\" The sibling `MergeLockHeldError` already lives in `src/core/merge-gate.errors.ts`, so that file is the natural home.",
+      "body": "This PR adds `MergeLockLostError` inside `merge-gate.service.ts`, right next to `withMergeLock`, the function that throws it:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e9684760009548da6f7471c54729f37972c3baac/src/core/merge-gate.service.ts#L842-L862\n\nTwo conventions say error classes don't go there:\n\n- `docs/conventions/general.md` §Structure (lines 37-38): \"**No inline error classes.** An `Error` subclass is declared in the area's `errors/` folder, never beside the code that throws it.\"\n- `docs/conventions/naming.md` (lines 135-137): every `Error` subclass goes in a `*.errors.ts` file; \"none is declared inline in a `service`, `routes` or other behavioural file.\"\n\nIts sibling `MergeLockHeldError` already lives in `src/core/merge-gate.errors.ts`, and the service imports it from there at line 92. Some older files still declare error classes inline, such as `SlotWaitInterruptedError` and `HandoffMissingError`. They predate the rule, so they don't make a new one acceptable.\n\n**Fix:** move the class and its JSDoc into `src/core/merge-gate.errors.ts`. Then point these imports at `./merge-gate.errors.js` (or `../core/merge-gate.errors.js` from `src/cli`):\n\n- `merge-gate.service.ts`\n- `src/cli/index.ts:68`\n- `src/cli/index.test.ts:108` and `:197`\n- `src/core/land.test.ts:44`\n- `src/core/merge-gate.test.ts:122`",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "289-291, 303-305, 321-323",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "An interrupt during the steer drops every peer already collected in `unsteered`, plus the peers still left, with no line printed. The land is recorded and a re-run refuses, so those sessions are named nowhere: the gap the new print-before-audit exists to close.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0099-workers-share-files-and-collaborate-a-launch-overlapping.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 99's new unsteered paragraph says `pup land` \"still exits as its audit says\", but on a lost lock it exits 1 regardless of the audit (refuseScrubbed after printAuditOutcome), which ADR 88 in this same PR states; add \"or 1 when the lock was lost (decision 88)\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "723-733",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The release-only identity pre-check now lives in the shared `dropMergeLock`, whose boolean `reclaimMergeLock` (line 770) ignores right after reading the same identity; the check belongs in `release()`, the only caller that needs it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "937-947",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`release()`'s catch wraps `directoryIdentity` in a nested try/catch that maps any lstat error to \"lost\"; either say that rule in the existing comment or drop the inner try/catch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comments above the new lost-lock tests for `pup land` and `pup merge` (\"Landed, and a re-run refuses it, but another run may have run alongside...\") restate the production comments almost word for word; the test titles and assertions already carry them.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6833670000000005,
+  "duration_ms": 227530,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 10720,
+    "cache_read": 202297,
+    "cache_creation": 47155,
+    "total": 260182
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 112,
+      "output": 40395,
+      "cache_read": 1823437,
+      "cache_creation": 206403,
+      "cost_usd": 2.3465153999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 9092,
+      "cache_read": 250886,
+      "cache_creation": 88302,
+      "cost_usd": 0.33685160000000003
+    }
+  ],
+  "permission_denials": []
+}
