@@ -1,0 +1,117 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T11:58:44.868Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41824739691",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41824739691",
+  "actor": "AlexisBalayre",
+  "commit_sha": "23d9b71d0fc37b1a56d48464a00e89c6ebfe0384",
+  "source": "pr",
+  "pr_number": 218,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9b79aa5f6ee75438f09e8d008a3859e314b26f48",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "100-102",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "105-119",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`baseUrl` is read from the session's tsconfig, has no length limit (only `readPlainFile`'s 1 MiB), and is left out of the new 2048-character count. `join(baseUrl, t)` puts a copy of it into every substitution. So a tsconfig with a ~1 MiB `baseUrl` and `\"*\": [\"*\" x 8]` passes all three bounds (entries 9, characters 9, substitutions 8). Every bare import then builds 8 targets of about 1 MiB each, roughly 136 strings of 1 MiB per import. That is the stall the round was meant to close, made worse.",
+      "body": "**The new characters bound leaves out `baseUrl`, and `baseUrl` ends up in every candidate path. So the merge-lock stall is still reachable.**\n\n`baseUrl` comes from the same session-controlled `compilerOptions` (`readPathAliases(ctx.measurePath)` reads the measured checkout's tsconfig). Its length is limited only by `readPlainFile`'s 1 MiB cap. L105 destructures it with no check, L107-112 count only pattern keys and targets, and L119 prepends it to every target with `join(baseUrl, t)`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/23d9b71d0fc37b1a56d48464a00e89c6ebfe0384/src/adapters/typescript-source.utils.ts#L105-L119\n\nThis tsconfig passes all three bounds (entries = 9, chars = 9, substitutions = 8):\n\n```json\n{\"compilerOptions\":{\"baseUrl\":\"xxxx…(~1,040,000 chars)\",\"paths\":{\"*\":[\"*\",\"*\",\"*\",\"*\",\"*\",\"*\",\"*\",\"*\"]}}}\n```\n\n`path.join` only collapses `.`/`..` segments and repeated slashes, so each target stays about 1 MiB long. `*` matches every bare import, including `node:*` and `vitest`. For each one:\n- `aliasTargets` builds 8 copies of about 1 MiB each (L145).\n- `resolveImport` maps all of them eagerly before `.find` (L168).\n- `resolveFile` normalizes each one, then builds and hashes about 17 candidates per target (L171-181). A `baseUrl` that doesn't start with `..` never takes the early return.\n\nThat comes to about 136 strings of 1 MiB per import. `findDeadExports` calls this for every import, and `runMergeGate` runs the gate inside `withMergeLock` (`merge-gate.service.ts` ~L950). The cost is in the same range as the 255 × 4 KiB case the ADR measured at about 50 ms per import, or worse. So the JSDoc's \"Characters cap the length of every string built from a substitution\" and ADR 0130's \"caps the length of each candidate path\" / \"worst measured case is about 0.1 ms per import\" don't hold while `baseUrl` stays out of the count.\n\n**Suggested fix:** count the explicit `baseUrl` in `chars`. A non-string `baseUrl` still ends in a throw from `join`, and the caller catches it.\n\n```ts\nconst chars = entries.reduce(\n  (n, [p, targets]) => n + p.length + targets.join('').length,\n  (config.compilerOptions?.baseUrl ?? '').length,\n);\n```\n\nSeeding with the explicit value keeps the existing 2048/2049 boundary test valid. Seeding with the defaulted `baseUrl.length` would add 1 for `'.'` and break that test. Add a case such as `{ baseUrl: 'x'.repeat(2048), paths: { '@a/*': ['*'] } }` → no aliases.\n\nThe timings are scaled from the ADR's own measurement. Nothing was run under CI.",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "144-145",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The specifier side has no bound, and its cost grows with source size rather than being a fixed amount per import. `aliasTargets` copies the matched part of the specifier into each of up to 8 targets, and each target then becomes about 17 candidate strings. A specifier of length L therefore costs about 136·L of string work, where a relative import costs about 17·L. Source files are read with `readFileSync` and no size cap (`typescript.adapter.ts` L91), but every byte of specifier is also a byte of source that `ts.createSourceFile` already parses. So this only multiplies an existing linear cost, by about 8x; it does not create a fixed-cost stall like finding 1. Even so, the ADR's \"worst measured case is about 0.1 ms per import\" (ADR 0130 L48-49) only holds for short specifiers, and the JSDoc's \"Characters cap the length of every string built from a substitution\" likewise ignores the matched specifier. Changing those to \"per short import\", or noting that the cost still grows with specifier length, would make the claims accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "92",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A 2048-character cap over the whole `paths` drops all aliases for a moderately sized monorepo that declares its library aliases in the root `tsconfig.json`. A typical entry such as `\"@acme/feature-billing\": [\"libs/feature/billing/src/index.ts\"]` is about 54 characters, so the cap trips at about 38 aliases. The 256-entry cap alone allowed 128. Past that point the dead-export check silently goes back to relative-only resolution and reports every alias-only-imported export as dead. A per-string cap (longest pattern or substitution plus `baseUrl`) would bound candidate length the same way without counting the number of aliases twice, since the entry cap already limits that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md",
+      "line": "36-51",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR's *Bound.* paragraph repeats the JSDoc's \"each bound caps one term\" breakdown almost sentence for sentence, tells the debugging story twice (\"The entry cap alone was not enough…\" / \"A characters cap alone was not enough either…\"), and tags \"(CI review, PR #218)\" twice. Keep the measurements that justify the numbers, leave the mechanism to the JSDoc next to the code, and keep one tag.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6552379,
+  "duration_ms": 207633,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 9724,
+    "cache_read": 259032,
+    "cache_creation": 49705,
+    "total": 318475
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 56,
+      "output": 28318,
+      "cache_read": 577970,
+      "cache_creation": 131008,
+      "cost_usd": 1.4863330000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 4107,
+      "cache_read": 110924,
+      "cache_creation": 46681,
+      "cost_usd": 0.16890489999999997
+    }
+  ],
+  "permission_denials": []
+}
