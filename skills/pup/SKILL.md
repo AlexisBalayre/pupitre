@@ -46,6 +46,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override; `--max-sessions <n>` sets the session cap, default 4), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |
 | Reports | `pup report --open`, `pup map [module] --open` |
+| Where the usage went | `pup usage [--since <date>] [--json]` (operator-only, read-only): cost share, cache hit rate and context per class, model and effort, re-caches after an idle hour, tool-output carry |
 
 A goal names files, mechanism and the decision number it records; acceptance criteria are
 checkable sentences. A criterion or goal starting with `--` is parsed as an option: reword it.
