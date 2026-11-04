@@ -175,6 +175,7 @@ import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
+  transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
@@ -2144,6 +2145,119 @@ describe('CLI commands', () => {
 
       expect(recordedOrigin(repo)).toBe('git@github.com:owner/renamed.git');
       expect(logs).toContain('push target: git@github.com:owner/renamed.git');
+    });
+  });
+
+  describe('usage', () => {
+    it('refuses a session running it from its worktree', () => {
+      const own = initRepo();
+      const worktree = join(own, '.worktrees', 's1');
+      mkdirSync(worktree, { recursive: true });
+      seedSession(own, 's1', worktree);
+      useCwd(worktree);
+
+      buildProgram().parse(['usage'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('operator-only')]);
+      expect(logs).toEqual([]);
+    });
+
+    it('refuses the conductor', () => {
+      useCwd(initRepo());
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(['usage'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('operator-only')]);
+      expect(logs).toEqual([]);
+    });
+
+    it('prints the report as text, or as JSON with --json', () => {
+      useCwd(initRepo());
+      vi.stubEnv('HOME', tempDir('pup-cli-usage-home-'));
+
+      buildProgram().parse(['usage', '--since', '2026-10-21'], { from: 'user' });
+      buildProgram().parse(['usage', '--json'], { from: 'user' });
+
+      expect(logs[0]).toContain('Usage since 2026-10-21T00:00:00.000Z: $0.00 over 0 calls');
+      expect(JSON.parse(logs[1] as string)).toMatchObject({ rows: [], totalCost: 0 });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reads the transcripts of the config dir --session-env names', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const configDir = tempDir('pup-cli-usage-config-');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      vi.stubEnv('HOME', tempDir('pup-cli-usage-home-'));
+      const dir = transcriptDir(join(repo, '.worktrees', 's1'), configDir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'a.jsonl'),
+        `${JSON.stringify({
+          type: 'assistant',
+          requestId: 'r1',
+          timestamp: '2026-10-22T10:00:00Z',
+          message: { model: 'claude-opus-5-5', usage: { input_tokens: 5 } },
+        })}\n`,
+      );
+
+      buildProgram().parse(['usage', '--since', '2026-10-21', '--json'], { from: 'user' });
+
+      expect(JSON.parse(logs[0] as string).rows).toMatchObject([{ class: 'worker', calls: 1 }]);
+    });
+
+    it('escapes DEL and C1 in a planted name under --json', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const configDir = tempDir('pup-cli-usage-config-');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      vi.stubEnv('HOME', tempDir('pup-cli-usage-home-'));
+      const dir = transcriptDir(join(repo, '.worktrees', 's1'), configDir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'a.jsonl'),
+        `${JSON.stringify({
+          type: 'assistant',
+          requestId: 'r1',
+          timestamp: '2026-10-22T10:00:00Z',
+          effort: 'hi\u009b2J\u007f',
+          message: { model: 'claude-opus-5-5', usage: { input_tokens: 5 } },
+        })}\n`,
+      );
+
+      buildProgram().parse(['usage', '--since', '2026-10-21', '--json'], { from: 'user' });
+
+      const out = logs[0] as string;
+      expect(out).not.toMatch(/[\u007f-\u009f]/);
+      expect(out).toContain('hi\\u009b2J\\u007f');
+      expect(JSON.parse(out).rows).toMatchObject([{ effort: 'hi\u009b2J\u007f' }]);
+    });
+
+    it('refuses a relative CLAUDE_CONFIG_DIR that --session-env passes', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', '~/w4b');
+
+      buildProgram().parse(['usage'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('it must be an absolute path')]);
+      expect(logs).toEqual([]);
+    });
+
+    it('refuses a date it cannot read', () => {
+      useCwd(initRepo());
+
+      buildProgram().parse(['usage', '--since', 'last tuesday-ish'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('--since needs a date')]);
     });
   });
 
