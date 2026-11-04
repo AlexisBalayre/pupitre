@@ -1,0 +1,167 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T09:04:08.071Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41803177413",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41803177413",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f7ce4759dbae2d4e90c88b8041bc67acafd9f3b7",
+  "source": "pr",
+  "pr_number": 220,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/sandbox-profile.utils.ts",
+      "line": "202-203",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The docblock says 'pup makes each [output] in a holder of its own', but the Python coverage output is `mkdtempSync(join(tmpdir(), 'pup-coverage-'))` (src/adapters/python.adapter.ts:350), directly in the shared tmpdir with no holder; the property that matters (an ungranted parent) still holds, so only the comment is wrong.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile.utils.ts",
+      "line": "241",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Under `pup init`/`pup audit` the child's checkout is the operator's repo, so nothing may now write under `<repo>/.worktrees`. A TS repo whose vitest/jest config has no `include` discovers `.worktrees/sN/**` tests, and any that write beside themselves (new snapshots, fixtures, a default-include `tsc` emit) now fail with EPERM, turning a passing baseline stage into a recorded FAIL while sessions exist. This is worth naming in ADR 0117's ceilings rather than a break.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile.utils.ts",
+      "line": "213-218",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`writeProfile` now takes three positional `string[]` lists (writable, scratch, outputs), each with a different security treatment. Swapping the two trailing `[]`-defaulted arrays still typechecks but silently changes the profile. The first parameter is still named `writablePaths` although the body treats it as `pinnedCheckouts`, while `GateChildOptions.writablePaths` now flows into `outputPaths`. An options object `{ checkouts, scratch, outputs }` would name each role at the call site.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile.utils.ts",
+      "line": "168-172",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The unlink-deny rule builds its `(literal ...)` clauses with an inline map nested three templates deep, right beside the `subpaths` closure that does the same for `(subpath ...)`. It is the only place outside the helper that escapes inline. A sibling `literals` closure would make it read `(deny file-write-unlink${literals(...)}${subpaths(...)})`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile-utils.test.ts",
+      "line": "40-56",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test helper `profile()` grows to five positional `string[]` parameters, so call sites like `profile(['/repo'], [], [], ['/repo/a'], ['/repo/b'])` can't be read without counting commas, and a swap still typechecks. Taking a `Partial<{...}>` object, as `sandboxProfile` itself does, would name each list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile-utils.test.ts",
+      "line": "18-21",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `vi.mock('node:fs', …)` wrapping `lstatSync` to fake another device goes beyond docs/conventions/testing.md §\"When `vi.mock` is right\", which reserves `vi.mock` for tmux and `claude -p` (\"That is the whole current list\"). Either extend that list with the reason (a real mount is out of reach in a test process) or stub without `vi.mock`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "352-357",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `gateInvocation` call-site comment (\"the caller's are outputs a tool may remove and make again, so writeProfile refuses one that holds a .git or cannot be read\") repeats the `writeProfile` JSDoc and decision 117. Keep at most the \"(decision 117)\" pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-profile.utils.ts",
+      "line": "207-211",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `writeProfile` JSDoc tail narrates the attack and the walk mechanics (\"moved out, `.worktrees/s1` had its pointer file rewritten in scratch ... What the walk cannot see into is sealed whole\"), which `nestedRepoPaths`'s doc and ADR 0117 already hold. It also mixes the grant, output and walk rules in one hard-to-scan block.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0117-a-sandbox-grant-s-own-name-and-every-directory.md",
+      "line": "40-41",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0117 lines 40-41 are one overlong line and lines 131-132 break mid-sentence oddly, while the rest of the ADR (like 0116) wraps at about 95 columns. Cosmetic only.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.7580999,
+  "duration_ms": 501896,
+  "num_turns": 19,
+  "tokens": {
+    "input": 16,
+    "output": 16181,
+    "cache_read": 427586,
+    "cache_creation": 81828,
+    "total": 525611
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 210,
+      "output": 158077,
+      "cache_read": 4276537,
+      "cache_creation": 436624,
+      "cost_usd": 6.4462914
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 9908,
+      "cache_read": 265675,
+      "cache_creation": 74434,
+      "cost_usd": 0.31180850000000004
+    }
+  ],
+  "permission_denials": []
+}
