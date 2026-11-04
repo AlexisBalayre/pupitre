@@ -1,0 +1,96 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T09:05:17.100Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41804269014",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41804269014",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a970b47abc2f292baaed005eae116e759fed057c",
+  "source": "pr",
+  "pr_number": 217,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4b31306ace02818f1bf428acc385979e124a054f",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "80-83",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "82-86",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A scope-in glob of exactly `./` is now offered as a file to create. Normalizing `./` gives the empty string. globToRegExpSource also turns `./` into `^$`, so the glob matches no tracked path. The empty probe matches `^$`, no protected glob (`.claude/**`, `.pupitre/**`) or plausible scope-out matches `\"\"`, and scopedPaths keeps it. The kickoff then prints \"`./`: to be created, no tracked file matches it yet\". Before this commit the probe was `./`, which fails `^$`, so nothing was listed. assertPlannableSpec only rejects an all-blank scope-in, so `pup new --scope ./` gets through. A user could easily type `./` meaning the whole repo. The scope is already useless in that case, since it lets the session edit nothing, but the new line points the session at a bogus file to create instead of leaving the kickoff silent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "85",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Duplicated Code. `glob.trim().replace(/^\\.\\//, '')` is now the third copy of the glob normalization. The others are in `src/core/glob.utils.ts:15` and `src/core/routing.utils.ts:60`. The comment on lines 80-81 says the text is \"normalized as globToRegExp reads it\", so the correctness of `toCreate` now depends on this copy staying in step with `glob.utils.ts`. If `globToRegExpSource` changes how it normalizes, `toCreate` would silently disagree with the gate. The project rule \"no abstraction until third use\" is met by this third use. It is still a nit because the copy is one short expression and the behavior is correct today.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6865015999999999,
+  "duration_ms": 64796,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 4859,
+    "cache_read": 194743,
+    "cache_creation": 36381,
+    "total": 235993
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 26,
+      "output": 8384,
+      "cache_read": 276489,
+      "cache_creation": 52578,
+      "cost_usd": 0.5951147999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2377,
+      "cache_read": 55563,
+      "cache_creation": 24813,
+      "cost_usd": 0.0913868
+    }
+  ],
+  "permission_denials": []
+}
