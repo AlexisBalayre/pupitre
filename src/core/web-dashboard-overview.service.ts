@@ -31,7 +31,6 @@ import {
   escapeHtml,
   GATE_METRICS,
   hint,
-  listSection,
   section,
   textOrPrLink,
   UNMINTED_LABEL,
@@ -301,15 +300,14 @@ function deliverySection(view: OverviewView): string {
 }
 
 function needsSection(needs: DashboardNeed[]): string {
-  return listSection('Needs you', needs, 'Nothing waits on you.', (items) => {
-    const rows = items.map(
-      (need) =>
-        `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span> ` +
-        `<span class="reason">${escapeHtml(need.reason)}</span>` +
-        `<div class="answer">${textOrPrLink(need.answer)}</div></li>`,
-    );
-    return `<ul class="rows">${rows.join('')}</ul>`;
-  });
+  if (needs.length === 0) return section('Needs you', hint('Nothing waits on you.'));
+  const items = needs.map(
+    (need) =>
+      `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span> ` +
+      `<span class="reason">${escapeHtml(need.reason)}</span>` +
+      `<div class="answer">${textOrPrLink(need.answer)}</div></li>`,
+  );
+  return section('Needs you', `<ul class="rows">${items.join('')}</ul>`);
 }
 
 function conductorSection(snapshot: DashboardSnapshot): string {
@@ -322,17 +320,16 @@ function conductorSection(snapshot: DashboardSnapshot): string {
 
 function sessionsSection(view: OverviewView): string {
   const live = view.snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');
-  return listSection('Sessions', live, 'Nothing running.', () => {
-    const states = [
-      ...STATE_ORDER.filter((state) => live.some((s) => s.state === state)),
-      ...new Set(live.map((s) => s.state).filter((state) => !STATE_ORDER.includes(state))),
-    ];
-    const groups = states.map((state) => {
-      const rows = live.filter((s) => s.state === state).map((s) => sessionRow(s, view.openDebt));
-      return `<h3 class="state-group">${escapeHtml(state)} <span class="hint">${rows.length}</span></h3><ul class="rows">${rows.join('')}</ul>`;
-    });
-    return groups.join('');
+  if (live.length === 0) return section('Sessions', hint('Nothing running.'));
+  const states = [
+    ...STATE_ORDER.filter((state) => live.some((s) => s.state === state)),
+    ...new Set(live.map((s) => s.state).filter((state) => !STATE_ORDER.includes(state))),
+  ];
+  const groups = states.map((state) => {
+    const rows = live.filter((s) => s.state === state).map((s) => sessionRow(s, view.openDebt));
+    return `<h3 class="state-group">${escapeHtml(state)} <span class="hint">${rows.length}</span></h3><ul class="rows">${rows.join('')}</ul>`;
   });
+  return section('Sessions', groups.join(''));
 }
 
 function sessionRow(session: DashboardSession, openDebt: WebDebtEntry[]): string {
@@ -403,23 +400,22 @@ function debtOf(session: DashboardSession, openDebt: WebDebtEntry[]): string {
 
 function pullRequestsSection(view: OverviewView): string {
   const open = view.snapshot.sessions.filter((s) => s.openPr !== undefined);
-  return listSection('Open pull requests', open, 'No PR waits to land.', () => {
-    const rows = open.map((session) => {
-      const url = session.openPr?.url;
-      const link =
-        url === undefined
-          ? `<code>${escapeHtml('(PR url outside the pull-request shape; inspect the store)')}</code>`
-          : textOrPrLink(url);
-      return (
-        `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>${link}</div>` +
-        `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
-        `<div class="fact">${escapeHtml(reviewState(session, view.fixRounds.get(session.id)))}</div>` +
-        debtOf(session, view.openDebt) +
-        '</li>'
-      );
-    });
-    return `<ul class="rows">${rows.join('')}</ul>`;
+  if (open.length === 0) return section('Open pull requests', hint('No PR waits to land.'));
+  const rows = open.map((session) => {
+    const url = session.openPr?.url;
+    const link =
+      url === undefined
+        ? `<code>${escapeHtml('(PR url outside the pull-request shape; inspect the store)')}</code>`
+        : textOrPrLink(url);
+    return (
+      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>${link}</div>` +
+      `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
+      `<div class="fact">${escapeHtml(reviewState(session, view.fixRounds.get(session.id)))}</div>` +
+      debtOf(session, view.openDebt) +
+      '</li>'
+    );
   });
+  return section('Open pull requests', `<ul class="rows">${rows.join('')}</ul>`);
 }
 
 /**
@@ -440,13 +436,12 @@ function reviewState(session: DashboardSession, rounds: number | undefined): str
 }
 
 function plannedSection(snapshot: DashboardSnapshot): string {
-  return listSection('Planned', snapshot.backlog, 'Nothing planned.', (backlog) => {
-    const rows = backlog.map(
-      (task) =>
-        `<li class="session"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span>` +
-        `${task.origin === 'human' ? '' : `<span class="branch">from ${escapeHtml(task.origin)}</span>`}</div>` +
-        `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div></li>`,
-    );
-    return `<ul class="rows">${rows.join('')}</ul>`;
-  });
+  if (snapshot.backlog.length === 0) return section('Planned', hint('Nothing planned.'));
+  const rows = snapshot.backlog.map(
+    (task) =>
+      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span>` +
+      `${task.origin === 'human' ? '' : `<span class="branch">from ${escapeHtml(task.origin)}</span>`}</div>` +
+      `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div></li>`,
+  );
+  return section('Planned', `<ul class="rows">${rows.join('')}</ul>`);
 }

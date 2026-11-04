@@ -37,8 +37,9 @@
      carries every capture, "not measured" in words. A metric no capture measured is one line in its
      chart's place, and an empty history is one line for the whole section. One series per metric,
      built once, feeds both the chart and the moves table, so the two cannot disagree on what a
-     capture compares with. A list section that shows a hint when empty goes through one
-     `listSection` in `web-dashboard-sheet.utils.ts`: Health's three and the Overview's four.
+     capture compares with. Health's three sections show their hint when empty through one
+     `listSection` in `web-dashboard-sheet.utils.ts`. The chart's figure line goes through the
+     frame the other charts share, an unmeasured capture passed as NaN and said in words.
      *Moves.* Each capture is compared, figure by figure, with the newest earlier capture that
      measured that figure comparably, so a gap hides no change. A move's size is its change over the
      larger of its two values, so a count and a ratio rank on one scale and a figure leaving zero
