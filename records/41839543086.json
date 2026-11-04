@@ -1,0 +1,78 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T13:38:06.351Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41839543086",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41839543086",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7af71b96f30d90e4facbbfe938c8e5eb452dc888",
+  "source": "pr",
+  "pr_number": 221,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0021-debt-delta-three-soft-stages-with-a-merge.md",
+      "line": "4",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new `Amended by` link points to `0127-the-complexity-stage-judges-a-new-file-on-its.md`, which does not exist at this head, so the link is dead until ADR 0127 lands.",
+      "body": "The new `Amended by` line links to `0127-the-complexity-stage-judges-a-new-file-on-its.md`, but that file is not in this branch. It is also not on `main`, even after the merge of `main` in 7af71b9.\n\n- Globbing `docs/adr/012*` at head returns 0120, 0121, 0123, 0124, 0125, 0128 and 0129. There is no 0127.\n- `docs/adr/README.md` goes straight from 0125 to 0128.\n- The ADR exists only in commits `deeafd5`, `2eb4b59` and `6ea6bf4`. None of them is in HEAD's history (`git rev-list --count HEAD..6ea6bf4` = 3). They are presumably the branch of PR #216.\n\nThe link itself is right. The filename matches the one in those commits, and 0127's header there reads `- Amends: [0021](...)`, so \"amended by\" describes the relationship correctly. The problem is merge order: if this PR merges before ADR 0127 reaches `main`, ADR 0021 links to a file that does not exist. Merge the PR that adds 0127 first, or fold this line into that PR.\n\n<https://github.com/AlexisBalayre/pupitre/blob/7af71b96f30d90e4facbbfe938c8e5eb452dc888/docs/adr/0021-debt-delta-three-soft-stages-with-a-merge.md#L4-L4>",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6692641000000001,
+  "duration_ms": 93635,
+  "num_turns": 9,
+  "tokens": {
+    "input": 12,
+    "output": 4575,
+    "cache_read": 205598,
+    "cache_creation": 46101,
+    "total": 256286
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 4575,
+      "cache_read": 205598,
+      "cache_creation": 46101,
+      "cost_usd": 0.5014756
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 4864,
+      "cache_read": 198080,
+      "cache_creation": 39709,
+      "cost_usd": 0.16778849999999998
+    }
+  ],
+  "permission_denials": []
+}
