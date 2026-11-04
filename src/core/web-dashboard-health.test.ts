@@ -123,7 +123,7 @@ describe('the Health sheet', () => {
     const markers = [...page.matchAll(/<line class="marker" x1="([\d.]+)"/g)].map(([, x]) => x);
     expect(markers).toEqual(['144', '416', '144', '416', '144', '416']);
     expect(page).toContain(
-      `<a href="${PR}" target="_blank" rel="noopener noreferrer"><title>s-a merged 2026-10-02 00:00 — ${PR}</title>`,
+      `<a href="${PR}" target="_blank" rel="noopener noreferrer"><title>s-a merged 2026-10-02 00:00 ${PR}</title>`,
     );
     expect(page).toContain('<g><title>s-b merged 2026-10-04 00:00</title>');
     expect(page).toContain('2 merged, oldest first');

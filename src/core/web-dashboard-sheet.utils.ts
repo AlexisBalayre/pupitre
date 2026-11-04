@@ -24,6 +24,16 @@ export function hint(text: string): string {
   return `<p class="hint">${escapeHtml(text)}</p>`;
 }
 
+/** A section drawn from its items, or its one-line hint when there are none. */
+export function listSection<T>(
+  title: string,
+  items: T[],
+  empty: string,
+  render: (items: T[]) => string,
+): string {
+  return section(title, items.length === 0 ? hint(empty) : render(items));
+}
+
 /** Escaped text, or a link when it is a pull request's url and nothing else (decisions 83, 91). */
 export function textOrPrLink(text: string): string {
   if (!PR_URL.test(text)) return `<code>${escapeHtml(text)}</code>`;
