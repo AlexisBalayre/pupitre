@@ -75,12 +75,7 @@
     rather than under `test/unit/`. The task's scope was `src/core/intent*`, and the `@src`
     aliases decision 116 needs do not exist yet. For the same reason `CONTROL_CHARS`, `FENCE_OPEN`
     and `FENCE_CLOSE` are copies of `brief.service.ts`'s, marked as such; the conductor has planned
-    a task to share them. The service holds the four verbs and the template, and its helpers sit
-    beside it, each a seam of its own: `intent-files.utils.ts` (the directory, the listing, the
-    id-to-path lookup, the slug), `intent-parse.utils.ts` (one file into an `Intent`, its title and
-    status lines) and `intent-markdown.utils.ts` (what a fence or a comment hides, and the
-    questions). The gate's complexity stage flags a touched file that gains more than 15 decision
-    points, and the one file held 49.
+    a task to share them.
     *Tests.* `intent-service.test.ts` covers numbering and the template, the slug, refused titles,
     listing with malformed and non-intent names, the stripped read, six status lines that are
     hidden or doubled and one past a closed comment and fence, duplicate and missing ids,
