@@ -14,6 +14,11 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
   return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
 });
+// The real scratch git dir, so a test can fail one git call made in it.
+vi.mock('./merge-gate.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.service.js')>();
+  return { ...actual, withScratchGitDir: vi.fn(actual.withScratchGitDir) };
+});
 // The real audit, so a test can make the one after a land throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./audit.service.js')>();
@@ -29,7 +34,7 @@ import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -1267,6 +1272,42 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     await expect(land()).rejects.toThrow(refusal(squash));
     expectNothingChanged(before);
+  });
+
+  it('refuses, landing nothing, when git fails reading what the merge landed', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const real = vi.mocked(withScratchGitDir).getMockImplementation();
+    vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+      (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+        fn((args, opts) => {
+          if (args.includes('rev-list')) throw new Error('fatal: bad object');
+          return git(args, opts);
+        }),
+      ),
+    );
+    const before = mainSha();
+
+    try {
+      await expect(land()).rejects.toThrow(
+        new RegExp(
+          `^Reading what ${squash} landed failed\\. Nothing was landed\\.\\n.*bad object`,
+          's',
+        ),
+      );
+    } finally {
+      vi.mocked(withScratchGitDir).mockReset();
+    }
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
   });
 
   // Ancestry alone would take a merge commit carrying changes of its own.
