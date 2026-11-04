@@ -61,6 +61,16 @@ describe('parsePathAliases', () => {
     expect(parsePathAliases(tsconfig(2049)).size).toBe(0);
   });
 
+  it('counts baseUrl once per substitution it prefixes toward the 2048 characters', () => {
+    const tsconfig = (baseUrl: number) =>
+      JSON.stringify({
+        compilerOptions: { baseUrl: 'x'.repeat(baseUrl), paths: { '@a/*': ['*', '*'] } },
+      });
+
+    expect(parsePathAliases(tsconfig(1021)).size).toBe(1);
+    expect(parsePathAliases(tsconfig(1022)).size).toBe(0);
+  });
+
   it('yields no aliases for a pattern of more than 8 substitutions', () => {
     const tsconfig = (n: number) =>
       JSON.stringify({

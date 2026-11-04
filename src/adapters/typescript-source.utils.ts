@@ -84,7 +84,8 @@ export type PathAliases = Map<string, string[]>;
  * interrupt forwarding can reach (decisions 31 and 110). Each bound caps one
  * term of what an import costs. Entries (patterns plus substitutions) cap the
  * wildcard scan. Characters cap the length of every string built from a
- * substitution. Substitutions per pattern cap how many targets one import
+ * substitution, so an explicit `baseUrl`, which prefixes each one, counts once
+ * per substitution. Substitutions per pattern cap how many targets one import
  * fans out to, each one about 17 candidate paths and a copy of the matched
  * specifier. A real `paths` has a handful of short entries.
  */
@@ -105,7 +106,11 @@ export function parsePathAliases(tsconfigText: string): PathAliases {
   const { baseUrl = '.', paths = {} } = config.compilerOptions ?? {};
   const entries = Object.entries(paths) as [string, string[]][];
   const size = entries.reduce((n, [, targets]) => n + 1 + targets.length, 0);
-  const chars = entries.reduce((n, [p, targets]) => n + p.length + targets.join('').length, 0);
+  const baseChars = (config.compilerOptions?.baseUrl ?? '').length;
+  const chars = entries.reduce(
+    (n, [p, targets]) => n + p.length + targets.join('').length + targets.length * baseChars,
+    0,
+  );
   if (
     size > MAX_PATH_ALIAS_ENTRIES ||
     chars > MAX_PATH_ALIAS_CHARS ||
