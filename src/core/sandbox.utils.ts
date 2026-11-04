@@ -64,7 +64,7 @@ interface GateChildOptions {
    * same path as `cwd`, where the write grant is legitimate.
    */
   repoPath: string;
-  /** Further writable paths — a capability's report directory. */
+  /** Further writable paths — a capability's report directory, which the child may remove. */
   writablePaths?: string[];
   /**
    * Extra env names the operator allowed with `--gate-env`. Never read from
@@ -349,16 +349,20 @@ function gateInvocation(
       // basis of decision 29 — session-writable during its own merge, and
       // reached every *sibling* worktree's `.git` pointer file, which is
       // one level deeper than the `.git` deny below.
-      // Caller-supplied grants land in the first, protected set — .git
-      // denied at any depth under each. Only the two directories this
-      // seam itself created for the child are exempt from that deny.
+      // Caller-supplied grants are protected as checkouts — .git denied at
+      // any depth under each. Only the two directories this seam itself
+      // created for the child are exempt from that deny. The checkout the
+      // child runs in and those two keep their names (decision 117); the
+      // caller's are outputs a tool may remove and make again, so
+      // writeProfile refuses one that holds a .git or cannot be read.
       writeProfile(
         // A profile of its own: children start together (decision 95), and a
         // shared file was rewritten for the next child before `sandbox-exec`
         // read this one's, so it ran under that child's grants.
         mkdtempSync(join(policyDir, 'child-')),
-        [options.cwd, ...(options.writablePaths ?? [])],
+        [options.cwd],
         [scratchDir, cacheDir],
+        options.writablePaths ?? [],
       ),
       command,
       ...args,
