@@ -1,4 +1,6 @@
+import { globToRegExp } from './glob.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
+import { scopedPaths } from './scope-audit.utils.js';
 import type { TaskSpec } from './types/profile.types.js';
 
 /** Control characters that must never reach a generated scope pattern file. */
@@ -30,4 +32,57 @@ export function assertPlannableSpec(task: TaskSpec): void {
       );
     }
   }
+}
+
+/** What a task's scope-in names among the tracked files, as its kickoff lists them. */
+interface ScopeInFiles {
+  /** Tracked files the task may edit, in `tracked`'s order. */
+  files: string[];
+  /** Scope-in globs that match no tracked path and name an editable one: files to create. */
+  toCreate: string[];
+}
+
+/** Candidates `scopedPaths` takes per call, so the deadline is checked between calls. */
+const SCOPE_BATCH = 1_000;
+
+/**
+ * The tracked files a task's scope-in matches, read with the gate's own
+ * precedence (`scopedPaths`), so the kickoff never names a file the session
+ * could not commit: a protected path or one scope-out takes back (decision 128).
+ * A glob is to be created only when it matches no tracked path at all, before
+ * that precedence, and its own text is not refused by it: a glob whose files
+ * are all protected or under scope-out names nothing the session may add.
+ * Undefined once `deadline` (a `Date.now()` instant) passes, checked between
+ * paths: the listing is the repo's, which a session can plant to be huge.
+ */
+export function scopeInFiles(
+  tracked: string[],
+  task: Pick<TaskSpec, 'scopeIn' | 'scopeOut'>,
+  deadline: number,
+): ScopeInFiles | undefined {
+  const scopeIn = task.scopeIn.filter((glob) => glob.trim());
+  const inRes = scopeIn.map(globToRegExp);
+  const matched = new Set<number>();
+  const candidates: string[] = [];
+  for (const path of tracked) {
+    if (Date.now() > deadline) return undefined;
+    const hits = inRes.flatMap((re, index) => (re.test(path) ? [index] : []));
+    for (const index of hits) matched.add(index);
+    if (hits.length > 0) candidates.push(path);
+  }
+  const files: string[] = [];
+  for (let start = 0; start < candidates.length; start += SCOPE_BATCH) {
+    if (Date.now() > deadline) return undefined;
+    files.push(
+      ...scopedPaths(candidates.slice(start, start + SCOPE_BATCH), scopeIn, task.scopeOut),
+    );
+  }
+  // A glob's text, normalized as globToRegExp reads it, matches its own
+  // pattern, so the gate's rule reads it as a path.
+  const toCreate = scopeIn.filter(
+    (glob, index) =>
+      !matched.has(index) &&
+      scopedPaths([glob.trim().replace(/^\.\//, '')], [glob], task.scopeOut).length > 0,
+  );
+  return { files, toCreate };
 }
