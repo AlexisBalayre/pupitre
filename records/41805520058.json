@@ -1,0 +1,137 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T09:18:03.926Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41805520058",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41805520058",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9b79aa5f6ee75438f09e8d008a3859e314b26f48",
+  "source": "pr",
+  "pr_number": 218,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "cbae1e307e7e66db61d933edde5481aa57f7cdcc",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "86-123",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "100-102",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`parsePathAliases` limits patterns plus substitutions to 256 but not their length. One `\"*\"` pattern with 255 substitutions of about 4 KiB each passes the cap, and every bare import then resolves all 255 long targets. Each target takes about 20 string passes, which adds up to an estimated tens of ms per one-line `import 'a';`, run synchronously inside the merge lock.",
+      "body": "**The 256 cap limits how many entries `paths` has, not how long they are, so the merge-lock stall is still reachable.**\n\nThe cap counts `1 + targets.length` per pattern. The only limit on the strings themselves is `readPlainFile`'s 1 MiB. So this tsconfig passes the cap and parses without throwing:\n\n```json\n{\"compilerOptions\":{\"paths\":{\"*\":[\"src/<4 KiB>*\", …×255]}}}\n```\n\n**What each bare import costs.** `\"*\"` matches every bare specifier that isn't an exact key, including the repo's existing `node:*`, `typescript` and `vitest` imports. For each one:\n- `aliasTargets` builds 255 strings of about 4 KiB with `replace` (L132).\n- `resolveImport` maps every target through `normalize` before `.find` picks one (L155). A specifier that resolves to nothing tries all of them.\n- `resolveFile` builds about 17 candidates per target, 8 of them through `path.join`, Node's JS character-by-character normalize loop, and hashes each one in `files.has` (L158-167).\n\nThat is roughly 20 MiB of string work per import, an estimated 20-50 ms. `collectUsage` doesn't deduplicate specifiers.\n\n**Why it matters.** `deadCode` is synchronous, and `measureStaticDebt` reaches it inside `withMergeLock` (`merge-gate.service.ts` ~L2581). The repo's existing several hundred bare imports alone mean about 10-20 s of blocked event loop per gate. A session that adds a file of a few thousand `import 'a';` lines (about 60 KB; `readSources` has no cap, and diff-size only flags) holds the lock for minutes. No stage timeout or interrupt forwarding fires during that time. That is the exact threat the `MAX_PATH_ALIAS_ENTRIES` JSDoc (L80-86) and ADR 0130's *Bound.* paragraph say the cap closes.\n\n**Suggested fix.** Cap total characters as well as entries. A real `paths` fits well under 4 KiB, for example:\n\n```ts\nconst chars = entries.reduce((n, [p, ts]) => n + p.length + ts.join('').length, 0);\nif (size > MAX_PATH_ALIAS_ENTRIES || chars > MAX_PATH_ALIAS_CHARS) return new Map();\n```\n\nOver the cap, return no aliases: per ADR 0130, missing an alias is the safe direction. Optionally, also cap substitutions per pattern. That bounds the copies of a long matched specifier.\n\nThe per-import timings are estimates from reading the code. Nothing was run under CI.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9b79aa5f6ee75438f09e8d008a3859e314b26f48/src/adapters/typescript-source.utils.ts#L100-L102",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "112-121",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`aliasTargets` now relies on the Map's insertion order, which only `parsePathAliases` sets (a hidden ordering invariant). Before this change it sorted locally, so any `PathAliases` worked.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source-utils.test.ts",
+      "line": "52-53",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The bound test only uses one substitution per pattern (128 → 256 kept, 129 → 258 dropped). A cap that counted patterns alone would fail it too, but no case puts many substitutions on a few patterns to check that term on its own.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "87",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`MAX_PATH_ALIAS_ENTRIES = 256` is a threshold declared in a `.utils.ts` file. `docs/conventions/general.md` §No hardcoded values puts thresholds in the area's `*.constants.ts` (the adapters area already has `typescript-debt.constants.ts`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md",
+      "line": "54",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The edited *Complexity* line (\"That brought the delta to +9, and the bound added one more branch.\") is new process history. It leaves the reader to add up the final figure, and it runs well past the wrap width the rest of the file keeps. State the final delta or drop the clause, and rewrap.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md",
+      "line": "38",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The *Bound.* paragraph and the `MAX_PATH_ALIAS_ENTRIES` JSDoc both say decision 110 closed the merge-lock stall. Decision 110 is the diff-size flag decision and doesn't appear to cover it; cite decision 31 alone unless 110 really does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9032876999999997,
+  "duration_ms": 295187,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 8911,
+    "cache_read": 255850,
+    "cache_creation": 45469,
+    "total": 310242
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 68,
+      "output": 34452,
+      "cache_read": 826203,
+      "cache_creation": 149527,
+      "cost_usd": 1.7385945999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 4813,
+      "cache_read": 144421,
+      "cache_creation": 40826,
+      "cost_usd": 0.16469309999999995
+    }
+  ],
+  "permission_denials": []
+}
