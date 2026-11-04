@@ -1,6 +1,8 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -41,6 +43,15 @@ afterEach(() => {
 
 /** The label pup reports when it applied its own profile rather than inheriting one. */
 const APPLIED_LABEL = 'sandbox-exec (macOS)';
+
+// Same isolation the other suites use: a test repo must not inherit the
+// developer's global git config, nor the GIT_DIR family a pre-commit run sets —
+// unscrubbed, `git init` re-initialised the hook's repo and set it bare.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
 
 /** Both darwin answers: which one depends on whether this suite runs inside pup's own gate. */
 const DARWIN_LABEL = /^sandbox-exec \(macOS\)$|^inherited \(pup is itself sandboxed\)$/;
@@ -620,13 +631,14 @@ describe('runGateChild', () => {
         // P/.git and nothing deeper — so this .git sits inside the grant with
         // no per-path deny of its own. That is the exact shape of #49's
         // sibling-worktree attack. The regex deny covers .git at any depth,
-        // which is what this asserts.
+        // which is what this asserts, on a vendored repo: `.worktrees` itself
+        // is not writable at all.
         const cwd = fakeCheckout();
-        const nestedGit = join(cwd, '.worktrees', 's1', '.git');
+        const nestedGit = join(cwd, 'vendor', 'dep', '.git');
         mkdirSync(nestedGit, { recursive: true });
 
         await expect(
-          runGateChild('sh', ['-c', 'printf x > .worktrees/s1/.git/config'], {
+          runGateChild('sh', ['-c', 'printf x > vendor/dep/.git/config'], {
             cwd,
             repoPath: cwd,
           }),
@@ -634,11 +646,206 @@ describe('runGateChild', () => {
         expect(existsSync(join(nestedGit, 'config'))).toBe(false);
         // The control: an ordinary file in the same nested checkout still
         // writes, so the denial above is the .git rule and not a lost grant.
-        await runGateChild('sh', ['-c', 'printf ok > .worktrees/s1/ordinary.txt'], {
+        await runGateChild('sh', ['-c', 'printf ok > vendor/dep/ordinary.txt'], {
           cwd,
           repoPath: cwd,
         });
-        expect(readFileSync(join(cwd, '.worktrees', 's1', 'ordinary.txt'), 'utf8')).toBe('ok');
+        expect(readFileSync(join(cwd, 'vendor', 'dep', 'ordinary.txt'), 'utf8')).toBe('ok');
+      });
+
+      it('cannot move the checkout it runs in out from under its .git deny and back', async () => {
+        // `pup init` and `pup audit` run the child in the operator's own repo.
+        // Its grant covered its own name, so the child moved the repo into its
+        // TMPDIR, where no .git rule reaches, set `core.hooksPath` and moved it
+        // back: pup's next unsandboxed git call ran the hook (decision 117).
+        const cwd = fakeCheckout();
+        execFileSync('git', ['init', '-q', cwd], { env: GIT_ENV });
+        const config = join(cwd, '.git', 'config');
+        expect(existsSync(config)).toBe(true);
+
+        await expect(
+          runGateChild(
+            'sh',
+            [
+              '-c',
+              'mv "$1" "$TMPDIR/moved" && git -C "$TMPDIR/moved" config core.hooksPath /tmp/pup-hooks && mv "$TMPDIR/moved" "$1"',
+              'sh',
+              cwd,
+            ],
+            { cwd, repoPath: cwd },
+          ),
+        ).rejects.toThrow(/Operation not permitted/);
+        // Read as a file: git would follow a GIT_DIR a pre-commit run sets.
+        expect(readFileSync(config, 'utf8')).not.toContain('hooksPath');
+      });
+
+      it('cannot move or remove its scratch, its cache, or a grant above its checkout', async () => {
+        // The same move through a directory above the checkout, where another
+        // grant covers it, and the symlink swaps of the scratch and cache roots
+        // at the source: none of these names can be freed. Each destination is
+        // granted, so only the pin refuses the move.
+        const outer = tempDir('pup-outer-grant-');
+        const cwd = join(outer, 'repo');
+        mkdirSync(cwd);
+        const cache = join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(cwd));
+        onTestFinished(() => {
+          rmSync(cache, { recursive: true, force: true });
+        });
+        const options = { cwd, repoPath: cwd, writablePaths: [outer] };
+
+        for (const script of [
+          'mv "$1" "$TMPDIR/moved"',
+          'mv "$TMPDIR" "$1/moved"',
+          'mv "$2" "$1/moved"',
+          'rm -r -f "$2" && ln -s "$1" "$2"',
+        ]) {
+          await expect(
+            runGateChild('sh', ['-c', script, 'sh', outer, cache], options),
+          ).rejects.toThrow(/Operation not permitted/);
+        }
+        expect(existsSync(cwd)).toBe(true);
+        expect(lstatSync(cache).isDirectory()).toBe(true);
+        // The control: below those names, moving and removing still works.
+        expect(
+          await runGateChild(
+            'sh',
+            ['-c', 'mkdir a "$TMPDIR/b" && mv a c && rmdir c "$TMPDIR/b" && printf ok'],
+            options,
+          ),
+        ).toBe('ok');
+      });
+
+      it('cannot move a nested checkout out from under its .git deny and back', async () => {
+        // The same move one level down. Moved into scratch, `.worktrees/s1`
+        // had its `.git` pointer file aimed at a git dir the child wrote, and
+        // moved back, it ran that dir's config on pup's next git call there
+        // (decision 117). `.worktrees` is now unwritable whole; the walk pins
+        // any other nested repo, a vendored one here.
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, 'vendor', 's1');
+        mkdirSync(join(cwd, 'vendor', 'plain'), { recursive: true });
+        mkdirSync(worktree);
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s1\n');
+
+        for (const script of [
+          'mv vendor/s1 "$TMPDIR/s1" && printf "gitdir: /evil" > "$TMPDIR/s1/.git" && mv "$TMPDIR/s1" vendor/s1',
+          'mv vendor "$TMPDIR/vendor"',
+        ]) {
+          await expect(runGateChild('sh', ['-c', script], { cwd, repoPath: cwd })).rejects.toThrow(
+            /Operation not permitted/,
+          );
+        }
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s1\n',
+        );
+        // The control: a directory that leads to no .git still moves.
+        await runGateChild('sh', ['-c', 'mv vendor/plain vendor/moved'], {
+          cwd,
+          repoPath: cwd,
+        });
+        expect(existsSync(join(cwd, 'vendor', 'moved'))).toBe(true);
+      });
+
+      it('cannot hide a nested checkout from the next profile, then move it', async () => {
+        // One child makes `vendor` unreadable, so the walk behind the next
+        // child's profile cannot see `s1`; the next child makes it readable
+        // again and runs the same move. The unreadable directory is sealed.
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, 'vendor', 's1');
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s1\n');
+        const options = { cwd, repoPath: cwd };
+
+        try {
+          await runGateChild('chmod', ['000', 'vendor'], options);
+          await expect(
+            runGateChild(
+              'sh',
+              [
+                '-c',
+                'chmod 755 vendor && mv vendor/s1 "$TMPDIR/s1" && printf "gitdir: /evil" > "$TMPDIR/s1/.git" && mv "$TMPDIR/s1" vendor/s1',
+              ],
+              options,
+            ),
+          ).rejects.toThrow(/Operation not permitted/);
+        } finally {
+          chmodSync(join(cwd, 'vendor'), 0o755);
+        }
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s1\n',
+        );
+      });
+
+      it('cannot take a worktree pup adds after its profile was written, nor plant one', async () => {
+        // `pup init` and `pup audit` run the child in the operator's repo while
+        // pup adds worktrees there, which no walk at profile time can see: `s2`
+        // appears once the child runs, and the child moves it into scratch,
+        // rewrites its pointer and moves it back under a new name (decision 117).
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, '.worktrees', 's2');
+        mkdirSync(join(cwd, '.worktrees'));
+        const options = { cwd, repoPath: cwd };
+
+        // The profile is written before runGateChild returns.
+        const child = runGateChild(
+          'sh',
+          [
+            '-c',
+            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 "$TMPDIR/s2" && printf "gitdir: /evil" > "$TMPDIR/s2/.git" && mv "$TMPDIR/s2" .worktrees/s3',
+          ],
+          options,
+        );
+        mkdirSync(worktree);
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
+
+        await expect(child).rejects.toThrow(/Operation not permitted/);
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s2\n',
+        );
+        // A link at a name pup has yet to use, or at `.worktrees` itself before
+        // pup makes it, in any case, would aim pup's next worktree at scratch.
+        const fresh = fakeCheckout();
+        for (const [script, dir] of [
+          ['ln -s "$TMPDIR" .worktrees/s4', cwd],
+          ['ln -s "$TMPDIR" .WORKTREES', fresh],
+        ] as const) {
+          await expect(
+            runGateChild('sh', ['-c', script], { cwd: dir, repoPath: dir }),
+          ).rejects.toThrow(/Operation not permitted/);
+        }
+        expect(existsSync(join(fresh, '.worktrees'))).toBe(false);
+        // The control: the same link anywhere else in the checkout is made.
+        await runGateChild('sh', ['-c', 'ln -s "$TMPDIR" elsewhere'], options);
+        expect(lstatSync(join(cwd, 'elsewhere')).isSymbolicLink()).toBe(true);
+      });
+
+      it('cannot swap its checkout with a directory in its scratch, in either order', async () => {
+        // `renamex_np` with RENAME_SWAP moves both names at once; each is
+        // checked as a source, so neither side frees a pin. The swap is made
+        // through ctypes because no shell tool makes one.
+        const swap =
+          'import ctypes, os, sys\n' +
+          'libc = ctypes.CDLL(None, use_errno=True)\n' +
+          'if libc.renamex_np(sys.argv[1].encode(), sys.argv[2].encode(), 2):\n' +
+          '    sys.exit(os.strerror(ctypes.get_errno()))';
+        const cwd = fakeCheckout();
+        const inScratch = (pair: string) =>
+          runGateChild(
+            'sh',
+            [
+              '-c',
+              `mkdir -p "$TMPDIR/d" "$TMPDIR/e" && python3 -I -B -c "$1" ${pair}`,
+              'sh',
+              swap,
+              cwd,
+            ],
+            { cwd, repoPath: cwd },
+          );
+
+        await expect(inScratch('"$TMPDIR/d" "$2"')).rejects.toThrow(/Operation not permitted/);
+        await expect(inScratch('"$2" "$TMPDIR/d"')).rejects.toThrow(/Operation not permitted/);
+        // The control: the same swap of two names nobody pinned goes through.
+        await expect(inScratch('"$TMPDIR/d" "$TMPDIR/e"')).resolves.toBe('');
       });
 
       it('creates a git repo in its own scratch space, where nothing is being measured', async () => {
