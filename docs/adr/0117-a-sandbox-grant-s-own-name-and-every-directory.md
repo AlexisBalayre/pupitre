@@ -1,11 +1,12 @@
-# 0117. A sandbox grant's own name, every directory above it and every directory below a checkout that leads to a nested `.git` cannot be unlinked or renamed, and nothing under a directory the walk cannot read can be, except a caller's output directory, which keeps its name free (2026-10-28).
+# 0117. A sandbox grant's own name, every directory above it and every directory below a checkout that leads to a nested `.git` cannot be unlinked or renamed, nothing under a directory the walk cannot read can be, the checkout's `.worktrees` cannot be written at all and a child mounts nothing; a caller's output directory keeps its name free and must hold no `.git` (2026-10-28).
 
 - Status: accepted
 
 117. **A sandbox grant's own name, every directory above it and every directory below a
-    checkout that leads to a nested `.git` cannot be unlinked or renamed, and nothing under a
-    directory the walk cannot read can be, except a caller's output directory, which keeps its
-    name free (2026-10-28).**
+    checkout that leads to a nested `.git` cannot be unlinked or renamed, nothing under a
+    directory the walk cannot read can be, the checkout's `.worktrees` cannot be written at all
+    and a child mounts nothing; a caller's output directory keeps its name free and must hold
+    no `.git` (2026-10-28).**
     The t-mvqve712 security review found by reading the profile that a grant covers its own
     name, so a child may rename it. Reproduced under the generated profile on macOS: in
     `pup init` and `pup audit` the child's cwd is the operator's repo. The child ran `mv` on
@@ -53,10 +54,36 @@
     sealed. A directory on another device than the checkout's parent is sealed the same way,
     by its `lstat` device number, which costs the walk nothing measurable. A volume mounted
     over `.worktrees` or `s1` would read as holding no `.git` and could be detached before
-    the next child runs. Whether a child can mount one from inside the profile was not tried:
-    the conductor's review judged that `hdiutil attach` reaches diskarbitrationd through the
-    `(allow default)` mach lookups, and the seal does not depend on the answer. A checkout
-    that is itself a mount point is sealed whole.
+    the next child runs. A checkout that is itself a mount point is sealed whole.
+    *No mounts.* The unlink rule does not stop a mount, and a volume mounted over
+    `.worktrees/s1` or a checkout's `.git` swaps what pup's next git call reads without one
+    unlink. Measured on macOS with a 1 MB HFS image: under the profile `writeProfile` generates,
+    minus the new rule, a child mounted the image on a directory inside its checkout with
+    `/sbin/mount`, since the write grant and the granted `/dev` cover what `mount(2)` checks. A
+    subpath `file-write*` deny on the mount point did not stop it either, and an unmount went
+    through under the blanket write deny. `(deny file-mount file-mount-update file-unmount)`
+    refused the same mount under the real profile, refused `hdiutil attach -mountpoint` (whose
+    mount diskarbitrationd performs) with "Permission denied", and refused the unmount. The
+    rule is not scoped to the checkout: a mount over an ancestor of it, or over
+    `/opt/homebrew/bin`, is the same swap, and no gate child has reason to mount or unmount
+    anything. FUSE and smbfs were not tried, as neither is installed here; `mount_smbfs` and
+    macFUSE's mounter call `mount(2)` from the child's process tree, which the rule covers.
+    The seal's device check stays, for a volume mounted before the rule or by something
+    outside the sandbox.
+    *The worktrees.* The walk pins what it saw when it wrote the profile, and pup adds
+    worktrees to the operator's repo while a `pup init` or `pup audit` child runs there. The
+    conductor's review of the walk found that a child could move a `.worktrees/sN` added after
+    its profile into scratch, rewrite the `.git` pointer there and move it back under a new
+    name. pup owns `.worktrees`, so the profile denies every write under the child's own
+    checkout's `.worktrees`, the directory included, as a `subpath` in the same carve-out as
+    `.git`. Every write, not only unlink: the deny also refuses a link a child plants at
+    `.worktrees` before pup makes it, or at a `.worktrees/<name>` pup has yet to use, which
+    would aim pup's next `git worktree add` at scratch. Measured on APFS, the match is
+    case-insensitive: `.WORKTREES` and `.Worktrees` are refused too. No gate child writes
+    another session's worktree: pup's own gate runs in a scratch checkout with no
+    `.worktrees`, and a session's own worktree is its checkout, not under it. A `.worktrees`
+    that is already a link when the profile is written is not followed, so writes through it
+    land on a target no grant names and are refused unless that target is granted.
     The seal fails closed, and its cost lands on later stages. A child that leaves a
     directory unreadable, oddly named or mounted over loses unlink under it for every later
     child. A child that runs `chmod 000` on the checkout root seals the whole checkout, so
@@ -72,12 +99,15 @@
     makes it again (decision 108). Pinning that directory would bring back the EPERM decision
     108 fixed. The ancestors of an output are pinned, so the holder pup made around the report
     directory stays put.
-    Ceilings. An output a child moves elsewhere takes its contents along. Every current caller
-    passes a directory pup made with `mkdtemp`, the TypeScript report directory and the Python
-    coverage directory. Neither holds a repo pup's git reads. A caller that passes a repo as an
-    output would reopen this hole for that repo. The nested set is what the walk saw when the
-    profile was written: a worktree pup adds while the child runs is not pinned for that
-    child. The walk has no bound on the number of directories, so a child that makes millions
+    An output a child moves elsewhere takes its contents along. Every current caller passes a
+    directory pup made with `mkdtemp`, the TypeScript report directory and the Python coverage
+    directory, but nothing but this record said so. So `writeProfile` walks each output that
+    exists with the same walk and refuses, writing no profile, one that holds a `.git` at any
+    depth or a directory the walk cannot read: the stage fails rather than grant a repo a free
+    name.
+    Ceilings. A nested repo other than a worktree that appears while a child runs, a submodule
+    or vendored clone, is not pinned for that child; the next profile pins it. The walk has
+    no bound on the number of directories, so a child that makes millions
     of them slows every later child's profile, by minutes at worst. It cannot thereby hide
     one. A child can still move a repo it
     made in scratch into the checkout, under a name that does not exist yet, since a rename's
@@ -92,8 +122,14 @@
     file is unchanged, and a sibling directory with no `.git` still moves. A fourth is refused a
     `renamex_np` swap of a scratch directory with its checkout, in both operand orders, while
     the same swap of two scratch directories goes through. A fifth runs after a child made
-    `.worktrees` unreadable. It restores the mode and tries the worktree move, is refused, and
-    the pointer file is unchanged. With the pins emptied, the first two
+    `vendor` unreadable. It restores the mode and tries the nested move, is refused, and
+    the pointer file is unchanged. The third and fifth use a vendored repo, `vendor/s1`, as
+    `.worktrees` is no longer writable at all. A sixth waits until the test adds
+    `.worktrees/s2` after its profile was written, then tries to move it into scratch, rewrite
+    its pointer and move it back as `s3`: refused, the pointer unchanged. Children are refused a
+    link at `.worktrees/s4` and at `.WORKTREES` in a checkout with none yet, while the same link
+    elsewhere in the checkout is made; without the `.worktrees` deny, the sixth fails. With the
+    pins emptied, the first two
     fail because the child's command succeeds. Without the walk's pins, the worktree test
     fails. Without the root pins, the swap test fails. With the unreadable directory pinned
     but not sealed, the fifth fails. In `sandbox-profile-utils.test.ts`, the
@@ -106,4 +142,6 @@
     mode-000 checkout root is sealed whole. With the device check taken out, the device case
     fails. Two directories named
     with a newline and with `\u009b`, each holding a `.git`, seal their parent, and neither
-    name reaches the profile.
+    name reaches the profile. Both goldens carry the mount rule and the `.worktrees` deny, which
+    an output does not get. An output that holds a `.git`, leads to a nested one or cannot be
+    read is refused and no profile file is written, while the same directory fresh is granted.

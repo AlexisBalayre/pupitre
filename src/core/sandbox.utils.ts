@@ -353,7 +353,8 @@ function gateInvocation(
       // any depth under each. Only the two directories this seam itself
       // created for the child are exempt from that deny. The checkout the
       // child runs in and those two keep their names (decision 117); the
-      // caller's are outputs a tool may remove and make again.
+      // caller's are outputs a tool may remove and make again, so
+      // writeProfile refuses one that holds a .git or cannot be read.
       writeProfile(
         // A profile of its own: children start together (decision 95), and a
         // shared file was rewritten for the next child before `sandbox-exec`

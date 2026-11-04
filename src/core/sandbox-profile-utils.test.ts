@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -93,6 +94,7 @@ describe('sandboxProfile', () => {
         '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
         `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x")\n  (subpath "/repo/.git"))`,
         String.raw`(deny file-write* (require-all (subpath "/repo") (regex #"/\.git(/|$)")))`,
+        '(deny file-mount file-mount-update file-unmount)',
         '(deny file-write-unlink\n  (literal "/repo")\n  (literal "/"))',
         '',
       ].join('\n'),
@@ -133,6 +135,16 @@ describe('sandboxProfile', () => {
     expect(generated).toContain(gitDeny);
     expect(generated).not.toContain('(require-all (subpath "/scratch-grant")');
     expect(generated.indexOf(gitDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
+  });
+
+  // A volume mounted over a worktree or a `.git` swaps what pup's next git call
+  // reads without one unlink, and no write rule refused a mount (decision 117).
+  it('denies every mount, remount and unmount, after the grants', () => {
+    const generated = profile(['/repo']);
+    const mountDeny = '(deny file-mount file-mount-update file-unmount)';
+
+    expect(generated).toContain(mountDeny);
+    expect(generated.indexOf(mountDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
   });
 
   it('leaves the unlink deny out when nothing is pinned, since bare it denies every unlink', () => {
@@ -177,8 +189,9 @@ describe('writeProfile', () => {
           .map((path) => `\n  (subpath "${home}/${path}")`)
           .join('')})`,
         '(allow file-write*\n  (subpath "/x/checkout")\n  (subpath "/x/scratch")\n  (subpath "/dev"))',
-        `(deny file-write*\n  (subpath "${home}/.pupitre")\n  (subpath "${policyDir}")\n  (subpath "/x/checkout/.git"))`,
+        `(deny file-write*\n  (subpath "${home}/.pupitre")\n  (subpath "${policyDir}")\n  (subpath "/x/checkout/.git")\n  (subpath "/x/checkout/.worktrees"))`,
         String.raw`(deny file-write* (require-all (subpath "/x/checkout") (regex #"/\.git(/|$)")))`,
+        '(deny file-mount file-mount-update file-unmount)',
         '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x/scratch")\n  (literal "/x")\n  (literal "/"))',
         '',
       ].join('\n'),
@@ -200,6 +213,37 @@ describe('writeProfile', () => {
     expect(generated).toContain(
       '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x")\n  (literal "/")\n  (literal "/y/holder")\n  (literal "/y"))',
     );
+    // Only the child's own checkout is where pup keeps worktrees.
+    expect(generated).toContain('(subpath "/x/checkout/.worktrees")');
+    expect(generated).not.toContain('/y/holder/report/.worktrees');
+  });
+
+  // An output keeps its name free, so one holding a repo could carry it into
+  // scratch, past every .git rule, and back: no profile is written for it.
+  it.each([
+    ['holds a .git', (output: string) => mkdirSync(join(output, '.git'))],
+    [
+      'leads to a nested .git',
+      (output: string) => mkdirSync(join(output, 'a', '.git'), { recursive: true }),
+    ],
+    ['cannot be read', (output: string) => chmodSync(output, 0o000)],
+  ])('refuses an output that %s, writing no profile', (_, make) => {
+    const output = tempDir('pup-output-');
+    const policyDir = tempDir('pup-profile-');
+    // The control: the same output, fresh, is granted.
+    expect(() =>
+      writeProfile(tempDir('pup-profile-'), ['/x/checkout'], [], [output]),
+    ).not.toThrow();
+    make(output);
+
+    try {
+      expect(() => writeProfile(policyDir, ['/x/checkout'], [], [output])).toThrow(
+        `Refusing to grant ${output} as an output`,
+      );
+    } finally {
+      chmodSync(output, 0o755);
+    }
+    expect(existsSync(join(policyDir, 'gate-child.sb'))).toBe(false);
   });
 
   // Moved out and back, a nested worktree came home with its `.git` pointer

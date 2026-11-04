@@ -60,6 +60,27 @@ function gitDenyRule(checkoutPath: string): string {
 }
 
 /**
+ * Where pup puts session worktrees in the operator's repo, which is the
+ * child's checkout under `pup init` and `pup audit`. Never writable from the
+ * child's own checkout: the walk below pins only the worktrees there when the
+ * profile is written, and pup adds more while a child runs, so a later
+ * `.worktrees/sN` could be moved into scratch, its `.git` pointer rewritten
+ * and moved back (decision 117). Denying every write, not only the unlink,
+ * also refuses a link planted at `.worktrees` or a name pup has yet to use.
+ * The match is case-insensitive on APFS, measured: `.WORKTREES` is refused too.
+ */
+const WORKTREES_DIRNAME = '.worktrees';
+
+/**
+ * No mount, remount or unmount. A volume mounted over `.worktrees/s1` or a
+ * checkout's `.git` swaps what pup's next git call reads with no unlink at all,
+ * and none of the write rules stop one: measured, a child mounted an HFS image
+ * inside its grant through `mount(2)` and `hdiutil attach`, and unmounted a
+ * volume under the blanket write deny. A gate child has no reason to do either.
+ */
+const MOUNT_DENY_RULE = '(deny file-mount file-mount-update file-unmount)';
+
+/**
  * Read-denied outright, and deliberately a fixed constant with no extension
  * mechanism: a per-repo or per-operator list is a channel a session can write
  * (the lesson decision 31 paid for with `python_files`), and the value of a
@@ -142,6 +163,7 @@ export function sandboxProfile(policy: {
       ...policy.protectedPaths,
     ])})`,
     ...policy.checkoutPaths.map(gitDenyRule),
+    MOUNT_DENY_RULE,
     // Bare, the rule would deny every unlink, so no pins means no rule.
     ...(policy.pinnedPaths.length + policy.sealedPaths.length > 0
       ? [
@@ -178,11 +200,15 @@ function escapeSbpl(value: string): string {
  * it. The one exemption is `outputPaths`, protected as checkouts are but with
  * their own names left free: vitest removes its empty report directory after
  * a failing run and the re-run makes it again (decision 108). Their
- * ancestors stay pinned, and pup makes each one in a holder of its own.
+ * ancestors stay pinned, and pup makes each one in a holder of its own. An
+ * output with a free name could carry a repo out from under every `.git`
+ * rule, so one that holds a `.git`, or a directory the walk cannot see into,
+ * is refused and no profile is written.
  * Below a pinned checkout, every directory that leads to a nested `.git` is
  * pinned as well: moved out, `.worktrees/s1` had its pointer file rewritten in
  * scratch and came back aimed at a git dir the child wrote. What the walk
- * cannot see into is sealed whole.
+ * cannot see into is sealed whole, and `.worktrees`, where pup adds more while
+ * the child runs, is not writable at all.
  */
 export function writeProfile(
   policyDir: string,
@@ -192,7 +218,16 @@ export function writeProfile(
 ): string {
   const profilePath = join(policyDir, 'gate-child.sb');
   const pinnedCheckouts = [...new Set(writablePaths.map(grantPath))];
-  const checkouts = [...new Set([...pinnedCheckouts, ...outputPaths.map(grantPath)])];
+  const outputs = outputPaths.map(grantPath);
+  for (const output of outputs) {
+    const { pinned, sealed } = nestedRepoPaths(output);
+    if (pinned.length + sealed.length > 0) {
+      throw new Error(
+        `Refusing to grant ${output} as an output: it holds a .git, or a directory pup cannot read; an output is a fresh directory pup made.`,
+      );
+    }
+  }
+  const checkouts = [...new Set([...pinnedCheckouts, ...outputs])];
   const scratch = [...new Set(scratchPaths.map(grantPath))].filter(
     (path) => !checkouts.includes(path),
   );
@@ -202,7 +237,10 @@ export function writeProfile(
     profilePath,
     sandboxProfile({
       writablePaths: grants,
-      protectedPaths: checkouts.map((path) => join(path, GIT_DIRNAME)),
+      protectedPaths: [
+        ...checkouts.map((path) => join(path, GIT_DIRNAME)),
+        ...pinnedCheckouts.map((path) => join(path, WORKTREES_DIRNAME)),
+      ],
       checkoutPaths: checkouts,
       pinnedPaths: [
         ...new Set([
@@ -225,7 +263,7 @@ export function writeProfile(
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
- * Below `root`: every directory that holds a `.git`, worktree pointer file or
+ * At and below `root`: every directory that holds a `.git`, worktree pointer file or
  * directory, or leads to one, to pin; and every directory the walk could not
  * see into, to seal whole. Read afresh for each child: pup adds worktrees while
  * other runs go on. Matched without case, as the APFS lookup git makes is.
@@ -272,9 +310,10 @@ function nestedRepoPaths(root: string): { pinned: string[]; sealed: string[] } {
       }
     }
   }
-  // Each one and everything between it and the root: moving any of them moves it.
+  // Each one and everything between it and the root, the root included:
+  // moving any of them moves it.
   const pinned = [...holders, ...sealed].flatMap((dir) =>
-    [dir, ...ancestors(dir)].filter((path) => path.startsWith(`${root}/`)),
+    [dir, ...ancestors(dir)].filter((path) => path === root || path.startsWith(`${root}/`)),
   );
   return { pinned, sealed };
 }
