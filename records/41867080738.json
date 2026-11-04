@@ -1,0 +1,111 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T16:30:42.594Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41867080738",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41867080738",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e000290b8c9257f3b79a56a8c9883690bdc38312",
+  "source": "pr",
+  "pr_number": 218,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "137-138",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test checks that an exact key beats a wildcard that also matches. The only exact-key case (`'@ui'`) has no competing wildcard, so moving `const exact = aliases.get(specifier); if (exact) return exact;` after the wildcard loop would still pass. Add a case such as `{ \"@*\": [\"b/*\"], \"@ui\": [...] }` that resolves `'@ui'` to the exact target.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "96-108",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `parsePathAliases` JSDoc (\"A `paths` or `baseUrl` of a shape tsc rejects throws\") and ADR 0130 overstate the shape check. `\"paths\": [[\"src/*\"]]` passes `Object.entries` as the alias `\"0\" -> [\"src/*\"]`, and an empty substitution list `\"@a/*\": []` is kept without throwing, though tsc rejects both. Neither does any harm, but the text should say that only the shapes that throw fall back to no aliases.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "108-118",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`parsePathAliases` computes the bounds, enforces them and builds the Map in one function, and the bound names hide what they count. `size` is entries plus substitutions, and `chars` is a three-term formula in which `baseChars` stands in for `join(baseUrl, t)`. Rename them (`entryCount`, `aliasChars`) or extract a small `withinAliasBounds` predicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "77-97",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 10-line JSDoc above the `MAX_PATH_ALIAS_*` constants walks through the cost arithmetic term by term (\"Each bound caps one term of what an import costs…\"), which the code in `parsePathAliases` already states. Keep the WHY (the merge lock that no stage timeout reaches, decisions 31 and 110) with one line per constant, and drop the cost narration.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8074726,
+  "duration_ms": 212271,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 8252,
+    "cache_read": 271047,
+    "cache_creation": 49068,
+    "total": 328379
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 40,
+      "output": 34664,
+      "cache_read": 544339,
+      "cache_creation": 121848,
+      "cost_usd": 1.5587518
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 7080,
+      "cache_read": 218543,
+      "cache_creation": 62401,
+      "cost_usd": 0.24872080000000002
+    }
+  ],
+  "permission_denials": []
+}
