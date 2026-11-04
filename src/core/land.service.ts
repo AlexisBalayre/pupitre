@@ -163,18 +163,15 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
             `says merged ${prUrl}; the PR landed elsewhere. Nothing was landed.`,
         );
       }
-      // A merge commit holds the pinned sha; a squash or rebase merge holds its
-      // content only, and is taken when that content is exactly the gate's
-      // (decision 130).
-      const landedOn = isAncestor(req.repoPath, sha, mergeCommit)
-        ? `${mergeCommit}^1`
-        : squashedOnto(req.repoPath, sha, mergeCommit);
+      // A merge, squash or rebase is taken when what it landed is exactly the
+      // gate's content: ancestry alone would take a merge commit carrying
+      // changes of its own (decision 130).
+      const landedOn = mergedOnto(req.repoPath, sha, mergeCommit);
       if (landedOn === undefined) {
         throw new Error(
-          `${mergeCommit}, the commit GitHub says merged ${prUrl}, neither contains ${sha}, the ` +
-            'commit the gate pinned, nor has the tree git gives merging it onto the commit the ' +
-            'merge went onto; the squash or rebase landed content the gate never measured. ' +
-            'Nothing was landed.',
+          `${mergeCommit}, the commit GitHub says merged ${prUrl}, does not have the tree git ` +
+            `gives merging ${sha}, the commit the gate pinned, onto the commit the merge went ` +
+            'onto; the merge landed content the gate never measured. Nothing was landed.',
         );
       }
       // What the gate checks under its lock before the same checkout (decisions
@@ -340,40 +337,64 @@ function fetchTarget(
 }
 
 /**
- * The commit a squash or rebase merge of `sha` went onto, when `mergeCommit`'s
- * tree is exactly the tree git gives merging `sha` there (decision 130):
- * anything the merge added, dropped or altered past what the gate measured
- * makes them differ. A squash went onto `mergeCommit`'s first parent; a
- * rebase merge replayed the pinned branch's own commits, as many as `sha` has
- * that `mergeCommit` lacks, so it went onto the first parent that many commits
- * down. That base is tried first: the last replayed commit's parent matches
- * too, and the steer would then miss every file but the last commit's. A
- * conflicted merge is no match. Run from the scratch git dir, for the fetch's
- * reason (decision 54): a merge reads drivers from config.
+ * The commit a merge, squash or rebase of `sha` went onto, when what it landed
+ * is exactly the tree git gives merging the pinned content there (decision
+ * 130): anything the merge added, dropped or altered past what the gate
+ * measured makes them differ. A merge commit or a squash went onto
+ * `mergeCommit`'s first parent, and its tree is checked against merging `sha`
+ * there. A rebase merge replayed the pinned branch's own commits, the ones
+ * `sha` has that `mergeCommit` lacks, onto the first parent that many commits
+ * down, and each replayed commit's tree is checked against merging its pinned
+ * commit there: checking the last alone would take commits of someone else's
+ * that the last one undoes. That base is tried first, since the last replayed
+ * commit's parent matches as a squash, and the steer would then miss every file
+ * but the last commit's. A conflicted merge is no match. Run from the scratch
+ * git dir, for the fetch's reason (decision 54): a merge reads drivers from
+ * config. The repo's commit graph, a cache in the object store a session can
+ * write, is not read.
  */
-function squashedOnto(repoPath: string, sha: string, mergeCommit: string): string | undefined {
+function mergedOnto(repoPath: string, sha: string, mergeCommit: string): string | undefined {
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
-  return withScratchGitDir(repoPath, 'pup-land-', (git) => {
-    const tree = git(['rev-parse', '--verify', `${mergeCommit}^{tree}`], piped).trim();
-    const own = Number(git(['rev-list', '--count', sha, `^${mergeCommit}`], piped).trim());
-    for (const depth of new Set([own, 1])) {
-      try {
-        const base = git(
-          ['rev-parse', '--verify', '--quiet', `${mergeCommit}~${depth}^{commit}`],
-          piped,
-        ).trim();
-        const merged = git(['merge-tree', '--write-tree', '--no-messages', base, sha], {
+  try {
+    return withScratchGitDir(repoPath, 'pup-land-', (scratchGit) => {
+      const git = (args: string[]) =>
+        scratchGit(['-c', 'core.commitGraph=false', ...args], {
           ...piped,
           timeout: GATE_COMMAND_TIMEOUT_MS,
         }).trim();
-        if (merged === tree) return base;
-      } catch (error) {
-        // no commit that far down, or a conflict
-        rethrowIfKilled(error);
+      const own = git(['rev-list', '--reverse', sha, `^${mergeCommit}`]).split('\n');
+      // One pinned commit is a squash's case. Never depth 0: `mergeCommit`
+      // itself, whose merge with an ancestor is its own tree.
+      const shapes = own.length > 1 ? [own, [sha]] : [[sha]];
+      for (const heads of shapes) {
+        try {
+          const base = git([
+            'rev-parse',
+            '--verify',
+            '--quiet',
+            `${mergeCommit}~${heads.length}^{commit}`,
+          ]);
+          const replays = heads.every((head, at) => {
+            const replayed = `${mergeCommit}~${heads.length - 1 - at}^{tree}`;
+            return (
+              git(['merge-tree', '--write-tree', '--no-messages', base, head]) ===
+              git(['rev-parse', '--verify', replayed])
+            );
+          });
+          if (replays) return base;
+        } catch (error) {
+          // no commit that far down, or a conflict
+          rethrowIfKilled(error);
+        }
       }
-    }
-    return undefined;
-  });
+      return undefined;
+    });
+  } catch (error) {
+    rethrowIfKilled(error);
+    throw new Error(
+      `Reading what ${mergeCommit} landed failed. Nothing was landed.\n${failureSummary(error)}`,
+    );
+  }
 }
 
 /**

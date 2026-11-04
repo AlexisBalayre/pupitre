@@ -379,15 +379,18 @@ describe('landSession', { timeout: 20_000 }, () => {
       seedPeer('s2', 'src/feature.ts');
       const real = vi.mocked(gitDiffPaths).getMockImplementation();
       vi.mocked(gitDiffPaths).mockImplementation((repoPath, target, branch) => {
-        if (target.endsWith('^1')) throw new Error('fatal: bad revision');
+        // The landed files are the merge commit's; a peer's are its branch's.
+        if (!branch.startsWith('refs/heads/')) throw new Error('fatal: bad revision');
         return real?.(repoPath, target, branch) ?? [];
       });
 
       await landMerged();
 
-      expect(vi.mocked(gitDiffPaths).mock.calls.some(([, target]) => target.endsWith('^1'))).toBe(
-        true,
-      );
+      expect(
+        vi
+          .mocked(gitDiffPaths)
+          .mock.calls.some(([, , branch]) => !branch.startsWith('refs/heads/')),
+      ).toBe(true);
       expect(landedEvents()).toHaveLength(1);
       expect(steersTo('s2')).toEqual([]);
       expect(steerEvents('s2')).toEqual([]);
@@ -1110,6 +1113,11 @@ describe('landSession', { timeout: 20_000 }, () => {
     },
   );
 
+  /** The refusal of a merge commit whose tree is not the pinned content merged onto its base. */
+  const refusal = (merge: string) =>
+    `${merge}, the commit GitHub says merged ${PR_URL}, does not have the tree git gives ` +
+    `merging ${pinned}, the commit the gate pinned`;
+
   /** A clone of origin, where GitHub's side of a squash or rebase merge is made. */
   function cloneOrigin(): string {
     const clone = tempDir('pup-land-clone-');
@@ -1231,10 +1239,110 @@ describe('landSession', { timeout: 20_000 }, () => {
     });
     const before = mainSha();
 
-    await expect(land()).rejects.toThrow(
-      `${squash}, the commit GitHub says merged ${PR_URL}, neither contains ${pinned}`,
-    );
+    await expect(land()).rejects.toThrow(refusal(squash));
     expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
+  });
+
+  // Squashed onto the moved main, but undoing it: the tree is the pinned one
+  // exactly, which only a rebase onto main's older tip could give, and no
+  // replayed commit there is the other PR's.
+  it("refuses a squash of a two-commit pin that drops another PR's change, changing nothing", async () => {
+    pinned = commitIn(worktree, 'src/second.ts', 'export const second = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone, () => rmSync(join(clone, 'src/other.ts')));
+    expect(sh(clone, 'git', 'rev-parse', `${squash}^{tree}`)).toBe(
+      sh(clone, 'git', 'rev-parse', `${pinned}^{tree}`),
+    );
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expectNothingChanged(before);
+  });
+
+  // Ancestry alone would take a merge commit carrying changes of its own.
+  it('refuses a merge commit with a change the gate never measured, changing nothing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    sh(clone, 'git', 'merge', '--no-ff', '--no-commit', '-q', `origin/${BRANCH}`);
+    const merge = commitIn(clone, 'src/extra.ts', 'x;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    expect(sh(clone, 'git', 'rev-list', '--parents', '-n', '1', merge).split(' ')).toContain(
+      pinned,
+    );
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(merge));
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // GitHub resolved the conflict its own way: no merge of the pin gives that tree.
+  it('refuses a squash of a pin that conflicts with the moved main, changing nothing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    commitIn(clone, 'src/feature.ts', 'export const feature = 0;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    const squash = commitIn(clone, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // The tree check merges a file both sides changed, which runs a merge driver
+  // the repo's attributes and config name; the scratch git dir reads neither.
+  it('runs no merge driver armed in the repo while checking the tree', async () => {
+    pinned = commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    const moved = commitIn(clone, 'src/app.ts', 'export const app = 3;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    writeFileSync(join(clone, 'src/feature.ts'), 'export const feature = 1;\n');
+    const squash = commitIn(clone, 'src/app.ts', 'export const app = 2;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    const marker = join(tempDir('pup-land-driver-'), 'ran');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* merge=x\n');
+    sh(repo, 'git', 'config', 'merge.x.driver', `touch ${marker}; false`);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expect(existsSync(marker)).toBe(false);
+    expectNothingChanged(before);
+    // The same merge run by the repo's own git does run it.
+    expect(() => sh(repo, 'git', 'merge-tree', '--write-tree', moved, pinned)).toThrow();
+    expect(existsSync(marker)).toBe(true);
   });
 });
