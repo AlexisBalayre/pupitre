@@ -1,0 +1,187 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T12:11:21.843Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41825911270",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41825911270",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8c949e7c178d9f77fd8c7e5fc624ac1593ad9add",
+  "source": "pr",
+  "pr_number": 206,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "184-198",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`parseCall` never checks that the usage fields are numbers. If a worker writes `input_tokens` as a string, `contextOf` joins the strings instead of adding. `percentile` returns that string, and `tokens()` prints it raw through `formatRow` with no `sanitizeReason`, so ESC/CSI sequences from a worker's transcript reach the operator's terminal. A non-string `effort` or `model` crashes the command, and negative counts skew the totals.",
+      "body": "**Usage counts from a worker's transcript reach the operator's terminal unsanitized**\n\nA session writes its own transcript directory (ADR 0067: \"the newest `.jsonl` there is whatever it put there\"). ADR 0122 *Print* scrubs model, effort and tool names because they come \"from a file a worker can write\". The usage numbers come from the same file, and nothing checks them:\n\n```ts\nif (!usage || !model || model.startsWith('<')) return undefined;\nconst {\n  input_tokens: input = 0,\n  ...\n} = usage;\n```\n\nThe `= 0` defaults only replace `undefined`. Here is what each kind of bad value does:\n\n- **String `input_tokens`** (or `cache_read_input_tokens`): `contextOf` concatenates instead of adding. `percentile`'s `a - b` comparator gives NaN, so the string stays in the list and is returned as the median, p90 and first-request floor. `tokens()` falls through to `String(n)`, and `formatRow` prints it with no `sanitizeReason`. A planted line such as `{\"type\":\"assistant\",\"timestamp\":\"2099-01-01T00:00:00Z\",\"requestId\":\"r\",\"message\":{\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":\"\\u001b[2J...\"}}}` clears the operator's screen and draws the worker's own text in its place. The total cost and the row's cost come out as `$NaN`.\n- **Negative counts:** these are accepted and take spend off the total.\n- **Non-string `effort`:** crashes `sanitizeReason(row.effort)` in the text report.\n- **Non-string `model`:** crashes at `model.startsWith`, on both the text and `--json` paths.\n\n`--json` itself is not open to the escape injection, because `JSON.stringify` and the DEL/C1 rewrite cover it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8c949e7c178d9f77fd8c7e5fc624ac1593ad9add/src/core/usage-report.service.ts#L184-L198\nhttps://github.com/AlexisBalayre/pupitre/blob/8c949e7c178d9f77fd8c7e5fc624ac1593ad9add/src/core/usage-report.service.ts#L483-L495\n\n**Fix:** check types where the data comes in.\n\n- Treat any count that is not `typeof n === 'number' && Number.isFinite(n) && n >= 0` as 0.\n- Require `typeof model === 'string'`.\n- Take `effort` only when it is a string, and use `'unknown'` otherwise.\n- Optionally, clamp `write1h` to `written` so that `write5m` cannot go negative.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "169-171",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`blocksOf` treats any array as `ContentBlock[]`, so a worker-written `\"content\":[null]` throws at `block.content` / `block.type`. Only the `readFileSync` call is inside a `try`, so one planted line crashes `pup usage` on every run, and the error does not name the file. A non-string `tool_use.name` likewise crashes `sanitizeReason(t.tool)` in `formatCarry`.",
+      "body": "**One malformed line in a worker's transcript stops `pup usage` from running**\n\n```ts\nfunction blocksOf(content: unknown): ContentBlock[] {\n  return Array.isArray(content) ? (content as ContentBlock[]) : [];\n}\n```\n\nThe cast does not check the array's elements. The crash path:\n\n- `parseLine`'s `try` covers only `JSON.parse`, and `scanLine` has no `try`.\n- `noteOrigin` reads the first `user` entry before the window check.\n- So a line `{\"type\":\"user\",\"message\":{\"content\":[null]}}` throws `TypeError: Cannot read properties of null (reading 'content')` in `textOf`, whatever `--since` is.\n- The `usage` action has no catch, and `fatalExitCode` rethrows a TypeError, so the command dies without naming the file.\n\nThe same applies at `block.type` in `noteAssistant` and `noteToolResults`.\n\nSeparately, line 236 checks only that `block.name` is truthy. A `tool_use` named `5` or `{}` is stored, and later crashes `sanitizeReason(t.tool)` in `formatCarry`, because `sanitizeReason` calls `.replace`.\n\nADR 0067 states the rule this breaks: \"An unreadable transcript is a reading that degrades, not a surface that dies\". This PR's own test checks that a non-JSON line and a `broken.jsonl` directory degrade the same way.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8c949e7c178d9f77fd8c7e5fc624ac1593ad9add/src/core/usage-report.service.ts#L169-L171\nhttps://github.com/AlexisBalayre/pupitre/blob/8c949e7c178d9f77fd8c7e5fc624ac1593ad9add/src/core/usage-report.service.ts#L234-L242\n\n**Fix:** both edits are needed, because neither covers the other.\n\n1. Keep only object blocks:\n\n```ts\nfunction blocksOf(content: unknown): ContentBlock[] {\n  if (!Array.isArray(content)) return [];\n  return content.filter((block): block is ContentBlock => typeof block === 'object' && block !== null);\n}\n```\n\n2. Require a string tool name at line 236: `block.type === 'tool_use' && block.id && typeof block.name === 'string'`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "299-311",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Nothing stops `workerDirsOf` from returning the checkout's own transcript dir, and sources are never deduped by file path. A sessions row whose `worktree_path` is the repo path (decision 67 treats that column as session-writable) makes every console, conductor and utility transcript count twice: once as `worker` and once as its real class. That doubles the total cost. Exclude `transcriptDir(repoPath, claudeDir)` from the worker set, or dedupe sources by file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "234-238, 263-265",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Tool names are recorded only in `noteAssistant`, which runs only for entries inside the window. So when a `tool_use` falls before `--since` and its `tool_result` falls after, the result is counted and carried under `unknown` instead of its tool. Recording `tool_use` ids from every assistant entry, whatever its timestamp, fixes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "424-426, 491",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The per-row 'cost split' prints only the read, write and output shares. `costOf` also computes the uncached-input part (`parts.input`), but it is never reported, so the shares don't add up to 100%. For lightly cached rows such as headless utility calls, a line like 'read 0.0%, write 0.0%, output 33.3%' leaves most of the cost unexplained. Add an input share, or label the line so it is clear input is left out.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "283-289",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readTranscript` calls `readFileSync(file, 'utf8')` on any `*.jsonl` name with no regular-file check and no `O_NONBLOCK`. A worker can plant a FIFO (`mkfifo x.jsonl`) or a symlink to `/dev/zero` in its own transcript dir, which hangs `pup usage` or grows its memory without bound. Open with `O_RDONLY | O_NONBLOCK`, `fstat`, and skip non-regular files, as `readPlainFile` in `src/adapters/capability.utils.ts` already does (decision 96). `latestContextTokens` has the same gap today.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "314-325",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sourcesIn` walks each dir with `readdirSync(dir, { recursive: true })` but keeps only depth 0 and `<x>/subagents/*.jsonl`. A symlinked top-level dir matching the `.worktrees` prefix can point the walk at the operator's whole `$HOME`. One unreadable subdirectory (e.g. `mkdir -m 000`) throws, and that blanks every transcript in the dir without any error. A two-level listing, with its own `try` per subagents dir, avoids both and drops the regexes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "37-38",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`const CHARS_PER_TOKEN = 4` redeclares a constant already exported from `src/core/profile.constants.ts:5` and used by the profile compiler. If that estimate is ever refined, tool-carry tokens will quietly stop matching profile-budget tokens. Import it from `./profile.constants.js` instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "231",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Conductor detection matches the literal `'# Pupitre conductor '`, which only happens to equal the heading `buildConductorContext` writes (`profile-compiler.service.ts:1275`). Rewording that heading would silently move every conductor transcript into `console`, and the test builds its own copy of the literal, so it would not catch the change. Export one heading-prefix constant and use it in all three places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2514-2525",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The text format lives in core (`formatUsageReport`), but the JSON format and its DEL/C1 `\\uXXXX` escaping are built inline in the CLI action, against AGENTS.md's 'src/cli/ stays thin; logic lives in src/core/'. As a result, the escaping can only be tested end to end. A `formatUsageReportJson` next to `formatUsageReport` would let the action just choose a formatter and make the escape test a unit test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "2189-2231",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The tests 'reads the transcripts of the config dir --session-env names' and 'escapes DEL and C1 in a planted name under --json' repeat the same ~17-line setup: config dir, `saveSessionEnv`, env stubs, `transcriptDir`, and the transcript write. A local helper inside `describe('usage')` that takes extra entry fields would leave each test showing only what it checks.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.494693699999999,
+  "duration_ms": 457924,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 20432,
+    "cache_read": 308358,
+    "cache_creation": 68530,
+    "total": 397332
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 246,
+      "output": 105785,
+      "cache_read": 3998279,
+      "cache_creation": 421163,
+      "cost_usd": 5.227744799999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 6200,
+      "cache_read": 204264,
+      "cache_creation": 73793,
+      "cost_usd": 0.26694890000000004
+    }
+  ],
+  "permission_denials": []
+}
