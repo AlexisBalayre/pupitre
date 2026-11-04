@@ -1,0 +1,164 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T12:34:15.484Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41829636076",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41829636076",
+  "actor": "AlexisBalayre",
+  "commit_sha": "036076c7c285767567bc6c15b4d975787cf0d3d6",
+  "source": "pr",
+  "pr_number": 213,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "277-330",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pup's visibility model (`visibleLines`) knows only code fences and HTML comments that start a line. It has no idea of CommonMark HTML blocks, so a status line inside an HTML block element that GitHub shows collapsed counts for pup but is hidden on GitHub. This is not the known `<div><!--` comment case; there is no comment at all. Example: `# 0001. T`, blank, `<details>`, `- Status: accepted`, `## Problem`, `</details>`, blank, `- Status: draft`. GitHub reads lines 3-6 as one raw HTML block: a collapsed \"Details\" element holding the accepted line. Below it, `- Status: draft` shows as an ordinary bullet. pup sees `- Status: accepted` as visible. It takes the `## Problem` inside the block as the first shown section (`statusOf`: `visible.findIndex(... SECTION_HEADING.test(line))`), so the visible `- Status: draft` below it is never counted, and exactly one status line, `accepted`, passes. `pup intent list` prints `accepted` while GitHub shows `Status: draft`. That breaks ADR 0126's 'pup must read the status a reader of the rendered file sees' and its claim that where the readings differ 'pup hides more'. The impact is low: nothing consumes `accepted` yet, and writing the line by hand is already a documented ceiling. A fix for the known `<div><!--` case that only handles comments would leave this open, so the comment-hiding fix should treat any line starting an HTML block (`^ {0,3}<[A-Za-z/]`) through the next blank line as hidden, the same way it treats comments.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "188-200",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When docs/intent/ doesn't exist yet, two concurrent first-time `pup intent new` runs both see ENOENT, and the second mkdirSync throws a raw EEXIST, which the CLI shows as a stack trace rather than drafting an intent; use mkdirSync(path, { recursive: true }) or treat EEXIST as success, keeping the lstat check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "3606-3618",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test \"lists a malformed intent as unreadable, and scrubs every title\" can't fail for the reason it states: core's `loadIntent` already strips U+009B before the CLI sees the title, so removing `sanitizeReason(entry.intent.title)` from `list` would still pass. Only a tab, which core keeps and `sanitizeReason` collapses, would exercise the CLI's own scrub.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1341-1348",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`intentOrRefuse` sends refusals through `sanitizeReason`, which cuts them at 300 code points, while the sibling `refuseScrubbed` exists so pup's own refusals aren't cut; the duplicate-id refusal lists every matching file name with unbounded slugs, so it can lose its \"; keep one.\" remediation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "42",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment at L42 says only the regex constants are copied (`// CONTROL_CHARS, FENCE_OPEN and FENCE_CLOSE are copies of brief.service.ts's, until a task shares them.`). But `visibleLines` also copies the fence-tracking logic from `sections()` in `/home/runner/work/pupitre/pupitre/src/core/brief.service.ts:157-169`, including the CommonMark close rule `if (closer && closer[0] === fence[0] && closer.length >= fence.length) fence = undefined;` (intent L315-316 matches brief L159-160 line for line). This is Duplicated Code. AGENTS.md's \"no abstraction until third use\" allows two copies, so extracting it isn't required. The problem is that the comment is the only link between the copies, and it names three regexes but not the logic. A future fix to fence parsing in one file (the brief's long comment shows it has had real bugs) won't point anyone to the other. Fix: name the fence open/close tracking in the L42 comment too, so whoever does the extraction later knows its full extent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent-service.test.ts",
+      "line": "346-352",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test `it('leaves no staged file behind', ...)` checks `existsSync(join(repo, INTENT_DIR, `0001-ship.md.${process.pid}.tmp`))`. That check is already covered by L286 in `'moves a draft with two questions to accepted...'`, which asserts `readdirSync(join(repo, INTENT_DIR)).toEqual(['0001-ship.md'])`. That assertion fails on any leftover file, whatever its name. The separate test also hard-codes the private staged-name format from `acceptIntent` (`${path}.${process.pid}.tmp`, service L176). If someone changes that format (for example to `randomUUID()`, as `/home/runner/work/pupitre/pupitre/src/claude/session-runtime.service.ts:268` uses), this test still passes but checks nothing. Fix: delete the test, since the `readdirSync` assertion at L286 already does the job without depending on the name.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/intent.service.ts",
+      "line": "250-252",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The catch is bare, so any `readPlainFile` failure gets the same message. That includes a file removed between the directory listing and the read, and a permission error. The message `${name} is not a plain file pup can read: a link, a fifo or too big.` names three causes as if they were exhaustive, so `pup intent list` can tell the operator \"a link, a fifo or too big\" about an unreadable regular file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1365",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment above `intent show` (\"Stripped of control characters by core, newlines and tabs kept, as `pup brief show` prints the brief.\") restates `Intent.text`'s JSDoc in intent.types.ts, which AGENTS.md §Comments and general.md §Comments call a seam duplicate; delete it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer's ADR diff read was truncated, and it did not read ADR 0126 in full, docs/02-cli.md, the test files, or testing.md. So whether ADR 0126 contradicts an earlier ADR without superseding it, and whether the tests comply with testing.md, were not checked by that area."
+    },
+    {
+      "component": "platform",
+      "description": "One reviewer's scoped `git diff` failed with a bwrap error about `.git/config.worktree.lock`. The reviewer read the files directly instead, with no loss of coverage."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6035180000000007,
+  "duration_ms": 273974,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 12955,
+    "cache_read": 329732,
+    "cache_creation": 48360,
+    "total": 391061
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 166,
+      "output": 72308,
+      "cache_read": 2537445,
+      "cache_creation": 258886,
+      "cost_usd": 3.3938230000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 5934,
+      "cache_read": 161780,
+      "cache_creation": 53650,
+      "cost_usd": 0.209695
+    }
+  ],
+  "permission_denials": []
+}
