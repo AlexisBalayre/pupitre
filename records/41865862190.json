@@ -1,0 +1,137 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T16:25:21.928Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41865862190",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41865862190",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cfdf9b17a35a8b153742fc6bb108ec86c5934505",
+  "source": "pr",
+  "pr_number": 222,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "385-388",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The inner catch in `mergedOnto` treats every git failure as \"no match\". A real failure such as git < 2.38, a usage error or exit 128 is reported as \"the merge landed content the gate never measured\" instead of \"Reading what X landed failed\".",
+      "body": "**Every git failure in the shape check is read as \"no match\"**\n\nThe per-shape `try` wraps `rev-parse --verify --quiet` and `merge-tree --write-tree --no-messages`. The two outcomes it means to swallow both exit with status 1:\n- \"no commit that far down\", from `rev-parse --verify --quiet`;\n- a conflict, from `merge-tree`.\n\nBut the catch only calls `rethrowIfKilled`, which rethrows only SIGINT, SIGTERM and SIGHUP. Every other failure is swallowed too:\n- a usage exit from `merge-tree` on a git without `--write-tree` (before 2.38, e.g. Ubuntu 22.04's 2.34);\n- a 128 from the plain `rev-parse --verify <mergeCommit>~N^{tree}`;\n- a missing object;\n- a crash.\n\n```ts\n        } catch (error) {\n          // no commit that far down, or a conflict\n          rethrowIfKilled(error);\n        }\n```\n\n**What goes wrong.** When every shape fails this way, `mergedOnto` returns `undefined` and `pup land` refuses with \"…the merge landed content the gate never measured.\" That message blames GitHub's merge for unmeasured content when git itself failed. The outer `Reading what ${mergeCommit} landed failed` path (L392-396), added for exactly this case, is never reached.\n\n**Old git can reach this.** Nothing enforces a minimum git version. The gate only calls `merge-tree --write-tree` when the target moved under an open PR, so a pin can exist without it ever running. On old git, every squash or rebase land, and now every merge-commit land too, would refuse permanently with a tampering-shaped reason.\n\n**Fix: match the gate.** The gate's own `merge-tree` caller already makes this distinction (decision 105, `src/core/merge-gate.service.ts` L1843-1846): status 1 is a conflict, and anything else is git failing to merge and is rethrown.\n\n**Missing test.** The new git-failure test only fails `rev-list`, which runs outside this `try`. A test where `merge-tree` throws with status 128 should expect the \"Reading what … landed failed\" refusal.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cfdf9b17a35a8b153742fc6bb108ec86c5934505/src/core/land.service.ts#L385-L388",
+      "suggestion": "        } catch (error) {\n          // 1 is no commit that far down, or a conflict; any other status is git\n          // failing outright (no `--write-tree` before 2.38), refused as such\n          rethrowIfKilled(error);\n          if ((error as { status?: unknown }).status !== 1) throw error;\n        }"
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "365-368",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When the pinned branch holds a merge commit (e.g. a re-gated PR that took main), a GitHub rebase merge flattens it away, so the rebase shape fails and the squash shape matches only the last replayed commit; acceptance stays sound, but the overlap steer's `gitDiffPaths(landedOn, mergeCommit)` misses the earlier replayed commits' files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "253-260",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`steerOverlappingSessions` gains a seventh positional string parameter, `landedOn`, right next to `mergeCommit`, so the two shas can be swapped without the type checker noticing; passing the pair (or the computed file set) would rule that out.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "1164-1176, 1235-1246, 1277-1287",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Three new tests repeat the same seedPrMerge/cloneOrigin/moveOriginMain/squashOnGitHub/fakeGh prelude; a small `squashedOntoMovedMain()` helper beside `squashOnGitHub` would cut each to one line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "1288-1296",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`(real as typeof withScratchGitDir)` casts away the possible `undefined` from `getMockImplementation()`, whereas the file's existing version of this pattern (~L385) handles it with `real?.(…)`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "497",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rebase test's comment says \"the last one's tree is checked against the base the first went onto\", but `mergedOnto` checks every replayed commit's tree, and ADR 0130 and the JSDoc warn that checking only the last tree is the bug; reword it to say each replayed tree is checked against merging its pinned commit onto the base.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.3379575,
+  "duration_ms": 375962,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 13980,
+    "cache_read": 313758,
+    "cache_creation": 67978,
+    "total": 395732
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 138,
+      "output": 102258,
+      "cache_read": 1485630,
+      "cache_creation": 324235,
+      "cost_usd": 4.167947
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 4335,
+      "cache_read": 88210,
+      "cache_creation": 47123,
+      "cost_usd": 0.1700105
+    }
+  ],
+  "permission_denials": []
+}
