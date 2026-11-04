@@ -1,0 +1,217 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T14:10:56.401Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41844138760",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41844138760",
+  "actor": "AlexisBalayre",
+  "commit_sha": "47a2eeece03defc0762680c22d2467853c028d95",
+  "source": "pr",
+  "pr_number": 206,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "313-325",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "workerDirsOf takes every sessions row's worktree_path as given (`const dirs = new Set(listSessions(db).map((row) => transcriptDir(row.worktree_path, claudeDir)));`). The munge keeps the result one segment under projects/, but that segment can be any project's: a worker that sets its row to /home/op/other-repo gets that project's console, conductor and subagent transcripts counted as Worker spend in this project's report. Only sanitized model, effort and tool names plus counts reach the operator, so nothing reaches the session and nothing leaks across users. The term is also redundant: every launched worktree is join(repoPath, '.worktrees', id) (session-lifecycle.service.ts:627, enforced by assertMintedRow, decision 84), so the prefix scan below already finds every real worker dir. Removing the row term, or keeping only rows that pass `row.worktree_path === join(repoPath, '.worktrees', row.id)`, closes this, along with the earlier empty-path and repo-path findings that share its cause; update decision 0122's 'the sessions table's rows plus any removed worktree' to match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "315-319",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The worktree prefix is matched against the munged name, which has lost its separators (`transcriptDir(`${join(repoPath, '.worktrees')}/`, claudeDir)` then `startsWith(prefix)`), so a sibling path that munges the same way, e.g. <repo>/.worktrees.old/x or <repo>/_worktrees_/x, is counted as this project's workers; matching a session-id shape (SESSION_ID_PATTERN) after the prefix would tighten it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "156, 189-192",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`countOf` accepts any finite count and `(call.output * price.output) / 1e6` multiplies before dividing, so a planted `\"output_tokens\": 1e308` overflows to Infinity: the report prints `$Infinity` total, 0.0% for every other row and NaN% / InfinityM for the planted one (null in --json), and a far-future timestamp keeps it in every window. Cap counts in `countOf` at a plausible ceiling, or treat a non-finite cost as 0.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "253-254, 475-476",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Calls are deduplicated by requestId only within one transcript (`state.calls` is per file), so history Claude Code copies into a new session file on a fork or resume (e.g. `--fork-session`) is counted once per file; a seen-key set shared across all sources in `buildUsageReport` would count each request once. Only operator-forked or resumed console sessions are affected.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2502-2507",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--since 7` reads like a day count next to the 'default: 7 days ago' help text, but V8's legacy Date parser accepts it (`new Date('7')` is 2001-07-01, `'90'` is 1990), so the report silently covers all history; refuse a bare number or require an ISO-like `^\\d{4}-` prefix.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": "111-131",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The classification test cannot tell conductor from console: it only checks that the set of class names in `byClass` includes both, so inverting conductor detection (c.jsonl → console, o.jsonl → conductor) still passes. Assert which class gets c.jsonl's cost (opus, 2000 written).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": "132-142",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test asserts `cacheReadCostShare`, `cacheWriteCostShare` or `outputCostShare`, so swapping or dropping a share in `rowOf` passes the suite; pin the worker row's three shares from its fixture.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": "217-222",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test passes `claudeDirs: [claudeDir, other, claudeDir]` to cover the dedupe but only asserts class names, so removing `new Set(opts.claudeDirs)` (worker read twice, calls 2) still passes; also assert `calls: 1` on the worker row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "328-362",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`Source.class` uses `UsageClass.Console` both as 'checkout transcript, class not resolved yet' and as the real Console class: `sourcesOf` tags every checkout file Console and `classOf` treats that as a placeholder (`if (source.class !== UsageClass.Console) return source.class; ...`). A location kind (`'worktree' | 'checkout' | 'subagent'`) mapped to a class only in `classOf` would make the provisional value explicit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "427-428, 482",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Every call's cost is computed twice: `buildUsageReport` sums `costOf` over all calls for `totalCost`, then `rowOf` runs `bucket.calls.map(costOf)` again per row; build the rows first, take `totalCost` from `rows.map(r => r.cost)`, then fill in `costShare`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "220-229",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`Transcript` is both the scan's working state and `readTranscript`'s result, so the scan-only fields `toolNames` and `sawUser` reach `addCalls`, `addToolCarry` and `classOf`, which never read them; keep them local to `readTranscript` or return a narrower shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "316, 349-350",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`workerDirsOf` calls `listSessions(db)` and runs once per config dir in `for (const claudeDir of claudeDirs)`, so the same sessions query runs once per dir; call it once in `sourcesOf` and pass the worktree paths in.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": "54-68",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`toolResult(id, atMs, chars)` and `toolResultBlocks(id, atMs, content)` build the same tool_result entry and differ only in how `content` is filled; keep one builder taking `content: unknown` and pass `'x'.repeat(chars)` at the string call sites.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.test.ts",
+      "line": "248, 303",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`const at = (ms: number): string => new Date(ms).toISOString();` is declared identically in two tests while the module-level builders inline `new Date(atMs).toISOString()` four times; hoist it next to `HOUR`/`T0` and reuse it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6847250000000007,
+  "duration_ms": 274571,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 15998,
+    "cache_read": 278752,
+    "cache_creation": 62421,
+    "total": 357183
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 144,
+      "output": 72734,
+      "cache_read": 1939724,
+      "cache_creation": 292799,
+      "cost_usd": 3.4944588000000008
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 4379,
+      "cache_read": 106252,
+      "cache_creation": 54326,
+      "cost_usd": 0.1902662
+    }
+  ],
+  "permission_denials": []
+}
