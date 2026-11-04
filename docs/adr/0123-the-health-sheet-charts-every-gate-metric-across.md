@@ -1,7 +1,7 @@
 # 0123. The Health sheet charts every gate metric across every snapshot, merges marked on the time axis (2026-10-29)
 
 - Status: accepted
-- Amends: [0098](0098-pup-dashboard-is-a-set-of-sheets-figures.md)
+- Amends: [0091](0091-pup-dashboard-serves-a-read-only-live-page.md), [0098](0098-pup-dashboard-is-a-set-of-sheets-figures.md)
 
 123. **The Health sheet charts every gate metric across every snapshot, merges marked on the time
      axis (2026-10-29).**
@@ -25,7 +25,9 @@
      printed from the parsed instant, in UTC, so no stored time string reaches the page; the session
      id prints as `(unminted session id)` outside the minted shape, and a PR url goes through
      `sanitizeReason`, `displayText` and `escapeHtml`, and is a link only in a pull request's shape,
-     as on the Overview.
+     as on the Overview. That check, `PR_URL`, moves from `dashboard.service.ts` (decision 91) to
+     `dashboard.constants.ts`: the link it guards is now built in `web-dashboard-sheet.utils.ts`,
+     where both sheets reach it, and a util imports no service.
      *Charts.* `timeLineChart` in `chart.utils.ts` places each capture by when it was taken, not
      evenly, so merges can be marked between them: each is a dashed rule across the plot at its
      moment, its hover naming the session, the time and the PR, and a link to the PR when there is

@@ -3,7 +3,8 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { captureDebt, listBaselineHistory } from './baseline-history.repository.js';
 import { type TimeDatum, type TimeMarker, timeLineChart } from './chart.utils.js';
-import { debtFigures, PR_URL } from './dashboard.service.js';
+import { PR_URL } from './dashboard.constants.js';
+import { debtFigures } from './dashboard.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectId } from './paths.utils.js';
 import { displayText, toIsoUtc } from './report-data.utils.js';
@@ -15,7 +16,6 @@ import {
   GATE_METRICS,
   hint,
   listSection,
-  section,
   textOrPrLink,
   UNMINTED_LABEL,
 } from './web-dashboard-sheet.utils.js';
