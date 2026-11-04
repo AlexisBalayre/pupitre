@@ -11,7 +11,8 @@ export interface LandOutcome {
   fastForwarded: boolean;
   removedWorktree: boolean;
   /**
-   * Set when the local branch held commits main does not, and was kept. Never
+   * Set when the local branch held commits neither main nor the pinned sha
+   * does, and was kept. Never
    * set with `keptWorktree`, which keeps the branch too: read both.
    */
   keptBranch?: string;

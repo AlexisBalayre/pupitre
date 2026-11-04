@@ -1,6 +1,7 @@
 # 0082. Three edges the decision 80 review left open: git-lfs transfer agents, the PR head, and ledger truth (2026-10-13)
 
 - Status: accepted
+- Amended by: [0130](0130-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md)
 
 82. **Three edges the decision 80 review left open: git-lfs transfer agents, the PR head, and ledger
     truth (2026-10-13).**

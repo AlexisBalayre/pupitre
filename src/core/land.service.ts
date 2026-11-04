@@ -48,7 +48,8 @@ interface LandRequest {
  * `pup land <session>` (decision 84): the GitHub half of a `--pr` merge. Every
  * refusal comes before anything moves: the session must be merged with a PR
  * that GitHub says is MERGED, and the target fetched from the recorded origin
- * must hold the sha the gate pinned. Then, under the merge lock, the local
+ * must hold the sha the gate pinned, or a squash or rebase merge of exactly its
+ * content (decision 130). Then, under the merge lock, the local
  * target is fast-forwarded with the gate's plumbing, the session's worktree
  * and branch go, a `landed` event drops the PR from the inbox, and the audit
  * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
@@ -113,9 +114,9 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         'MERGED; merge it there first. Nothing was landed.',
     );
   }
-  // A merge commit over a head that moved past the pin lands commits the gate
-  // never measured, as a squash does; the PR vouched for the pinned sha only
-  // (decision 82). GitHub's own "Update branch" moves the head too, and refuses.
+  // A merge, squash or rebase of a head that moved past the pin lands commits
+  // the gate never measured; the PR vouched for the pinned sha only (decision
+  // 82). GitHub's own "Update branch" moves the head too, and refuses.
   // Only a re-gate before the merge vouches for a moved head (decision 86).
   if (pr.head !== sha) {
     throw new Error(
@@ -155,27 +156,24 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       }
       const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
       const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
-      // A squash or rebase merge lands other commits than the ones the gate
-      // measured; the PR vouched for the pinned sha only (decision 82).
-      if (!isAncestor(req.repoPath, sha, originTip)) {
-        throw new Error(
-          `origin's ${target} at ${originTip} does not contain ${sha}, the commit the gate ` +
-            'pinned; a squash or rebase merge lands commits the gate never measured. Nothing ' +
-            'was landed.',
-        );
-      }
-      // The event will say this commit landed the pinned sha on the target: true
-      // by construction only, so both containments are checked.
+      // The event will say this commit landed the pinned content on the target.
       if (!isAncestor(req.repoPath, mergeCommit, originTip)) {
         throw new Error(
           `origin's ${target} at ${originTip} does not contain ${mergeCommit}, the commit GitHub ` +
             `says merged ${prUrl}; the PR landed elsewhere. Nothing was landed.`,
         );
       }
-      if (!isAncestor(req.repoPath, sha, mergeCommit)) {
+      // A merge commit holds the pinned sha; a squash or rebase merge holds its
+      // content only, and is taken when that content is exactly the gate's
+      // (decision 130).
+      const landedOn = isAncestor(req.repoPath, sha, mergeCommit)
+        ? `${mergeCommit}^1`
+        : squashedOnto(req.repoPath, sha, mergeCommit);
+      if (landedOn === undefined) {
         throw new Error(
-          `${mergeCommit}, the commit GitHub says merged ${prUrl}, does not contain ${sha}, the ` +
-            'commit the gate pinned; the pinned commit reached the target some other way. ' +
+          `${mergeCommit}, the commit GitHub says merged ${prUrl}, neither contains ${sha}, the ` +
+            'commit the gate pinned, nor has the tree git gives merging it onto the commit the ' +
+            'merge went onto; the squash or rebase landed content the gate never measured. ' +
             'Nothing was landed.',
         );
       }
@@ -210,29 +208,39 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         originTip,
       ]);
       const targetSha = fastForwarded ? originTip : localSha;
-      const tornDown = tearDown(req.repoPath, session, targetSha);
+      const tornDown = tearDown(req.repoPath, session, targetSha, sha);
       appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
-      return { targetSha, fastForwarded, ...tornDown };
+      return { targetSha, fastForwarded, landedOn, ...tornDown };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );
+  const { landedOn, ...outcome } = landed;
 
   // Before the audit, which can throw: once the event is written a re-run
   // refuses, and nothing else steers (decision 88).
-  steerOverlappingSessions(db, req.repoPath, session.id, mergeCommit, target, landed.targetSha);
+  steerOverlappingSessions(
+    db,
+    req.repoPath,
+    session.id,
+    landedOn,
+    mergeCommit,
+    target,
+    outcome.targetSha,
+  );
   // The conductor may run this, so no human stands between an observed
   // regression and the bar: a regressed measurement is reported and left for
   // `pup audit`, which the operator runs (decision 84).
   const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-  return { prUrl, mergeCommit, target, ...landed, audit };
+  return { prUrl, mergeCommit, target, ...outcome, audit };
 }
 
 /**
  * Steer each running session whose branch changed a file the landed PR changed,
  * once, to take the target in now (decision 99): a conflict met one land at a
  * time is one change wide, and the gate's rebase stays the final check. The
- * PR's files are its merge commit against its first parent, the target it
- * merged into; a session's are its branch's own changes since it forked from
+ * PR's files are its merge commit against the target it landed on: its first
+ * parent, or the commit a squash or rebase merge went onto (decision 130); a
+ * session's are its branch's own changes since it forked from
  * the target. After the `landed` event and best effort: the land is done
  * whatever a steer does. A session whose steer fails for any reason, a refused
  * paste, a stop, tmux or the store, is skipped and the rest are still steered,
@@ -249,13 +257,14 @@ function steerOverlappingSessions(
   db: Database,
   repoPath: string,
   landedId: string,
+  landedOn: string,
   mergeCommit: string,
   target: string,
   targetSha: string,
 ): void {
   let landedFiles: Set<string>;
   try {
-    landedFiles = new Set(gitDiffPaths(repoPath, `${mergeCommit}^1`, mergeCommit));
+    landedFiles = new Set(gitDiffPaths(repoPath, landedOn, mergeCommit));
   } catch (error) {
     rethrowIfKilled(error);
     return;
@@ -331,15 +340,54 @@ function fetchTarget(
 }
 
 /**
+ * The commit a squash or rebase merge of `sha` went onto, when `mergeCommit`'s
+ * tree is exactly the tree git gives merging `sha` there (decision 130):
+ * anything the merge added, dropped or altered past what the gate measured
+ * makes them differ. A squash went onto `mergeCommit`'s first parent; a
+ * rebase merge replayed the pinned branch's own commits, as many as `sha` has
+ * that `mergeCommit` lacks, so it went onto the first parent that many commits
+ * down. That base is tried first: the last replayed commit's parent matches
+ * too, and the steer would then miss every file but the last commit's. A
+ * conflicted merge is no match. Run from the scratch git dir, for the fetch's
+ * reason (decision 54): a merge reads drivers from config.
+ */
+function squashedOnto(repoPath: string, sha: string, mergeCommit: string): string | undefined {
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  return withScratchGitDir(repoPath, 'pup-land-', (git) => {
+    const tree = git(['rev-parse', '--verify', `${mergeCommit}^{tree}`], piped).trim();
+    const own = Number(git(['rev-list', '--count', sha, `^${mergeCommit}`], piped).trim());
+    for (const depth of new Set([own, 1])) {
+      try {
+        const base = git(
+          ['rev-parse', '--verify', '--quiet', `${mergeCommit}~${depth}^{commit}`],
+          piped,
+        ).trim();
+        const merged = git(['merge-tree', '--write-tree', '--no-messages', base, sha], {
+          ...piped,
+          timeout: GATE_COMMAND_TIMEOUT_MS,
+        }).trim();
+        if (merged === tree) return base;
+      } catch (error) {
+        // no commit that far down, or a conflict
+        rethrowIfKilled(error);
+      }
+    }
+    return undefined;
+  });
+}
+
+/**
  * What the gate's own teardown may have left (it is best effort): the
- * session's worktree, and its branch while main holds every commit of it. A
- * branch with commits main lacks is kept for the operator, as the gate keeps one that moved
- * past the pin.
+ * session's worktree, and its branch while main holds every commit of it, or
+ * of the pinned `sha` whose content a squash or rebase merge landed. A branch
+ * with commits past both is kept for the operator, as the gate keeps one that
+ * moved past the pin.
  */
 function tearDown(
   repoPath: string,
   session: { worktree_path: string; branch: string },
   targetSha: string,
+  sha: string,
 ): { removedWorktree: boolean; keptBranch?: string; keptWorktree?: string } {
   runGit(repoPath, ['worktree', 'prune']);
   // Asked of git, not the filesystem: a directory git no longer registers,
@@ -371,7 +419,7 @@ function tearDown(
     return { removedWorktree };
   }
   if (
-    isAncestor(repoPath, branchSha, targetSha) &&
+    (isAncestor(repoPath, branchSha, targetSha) || isAncestor(repoPath, branchSha, sha)) &&
     deleteBranchAt(repoPath, branchRef, branchSha)
   ) {
     return { removedWorktree };

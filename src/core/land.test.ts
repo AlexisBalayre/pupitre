@@ -862,43 +862,6 @@ describe('landSession', { timeout: 20_000 }, () => {
     expectNothingChanged(mainBefore);
   });
 
-  // A squash merge, with the pinned commit then reaching origin's main by
-  // another route: both containments pass but the merge commit never held it.
-  it('refuses a merge commit that does not contain the pinned sha, changing nothing', async () => {
-    seedPrMerge();
-    const gitCommit = (...args: string[]) =>
-      sh(
-        origin,
-        'git',
-        '-c',
-        'user.email=gh@test',
-        '-c',
-        'user.name=github',
-        'commit-tree',
-        ...args,
-      );
-    const squash = gitCommit(
-      `${pinned}^{tree}`,
-      '-p',
-      sh(origin, 'git', 'rev-parse', 'main'),
-      '-m',
-      'squash',
-    );
-    const later = gitCommit(`${pinned}^{tree}`, '-p', squash, '-p', pinned, '-m', 'another route');
-    sh(origin, 'git', 'update-ref', 'refs/heads/main', later);
-    fakeGh({
-      state: 'MERGED',
-      baseRefName: 'main',
-      headRefOid: pinned,
-      mergeCommit: { oid: squash },
-    });
-    const mainBefore = mainSha();
-
-    await expect(land()).rejects.toThrow(/the pinned commit reached the target some other way/);
-
-    expectNothingChanged(mainBefore);
-  });
-
   it("refuses a row whose branch is not the session's own, asking gh nothing", async () => {
     seedPrMerge();
     db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run('main', SESSION_ID);
@@ -1147,26 +1110,49 @@ describe('landSession', { timeout: 20_000 }, () => {
     },
   );
 
-  // A squash merge puts other commits on main than the ones the gate measured.
-  it("refuses when origin's main does not contain the pinned sha, changing nothing", async () => {
-    seedPrMerge();
-    // The pinned tree on one new commit over origin's main, as GitHub squashes.
-    const squash = sh(
-      origin,
+  /** A clone of origin, where GitHub's side of a squash or rebase merge is made. */
+  function cloneOrigin(): string {
+    const clone = tempDir('pup-land-clone-');
+    sh(clone, 'git', 'clone', '-q', origin, '.');
+    return clone;
+  }
+
+  /** Another PR merged first: origin's main moves past the base the gate rebased onto. */
+  function moveOriginMain(clone: string): string {
+    const moved = commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    return moved;
+  }
+
+  /** GitHub's squash button onto origin's main, `edit` run on the squash before its commit. */
+  function squashOnGitHub(clone: string, edit: () => void = () => undefined): string {
+    sh(clone, 'git', 'merge', '--squash', '-q', `origin/${BRANCH}`);
+    edit();
+    sh(clone, 'git', 'add', '-A');
+    sh(
+      clone,
       'git',
       '-c',
       'user.email=gh@test',
       '-c',
       'user.name=github',
-      'commit-tree',
-      `${pinned}^{tree}`,
-      '-p',
-      'main',
+      'commit',
+      '-q',
+      '--allow-empty',
       '-m',
       'Squashed (#7)',
     );
-    sh(origin, 'git', 'update-ref', 'refs/heads/main', squash);
-    const before = mainSha();
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    return sh(clone, 'git', 'rev-parse', 'HEAD');
+  }
+
+  // Decision 130: GitHub's squash merges the pinned content onto a main that
+  // moved, so main holds the content the gate measured but not the pinned sha.
+  it('lands a squash of the pinned content onto a moved main, fast-forwarding and auditing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone);
     fakeGh({
       state: 'MERGED',
       baseRefName: 'main',
@@ -1174,7 +1160,80 @@ describe('landSession', { timeout: 20_000 }, () => {
       mergeCommit: { oid: squash },
     });
 
-    await expect(land()).rejects.toThrow(`does not contain ${pinned}`);
+    const outcome = await land();
+
+    expect(outcome).toMatchObject({
+      mergeCommit: squash,
+      targetSha: squash,
+      fastForwarded: true,
+      removedWorktree: true,
+    });
+    expect(outcome.keptBranch).toBeUndefined();
+    expect(mainSha()).toBe(squash);
+    expect(sh(repo, 'git', 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(repo, 'src/feature.ts'), 'utf8')).toContain('feature');
+    expect(readFileSync(join(repo, 'src/other.ts'), 'utf8')).toContain('other');
+    expect(sh(repo, 'git', 'rev-parse', 'refs/remotes/origin/main')).toBe(squash);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(getProject(db, pid)?.baseline).not.toBeNull();
+    expect(landedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+      { sha: squash, target: 'main', prUrl: PR_URL },
+    ]);
+  });
+
+  // A rebase merge replays each pinned commit, so the last one's tree is
+  // checked against the base the first went onto, as many commits down.
+  it('lands a rebase merge of a two-commit pin onto a moved main', async () => {
+    pinned = commitIn(worktree, 'src/second.ts', 'export const second = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    const moved = moveOriginMain(clone);
+    sh(clone, 'git', 'checkout', '-q', '-b', 'rebased', `origin/${BRANCH}`);
+    sh(clone, 'git', '-c', 'user.email=gh@test', '-c', 'user.name=github', 'rebase', '-q', 'main');
+    sh(clone, 'git', 'push', '-q', 'origin', 'rebased:main');
+    const last = sh(clone, 'git', 'rev-parse', 'HEAD');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: last },
+    });
+
+    const outcome = await land();
+
+    expect(outcome).toMatchObject({ mergeCommit: last, targetSha: last, fastForwarded: true });
+    expect(mainSha()).toBe(last);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(landedEvents()).toHaveLength(1);
+    // The landed files are both replayed commits', not the last one's alone.
+    expect(vi.mocked(gitDiffPaths)).toHaveBeenCalledWith(repo, moved, last);
+  });
+
+  it.each([
+    ['an extra change', (clone: string) => writeFileSync(join(clone, 'src/extra.ts'), 'x;\n')],
+    ['a missing change', (clone: string) => rmSync(join(clone, 'src/feature.ts'))],
+    [
+      'an altered change',
+      (clone: string) =>
+        writeFileSync(join(clone, 'src/feature.ts'), 'export const feature = 2;\n'),
+    ],
+  ])('refuses a squash with %s the gate never measured, changing nothing', async (_, edit) => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone, () => edit(clone));
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(
+      `${squash}, the commit GitHub says merged ${PR_URL}, neither contains ${pinned}`,
+    );
     expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
   });
