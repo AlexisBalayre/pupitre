@@ -77,9 +77,12 @@ export function scopeInFiles(
       ...scopedPaths(candidates.slice(start, start + SCOPE_BATCH), scopeIn, task.scopeOut),
     );
   }
-  // A glob's text matches its own pattern, so the gate's rule reads it as a path.
+  // A glob's text, normalized as globToRegExp reads it, matches its own
+  // pattern, so the gate's rule reads it as a path.
   const toCreate = scopeIn.filter(
-    (glob, index) => !matched.has(index) && scopedPaths([glob], [glob], task.scopeOut).length > 0,
+    (glob, index) =>
+      !matched.has(index) &&
+      scopedPaths([glob.trim().replace(/^\.\//, '')], [glob], task.scopeOut).length > 0,
   );
   return { files, toCreate };
 }

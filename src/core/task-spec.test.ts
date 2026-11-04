@@ -48,6 +48,20 @@ describe('scopeInFiles (decision 128)', () => {
     });
   });
 
+  // `pup new --scope` stores a glob as typed; globToRegExp trims it and drops a leading `./`.
+  it('offers for creation a new file whose glob is ./-prefixed or space-padded', () => {
+    expect(
+      scopeInFiles(
+        tracked,
+        {
+          scopeIn: ['./src/core/new.ts', ' src/core/other.ts ', './.claude/new.md'],
+          scopeOut: [],
+        },
+        NO_DEADLINE,
+      ),
+    ).toEqual({ files: [], toCreate: ['./src/core/new.ts', ' src/core/other.ts '] });
+  });
+
   // The hook would refuse what it names, so it is neither listed nor offered for creation.
   it('never offers for creation a glob only protected or scope-out paths answer', () => {
     expect(
