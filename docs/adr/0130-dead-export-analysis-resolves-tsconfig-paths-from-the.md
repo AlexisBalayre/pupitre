@@ -52,6 +52,12 @@
     enough either: 255 two-character substitutions still cost about 0.6 ms per import. Under
     all three bounds the worst measured case is about 0.1 ms per import, a 254-character
     `baseUrl` under `*: ["*" × 8]` included (CI review, PR #218).
+    The bounds hold only because a target's `*` is replaced literally, so a target is never
+    longer than its own text plus the matched specifier. A string replacement read the specifier
+    as a template: each `$'` or `` $` `` in it expanded to a copy of the rest of the target, so
+    `*: ["*" + 2000 × "x"]` under one `import 'a' + 200,000 × "$'"` built a target of about
+    400 million characters, and `$&` resolved somewhere tsc does not. `aliasTargets` passes a
+    function instead (CI review, PR #218).
     `parsePathAliases` sorts the wildcards longest prefix first once, and `aliasTargets` takes
     the first match in Map order rather than sorting per import (CI review, PR #218).
     *No re-stamp.* This repo's tsconfig declares no `paths`, so today's dead-export count is
@@ -62,8 +68,8 @@
     dropping them in `collectUsage`; resolving a bare specifier as a relative one; not sorting
     wildcards longest prefix first; ignoring `baseUrl`; leaving `baseUrl` out of the characters
     bound, or counting it once rather than per substitution; keeping a partly parsed
-    tsconfig's aliases; and matching a wildcard whose prefix and suffix overlap in the
-    specifier.
+    tsconfig's aliases; matching a wildcard whose prefix and suffix overlap in the
+    specifier; and substituting the matched specifier as a replacement string.
     *Complexity.* The first cut added 20 decision points to `typescript-source.utils.ts`, and
     the gate refused it at its +15 limit. The resolution now shares one path between the
     relative and alias cases. It takes the first wildcard after a longest-prefix sort, not a

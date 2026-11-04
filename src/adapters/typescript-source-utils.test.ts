@@ -120,6 +120,16 @@ describe('resolveImport', () => {
     expect(resolveImport('x.ts', 'a', new Set(['src/index.ts']), aliases)).toBeUndefined();
   });
 
+  it('substitutes the matched specifier literally, `$` patterns and all, as tsc does', () => {
+    const aliases = new Map([['@x/*', ['src/*/m']]]);
+    const names = ['$&', "$'", '$`'];
+    const dollarFiles = new Set(names.map((name) => `src/${name}/m.ts`));
+
+    for (const name of names) {
+      expect(resolveImport('x.ts', `@x/${name}`, dollarFiles, aliases)).toBe(`src/${name}/m.ts`);
+    }
+  });
+
   it('tries each substitution in order and keeps an alias inside the repo', () => {
     const aliases = new Map([
       ['@x/*', ['missing/*', 'src/core/*']],

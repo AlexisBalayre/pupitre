@@ -128,8 +128,10 @@ export function parsePathAliases(tsconfigText: string): PathAliases {
 /**
  * The substitutions of the pattern TypeScript picks for a bare specifier: an
  * exact key first, else the first matching wildcard, which `parsePathAliases`'
- * order makes the one with the longest prefix, its `*` replaced by what it
- * matched. A specifier no pattern matches has none.
+ * order makes the one with the longest prefix, its `*` replaced literally by
+ * what it matched, as tsc does: a replacement string would expand `$'`,
+ * `` $` `` and `$&` in the specifier into copies of the target. A specifier
+ * no pattern matches has none.
  */
 function aliasTargets(specifier: string, aliases: PathAliases): string[] {
   const exact = aliases.get(specifier);
@@ -147,7 +149,7 @@ function aliasTargets(specifier: string, aliases: PathAliases): string[] {
       continue;
     }
     const matched = specifier.slice(prefix.length, specifier.length - suffix.length);
-    return targets.map((t) => t.replace('*', matched));
+    return targets.map((t) => t.replace('*', () => matched));
   }
   return [];
 }
