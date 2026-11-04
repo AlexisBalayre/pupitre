@@ -33,13 +33,22 @@
     reader treats any throw as no aliases.
     Each of these misses in the safe direction: an alias import goes unresolved, and an
     export looks deader than it is.
-    *Bound.* The tsconfig is the session's, and every bare import that is not an exact key
-    scans the wildcards synchronously inside the merge lock, where no stage timeout or
-    interrupt forwarding reaches (the stall decisions 31 and 110 closed). `readPlainFile`'s
-    1 MiB cap alone still admits about 70k patterns. So a `paths` of more than 256 patterns
-    plus substitutions yields no aliases, the same safe direction. `parsePathAliases` sorts
-    the wildcards longest prefix first once, and `aliasTargets` takes the first match in Map
-    order rather than sorting per import (CI review, PR #218).
+    *Bound.* The tsconfig is the session's, and every bare import is resolved synchronously
+    inside the merge lock, where no stage timeout or interrupt forwarding reaches (the stall
+    decisions 31 and 110 closed). `readPlainFile`'s 1 MiB cap alone still admits about 70k
+    patterns. A `paths` over any of three bounds yields no aliases, the same safe direction.
+    Each bound caps one term of what an import costs. More than 256 patterns plus
+    substitutions caps the wildcard scan. More than 2048 characters across patterns and
+    substitutions caps the length of each candidate path. More than 8 substitutions on one
+    pattern caps the fan-out: every substitution becomes about 17 candidate paths, each
+    carrying a copy of the matched specifier. The entry cap alone was not enough. It let 255
+    substitutions of 4 KiB sit under `*`, which matches every bare import, `node:*` and
+    `vitest` included. That cost about 50 ms per import, measured, so a file of a few thousand
+    `import 'a'` lines held the lock for minutes. A characters cap alone was not enough
+    either: 255 two-character substitutions still cost about 0.6 ms per import. Under all
+    three bounds the worst measured case is about 0.1 ms per import (CI review, PR #218).
+    `parsePathAliases` sorts the wildcards longest prefix first once, and `aliasTargets` takes
+    the first match in Map order rather than sorting per import (CI review, PR #218).
     *No re-stamp.* This repo's tsconfig declares no `paths`, so today's dead-export count is
     unchanged, and dead exports are compared as sets with no rule id (decision 58). As decision
     39 learned, the gate cannot validate its own change: this branch's merge runs main's adapter.
@@ -51,4 +60,5 @@
     *Complexity.* The first cut added 20 decision points to `typescript-source.utils.ts`, and
     the gate refused it at its +15 limit. The resolution now shares one path between the
     relative and alias cases. It takes the first wildcard after a longest-prefix sort, not a
-    running best, and it leaves shapes tsc rejects to throw. That brought the delta to +9, and the bound added one more branch.
+    running best, and it leaves shapes tsc rejects to throw. That brought the delta to +9. The entry bound added one more branch, and the
+    characters and substitutions bounds two more, for +12.

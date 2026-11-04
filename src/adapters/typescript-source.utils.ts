@@ -78,17 +78,23 @@ export function isInNestedPackage(file: string, nested: Set<string>): boolean {
 export type PathAliases = Map<string, string[]>;
 
 /**
- * Patterns plus substitutions honoured from one tsconfig. The tsconfig is the
- * session's, `readPlainFile` lets it reach 1 MiB, and every bare import scans
- * the patterns synchronously inside the merge lock, where no stage timeout or
- * interrupt forwarding can reach (decisions 31 and 110). A real `paths` has a
- * handful.
+ * Bounds on the `paths` honoured from one tsconfig. The tsconfig is the
+ * session's, `readPlainFile` lets it reach 1 MiB, and every bare import is
+ * resolved synchronously inside the merge lock, where no stage timeout or
+ * interrupt forwarding can reach (decisions 31 and 110). Each bound caps one
+ * term of what an import costs. Entries (patterns plus substitutions) cap the
+ * wildcard scan. Characters cap the length of every string built from a
+ * substitution. Substitutions per pattern cap how many targets one import
+ * fans out to, each one about 17 candidate paths and a copy of the matched
+ * specifier. A real `paths` has a handful of short entries.
  */
 const MAX_PATH_ALIAS_ENTRIES = 256;
+const MAX_PATH_ALIAS_CHARS = 2048;
+const MAX_PATH_ALIAS_SUBSTITUTIONS = 8;
 
 /**
- * The `paths` of a root `tsconfig.json`'s text. `extends` is not followed, and
- * text TypeScript cannot parse, or a `paths` over `MAX_PATH_ALIAS_ENTRIES`,
+ * The `paths` of a root `tsconfig.json`'s text. `extends` is not followed.
+ * Text TypeScript cannot parse, or a `paths` over any of the bounds above,
  * yields no aliases, which is today's relative-only resolution. A `paths` or
  * `baseUrl` of a shape tsc rejects throws, and the caller falls back to no
  * aliases.
@@ -99,7 +105,14 @@ export function parsePathAliases(tsconfigText: string): PathAliases {
   const { baseUrl = '.', paths = {} } = config.compilerOptions ?? {};
   const entries = Object.entries(paths) as [string, string[]][];
   const size = entries.reduce((n, [, targets]) => n + 1 + targets.length, 0);
-  if (size > MAX_PATH_ALIAS_ENTRIES) return new Map();
+  const chars = entries.reduce((n, [p, targets]) => n + p.length + targets.join('').length, 0);
+  if (
+    size > MAX_PATH_ALIAS_ENTRIES ||
+    chars > MAX_PATH_ALIAS_CHARS ||
+    entries.some(([, targets]) => targets.length > MAX_PATH_ALIAS_SUBSTITUTIONS)
+  ) {
+    return new Map();
+  }
   return new Map(
     entries
       .sort(([a], [b]) => b.indexOf('*') - a.indexOf('*'))

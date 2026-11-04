@@ -53,6 +53,24 @@ describe('parsePathAliases', () => {
     expect(parsePathAliases(tsconfig(129)).size).toBe(0);
   });
 
+  it('yields no aliases for a paths of more than 2048 characters, however few its entries', () => {
+    const tsconfig = (chars: number) =>
+      JSON.stringify({ compilerOptions: { paths: { '@a/*': [`${'x'.repeat(chars - 5)}*`] } } });
+
+    expect(parsePathAliases(tsconfig(2048)).size).toBe(1);
+    expect(parsePathAliases(tsconfig(2049)).size).toBe(0);
+  });
+
+  it('yields no aliases for a pattern of more than 8 substitutions', () => {
+    const tsconfig = (n: number) =>
+      JSON.stringify({
+        compilerOptions: { paths: { '*': Array.from({ length: n }, (_, i) => `s${i}/*`) } },
+      });
+
+    expect(parsePathAliases(tsconfig(8)).size).toBe(1);
+    expect(parsePathAliases(tsconfig(9)).size).toBe(0);
+  });
+
   it('throws on paths of a shape tsc rejects', () => {
     expect(() => parsePathAliases('{ "compilerOptions": { "paths": ["src/*"] } }')).toThrow();
     expect(() =>
