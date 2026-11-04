@@ -1,6 +1,7 @@
 # 0021. Debt delta = three soft stages with a merge-time ratchet (2026-07-24)
 
 - Status: accepted
+- Amended by: [0127](0127-the-complexity-stage-judges-a-new-file-on-its.md)
 
 21. **Debt delta = three soft stages with a merge-time ratchet (2026-07-24).** `dead-code`
     and `duplication` measure the whole branch worktree and compare against repo-wide
