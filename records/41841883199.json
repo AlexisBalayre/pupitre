@@ -1,0 +1,131 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T13:56:14.015Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41841883199",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41841883199",
+  "actor": "AlexisBalayre",
+  "commit_sha": "704a40d8a0a6051a3c9267fefb041a356ea90eb5",
+  "source": "pr",
+  "pr_number": 218,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "149-150",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`aliasTargets` passes `matched`, which comes from the session's import specifier, as a string replacement to `String.prototype.replace`. JavaScript expands `$'`, `` $` `` and `$&` inside a replacement string. Each `$'` inserts everything after the `*` in the target, so a target-sized string comes out for every two characters of specifier. That breaks the ADR's claim that the 2048-character bound \"caps the length of each candidate path\". The work per import becomes (specifier length × target length) instead of linear, about 1000× more. It all runs synchronously inside the merge lock.",
+      "body": "**The `$` patterns in the matched specifier get past the characters bound on alias targets**\n\n```ts\nconst matched = specifier.slice(prefix.length, specifier.length - suffix.length);\nreturn targets.map((t) => t.replace('*', matched));\n```\n<https://github.com/AlexisBalayre/pupitre/blob/704a40d8a0a6051a3c9267fefb041a356ea90eb5/src/adapters/typescript-source.utils.ts#L149-L150>\n\nWhen the second argument of `String.prototype.replace` is a string, JavaScript reads it as a replacement template (GetSubstitution). In it, `$'` means \"the part of the subject after the match\", `` $` `` means \"the part before\" (which includes the joined `baseUrl`), and `$&` means \"the match\". Here `matched` comes straight from an import specifier in the session's own source (`specifier.text` in `collectUsage`). Source files are read with plain `readFileSync`, with no size cap.\n\nSo a tsconfig that stays well under every bound can still produce a huge target. For example, `\"paths\": { \"*\": [\"*\" + \"x\".repeat(2000)] }` (2002 characters by the bound's own count) combined with one `import 'a' + \"$'\".repeat(200_000)` produces a target of about 400 million characters. That target then goes through `normalize`, about 8 re-normalizing `join` calls in `resolveFile`, and about 17 `files.has` lookups. All of it runs synchronously inside the merge lock, and a longer specifier throws a `RangeError` or exhausts the heap while the lock is held. This is the stall that decision 31 closed and that ADR 0130's *Bound* section says these caps prevent.\n\nThis is not the earlier \"specifier length is a linear multiple of parse cost\" point. With `$'`, the multiplier is the length of the target, up to about 2048, not a constant. It is also a correctness bug: tsc substitutes `*` literally, so a specifier containing `$&` resolves differently here.\n\nWhen the replacement is a function, its return value goes in literally. That brings the target length back to `target + matched` and matches tsc.",
+      "suggestion": "    const matched = specifier.slice(prefix.length, specifier.length - suffix.length);\n    return targets.map((t) => t.replace('*', () => matched));"
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "105-129",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "If the root tsconfig declares `paths` but takes `baseUrl` from an `extends`ed config, `const { baseUrl = '.', paths = {} } = config.compilerOptions ?? {};` joins the substitutions to the repo root, while tsc joins them to the inherited baseUrl. A repo file that happens to sit at the root-relative spot is then marked used, so an export can look less dead than it is. That contradicts ADR 0130's 'Each of these misses in the safe direction'. It only bites when a same-named file exists at both spots, and it opens no hiding place a relative import doesn't already give. The fix is a one-clause ADR wording correction.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "100-125",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`parsePathAliases` casts untrusted JSON with `as [string, string[]][]` and relies on `targets.join('')` or `.length` throwing to reject malformed shapes. That makes a TypeError inside the bound arithmetic the validation mechanism. An explicit `Array.isArray(targets) && targets.every(t => typeof t === 'string')` check would state the contract, and would let the bounds move into a small helper next to their constants.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "321",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The relative-only rule is now stated twice. `resolveImport` branches on `specifier.startsWith('.')`, and `depGraph` keeps its own `if (!imported.fileName.startsWith('.')) continue;` while silently relying on the `aliases = new Map()` default to stay relative-only. Drop the redundant guard, or say why it stays.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-source.utils.ts",
+      "line": "140-148",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In `aliasTargets`, the `star === -1` skip runs after `prefix` and `suffix` are already sliced from `indexOf('*')`, so exact keys compute meaningless slices only to throw them away. Checking `star === -1` first is clearer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In the ADR's last paragraph (*Complexity*), the line \"…That brought the delta to +9. The entry bound added one more branch, and the\" runs far past the ~95-column wrap the rest of the file keeps. Rewrap it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9185014999999996,
+  "duration_ms": 248980,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 10600,
+    "cache_read": 264268,
+    "cache_creation": 46502,
+    "total": 321382
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 58,
+      "output": 36795,
+      "cache_read": 638068,
+      "cache_creation": 133910,
+      "cost_usd": 1.6728015999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 7189,
+      "cache_read": 260244,
+      "cache_creation": 59087,
+      "cost_usd": 0.24569989999999997
+    }
+  ],
+  "permission_denials": []
+}
