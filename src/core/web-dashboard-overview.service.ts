@@ -2,8 +2,8 @@ import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import {
-  type BaselineHistoryRow,
   baselineHistoryAsOf,
+  captureDebt,
   listRecentBaselineHistory,
 } from './baseline-history.repository.js';
 import { briefDestination, readBrief } from './brief.service.js';
@@ -12,7 +12,6 @@ import {
   buildDashboardSnapshot,
   debtFigures,
   needsYou,
-  PR_URL,
   prFixRounds,
   routeLabel,
 } from './dashboard.service.js';
@@ -27,7 +26,15 @@ import type {
   DashboardSnapshot,
 } from './types/dashboard.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
-import { DAY_MS, escapeHtml, hint, section } from './web-dashboard-sheet.utils.js';
+import {
+  DAY_MS,
+  escapeHtml,
+  GATE_METRICS,
+  hint,
+  section,
+  textOrPrLink,
+  UNMINTED_LABEL,
+} from './web-dashboard-sheet.utils.js';
 
 const WEEK_MS = 7 * DAY_MS;
 const MERGE_WEEKS = 8;
@@ -112,39 +119,10 @@ function readGoal(repoPath: string): OverviewView['goal'] {
     : { text: displayText(destination) };
 }
 
-const pct = (ratio: number): string => `${Math.round(ratio * 1000) / 10}%`;
-
-/** The baseline figures a tile can show, in the order the tiles stand. */
-const METRICS: {
-  key: keyof Omit<DashboardBaseline, 'capturedAt'>;
-  label: string;
-  format: (value: number) => string;
-  /** How a week's movement prints: counts as counts, the ratio in percentage points. */
-  change: (delta: number) => string;
-}[] = [
-  {
-    key: 'coverageRatio',
-    label: 'coverage',
-    format: pct,
-    change: (d) => `${signed(Math.round(d * 1000) / 10)} pt`,
-  },
-  { key: 'deadExports', label: 'unused exports', format: String, change: signed },
-  { key: 'duplicatedLines', label: 'duplicated lines', format: String, change: signed },
-];
-
-function signed(n: number): string {
-  return n > 0 ? `+${n}` : String(n);
-}
-
 /** The stored debt baseline as `pup audit` last wrote it, for the rule its duplication was counted under. */
 function storedDebt(db: Database, pid: string): DebtBaseline | undefined {
   const stored = getProject(db, pid)?.baseline;
   return stored ? parseJsonOr<Partial<ProjectBaseline>>(stored, {}).debt : undefined;
-}
-
-/** A capture's debt column, null when nothing measured debt then. */
-function captureDebt(row: BaselineHistoryRow): DebtBaseline | undefined {
-  return row.debt === null ? undefined : parseJsonOr<DebtBaseline | undefined>(row.debt, undefined);
 }
 
 /**
@@ -181,7 +159,7 @@ function figureTiles(
       trend: [],
       format: String,
     },
-    ...METRICS.map((metric) => {
+    ...GATE_METRICS.map((metric) => {
       const value = figures[metric.key];
       const before = past[metric.key];
       const comparable =
@@ -256,16 +234,8 @@ function mergesPerWeek(db: Database, now: number): ChartDatum[] {
   }));
 }
 
-/** Escaped text, or a link when it is a pull request's url and nothing else (decisions 83, 91). */
-function textOrPrLink(text: string): string {
-  if (!PR_URL.test(text)) return `<code>${escapeHtml(text)}</code>`;
-  // `noreferrer`: the page's own url carries the run token.
-  return `<a href="${escapeHtml(text)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
-}
-
 /** The order the sessions' states are listed in: what has stopped first, finished work last. */
 const STATE_ORDER = ['blocked', 'running', 'awaiting-review', 'queued', 'rejected'];
-const UNMINTED_LABEL = '(unminted session id)';
 
 /**
  * The Overview: the goal and the figures first, then the live sections `pup
