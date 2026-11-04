@@ -98,22 +98,24 @@ interface Bucket {
   recachedTokens: number;
 }
 
+// A session writes its own transcript, so a field that is counted, coerced or
+// printed is `unknown` until it is checked.
 interface TranscriptEntry {
   type?: string;
-  timestamp?: string;
+  timestamp?: unknown;
   requestId?: string;
-  effort?: string;
+  effort?: unknown;
   entrypoint?: string;
   message?: {
     id?: string;
-    model?: string;
+    model?: unknown;
     content?: unknown;
     usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-      cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number };
+      input_tokens?: unknown;
+      output_tokens?: unknown;
+      cache_read_input_tokens?: unknown;
+      cache_creation_input_tokens?: unknown;
+      cache_creation?: { ephemeral_1h_input_tokens?: unknown };
     };
   };
 }
@@ -121,7 +123,7 @@ interface TranscriptEntry {
 interface ContentBlock {
   type?: string;
   id?: string;
-  name?: string;
+  name?: unknown;
   tool_use_id?: string;
   content?: unknown;
   text?: unknown;
@@ -167,7 +169,10 @@ function percentile(values: number[], p: number): number {
 }
 
 function blocksOf(content: unknown): ContentBlock[] {
-  return Array.isArray(content) ? (content as ContentBlock[]) : [];
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (block): block is ContentBlock => typeof block === 'object' && block !== null,
+  );
 }
 
 function textOf(content: unknown): string {
@@ -181,20 +186,28 @@ function textOf(content: unknown): string {
     .join('');
 }
 
+/** A token count, or 0 for anything else: a string would concatenate, a negative one refund. */
+function countOf(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
 function parseCall(entry: TranscriptEntry, at: number): Call | undefined {
   const usage = entry.message?.usage;
   const model = entry.message?.model;
-  if (!usage || !model || model.startsWith('<')) return undefined;
-  const {
-    input_tokens: input = 0,
-    output_tokens: output = 0,
-    cache_read_input_tokens: read = 0,
-    cache_creation_input_tokens: written = 0,
-  } = usage;
+  if (!usage || typeof model !== 'string' || !model || model.startsWith('<')) return undefined;
+  const written = countOf(usage.cache_creation_input_tokens);
   // The total spans both tiers; without the per-tier split it is priced at the shorter one.
-  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
-  const effort = entry.effort ?? 'unknown';
-  return { at, model, effort, input, read, write5m: written - write1h, write1h, output };
+  const write1h = Math.min(countOf(usage.cache_creation?.ephemeral_1h_input_tokens), written);
+  return {
+    at,
+    model,
+    effort: typeof entry.effort === 'string' ? entry.effort : 'unknown',
+    input: countOf(usage.input_tokens),
+    read: countOf(usage.cache_read_input_tokens),
+    write5m: written - write1h,
+    write1h,
+    output: countOf(usage.output_tokens),
+  };
 }
 
 interface ToolResult {
@@ -233,7 +246,7 @@ function noteOrigin(state: Transcript, entry: TranscriptEntry): void {
 
 function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): void {
   for (const block of blocksOf(entry.message?.content)) {
-    if (block.type === 'tool_use' && block.id && block.name)
+    if (block.type === 'tool_use' && block.id && typeof block.name === 'string')
       state.toolNames.set(block.id, block.name);
   }
   const call = parseCall(entry, at);
@@ -256,7 +269,8 @@ function scanLine(state: Transcript, line: string, sinceMs: number): void {
   const entry = parseLine(line);
   if (!entry) return;
   noteOrigin(state, entry);
-  const at = Date.parse(entry.timestamp ?? '');
+  // Date.parse coerces what it is given, and `{"toString":1}` throws on coercion.
+  const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : Number.NaN;
   if (Number.isNaN(at)) return;
   // A call before the window is not counted, but it dates the transcript's start
   // and the gap to its first counted call; lines are appended in order.

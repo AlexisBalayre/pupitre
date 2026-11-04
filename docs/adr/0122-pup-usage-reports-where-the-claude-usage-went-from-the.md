@@ -34,6 +34,12 @@
     tokens by model-id prefix; cache reads cost 0.1x input, 5-minute writes 1.25x and 1-hour
     writes 2x. The figures are the operator's to keep current. A model with no entry is priced
     at zero and named in the report, so a gap shows instead of skewing the shares quietly.
+    *Read.* The counts come from that same file, so each field is checked where it is read: a
+    count that is not a finite non-negative number is 0 (a string would concatenate, a negative
+    one refund), the 1-hour write is capped at the total written, a call whose model is not a
+    string is no call, and an effort that is not a string is `unknown`. A content block that
+    is not an object, a tool name or a timestamp that is not a string is skipped, so one
+    malformed line degrades the reading as an unreadable transcript does (decision 67).
     *Print.* A model, effort or tool name comes from a file a worker can write, so the text
     report scrubs each with `sanitizeReason` where it prints (decision 68). `JSON.stringify`
     escapes only U+0000–U+001F, so `--json` also writes DEL and C1 as `\uXXXX`, which
@@ -45,5 +51,7 @@
     in the store: it would need a writer on every turn, and the transcript already has the data.
     *Tests.* `usage-report.test.ts` builds a fixture directory and plants a two-hour idle gap
     to count one re-cache, a short gap that is not one, and the floors, a transcript that
-    straddles the window edge, an image result, a second config dir and an escape in a name; the CLI tests refuse a
+    straddles the window edge, an image result, a second config dir, an escape in a name, and
+    a string, negative and over-tier count, a non-string model, effort, tool name and
+    timestamp and a null block; the CLI tests refuse a
     session, the conductor and an unreadable date.
