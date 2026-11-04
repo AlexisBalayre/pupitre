@@ -35,8 +35,9 @@
     writes 2x. The figures are the operator's to keep current. A model with no entry is priced
     at zero and named in the report, so a gap shows instead of skewing the shares quietly.
     *Print.* A model, effort or tool name comes from a file a worker can write, so the text
-    report scrubs each with `sanitizeReason` where it prints (decision 68); `--json` escapes
-    them already.
+    report scrubs each with `sanitizeReason` where it prints (decision 68). `JSON.stringify`
+    escapes only U+0000–U+001F, so `--json` also writes DEL and C1 as `\uXXXX`, which
+    parses back to the same value.
     *Who.* Operator-only. The transcripts hold every session's prompts and tool output, and a
     session or the conductor steering by its own spend is not what the report is for; both are
     refused the way `pup audit` refuses them.

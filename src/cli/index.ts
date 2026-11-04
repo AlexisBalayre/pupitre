@@ -2511,7 +2511,17 @@ export function buildProgram(): Command {
       if (userDir === undefined) return;
       const claudeDirs = [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
       const report = buildUsageReport(db, repoPath, { since, claudeDirs });
-      console.log(opts.json ? JSON.stringify(report, null, 2) : formatUsageReport(report));
+      // JSON.stringify leaves DEL and C1 raw, and a terminal can read U+009B
+      // as CSI; outside a string literal JSON has no such character, so the
+      // `\uXXXX` form parses back to the same value (decision 68).
+      console.log(
+        opts.json
+          ? JSON.stringify(report, null, 2).replace(
+              /[\u007f-\u009f]/g,
+              (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+            )
+          : formatUsageReport(report),
+      );
     });
 
   const session = program.command('session').description('Session-internal protocol commands');

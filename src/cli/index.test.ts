@@ -2210,6 +2210,34 @@ describe('CLI commands', () => {
       expect(JSON.parse(logs[0] as string).rows).toMatchObject([{ class: 'worker', calls: 1 }]);
     });
 
+    it('escapes DEL and C1 in a planted name under --json', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const configDir = tempDir('pup-cli-usage-config-');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      vi.stubEnv('HOME', tempDir('pup-cli-usage-home-'));
+      const dir = transcriptDir(join(repo, '.worktrees', 's1'), configDir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'a.jsonl'),
+        `${JSON.stringify({
+          type: 'assistant',
+          requestId: 'r1',
+          timestamp: '2026-10-22T10:00:00Z',
+          effort: 'hi\u009b2J\u007f',
+          message: { model: 'claude-opus-5-5', usage: { input_tokens: 5 } },
+        })}\n`,
+      );
+
+      buildProgram().parse(['usage', '--since', '2026-10-21', '--json'], { from: 'user' });
+
+      const out = logs[0] as string;
+      expect(out).not.toMatch(/[\u007f-\u009f]/);
+      expect(out).toContain('hi\\u009b2J\\u007f');
+      expect(JSON.parse(out).rows).toMatchObject([{ effort: 'hi\u009b2J\u007f' }]);
+    });
+
     it('refuses a relative CLAUDE_CONFIG_DIR that --session-env passes', () => {
       const repo = initRepo();
       useCwd(repo);
