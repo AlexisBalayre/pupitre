@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { IntentStatus } from './intent.enums.js';
 import { IntentRefusedError } from './intent.errors.js';
@@ -19,6 +19,21 @@ import {
   listIntents,
   readIntent,
 } from './intent.service.js';
+
+/** Set by a test to make the next directory listing return this stale answer instead. */
+const staleListing: { next?: string[] } = {};
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readdirSync: ((...args: Parameters<typeof actual.readdirSync>) => {
+      const stale = staleListing.next;
+      staleListing.next = undefined;
+      return stale ?? actual.readdirSync(...args);
+    }) as typeof actual.readdirSync,
+  };
+});
 
 /** A repo with `docs/intent/` holding the given files. */
 function repoWith(files: Record<string, string> = {}): string {
@@ -82,6 +97,19 @@ describe('intents on disk', () => {
       '0003-mine.md',
     ]);
     expect(listIntents(repo).map((entry) => entry.id)).toEqual(['0001', '0003']);
+  });
+
+  it('gives a different id when the first listing is stale and another slug took the id', () => {
+    const repo = repoWith({ '0001-other-title.md': intentTemplate('0001', 'Other title') });
+    staleListing.next = [];
+
+    const created = createIntent(repo, 'Mine');
+
+    expect(created.id).toBe('0002');
+    expect(readdirSync(join(repo, INTENT_DIR)).sort()).toEqual([
+      '0001-other-title.md',
+      '0002-mine.md',
+    ]);
   });
 
   it('refuses a new intent once 9999 is taken, creating nothing', () => {
