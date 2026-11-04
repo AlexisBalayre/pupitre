@@ -72,39 +72,51 @@ export function isInNestedPackage(file: string, nested: Set<string>): boolean {
 /**
  * A tsconfig's `compilerOptions.paths`: pattern -> substitutions, each already
  * joined to the repo-relative directory it resolves from (`baseUrl`, else the
- * tsconfig's own, which is the repo root). A Map, so no specifier can reach a
- * prototype key.
+ * tsconfig's own, which is the repo root), in longest-wildcard-prefix-first
+ * order. A Map, so no specifier can reach a prototype key.
  */
 export type PathAliases = Map<string, string[]>;
 
 /**
+ * Patterns plus substitutions honoured from one tsconfig. The tsconfig is the
+ * session's, `readPlainFile` lets it reach 1 MiB, and every bare import scans
+ * the patterns synchronously inside the merge lock, where no stage timeout or
+ * interrupt forwarding can reach (decisions 31 and 110). A real `paths` has a
+ * handful.
+ */
+const MAX_PATH_ALIAS_ENTRIES = 256;
+
+/**
  * The `paths` of a root `tsconfig.json`'s text. `extends` is not followed, and
- * text TypeScript cannot parse yields no aliases, which is today's relative-only
- * resolution. A `paths` or `baseUrl` of a shape tsc rejects throws, and the
- * caller falls back to no aliases.
+ * text TypeScript cannot parse, or a `paths` over `MAX_PATH_ALIAS_ENTRIES`,
+ * yields no aliases, which is today's relative-only resolution. A `paths` or
+ * `baseUrl` of a shape tsc rejects throws, and the caller falls back to no
+ * aliases.
  */
 export function parsePathAliases(tsconfigText: string): PathAliases {
   const { config, error } = ts.parseConfigFileTextToJson('tsconfig.json', tsconfigText);
   if (error) return new Map();
   const { baseUrl = '.', paths = {} } = config.compilerOptions ?? {};
+  const entries = Object.entries(paths) as [string, string[]][];
+  const size = entries.reduce((n, [, targets]) => n + 1 + targets.length, 0);
+  if (size > MAX_PATH_ALIAS_ENTRIES) return new Map();
   return new Map(
-    Object.entries(paths).map(([pattern, targets]) => [
-      pattern,
-      (targets as string[]).map((t) => join(baseUrl, t)),
-    ]),
+    entries
+      .sort(([a], [b]) => b.indexOf('*') - a.indexOf('*'))
+      .map(([pattern, targets]) => [pattern, targets.map((t) => join(baseUrl, t))]),
   );
 }
 
 /**
  * The substitutions of the pattern TypeScript picks for a bare specifier: an
- * exact key first, else the wildcard pattern with the longest prefix, its `*`
- * replaced by what it matched. A specifier no pattern matches has none.
+ * exact key first, else the first matching wildcard, which `parsePathAliases`'
+ * order makes the one with the longest prefix, its `*` replaced by what it
+ * matched. A specifier no pattern matches has none.
  */
 function aliasTargets(specifier: string, aliases: PathAliases): string[] {
   const exact = aliases.get(specifier);
   if (exact) return exact;
-  const longestPrefixFirst = [...aliases].sort(([a], [b]) => b.indexOf('*') - a.indexOf('*'));
-  for (const [pattern, targets] of longestPrefixFirst) {
+  for (const [pattern, targets] of aliases) {
     const star = pattern.indexOf('*');
     const prefix = pattern.slice(0, star);
     const suffix = pattern.slice(star + 1);

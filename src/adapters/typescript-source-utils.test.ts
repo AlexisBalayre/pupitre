@@ -33,6 +33,26 @@ describe('parsePathAliases', () => {
     expect(parsePathAliases('{ "compilerOptions": { "paths": { "@a/*": ["src/*"] }').size).toBe(0);
   });
 
+  it('orders wildcards longest prefix first, whatever order the tsconfig lists them in', () => {
+    const aliases = parsePathAliases(
+      '{ "compilerOptions": { "paths": { "@a": ["a"], "@*": ["b/*"], "@src/core/*": ["c/*"], "@src/*": ["d/*"] } } }',
+    );
+
+    expect([...aliases.keys()]).toEqual(['@src/core/*', '@src/*', '@*', '@a']);
+  });
+
+  it('yields no aliases for a paths of more than 256 patterns plus substitutions', () => {
+    const tsconfig = (n: number) =>
+      JSON.stringify({
+        compilerOptions: {
+          paths: Object.fromEntries(Array.from({ length: n }, (_, i) => [`@${i}/*`, ['src/*']])),
+        },
+      });
+
+    expect(parsePathAliases(tsconfig(128)).size).toBe(128);
+    expect(parsePathAliases(tsconfig(129)).size).toBe(0);
+  });
+
   it('throws on paths of a shape tsc rejects', () => {
     expect(() => parsePathAliases('{ "compilerOptions": { "paths": ["src/*"] } }')).toThrow();
     expect(() =>
@@ -55,11 +75,9 @@ describe('resolveImport', () => {
   });
 
   it('resolves a bare specifier through the longest-prefix wildcard alias', () => {
-    const aliases = new Map([
-      ['@src/*', ['src/*']],
-      ['@src/core/*', ['src/core/deep/*']],
-      ['@ui', ['src/ui/c.js']],
-    ]);
+    const aliases = parsePathAliases(
+      '{ "compilerOptions": { "paths": { "@src/*": ["src/*"], "@src/core/*": ["src/core/deep/*"], "@ui": ["src/ui/c.js"] } } }',
+    );
 
     expect(resolveImport('x.ts', '@src/core/a.js', files, aliases)).toBeUndefined();
     expect(resolveImport('x.ts', '@src/core/b.js', files, aliases)).toBe('src/core/deep/b.ts');

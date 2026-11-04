@@ -33,6 +33,13 @@
     reader treats any throw as no aliases.
     Each of these misses in the safe direction: an alias import goes unresolved, and an
     export looks deader than it is.
+    *Bound.* The tsconfig is the session's, and every bare import that is not an exact key
+    scans the wildcards synchronously inside the merge lock, where no stage timeout or
+    interrupt forwarding reaches (the stall decisions 31 and 110 closed). `readPlainFile`'s
+    1 MiB cap alone still admits about 70k patterns. So a `paths` of more than 256 patterns
+    plus substitutions yields no aliases, the same safe direction. `parsePathAliases` sorts
+    the wildcards longest prefix first once, and `aliasTargets` takes the first match in Map
+    order rather than sorting per import (CI review, PR #218).
     *No re-stamp.* This repo's tsconfig declares no `paths`, so today's dead-export count is
     unchanged, and dead exports are compared as sets with no rule id (decision 58). As decision
     39 learned, the gate cannot validate its own change: this branch's merge runs main's adapter.
@@ -44,4 +51,4 @@
     *Complexity.* The first cut added 20 decision points to `typescript-source.utils.ts`, and
     the gate refused it at its +15 limit. The resolution now shares one path between the
     relative and alias cases. It takes the first wildcard after a longest-prefix sort, not a
-    running best, and it leaves shapes tsc rejects to throw. That brings the delta to +9.
+    running best, and it leaves shapes tsc rejects to throw. That brought the delta to +9, and the bound added one more branch.
