@@ -1,5 +1,4 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
@@ -74,8 +73,8 @@ interface UsageReport {
 
 interface UsageOptions {
   since: Date;
-  /** Every Claude config dir a window of the project may have written to; `~/.claude` when omitted. */
-  claudeDirs?: string[];
+  /** Every Claude config dir a window of the project may have written to. */
+  claudeDirs: string[];
 }
 
 interface Call {
@@ -99,17 +98,12 @@ interface Bucket {
   recachedTokens: number;
 }
 
-interface ToolResult {
-  tool: string;
-  tokens: number;
-  callsAfter: number;
-}
-
 interface TranscriptEntry {
   type?: string;
   timestamp?: string;
   requestId?: string;
   effort?: string;
+  entrypoint?: string;
   message?: {
     id?: string;
     model?: string;
@@ -138,8 +132,7 @@ function contextOf(call: Call): number {
 }
 
 function priceOf(model: string): { input: number; output: number } | undefined {
-  const key = Object.keys(MODEL_PRICES).find((prefix) => model.startsWith(prefix));
-  return key ? MODEL_PRICES[key] : undefined;
+  return Object.entries(MODEL_PRICES).find(([prefix]) => model.startsWith(prefix))?.[1];
 }
 
 interface CostParts {
@@ -150,8 +143,7 @@ interface CostParts {
 }
 
 function costOf(call: Call): CostParts {
-  const price = priceOf(call.model);
-  if (!price) return { read: 0, write: 0, output: 0, input: 0 };
+  const price = priceOf(call.model) ?? { input: 0, output: 0 };
   const perToken = price.input / 1e6;
   return {
     input: call.input * perToken,
@@ -193,60 +185,53 @@ function parseCall(entry: TranscriptEntry, at: number): Call | undefined {
   const usage = entry.message?.usage;
   const model = entry.message?.model;
   if (!usage || !model || model.startsWith('<')) return undefined;
-  const written = usage.cache_creation_input_tokens ?? 0;
-  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens;
-  const write5m = usage.cache_creation?.ephemeral_5m_input_tokens;
-  return {
-    at,
-    model,
-    effort: entry.effort ?? 'unknown',
-    input: usage.input_tokens ?? 0,
-    read: usage.cache_read_input_tokens ?? 0,
-    // Without the per-tier split the write is priced at the shorter tier.
-    write5m: write5m ?? (write1h === undefined ? written : 0),
-    write1h: write1h ?? 0,
-    output: usage.output_tokens ?? 0,
-  };
+  const {
+    input_tokens: input = 0,
+    output_tokens: output = 0,
+    cache_read_input_tokens: read = 0,
+    cache_creation_input_tokens: written = 0,
+  } = usage;
+  // The total spans both tiers; without the per-tier split it is priced at the shorter one.
+  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+  const effort = entry.effort ?? 'unknown';
+  return { at, model, effort, input, read, write5m: written - write1h, write1h, output };
 }
 
-interface ReadTranscript {
-  calls: Call[];
+interface ToolResult {
+  tool: string;
+  tokens: number;
+  /** Calls counted before the result arrived; every later one carries it. */
+  callsBefore: number;
+}
+
+interface Transcript {
+  calls: Map<string, Call>;
   /** The last call before the window, when the transcript began before it. */
   before: Call | undefined;
-  conductor: boolean;
-  headless: boolean;
-  toolResults: ToolResult[];
-}
-
-interface ScanState {
-  calls: Map<string, Call>;
-  before: Call | undefined;
   toolNames: Map<string, string>;
-  pending: { tool: string; tokens: number; callsBefore: number }[];
+  toolResults: ToolResult[];
   conductor: boolean;
   headless: boolean;
   sawUser: boolean;
 }
 
-type ScanEntry = TranscriptEntry & { entrypoint?: string };
-
-function parseLine(line: string): ScanEntry | undefined {
+function parseLine(line: string): TranscriptEntry | undefined {
   try {
-    return JSON.parse(line) as ScanEntry;
+    return JSON.parse(line) as TranscriptEntry;
   } catch {
     return undefined;
   }
 }
 
 /** What the transcript's start says about who ran it, whatever the window. */
-function noteOrigin(state: ScanState, entry: ScanEntry): void {
+function noteOrigin(state: Transcript, entry: TranscriptEntry): void {
   if (entry.entrypoint === 'sdk-cli') state.headless = true;
   if (entry.type !== 'user' || state.sawUser) return;
   state.sawUser = true;
   state.conductor = textOf(entry.message?.content).includes('# Pupitre conductor ');
 }
 
-function noteAssistant(state: ScanState, entry: ScanEntry, at: number): void {
+function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): void {
   for (const block of blocksOf(entry.message?.content)) {
     if (block.type === 'tool_use' && block.id && block.name)
       state.toolNames.set(block.id, block.name);
@@ -256,16 +241,10 @@ function noteAssistant(state: ScanState, entry: ScanEntry, at: number): void {
   if (call && key) state.calls.set(key, call);
 }
 
-/** A call before the window is not counted, but it dates the transcript's start and the gap to its first counted call. */
-function noteBefore(state: ScanState, entry: ScanEntry, at: number): void {
-  const call = entry.type === 'assistant' ? parseCall(entry, at) : undefined;
-  if (call && (!state.before || at >= state.before.at)) state.before = call;
-}
-
-function noteToolResults(state: ScanState, entry: ScanEntry): void {
+function noteToolResults(state: Transcript, entry: TranscriptEntry): void {
   for (const block of blocksOf(entry.message?.content)) {
     if (block.type !== 'tool_result') continue;
-    state.pending.push({
+    state.toolResults.push({
       tool: state.toolNames.get(block.tool_use_id ?? '') ?? 'unknown',
       tokens: Math.ceil(textOf(block.content).length / CHARS_PER_TOKEN),
       callsBefore: state.calls.size,
@@ -273,13 +252,15 @@ function noteToolResults(state: ScanState, entry: ScanEntry): void {
   }
 }
 
-function scanLine(state: ScanState, line: string, sinceMs: number): void {
-  const entry = line ? parseLine(line) : undefined;
+function scanLine(state: Transcript, line: string, sinceMs: number): void {
+  const entry = parseLine(line);
   if (!entry) return;
   noteOrigin(state, entry);
   const at = Date.parse(entry.timestamp ?? '');
   if (Number.isNaN(at)) return;
-  if (at < sinceMs) noteBefore(state, entry, at);
+  // A call before the window is not counted, but it dates the transcript's start
+  // and the gap to its first counted call; lines are appended in order.
+  if (at < sinceMs) state.before = parseCall(entry, at) ?? state.before;
   else if (entry.type === 'assistant') noteAssistant(state, entry, at);
   else if (entry.type === 'user') noteToolResults(state, entry);
 }
@@ -289,58 +270,24 @@ function scanLine(state: ScanState, line: string, sinceMs: number): void {
  * content block and stamps each with the request's usage, so entries sharing a
  * request id are one call and the last one holds the final output count.
  */
-function readTranscript(file: string, sinceMs: number): ReadTranscript | undefined {
-  let lines: string[];
-  try {
-    lines = readFileSync(file, 'utf8').split('\n');
-  } catch {
-    return undefined;
-  }
-  const state: ScanState = {
+function readTranscript(file: string, sinceMs: number): Transcript {
+  const state: Transcript = {
     calls: new Map(),
     before: undefined,
     toolNames: new Map(),
-    pending: [],
+    toolResults: [],
     conductor: false,
     headless: false,
     sawUser: false,
   };
-  for (const line of lines) scanLine(state, line, sinceMs);
-  const total = state.calls.size;
-  return {
-    calls: [...state.calls.values()],
-    before: state.before,
-    conductor: state.conductor,
-    headless: state.headless,
-    toolResults: state.pending.map((p) => ({
-      tool: p.tool,
-      tokens: p.tokens,
-      callsAfter: total - p.callsBefore,
-    })),
-  };
-}
-
-function jsonlIn(dir: string): string[] {
+  let text = '';
   try {
-    return readdirSync(dir)
-      .filter((name) => name.endsWith('.jsonl'))
-      .map((name) => join(dir, name));
+    text = readFileSync(file, 'utf8');
   } catch {
-    return [];
+    // unreadable: nothing to count
   }
-}
-
-/** Every `<session>/subagents/agent-*.jsonl` under a project's transcript directory. */
-function subagentFiles(dir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch {
-    return [];
-  }
-  return entries.flatMap((name) => jsonlIn(join(dir, name, 'subagents')));
+  for (const line of text.split('\n')) scanLine(state, line, sinceMs);
+  return state;
 }
 
 interface Source {
@@ -363,6 +310,21 @@ function workerDirsOf(db: Database, repoPath: string, claudeDir: string): Set<st
   return dirs;
 }
 
+/** A directory's own transcripts, and its sessions' `<session>/subagents/*.jsonl` as subagents. */
+function sourcesIn(dir: string, klass: UsageClass): Source[] {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir, { recursive: true, encoding: 'utf8' });
+  } catch {
+    // no such directory: nothing to report
+  }
+  return names.flatMap((name) => {
+    if (/^[^/]+\.jsonl$/.test(name)) return [{ file: join(dir, name), class: klass }];
+    const subagent = /^[^/]+\/subagents\/[^/]+\.jsonl$/.test(name);
+    return subagent ? [{ file: join(dir, name), class: UsageClass.Subagent }] : [];
+  });
+}
+
 /**
  * The project's console and conductor transcripts sit in the checkout's
  * directory, its workers' in one directory per worktree, and subagents' under
@@ -370,19 +332,16 @@ function workerDirsOf(db: Database, repoPath: string, claudeDir: string): Set<st
  */
 function sourcesOf(db: Database, repoPath: string, claudeDirs: string[]): Source[] {
   const sources: Source[] = [];
-  const addDir = (dir: string, klass: UsageClass): void => {
-    for (const file of jsonlIn(dir)) sources.push({ file, class: klass });
-    for (const file of subagentFiles(dir)) sources.push({ file, class: UsageClass.Subagent });
-  };
   for (const claudeDir of claudeDirs) {
-    for (const dir of workerDirsOf(db, repoPath, claudeDir)) addDir(dir, UsageClass.Worker);
-    addDir(transcriptDir(repoPath, claudeDir), UsageClass.Console);
+    for (const dir of workerDirsOf(db, repoPath, claudeDir))
+      sources.push(...sourcesIn(dir, UsageClass.Worker));
+    sources.push(...sourcesIn(transcriptDir(repoPath, claudeDir), UsageClass.Console));
   }
   return sources;
 }
 
 /** A subagent's file says nothing of who spawned it; the others tell themselves apart by how they started. */
-function classOf(source: Source, read: ReadTranscript): UsageClass {
+function classOf(source: Source, read: Transcript): UsageClass {
   if (source.class !== UsageClass.Console) return source.class;
   if (read.headless) return UsageClass.Utility;
   return read.conductor ? UsageClass.Conductor : UsageClass.Console;
@@ -412,23 +371,24 @@ function recachedTokens(call: Call, previous: Call | undefined): number {
   return written > call.read ? written : 0;
 }
 
-function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: ReadTranscript): void {
-  const ordered = [...read.calls].sort((a, b) => a.at - b.at);
-  for (const [index, call] of ordered.entries()) {
+function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcript): void {
+  let previous = read.before;
+  for (const call of [...read.calls.values()].sort((a, b) => a.at - b.at)) {
     const bucket = bucketFor(buckets, klass, call);
     bucket.calls.push(call);
     // Only a transcript that began inside the window has its first request in it.
-    if (index === 0 && !read.before) bucket.floors.push(contextOf(call));
-    const again = recachedTokens(call, index === 0 ? read.before : ordered[index - 1]);
+    if (!previous) bucket.floors.push(contextOf(call));
+    const again = recachedTokens(call, previous);
     if (again > 0) {
       bucket.recaches += 1;
       bucket.recachedTokens += again;
     }
+    previous = call;
   }
 }
 
-function addToolCarry(carry: Map<string, ToolCarry>, results: ToolResult[]): void {
-  for (const result of results) {
+function addToolCarry(carry: Map<string, ToolCarry>, read: Transcript): void {
+  for (const result of read.toolResults) {
     const entry = carry.get(result.tool) ?? {
       tool: result.tool,
       results: 0,
@@ -437,7 +397,7 @@ function addToolCarry(carry: Map<string, ToolCarry>, results: ToolResult[]): voi
     };
     entry.results += 1;
     entry.tokens += result.tokens;
-    entry.carriedTokens += result.tokens * result.callsAfter;
+    entry.carriedTokens += result.tokens * (read.calls.size - result.callsBefore);
     carry.set(result.tool, entry);
   }
 }
@@ -494,15 +454,15 @@ function unpricedModelsOf(buckets: Bucket[]): string[] {
 }
 
 export function buildUsageReport(db: Database, repoPath: string, opts: UsageOptions): UsageReport {
-  const claudeDirs = [...new Set(opts.claudeDirs ?? [join(homedir(), '.claude')])];
+  const claudeDirs = [...new Set(opts.claudeDirs)];
   const sinceMs = opts.since.getTime();
   const buckets = new Map<string, Bucket>();
   const carry = new Map<string, ToolCarry>();
   for (const source of sourcesOf(db, repoPath, claudeDirs)) {
     const read = readTranscript(source.file, sinceMs);
-    if (!read || read.calls.length === 0) continue;
+    if (read.calls.size === 0) continue;
     addCalls(buckets, classOf(source, read), read);
-    addToolCarry(carry, read.toolResults);
+    addToolCarry(carry, read);
   }
   const all = [...buckets.values()];
   const totalCost = total(all.flatMap((b) => b.calls.map((c) => sum(costOf(c)))));
