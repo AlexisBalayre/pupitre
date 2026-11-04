@@ -1,0 +1,227 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-04T11:46:04.647Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "41822974076",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/41822974076",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d7f9d5bc826b0472c1502ad45d4c51dc99d76b4c",
+  "source": "pr",
+  "pr_number": 212,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-sheet.utils.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "This PR adds a runtime import of `PR_URL` from `./dashboard.service.js` to a `*.utils.ts` file, which `docs/conventions/naming.md` forbids (utils cannot import a service).",
+      "body": "**A `utils` file now imports a service.**\n\n`docs/conventions/naming.md:76`: \"`utils` | **Pure functions only.** Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\"\n\nThis PR adds `import { PR_URL } from './dashboard.service.js';` to `web-dashboard-sheet.utils.ts`, which had no imports on the base. It's a value import: `textOrPrLink` (line 39) calls `PR_URL.test(text)`, and `PR_URL` is the runtime regex exported at `src/core/dashboard.service.ts:513`. Moving `textOrPrLink` here from the Overview service is what created the dependency. No other `*.utils.ts` in `src/core` has a runtime import from a service. The one similar import there, in `session-state.utils.ts`, is `import type`.\n\nThe obvious fix is to move `PR_URL` into a `*.constants.ts` file. `review.constants.ts` and `page-shell.constants.ts` already follow that pattern. Then import it from there in `dashboard.service.ts`, `web-dashboard-health.service.ts` and this util. ADR 0091 names `dashboard.service.ts` as where `PR_URL` is exported, so that line would need a small note.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d7f9d5bc826b0472c1502ad45d4c51dc99d76b4c/src/core/web-dashboard-sheet.utils.ts#L1-L1",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "277-286",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The time axis is scaled over both captures and merges, but its end labels are pinned to the first and last captures with start/end anchors. When merges run well past the last capture, or come before the first, the labels can overlap or be clipped off the 560-wide viewBox. Choosing the anchor from the x position, or labelling the axis's real extremes, would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "146-153, 245-249",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A metric that never changes (min === max) falls back to span 1 and is drawn on the plot floor. `timeLineChart` has no value labels, so steady 85% coverage looks like a line at the minimum unless you hover or read the figure line. Placing it mid-box when max === min would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "199",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A capture's `at` is stamped after measurement ends (`init.service.ts:321-327`), and the audit takes no merge lock. A merge or land from another session during a long audit is therefore credited to a snapshot that likely didn't measure it, and is missing from the next window where its effect shows. Fixing it needs a measurement start time or measured sha on the capture; at minimum, the ADR's Moves paragraph could state the limit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "105-110, 151-157",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rule that duplication counts under a rule is now encoded twice: Health's `rules: { duplicatedLines: debt?.duplicationRule }` and Overview's inline check at `web-dashboard-overview.service.ts:165-166`. A `rule` accessor on the shared `GATE_METRICS` entries would keep it in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "113-125",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Health adds a second inline first-merge-per-session SQL query against `events`, which makes Overview's `mergesPerWeek` comment (\"the store has no events query of this shape, and this is its only reader\") stale. Moving the query into `session.repository.ts` would also remove the row-shape and `Extract<SessionEvent, …>` casts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "236",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`timeLineChart` repeats `lineChart`'s plot box literal `{ left: 8, top: 16, width: WIDTH - 16, height: PLOT_HEIGHT - 44 }` (line 183). A shared constant next to `PLOT_HEIGHT` would stop the two line charts drifting apart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "146-153",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `scale()` re-implements the min/max scaling in `points()` (same halved span and copied comment), and disagrees with it on spreading vs reducing for long series. `points()` could build its y from `scale()` so the arithmetic lives once.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "255-257",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The merge-marker anchor hand-writes the same `target=\"_blank\" rel=\"noopener noreferrer\"` markup as `textOrPrLink`, without its WHY (the page url carries the run token). An edit to one link policy can therefore miss the other.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md",
+      "line": "4",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0123 declares `Amends: [0098]`, but 0098 has no `- Amended by: [0123]` back-link. Sibling ADRs carry both directions, for example 0091 ↔ 0098 and 0041 ↔ 0099.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "284, 291",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The moves header \"Merged since the snapshot before\" and the hint \"no pup merge between the two snapshots\" are imprecise. The window opens at the earliest capture compared with, which reaches further back across a gap or a rule change, as the ADR says. A header like \"Merged since the capture compared with\" would be accurate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "142-145",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `scale` JSDoc says \"Where a value falls in a box\", but `scale` takes `from` and `length`, not a box, and returns a mapper. The wording was left over from `points`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "277",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"The first and last captures name the axis's ends, once each.\" is inexact. Merge markers can extend the axis past the captures, and `placed[0]`/`placed.at(-1)` follow data order. Either reword it or delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-health.service.ts",
+      "line": "245-248",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "With no merges, the lead reads \"Merges, each a dashed rule naming its session: 0.\", which describes rules that aren't drawn. A form like \"Merges: 0 (dashed rules, one per session).\" reads better.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/report.service.ts",
+      "line": "66-67",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`report.service.ts` still parses `row.debt` inline, identical to the `captureDebt` this PR exports from `baseline-history.repository.ts`. A follow-up could call `captureDebt(row)` there.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.169669699999999,
+  "duration_ms": 228032,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 14871,
+    "cache_read": 196139,
+    "cache_creation": 71491,
+    "total": 282511
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 142,
+      "output": 50573,
+      "cache_read": 1682028,
+      "cache_creation": 274883,
+      "cost_usd": 2.9373215999999993
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 7688,
+      "cache_read": 108841,
+      "cache_creation": 57816,
+      "cost_usd": 0.2323481
+    }
+  ],
+  "permission_denials": []
+}
