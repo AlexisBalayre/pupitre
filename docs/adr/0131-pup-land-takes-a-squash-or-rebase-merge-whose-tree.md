@@ -1,9 +1,9 @@
-# 0130. `pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged onto its base (2026-11-04)
+# 0131. `pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged onto its base (2026-11-04)
 
 - Status: accepted
 - Amends: [0082](0082-three-edges-the-decision-80-review-left-open.md), [0084](0084-pup-land-session-closes-the-github-half-of.md)
 
-130. **`pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged
+131. **`pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged
     onto its base (2026-11-04).**
     Amends decisions 82 and 84. Decision 84 refused every squash or rebase merge, reading decision
     82's "the PR vouched for the pinned sha only" as "origin's target must contain the pinned

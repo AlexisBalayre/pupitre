@@ -49,7 +49,7 @@ interface LandRequest {
  * refusal comes before anything moves: the session must be merged with a PR
  * that GitHub says is MERGED, and the target fetched from the recorded origin
  * must hold the sha the gate pinned, or a squash or rebase merge of exactly its
- * content (decision 130). Then, under the merge lock, the local
+ * content (decision 131). Then, under the merge lock, the local
  * target is fast-forwarded with the gate's plumbing, the session's worktree
  * and branch go, a `landed` event drops the PR from the inbox, and the audit
  * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
@@ -165,7 +165,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       }
       // A merge, squash or rebase is taken when what it landed is exactly the
       // gate's content: ancestry alone would take a merge commit carrying
-      // changes of its own (decision 130).
+      // changes of its own (decision 131).
       const landedOn = mergedOnto(req.repoPath, sha, mergeCommit);
       if (landedOn === undefined) {
         throw new Error(
@@ -236,7 +236,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
  * once, to take the target in now (decision 99): a conflict met one land at a
  * time is one change wide, and the gate's rebase stays the final check. The
  * PR's files are its merge commit against the target it landed on: its first
- * parent, or the commit a squash or rebase merge went onto (decision 130); a
+ * parent, or the commit a squash or rebase merge went onto (decision 131); a
  * session's are its branch's own changes since it forked from
  * the target. After the `landed` event and best effort: the land is done
  * whatever a steer does. A session whose steer fails for any reason, a refused

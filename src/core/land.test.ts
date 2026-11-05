@@ -1159,7 +1159,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     return sh(clone, 'git', 'rev-parse', 'HEAD');
   }
 
-  // Decision 130: GitHub's squash merges the pinned content onto a main that
+  // Decision 131: GitHub's squash merges the pinned content onto a main that
   // moved, so main holds the content the gate measured but not the pinned sha.
   it('lands a squash of the pinned content onto a moved main, fast-forwarding and auditing', async () => {
     seedPrMerge();

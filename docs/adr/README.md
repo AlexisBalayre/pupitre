@@ -149,7 +149,8 @@ for the cross-references the text states, then the decision itself.
 - [0126. An intent is a file under `docs/intent/` the operator alone accepts, once it names two or three questions they must answer after review (2026-10-30)](0126-an-intent-is-a-file-under-docs-intent-the.md) (accepted)
 - [0128. A kickoff names the tracked files its scope-in matches, at most 40, and the globs that match none as files to create (2026-10-30)](0128-a-kickoff-names-the-tracked-files-its-scope-in-matches.md) (accepted)
 - [0129. Workers and the conductor learn the code through an Explore subagent on Sonnet at low effort that runs no git or shell, and read a file only to edit it or for its exact lines (2026-10-30)](0129-workers-and-the-conductor-learn-the-code-through-an-explore.md) (accepted)
-- [0130. `pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged onto its base (2026-11-04)](0130-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md) (accepted)
+- [0130. Dead-export analysis resolves tsconfig `paths` from the measured checkout (2026-10-30)](0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md) (accepted)
+- [0131. `pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged onto its base (2026-11-04)](0131-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes
