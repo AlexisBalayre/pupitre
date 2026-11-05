@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0008](0008-fresh-base-gating.md), [0027](0027-a-failed-pup-merge-pr-retries-cleanly-and.md)
+- Amended by: [0133](0133-a-rebase-that-stops-only-on-the-adr-index-falls.md)
 
 105. **A branch an open PR holds is never rebased: fresh-base merges the target into it, and the
     push does not force (2026-10-25).**

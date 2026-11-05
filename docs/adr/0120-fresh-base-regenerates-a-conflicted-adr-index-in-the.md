@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0079](0079-git-safe-config-turns-off-signature-verification-not.md), [0109](0109-one-file-per-decision-under-docs-adr-numbered.md)
+- Amended by: [0133](0133-a-rebase-that-stops-only-on-the-adr-index-falls.md)
 
 120. **Fresh-base regenerates a conflicted ADR index in the gate's scratch checkout
     (2026-10-28).** Decision 109 had every task that records a decision add a line to

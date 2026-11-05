@@ -4693,13 +4693,45 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const mergeOpenPr = () =>
         withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      // A stop resolved here would go on with `--continue`, which reads back
-      // rebase state the live session can write.
-      it('keeps the plain refusal for a branch it rebases, running nothing across the stop', async () => {
+      // A stop resolved in place would go on with `--continue`, which reads
+      // back rebase state the live session can write (decision 133).
+      it('merges main into a branch whose rebase stopped only on the index, never continuing it', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
         addDecision(worktree, 2);
         const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+        addDecision(repo, 3);
+        const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('merged');
+        expect(outcome.report.stages).toContainEqual(
+          expect.objectContaining({
+            stage: 'fresh-base',
+            status: 'pass',
+            detail: 'auto-merged main, its rebase having conflicted only in docs/adr/README.md',
+          }),
+        );
+        expect(ran('--continue')).toBe(false);
+        const head = sh(repo, 'git', 'rev-parse', 'main').trim();
+        expect(sh(repo, 'git', 'rev-list', '--parents', '-n', '1', head).trim().split(' ')).toEqual(
+          [head, tip, targetSha],
+        );
+        const index = freshIndexAt(head);
+        for (const n of [1, 2, 3]) expect(index).toContain(`(000${n}-d${n}.md) (accepted)`);
+        expectNoDriver();
+      });
+
+      it('keeps the plain refusal for a rebase that stops on another file too', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        // Both sides change src/app.ts in the commit that adds their decision.
+        writeFileSync(join(worktree, 'src/app.ts'), 'export const app = 3;\n');
+        addDecision(worktree, 2);
+        const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+        writeFileSync(join(repo, 'src/app.ts'), 'export const app = 2;\n');
         addDecision(repo, 3);
         const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
         vi.mocked(execFileSync).mockClear();
@@ -4710,10 +4742,44 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         const detail = outcome.report.stages.at(-1)?.detail ?? '';
         expect(detail).toContain('Auto-rebase onto main hit conflicts');
         expect(detail).toMatch(/^CONFLICT \(content\): Merge conflict in docs\/adr\/README\.md$/m);
-        expect(detail).not.toContain('was not regenerated');
-        // No tree was committed for a scratch checkout, and the rebase never went on.
-        expect(ran('commit-tree')).toBe(false);
+        expect(detail).toMatch(/^CONFLICT \(content\): Merge conflict in src\/app\.ts$/m);
+        expect(detail).not.toContain('merged main in instead');
+        // Nothing was merged in, and the rebase never went on.
+        expect(ran('merge-tree')).toBe(false);
         expect(ran('--continue')).toBe(false);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+        expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+        expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
+      });
+
+      it('reports the rebase and the merge it fell back to when that merge refuses', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+        writeFileSync(
+          join(repo, 'docs/adr/0002-other.md'),
+          '# 0002. Other\n\n- Status: accepted\n',
+        );
+        sh(repo, 'bash', 'scripts/adr-index.sh');
+        sh(repo, 'git', 'add', 'docs');
+        sh(repo, 'git', 'commit', '-q', '-m', 'another decision 2');
+        const mainBefore = sh(repo, 'git', 'rev-parse', 'main').trim();
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).toContain(
+          'Its only conflict was in docs/adr/README.md, so the gate merged main in instead ' +
+            'to regenerate it, and that stopped too:\nAuto-merge of main hit conflicts',
+        );
+        expect(detail).toContain(
+          'docs/adr/README.md was not regenerated: two decisions share the number 0002 in docs/adr/.',
+        );
+        expect(ran('commit-tree')).toBe(false);
         expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
         expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);

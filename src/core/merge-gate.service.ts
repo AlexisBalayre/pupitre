@@ -933,7 +933,8 @@ function formatGateReport(report: GateReport): string {
 
 /**
  * `pup merge`: fresh-base check with mechanical auto-rebase (decision 8), or a
- * merge of the target for a branch an open PR holds (decision 105), then the
+ * merge of the target for a branch an open PR holds (decision 105) or whose
+ * rebase conflicted only in the ADR index (decision 133), then the
  * hard stages — build, tests, lint, a touched nested package's own test and
  * typecheck (decision 59), scope audit — and the soft debt stages:
  * diff-size plus the v1.1 debt deltas (dead code, duplication, complexity;
@@ -1699,7 +1700,8 @@ function hashAdrIndex(repoPath: string, file: string): string {
 /**
  * Resolve a conflict confined to the ADR index (decision 120), on the merge
  * path only: a rebase stopped on one would go on with `--continue`, which reads
- * back rebase state the live session can write. `conflicts` is the conflict
+ * back rebase state the live session can write, so such a stop is aborted and
+ * the target merged in instead (decision 133). `conflicts` is the conflict
  * list `ADR_INDEX_CONFLICT` reads, and `merged` the tree `merge-tree` wrote with
  * it, the README holding git's conflict markers. The text outside the markers
  * merges whole, region by region: a side that left one as the base takes the
@@ -2057,26 +2059,51 @@ async function gateAndMerge(
         }),
       );
     } catch (error) {
-      // Every conflict goes back to the worker, the ADR index's included: the
-      // gate resolves that one only where it merges, since a resolved stop
-      // would go on through rebase state the live session can write (decision
-      // 120).
+      // A stop is never resolved in place: `--continue` would go on through
+      // rebase state the live session can write (decision 120). A stop whose
+      // only unmerged entries are the ADR index's three is aborted and the
+      // target merged in instead, in plumbing, where the index is regenerated
+      // over the merged tree and anything else that conflicts refuses
+      // (decision 133). Read before the abort, which clears it.
+      let adrIndexOnly = false;
+      try {
+        const unmerged = runGit(worktree, ['ls-files', '--unmerged', '-z'], pinned);
+        adrIndexOnly = ADR_INDEX_CONFLICT.test(unmerged.split('\0').filter(Boolean).join('\0'));
+      } catch (listing) {
+        rethrowIfKilled(listing);
+      }
       try {
         runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
         // nothing to abort — the rebase never started
       }
+      const refused = adrIndexOnly
+        ? await mergeTargetInto(req, worktree, worktreeEnv, session.branch, target, targetSha)
+        : '';
+      if (refused !== undefined) {
+        stages.push(
+          timedSince(started, {
+            stage: 'fresh-base',
+            status: 'fail',
+            detail:
+              `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
+              `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
+              `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}` +
+              (refused &&
+                `\nIts only conflict was in ${ADR_INDEX}, so the gate merged ` +
+                  `${sanitizeReason(target)} in instead to regenerate it, and that stopped too:\n` +
+                  refused),
+          }),
+        );
+        return failed();
+      }
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
-          status: 'fail',
-          detail:
-            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
-            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
-            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
+          status: 'pass',
+          detail: `auto-merged ${target}, its rebase having conflicted only in ${ADR_INDEX}`,
         }),
       );
-      return failed();
     }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
