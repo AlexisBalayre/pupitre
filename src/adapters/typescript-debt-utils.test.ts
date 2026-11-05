@@ -42,6 +42,30 @@ describe('findDeadExports', () => {
     expect(dead).toEqual([]);
   });
 
+  describe('tsconfig paths aliases', () => {
+    const files = {
+      'src/core/a.ts': 'export const viaAlias = 1;\n',
+      'src/core/a.test.ts': "import { viaAlias } from '@src/core/a.js';\n",
+      'src/index.ts': "import ts from 'typescript';\nconsole.log(ts);\n",
+    };
+
+    it('counts an import through an alias as usage', () => {
+      const dead = findDeadExports(
+        files,
+        new Set(['src/index.ts']),
+        new Map([['@src/*', ['src/*']]]),
+      );
+
+      expect(dead).toEqual([]);
+    });
+
+    it('reports the same export dead without aliases, as before', () => {
+      const dead = findDeadExports(files, new Set(['src/index.ts']));
+
+      expect(dead).toEqual([{ file: 'src/core/a.ts', exportName: 'viaAlias' }]);
+    });
+  });
+
   it('treats a namespace import as using every export of the target file', () => {
     const dead = findDeadExports(
       {

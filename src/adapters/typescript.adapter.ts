@@ -29,6 +29,8 @@ import {
   isCoverageExcluded,
   isInNestedPackage,
   isSourceFile,
+  type PathAliases,
+  parsePathAliases,
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
@@ -134,6 +136,24 @@ function readManifest(repoPath: string): PackageManifest | undefined {
   const manifestPath = join(repoPath, 'package.json');
   if (!existsSync(manifestPath)) return undefined;
   return JSON.parse(readPlainFile(manifestPath)) as PackageManifest;
+}
+
+/**
+ * The root `tsconfig.json`'s `paths`, read from the measured checkout and not
+ * the trusted one: a branch that introduces an alias also imports through it,
+ * and the trusted tsconfig would read those imports as unresolved and the
+ * exports as dead. That is safe to take from the session because an alias
+ * marks nothing used that a relative import from the same file could not.
+ * A missing or unreadable tsconfig means no aliases.
+ */
+function readPathAliases(repoPath: string): PathAliases {
+  const tsconfigPath = join(repoPath, 'tsconfig.json');
+  if (!existsSync(tsconfigPath)) return new Map();
+  try {
+    return parsePathAliases(readPlainFile(tsconfigPath));
+  } catch {
+    return new Map();
+  }
 }
 
 function packageManager(repoPath: string): string {
@@ -322,6 +342,7 @@ export const typescriptAdapter: Adapter = {
     return findDeadExports(
       sources,
       manifestEntryFiles(ctx.configPath, new Set(Object.keys(sources))),
+      readPathAliases(ctx.measurePath),
     );
   },
 

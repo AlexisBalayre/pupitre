@@ -373,6 +373,50 @@ describe('typescriptAdapter.depGraph', () => {
   });
 });
 
+describe('typescriptAdapter.deadCode', () => {
+  const tree = {
+    'package.json': '{}',
+    'src/a.ts': 'export const viaAlias = 1;\n',
+    'src/b.ts': "import { viaAlias } from '@src/a.js';\nexport const b = viaAlias;\n",
+  };
+  const aliased = '{ "compilerOptions": { "paths": { "@src/*": ["./src/*"] } } }';
+
+  function makeTree(files: Record<string, string>): string {
+    const dir = tempDir('pup-dead-');
+    mkdirSync(join(dir, 'src'));
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+    return dir;
+  }
+
+  it("resolves an import through the measured checkout's tsconfig paths", () => {
+    // The trusted checkout predates the alias: the branch introducing it must
+    // not read its own alias imports as unresolved.
+    const ctx = {
+      measurePath: makeTree({ ...tree, 'tsconfig.json': aliased }),
+      configPath: makeTree(tree),
+    };
+
+    expect(typescriptAdapter.deadCode?.(ctx)).toEqual([{ file: 'src/b.ts', exportName: 'b' }]);
+  });
+
+  it('resolves relative imports only without a usable tsconfig paths, as before', () => {
+    const dead = [
+      { file: 'src/a.ts', exportName: 'viaAlias' },
+      { file: 'src/b.ts', exportName: 'b' },
+    ];
+    for (const tsconfig of [
+      undefined,
+      '{ "compilerOptions": { "strict": true } }',
+      '{ "compil',
+      '{ "compilerOptions": { "paths": { "@src/*": "./src/*" } } }',
+    ]) {
+      const files = tsconfig === undefined ? tree : { ...tree, 'tsconfig.json': tsconfig };
+
+      expect(typescriptAdapter.deadCode?.(localContext(makeTree(files)))).toEqual(dead);
+    }
+  });
+});
+
 describe('typescriptAdapter nested packages', () => {
   const clone = Array.from({ length: 8 }, (_, i) => `export const v${i} = ${i} * 2;`).join('\n');
   const tree = {
