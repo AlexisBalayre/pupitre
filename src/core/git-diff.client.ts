@@ -6,7 +6,6 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
   readSync,
   realpathSync,
   statSync,
@@ -73,26 +72,39 @@ export function worktreeGitEnv(repoPath: string, worktreePath: string): Worktree
 export const POINTER_MAX_BYTES = 4096;
 
 /**
- * A pointer file's text, without the newline git ends it with, or undefined
- * when it is not a regular file. Opened without following a symlink and
- * without blocking, so a fifo swapped in after a check cannot hang the read.
+ * A session-writable file's text when it is a regular file of at most
+ * `maxBytes`; `missing` when nothing is there to read, as git finds it; and
+ * `irregular` for anything else — a symlink, a fifo, a directory, a file too
+ * big, or one that cannot be opened. Opened without following a symlink and
+ * without blocking, so a fifo planted before or swapped in after a check
+ * cannot hang node in `open()`, where no signal pup handles gets it out.
  */
-function readPointer(path: string): string | undefined {
+function readRegularFile(
+  path: string,
+  maxBytes: number,
+): { text: string } | 'missing' | 'irregular' {
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return undefined;
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'irregular';
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > POINTER_MAX_BYTES) return undefined;
+    if (!stat.isFile() || stat.size > maxBytes) return 'irregular';
     const buffer = Buffer.alloc(stat.size);
     const read = readSync(fd, buffer, 0, stat.size, 0);
-    return buffer.subarray(0, read).toString('utf8').replace(/\n$/, '');
+    return { text: buffer.subarray(0, read).toString('utf8') };
   } finally {
     closeSync(fd);
   }
+}
+
+/** A pointer file's text, without the newline git ends it with, or undefined when it is not a regular file. */
+function readPointer(path: string): string | undefined {
+  const read = readRegularFile(path, POINTER_MAX_BYTES);
+  return typeof read === 'object' ? read.text.replace(/\n$/, '') : undefined;
 }
 
 function realpathOrUndefined(path: string): string | undefined {
@@ -350,6 +362,11 @@ function worktreeConfigState(
  * in the shared ref store: a replacement for the target's tip would hand
  * every diff, and the scope audit reading it, a tree the session chose in
  * place of the one the sha names (decision 99).
+ * `core.commitGraph` is off for the same reason: git takes a commit's parents
+ * and root tree from `objects/info/commit-graph` when the file is there, and a
+ * session can write one that names another tree for the target's tip — a
+ * branch diff then reads as empty (decision 89). Grafts and replace refs have
+ * an environment pin too, in `GIT_HISTORY_ENV`.
  * `core.bigFileThreshold` is pinned to git's default, far above
  * `GIT_MAX_BUFFER`: a session-written low value makes git call every file
  * binary, so `--numstat` reads `-\t-` for a text file, which then lands in the
@@ -389,6 +406,8 @@ export const GIT_SAFE_CONFIG = [
   '-c',
   'core.useReplaceRefs=false',
   '-c',
+  'core.commitGraph=false',
+  '-c',
   'worktree.useRelativePaths=false',
   '-c',
   'core.bigFileThreshold=512m',
@@ -401,6 +420,45 @@ export const GIT_SAFE_CONFIG = [
   '-c',
   'filter.lfs.clean=',
 ] as const;
+
+/**
+ * The history pins no config key covers, laid over every pup git child's
+ * environment (decision 89). `info/grafts` in the shared `$GIT_COMMON_DIR`
+ * rewrites a commit's parents for every reader, and neither
+ * `core.useReplaceRefs` nor `GIT_NO_REPLACE_OBJECTS` turns it off (verified
+ * on Git 2.54): only `GIT_GRAFT_FILE` does, so it names a path that cannot
+ * exist, which git reads as no grafts and without a warning. `/dev/null`
+ * itself would open, and print git's deprecation hint on every call.
+ * `GIT_NO_REPLACE_OBJECTS` repeats `core.useReplaceRefs=false` for a child
+ * that takes no argv of pup's, `gh`'s git, as `pinnedGitEnv` hands it on.
+ */
+const GIT_HISTORY_ENV = {
+  GIT_NO_REPLACE_OBJECTS: '1',
+  GIT_GRAFT_FILE: '/dev/null/no-grafts',
+} as const;
+
+/**
+ * `runGit`'s whole pin as environment alone, for a program that runs git with
+ * argv of its own: `scrubbedGitEnv`, `GIT_HISTORY_ENV`, and `GIT_SAFE_CONFIG`
+ * as command-scope config, which outranks the repo's config the way a `-c`
+ * does. `gh` runs git in the main checkout, whose config a session can write,
+ * so a `core.fsmonitor` armed there would otherwise run on gh's first `git
+ * status` (decision 89).
+ */
+export function pinnedGitEnv(): NodeJS.ProcessEnv {
+  const entries = GIT_SAFE_CONFIG.filter((arg) => arg !== '-c');
+  const env: NodeJS.ProcessEnv = {
+    ...scrubbedGitEnv(),
+    ...GIT_HISTORY_ENV,
+    GIT_CONFIG_COUNT: String(entries.length),
+  };
+  entries.forEach((entry, index) => {
+    const equals = entry.indexOf('=');
+    env[`GIT_CONFIG_KEY_${index}`] = entry.slice(0, equals);
+    env[`GIT_CONFIG_VALUE_${index}`] = entry.slice(equals + 1);
+  });
+  return env;
+}
 
 /**
  * Diff-subcommand flags (they are not accepted at top level) that keep a
@@ -463,7 +521,7 @@ function safeArgv(cwd: string, args: string[]): string[] {
 
 function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
   return {
-    env: { ...scrubbedGitEnv(), ...opts.env },
+    env: { ...scrubbedGitEnv(), ...opts.env, ...GIT_HISTORY_ENV },
     maxBuffer: GIT_MAX_BUFFER,
     stdio: opts.stdio,
     timeout: opts.timeout,
@@ -677,10 +735,18 @@ export function gitDiffBinaryRecount(
  * `customtransfer` pattern differs by version (unescaped dots in 3.x,
  * unanchored on main), so the last alternative is the union of both, its
  * dots deliberately unescaped. `s` because git allows `\r` and the Unicode
- * line separators inside a subsection, which `.` skips without it.
+ * line separators inside a subsection, which `.` skips without it. Every
+ * subsection may be empty: `[filter ""]` is the key `filter..smudge`, a driver
+ * an attribute with an empty name selects (decision 89).
+ *
+ * And an `include.path` or `includeIf.<condition>.path`, refused whatever the
+ * file it names holds now: git reads that file on every call, so a session
+ * can fill it after the check, aim it at a fifo, or arm it under a condition
+ * (`onbranch:`, `gitdir:`) that is false where the check runs and true where
+ * the rebase does. The listing reads no include (decision 89).
  */
 const ARMED_DRIVER_KEY =
-  /^(?:filter\..+\.(?:clean|smudge|process)|merge\..+\.driver|lfs\.(?:.+\.)?standalonetransferagent|lfs\.extension\..+\.(?:clean|smudge))$|lfs.customtransfer.[^.]+.(?:path|args)/is;
+  /^(?:filter\..*\.(?:clean|smudge|process)|merge\..*\.driver|lfs\.(?:.*\.)?standalonetransferagent|lfs\.extension\..*\.(?:clean|smudge)|include(?:if\..*)?\.path)$|lfs.customtransfer.[^.]*.(?:path|args)/is;
 
 /**
  * The config scopes a session can reach. Both files sit inside the shared
@@ -700,8 +766,8 @@ export class ArmedGitDriverError extends Error {
     const shown = armed.slice(0, ARMED_NAMES_SHOWN).join(', ');
     const rest = armed.length - ARMED_NAMES_SHOWN;
     super(
-      `Refusing to run git in ${gitPath}: a filter or merge driver is armed, and git would ` +
-        `run it with your environment — ${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
+      `Refusing to run git in ${gitPath}: a filter or merge driver is armed, or a config ` +
+        `include could arm one, and git would run it with your environment —${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
         'These live in the untracked $GIT_COMMON_DIR, so no diff and no scope audit shows ' +
         'them. Clear them (`git config --unset <key>`, `rm .git/info/attributes`) and retry, ' +
         'and treat a session that wrote them as compromised.',
@@ -742,13 +808,19 @@ export function armedGitDrivers(gitPath: string, env?: WorktreeGitEnv): string[]
     ['rev-parse', '--path-format=absolute', '--git-common-dir'],
     opts,
   ).trim();
-  const [pattern] = attributePatterns(join(commonDir, 'info', 'attributes'));
-  if (pattern) armed.push(`info/attributes (${sanitizeReason(pattern)})`);
+  const patterns = attributePatterns(join(commonDir, 'info', 'attributes'));
+  if (patterns === undefined) {
+    armed.push('info/attributes (not a regular file of 1 MiB or less)');
+  } else if (patterns[0]) {
+    armed.push(`info/attributes (${sanitizeReason(patterns[0])})`);
+  }
   // `--list --show-scope` rather than `--local --get-regexp`: `--worktree`
   // silently falls back to the local file when `extensions.worktreeConfig` is
   // off, so it cannot be read on its own, and one listing covers both scopes.
   // Entries are `<scope>\0<key>\n<value>\0`, so they come out in pairs.
-  const listed = runGit(gitPath, ['config', '--list', '--show-scope', '-z'], opts)
+  // `--no-includes`, so a fifo an include names cannot block the listing: the
+  // include key itself is what gets refused (decision 89).
+  const listed = runGit(gitPath, ['config', '--list', '--show-scope', '--no-includes', '-z'], opts)
     .trim()
     .split('\0');
   for (let i = 0; i + 1 < listed.length; i += 2) {
@@ -770,10 +842,22 @@ export function armedGitDrivers(gitPath: string, env?: WorktreeGitEnv): string[]
   return armed;
 }
 
-/** Pattern lines of an attributes file — blank lines and comments are inert. */
-function attributePatterns(file: string): string[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8')
+/** Far above any attributes file a person writes; a bigger one is refused, not read. */
+const ATTRIBUTES_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Pattern lines of an attributes file — blank lines and comments are inert —
+ * or undefined when it is there but not a regular file, which counts as
+ * armed. The open-PR merge re-runs this check after its branch compare-and-swap,
+ * under the merge lock: a fifo read with a plain open would block node where
+ * SIGINT and SIGTERM cannot reach it, and SIGKILL would strand the lock
+ * (decision 50, amended by 89).
+ */
+function attributePatterns(file: string): string[] | undefined {
+  const read = readRegularFile(file, ATTRIBUTES_MAX_BYTES);
+  if (read === 'missing') return [];
+  if (read === 'irregular') return undefined;
+  return read.text
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('#'));
