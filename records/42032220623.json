@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-05T13:03:26.065Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42032220623",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42032220623",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7054ef995f60ebe57863f51a79651c7cd016b50f",
+  "source": "pr",
+  "pr_number": 225,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed before running, during sandbox setup: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied`. This happened for `gh pr view 225`, `gh pr diff 225`, `git diff --stat <merge_base>..HEAD` and even `git rev-parse HEAD`. Because the sandbox wraps every command, the reviewer subagents would hit the same failure."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewers were spawned and PR #225 was NOT reviewed. Without the diff, the PR metadata or the head SHA, the change could not be scoped, no finding could be checked against the PR's added lines, and the freshness check could not run. A Read/Grep-only review would have cited code with no way to know whether the PR touched it. This empty record must not be read as a clean review. Fix the runner's sandbox (it needs unprivileged user namespaces, or the sandbox turned off for this job), then re-run."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": true,
+  "incomplete_reason": "Not reviewed: no reviewer was spawned; re-run",
+  "cost_usd": 0.2426534,
+  "duration_ms": 21235,
+  "num_turns": 6,
+  "tokens": {
+    "input": 8,
+    "output": 1866,
+    "cache_read": 128187,
+    "cache_creation": 22458,
+    "total": 152519
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 1866,
+      "cache_read": 128187,
+      "cache_creation": 22458,
+      "cost_usd": 0.2426534
+    }
+  ],
+  "permission_denials": []
+}
