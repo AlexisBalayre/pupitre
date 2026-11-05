@@ -149,7 +149,7 @@ for the cross-references the text states, then the decision itself.
 - [0126. An intent is a file under `docs/intent/` the operator alone accepts, once it names two or three questions they must answer after review (2026-10-30)](0126-an-intent-is-a-file-under-docs-intent-the.md) (accepted)
 - [0128. A kickoff names the tracked files its scope-in matches, at most 40, and the globs that match none as files to create (2026-10-30)](0128-a-kickoff-names-the-tracked-files-its-scope-in-matches.md) (accepted)
 - [0129. Workers and the conductor learn the code through an Explore subagent on Sonnet at low effort that runs no git or shell, and read a file only to edit it or for its exact lines (2026-10-30)](0129-workers-and-the-conductor-learn-the-code-through-an-explore.md) (accepted)
-- [0130. The pre-commit hook runs only the tests related to the staged files (2026-11-05)](0130-the-pre-commit-hook-runs-only-the-tests-related-to.md) (accepted)
+- [0132. The pre-commit hook runs only the tests related to the staged files (2026-11-05)](0132-the-pre-commit-hook-runs-only-the-tests-related-to.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes

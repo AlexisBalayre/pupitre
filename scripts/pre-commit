@@ -114,7 +114,7 @@ if [ -n "${TYPECHECK_CMD:-}" ]; then
 fi
 
 # Only the test files that import a staged source file, directly or through
-# others, and the staged test files themselves (decision 130). The full suite
+# others, and the staged test files themselves (decision 132). The full suite
 # is TEST_CMD's, which the merge gate's test stage runs; an empty TEST_CMD still
 # turns tests off here. A commit with no staged source runs no tests.
 RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
