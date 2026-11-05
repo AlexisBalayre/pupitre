@@ -35,5 +35,5 @@
     main adds another merges with no worker action and never runs `--continue`. The landed
     commit has the branch tip and the target as parents, and its index passes `adr-index.sh
     --check`. A rebase that also stops on `src/app.ts` keeps the plain refusal and runs no
-    `merge-tree`. Two decisions that share a number report both refusals, commit no tree,
+    `merge-tree`. So does a stop whose listing fails, and the rebase is still aborted. Two decisions that share a number report both refusals, commit no tree,
     and leave the branch and main unmoved.
