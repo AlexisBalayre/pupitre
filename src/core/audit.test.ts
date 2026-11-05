@@ -1,7 +1,7 @@
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';

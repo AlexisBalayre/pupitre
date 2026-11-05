@@ -12,8 +12,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { hasConductorWindow, transcriptDir } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import {
   blockedReason,
   buildDashboardSnapshot,

@@ -13,11 +13,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { CommanderError } from 'commander';
 import type { ReactElement } from 'react';
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,

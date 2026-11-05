@@ -20,7 +20,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
 });
 
-import { tempDir } from '../test/temp-dir.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { sandboxProfile, writeProfile } from './sandbox-profile.utils.js';
 
 afterEach(() => {

@@ -13,8 +13,8 @@ import {
 } from 'node:fs';
 import { freemem } from 'node:os';
 import { basename, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import {
   availableMemoryBytes,
   GATE_SLOT_WAIT_MS,
