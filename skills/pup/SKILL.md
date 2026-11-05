@@ -46,6 +46,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override; `--max-sessions <n>` sets the session cap, default 4), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |
 | Reports | `pup report --open`, `pup map [module] --open` |
+| Where the usage went | `pup usage [--since <date>] [--json]` (operator-only, read-only): cost share, cache hit rate and context per class, model and effort, re-caches after an idle hour, tool-output carry |
 
 A goal names files, mechanism and the decision number it records; acceptance criteria are
 checkable sentences. A criterion or goal starting with `--` is parsed as an option: reword it.
@@ -57,7 +58,9 @@ scope-in can touch the gate, git, tmux, the store, the sandbox, hooks or profile
 critical, anything else standard; `--tier` on `plan add|edit` overrides the rule and `pup plan`
 marks it `*`. Standard climbs Sonnet 5.5 medium → Sonnet 5.5 high → Opus 5.5 high → Opus 5.5
 xhigh, critical Opus 5.5 high → Opus 5.5 xhigh, one rung per relaunch or respawn after a gate
-rejection, a CI fix round, a dead turn or a stall; a blocked task never climbs. `pup status`,
+rejection, a dead turn or a stall; a blocked task never climbs. A CI fix round (`pup fix`) runs
+on the rung the session's last window ran on; every later round on the PR climbs one
+(`repeat-fix-round`). `pup status`,
 `pup ui` and the dashboard show each session's model, effort and rung. A failure on the top rung
 refuses the next launch or respawn and lists the task under Needs you as `top-rung`: re-plan it,
 or pass `--model` and `--effort` to `pup launch`, `pup respawn` or `pup kill --respawn`. An

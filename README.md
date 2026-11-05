@@ -6,7 +6,7 @@ One `pup` CLI to launch agents in isolated git worktrees, watch them for conflic
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
 [![TypeScript](https://img.shields.io/badge/typescript-5.9-3178c6.svg)](tsconfig.json)
-[![Builds itself](https://img.shields.io/badge/dogfood-every%20PR%20through%20its%20own%20gate-8a2be2.svg)](docs/09-decisions.md)
+[![Builds itself](https://img.shields.io/badge/dogfood-every%20PR%20through%20its%20own%20gate-8a2be2.svg)](docs/adr/README.md)
 
 *Pupitre* is French for a conductor's music stand: one human at the stand, many sessions playing from the same score.
 
@@ -131,7 +131,7 @@ If you only want to see six terminals at once, one of the multiplexers is lighte
 
 ## Built on itself
 
-Pupitre has been developed with Pupitre since its second week. Its own pull requests go through its own gate, its backlog is driven by its own conductor, and every design choice that mattered is a numbered entry in [`docs/09-decisions.md`](docs/09-decisions.md), including the ones that went wrong first. If you want to see what a session-hardened merge gate looks like, read the decisions on scope hooks, push-target pinning and the debt ratchet.
+Pupitre has been developed with Pupitre since its second week. Its own pull requests go through its own gate, its backlog is driven by its own conductor, and every design choice that mattered is a numbered file in [`docs/adr/`](docs/adr/README.md), including the ones that went wrong first. If you want to see what a session-hardened merge gate looks like, read the decisions on scope hooks, push-target pinning and the debt ratchet.
 
 ## Design docs
 
@@ -146,7 +146,7 @@ Pupitre has been developed with Pupitre since its second week. Its own pull requ
 | [06 Adapters](docs/06-adapters.md) | Per-language toolchain plugins |
 | [07 Onboarding](docs/07-onboarding.md) | `pup init` on an existing repo |
 | [08 Roadmap](docs/08-roadmap.md) | Stack decisions and what comes next |
-| [09 Decisions](docs/09-decisions.md) | Numbered decisions; wins over 00 to 08 where they conflict |
+| [ADRs](docs/adr/README.md) | One file per numbered decision; wins over 00 to 08 where they conflict |
 
 ## Status
 

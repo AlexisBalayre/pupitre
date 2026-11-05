@@ -1,9 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readlinkSync,
   realpathSync,
@@ -71,7 +75,12 @@ import {
 } from './ledger.repository.js';
 import {
   DEBT_DETAIL_SAMPLES,
+  DIFF_SIZE_DEPENDENCY_FILES,
+  DIFF_SIZE_DOCS_DIR,
+  DIFF_SIZE_DOCS_EXTENSIONS,
+  DIFF_SIZE_DOCUSAURUS_CONFIG,
   DIFF_SIZE_FLAG_LINES,
+  DIFF_SIZE_TEST_SUFFIX,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_ENVIRONMENT_DIR,
   GATE_OUTPUT_TAIL_CHARS,
@@ -201,32 +210,397 @@ function failingTestNames(error: unknown): string {
   return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
+/** A changed path's new mode, and the path it was renamed from if git paired one. */
+interface RawDiffEntry {
+  mode: string;
+  renamedFrom?: string;
+}
+
 /**
- * Adds + deletes across the branch diff, excluding lockfiles and binary files.
- * A null numstat is a measurement, not a skip: a file git reports as binary
- * whose content is text is recounted from its patch and named in `forged`,
- * because git was told to call it binary by something no diff shows
- * (decision 53).
+ * The branch diff's `--raw` entries by new path. `-M` and `-l0` are passed
+ * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
+ * shared config a session can write, so a rename onto a test name is paired
+ * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
+ * second file was added.
+ */
+function rawDiffEntries(
+  repoPath: string,
+  target: string,
+  branch: string,
+): Map<string, RawDiffEntry> {
+  const fields = runGit(repoPath, [
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-color',
+    '-z',
+    '--raw',
+    '-M',
+    '-l0',
+    `${target}...${branch}`,
+  ]).split('\0');
+  const entries = new Map<string, RawDiffEntry>();
+  for (let i = 0; i < fields.length; i++) {
+    const header = fields[i];
+    if (!header?.startsWith(':')) continue;
+    // ":<old mode> <new mode> <old sha> <new sha> <status>", then one path, or
+    // the old and the new path for a rename or copy.
+    const [, mode = '', , , status = ''] = header.slice(1).split(' ');
+    if (/^[RC]/.test(status)) {
+      const from = fields[i + 1] ?? '';
+      const to = fields[i + 2] ?? '';
+      entries.set(to, status.startsWith('R') ? { mode, renamedFrom: from } : { mode });
+      i += 2;
+    } else {
+      entries.set(fields[i + 1] ?? '', { mode });
+      i += 1;
+    }
+  }
+  return entries;
+}
+
+type DiffSizeKind = 'source' | 'test' | 'docs';
+
+/**
+ * What the branch's tree tells the diff-size split beyond a path's own name
+ * (decision 110): whether a symlink can reach the path, and whether a
+ * Docusaurus config compiles the Markdown under `docs/`.
+ */
+interface BranchTree {
+  linked: (path: string) => boolean;
+  markdownIsCode: boolean;
+}
+
+/**
+ * A character outside ASCII. APFS, the macOS default and so the gate's
+ * filesystem (decision 78), folds some onto ASCII (`ſ` onto `s`, the Kelvin
+ * sign onto `k`) and others onto each other (`ς` onto `σ`) by its own tables,
+ * which no JavaScript case mapping or normalization reproduces. So a name
+ * holding one is never compared: a link holding one reaches every path, a
+ * changed path holding one is source, and a file named with one may be a
+ * Docusaurus witness (decision 110).
+ */
+const NON_ASCII = /[\u0080-\uffff]/;
+
+/**
+ * An ASCII path as the gate's filesystem looks it up: APFS opens a path in any
+ * case alike, so a link or specifier spelling one in another case still
+ * reaches it. Anything outside ASCII is settled by `NON_ASCII` first.
+ */
+const folded = (path: string): string => path.toLowerCase();
+
+/**
+ * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
+ * any ASCII case, names Docusaurus: its `@docusaurus/core` dependency or a
+ * `docusaurus` script.
+ */
+function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
+  try {
+    runGit(repoPath, [
+      'grep',
+      '-q',
+      '-i',
+      '-F',
+      '--no-textconv',
+      '-e',
+      'docusaurus',
+      branch,
+      '--',
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
+    ]);
+    return true;
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is "nothing matched"; anything else is git failing to answer.
+    if ((error as { status?: number }).status !== 1) throw error;
+    return false;
+  }
+}
+
+/**
+ * The branch's tree as the split reads it. A symlink reaches the path it lands
+ * on and everything under it, read from its blob lexically from the link's
+ * directory and compared folded; `git grep` never reads a link's blob, so this
+ * is the one place a link is seen. The blob is read up to its first NUL, as
+ * checkout writes the link with `symlink()`, which takes a C string. One whose
+ * target is absolute, lands outside the repo, or has a `..` after a named
+ * segment, which climbs from wherever that segment resolves and no lexical
+ * reading knows, may land anywhere and reaches every path, as does one whose
+ * path or target holds a character outside ASCII. A link named as a dependency
+ * file may name Docusaurus where no grep reads it, and a file named outside
+ * ASCII may be a config or dependency file no case-insensitive match finds.
+ */
+function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const landings: string[] = [];
+  let anywhere = false;
+  let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+    if (!entry) continue;
+    // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
+    const tab = entry.indexOf('\t');
+    const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
+    const path = entry.slice(tab + 1);
+    markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
+    if (mode !== '120000') continue;
+    markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
+      (name) => folded(name) === folded(basename(path)),
+    );
+    const [target = ''] = runGit(repoPath, ['cat-file', 'blob', oid]).split('\0', 1);
+    const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
+    const firstName = segments.findIndex((segment) => segment !== '..');
+    const lands = join(dirname(path), target).replace(/\/+$/, '');
+    anywhere ||=
+      NON_ASCII.test(path) ||
+      NON_ASCII.test(target) ||
+      target.startsWith('/') ||
+      (firstName !== -1 && segments.slice(firstName).includes('..')) ||
+      lands === '..' ||
+      lands.startsWith('../');
+    landings.push(folded(lands));
+  }
+  return {
+    linked: (path) => {
+      const key = folded(path);
+      return (
+        anywhere ||
+        landings.some((lands) => lands === '.' || key === lands || key.startsWith(`${lands}/`))
+      );
+    },
+    markdownIsCode,
+  };
+}
+
+/**
+ * A character no token (`NAME_TOKEN`) holds: anything but a letter, a digit
+ * or `_ . $ + @ -`, so a space, `#`, `=`, Next's `[id].test.ts` and a letter
+ * outside ASCII, whose other Unicode forms the gate's filesystem opens alike
+ * but no byte search finds. A test file named with one can be imported with no
+ * token naming it, so it counts as source.
+ */
+const UNSPELLABLE_NAME = /[^\w.$+@-]/;
+
+/**
+ * Which part of the diff-size split a path counts toward (decision 110). A
+ * symlink is source wherever it sits, and so is any path one can reach and any
+ * path holding a character outside ASCII, which a link spelled in ASCII may
+ * reach through the filesystem's folding. A test is only the trusted suffix
+ * under a name a token can spell, and never a file renamed onto it from a name
+ * that was not one, which would carry production code in under the test count.
+ * `.md` under `docs/` is code where a Docusaurus config compiles it.
+ */
+function diffSizeKind(
+  path: string,
+  entry: RawDiffEntry | undefined,
+  tree: BranchTree,
+): DiffSizeKind {
+  if (entry?.mode === '120000' || NON_ASCII.test(path) || tree.linked(path)) return 'source';
+  if (
+    path.startsWith(DIFF_SIZE_DOCS_DIR) &&
+    DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension)) &&
+    !(tree.markdownIsCode && path.endsWith('.md'))
+  ) {
+    return 'docs';
+  }
+  const isTest = (candidate: string): boolean =>
+    candidate.endsWith(DIFF_SIZE_TEST_SUFFIX) && !UNSPELLABLE_NAME.test(basename(candidate));
+  if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
+    return 'test';
+  }
+  return 'source';
+}
+
+const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
+
+/**
+ * A run of the characters a name may hold. Every other character ends one, so
+ * a name reads whole after a `/`, a quote or `=` and before a `?`, a `#`, a
+ * `>`, a script's `;`, `&&` or `)`, or a YAML list's `]`, with no list of
+ * delimiters to keep up. One class with nothing after it to backtrack into, so
+ * linear on any line: a pattern finding a name inside a token backtracked
+ * quadratically on one long unspaced line, and held the merge lock for minutes
+ * on a 1 MB file.
+ */
+const NAME_TOKEN = /[\w.$+@-]+/g;
+
+/**
+ * Per file on `branch` that names one of `targets`, the targets it names. A
+ * token names every target whose name, in any case, is the token or the token
+ * up to one of its dots, where an extension (`big.test.js`) or a serverless
+ * handler's export (`big.test.handler`) starts. Only dots within the longest
+ * name are tried, so a long token costs one scan. A relative specifier is not
+ * resolved: a decoy file at its literal path would take the resolution and
+ * hide the target, and matching by name only over-counts source, the safe
+ * direction. Every file `git grep` lists is read but those `skip` names,
+ * whatever its extension, since a Vue component, a Vite `index.html`, a
+ * `package.json` or a serverless config loads a module as well as code does.
+ * It is read with `core.precomposeUnicode` pinned off, as decision 114 pins
+ * the gate's other per-file reads: on macOS an NFD path read as its NFC
+ * sibling. A file costs one pass over its text and one lookup per distinct
+ * name it spells, however many tokens repeat a name or targets share it. Grep
+ * runs with colour pinned off: `color.grep=always` in the shared config would
+ * wrap each path in escapes, and a listing entry that does not start with the
+ * branch refuses rather than skips (decision 110). A path git listed in bytes
+ * that are not UTF-8 reads back with `U+FFFD` in their place, which names
+ * another file or none, so that importer names every target unread.
+ */
+function filesNaming(
+  repoPath: string,
+  branch: string,
+  targets: string[],
+  skip: (path: string) => boolean,
+): Map<string, Set<string>> {
+  const named = new Map<string, Set<string>>();
+  const byName = new Map<string, string[]>();
+  let longest = 0;
+  for (const target of targets) {
+    const name = folded(testStem(target));
+    byName.set(name, [...(byName.get(name) ?? []), target]);
+    longest = Math.max(longest, name.length);
+  }
+  let listing = '';
+  try {
+    listing = runGit(repoPath, [
+      '-c',
+      'color.ui=never',
+      '-c',
+      'color.grep=never',
+      'grep',
+      '--no-color',
+      '-l',
+      '-z',
+      '-i',
+      '-F',
+      '--no-textconv',
+      ...[...byName.keys()].flatMap((name) => ['-e', name]),
+      branch,
+      '--',
+    ]);
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is "nothing matched"; anything else is git failing to answer.
+    if ((error as { status?: number }).status !== 1) throw error;
+  }
+  const prefix = `${branch}:`;
+  for (const entry of listing.split('\0')) {
+    if (!entry) continue;
+    if (!entry.startsWith(prefix)) {
+      throw new Error(`git grep listed ${JSON.stringify(entry)}, not a path under ${prefix}`);
+    }
+    const importer = entry.slice(prefix.length);
+    if (skip(importer)) continue;
+    if (importer.includes('\ufffd')) {
+      named.set(importer, new Set(targets.filter((target) => target !== importer)));
+      continue;
+    }
+    const text = runGit(repoPath, [
+      '-c',
+      'core.precomposeUnicode=false',
+      'cat-file',
+      'blob',
+      `${branch}:${importer}`,
+    ]);
+    const names = new Set<string>();
+    for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
+      for (
+        let dot = token.indexOf('.', 1);
+        dot !== -1 && dot <= longest;
+        dot = token.indexOf('.', dot + 1)
+      ) {
+        if (byName.has(token.slice(0, dot))) names.add(token.slice(0, dot));
+      }
+      if (token.length <= longest && byName.has(token)) names.add(token);
+    }
+    const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
+    hits.delete(importer);
+    if (hits.size > 0) named.set(importer, hits);
+  }
+  return named;
+}
+
+/**
+ * The `tests` other code on `branch` reaches: production code can import a
+ * `*.test.ts` that also holds one test, which vitest collects and passes, or
+ * reach it through another test file that re-exports it (decision 110). Each
+ * round asks which files name the tests found so far; a test file naming one
+ * is followed in turn, until no new test file turns up. `kindOf` says what a
+ * naming file is: prose under `docs/` loads nothing and is skipped, and a file
+ * neither docs nor a test is code.
+ */
+function reachableTestFiles(
+  repoPath: string,
+  branch: string,
+  tests: string[],
+  kindOf: (path: string) => DiffSizeKind,
+): Set<string> {
+  if (tests.length === 0) return new Set();
+  const reached = new Set<string>();
+  const importsOf = new Map<string, Set<string>>();
+  const seen = new Set(tests);
+  let round = tests;
+  while (round.length > 0) {
+    const next: string[] = [];
+    const naming = filesNaming(repoPath, branch, round, (path) => kindOf(path) === 'docs');
+    for (const [importer, named] of naming) {
+      if (kindOf(importer) !== 'test') {
+        for (const test of named) reached.add(test);
+        continue;
+      }
+      importsOf.set(importer, new Set([...(importsOf.get(importer) ?? []), ...named]));
+      if (!seen.has(importer)) {
+        seen.add(importer);
+        next.push(importer);
+      }
+    }
+    round = next;
+  }
+  const queue = [...reached];
+  for (let test = queue.pop(); test !== undefined; test = queue.pop()) {
+    for (const imported of importsOf.get(test) ?? []) {
+      if (reached.has(imported)) continue;
+      reached.add(imported);
+      queue.push(imported);
+    }
+  }
+  return new Set(tests.filter((test) => reached.has(test)));
+}
+
+/**
+ * Adds + deletes across the branch diff, excluding lockfiles and binary files,
+ * split into source, test files and prose under `docs/` (decision 110). A null numstat is
+ * a measurement, not a skip: a file git reports as binary whose content is
+ * text is recounted from its patch and named in `forged`, because git was told
+ * to call it binary by something no diff shows (decision 53).
  */
 export function countChangedLines(
   repoPath: string,
   target: string,
   branch: string,
-): { lines: number; forged: string[] } {
-  let lines = 0;
+): { source: number; test: number; docs: number; forged: string[] } {
+  const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
-  for (const stat of gitDiffNumstat(repoPath, target, branch)) {
-    if (LOCKFILE_NAMES.includes(stat.path)) continue;
+  const raw = rawDiffEntries(repoPath, target, branch);
+  const tree = readBranchTree(repoPath, branch);
+  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
+  const stats = gitDiffNumstat(repoPath, target, branch).filter(
+    (stat) => !LOCKFILE_NAMES.includes(stat.path),
+  );
+  const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
+  const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
+  for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
+    kinds.set(path, 'source');
+  }
+  for (const stat of stats) {
+    const kind = kinds.get(stat.path) ?? 'source';
     if (stat.added !== null && stat.deleted !== null) {
-      lines += stat.added + stat.deleted;
+      counts[kind] += stat.added + stat.deleted;
       continue;
     }
     const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
     if (!recount) continue;
-    lines += recount.added + recount.deleted;
+    counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);
   }
-  return { lines, forged };
+  return { ...counts, forged };
 }
 
 /** Inside the merge lock's directory: the holder's pid, which a later run reads (decision 88). */
@@ -744,12 +1118,14 @@ function sessionMark(db: Database, sessionId: string): string {
  * sandbox in the moment between the add and the read, or plant
  * `config.worktree` there. `GIT_WORK_TREE` also does what `--work-tree` did,
  * outranking a `core.worktree` in the shared config that would aim the writes
- * elsewhere.
+ * elsewhere. Returns those pins, for a caller that runs git in the checkout.
  */
-function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): WorktreeGitEnv {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
+  const git = checkoutPinned(repoPath, dir, sha);
+  refuseEscapingLinks(dir, sha, git);
+  return git;
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -1228,6 +1604,202 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
 }
 
 /**
+ * The generated ADR index (decision 109). Every task that records a decision
+ * adds its line between the markers, so two branches that each add one
+ * conflict there and nowhere else. Fresh-base resolves that conflict, and only
+ * that one, by running the index's own script over the merged tree (decision
+ * 120). A path, not a git attribute or merge driver: decision 41 treats those
+ * as armed drivers.
+ */
+const ADR_INDEX = 'docs/adr/README.md';
+const ADR_DIR = 'docs/adr/';
+/** A decision file as the script lists one, `[0-9][0-9][0-9][0-9]-*.md`, its number captured. */
+const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/;
+const ADR_INDEX_SCRIPT = 'scripts/adr-index.sh';
+const ADR_INDEX_BEGIN = '<!-- adr-index:begin -->';
+const ADR_INDEX_END = '<!-- adr-index:end -->';
+/** Far past any real index (pupitre's is 25 KB): a larger side is refused unread. */
+const ADR_INDEX_MAX_BYTES = 1024 * 1024;
+/**
+ * A conflict list, its `<mode> <oid> <stage>\t<path>` entries joined by NUL,
+ * whose one conflicted path is the index, a regular file on all three sides;
+ * the groups are the three blobs. `merge-tree` lists entries a line each
+ * without `-z`, and C-quotes a path holding a newline, tab or quote there, so a
+ * line is one entry and a quoted path never matches. Any other shape (another
+ * path, a link, a side that added or deleted the index) is not two added
+ * lines, and keeps the plain refusal.
+ */
+const ADR_INDEX_CONFLICT = new RegExp(
+  `^${[1, 2, 3]
+    .map((stage) => `100644 ([0-9a-f]+) ${stage}\t${ADR_INDEX.replaceAll('.', '\\.')}`)
+    .join('\0')}$`,
+);
+/** A marker as the script counts one, a whole line, captured so a split keeps it. */
+const ADR_INDEX_MARKER = new RegExp(`\n(${ADR_INDEX_BEGIN}|${ADR_INDEX_END})(?=\n|$)`);
+
+/** Why the ADR index stays the worker's to merge; `regenerateAdrIndex` reports it. */
+class AdrIndexRefused extends Error {}
+
+/**
+ * The ADR index blob `oid` as the text before its begin marker and after its
+ * end marker, each with the newline that joins it to its marker. Refused when
+ * the markers are not each one line, once, begin first, since then there is
+ * no one block to regenerate, and when git decoded the text with a
+ * replacement character, so equal text here means equal bytes.
+ */
+function aroundAdrIndex(repoPath: string, oid: string): [string, string] {
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  if (Number(runGit(repoPath, ['cat-file', '-s', oid], piped)) > ADR_INDEX_MAX_BYTES) {
+    throw new AdrIndexRefused(`${ADR_INDEX} is over ${ADR_INDEX_MAX_BYTES} bytes`);
+  }
+  const text = runGit(repoPath, ['cat-file', 'blob', oid], piped);
+  // Text, marker, text, marker, text: the one shape the script rewrites.
+  const parts = `\n${text}`.split(ADR_INDEX_MARKER);
+  const markers = parts.filter((_, at) => at % 2 === 1).join('\n');
+  if (text.includes('�') || markers !== `${ADR_INDEX_BEGIN}\n${ADR_INDEX_END}`) {
+    throw new AdrIndexRefused(
+      `${ADR_INDEX} is not UTF-8 text holding each adr-index marker once, as a line, begin first`,
+    );
+  }
+  return [parts[0] as string, parts[4] as string];
+}
+
+/**
+ * Write the README the script left at `file` as a blob, through a descriptor
+ * opened without following a link or blocking on a fifo, and checked to be a
+ * regular file under the cap. A process the script started in a session of its
+ * own outlives the run's kill and can still swap the path, so git reads the
+ * checked descriptor as its stdin and never opens the path: a link swapped in
+ * after the check would have it read a file the sandbox denies and store it
+ * where gate children read (decisions 36, 120). Git reads the size it finds
+ * itself, so a file grown past the cap after the check stores only bytes the
+ * process wrote, which `aroundAdrIndex` then refuses unread.
+ */
+function hashAdrIndex(repoPath: string, file: string): string {
+  const refusal =
+    `${ADR_INDEX_SCRIPT} left no regular file of at most ${ADR_INDEX_MAX_BYTES} bytes ` +
+    `at ${ADR_INDEX}`;
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    throw new AdrIndexRefused(refusal);
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > ADR_INDEX_MAX_BYTES) throw new AdrIndexRefused(refusal);
+    return runGit(repoPath, ['hash-object', '-w', '--no-filters', '--stdin'], {
+      stdio: [fd, 'pipe', 'pipe'],
+    }).trim();
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Resolve a conflict confined to the ADR index (decision 120), on the merge
+ * path only: a rebase stopped on one would go on with `--continue`, which reads
+ * back rebase state the live session can write. `conflicts` is the conflict
+ * list `ADR_INDEX_CONFLICT` reads, and `merged` the tree `merge-tree` wrote with
+ * it, the README holding git's conflict markers. The text outside the markers
+ * merges whole, region by region: a side that left one as the base takes the
+ * other's, and two sides that both changed it are refused, as the plain merge
+ * refuses them. Two decision files that share a number merge clean under
+ * their own slugs, so the merged tree is refused when it holds such a pair:
+ * the hand merge would show the worker both lines, a regenerated index would
+ * land both. The tree is committed (unreferenced) and cut into a scratch
+ * checkout of its own, where the README becomes the merged text with an empty
+ * index and `scripts/adr-index.sh` from that tree fills the index in. The
+ * script is the branch's code, so it runs as a stage does, confined (decisions
+ * 28, 36), and the README is written in the same child; what the script wrote
+ * is read back by `hashAdrIndex` and its text outside the markers must be
+ * unchanged. The checkout and its root go before this returns, and no later
+ * stage cuts at either: a process the script left in a session of its own
+ * keeps the child's grant on the checkout's path, and could put a link there
+ * for the next checkout cut at it to write through. Returns the merged tree
+ * with the regenerated README in place, or what the refusal adds to its
+ * detail: nothing for a conflict list of another shape, else why the index
+ * was not regenerated.
+ */
+async function regenerateAdrIndex(
+  req: MergeRequest,
+  conflicts: string[],
+  merged: string,
+): Promise<{ tree: string } | string> {
+  const sides = ADR_INDEX_CONFLICT.exec(conflicts.join('\0'));
+  if (!sides) return '';
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  try {
+    const numbers = runGit(req.repoPath, ['ls-tree', '-z', '--name-only', merged, ADR_DIR], piped)
+      .split('\0')
+      .map((path) => ADR_DECISION.exec(path)?.[1])
+      .filter((number) => number !== undefined);
+    const shared = numbers.find((number, at) => numbers.indexOf(number) !== at);
+    if (shared) throw new AdrIndexRefused(`two decisions share the number ${shared} in ${ADR_DIR}`);
+    const cut = sides.slice(1).map((oid) => aroundAdrIndex(req.repoPath, oid));
+    const [before, after] = [0, 1].map((at) => {
+      const [base, ours, theirs] = cut.map((side) => side[at] as string);
+      const changed = [...new Set([ours, theirs])].filter((side) => side !== base);
+      if (changed.length > 1) {
+        throw new AdrIndexRefused(`both sides changed ${ADR_INDEX} outside the adr-index markers`);
+      }
+      return [...changed, base][0] as string;
+    });
+    const commit = runGit(
+      req.repoPath,
+      ['commit-tree', '--no-gpg-sign', '-m', 'pup merge: ADR index', merged],
+      piped,
+    ).trim();
+    // Private and unguessable as the stages' root is, and named after itself
+    // for the same reason: the admin dir `worktree add` names is its own.
+    const root = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-adr-index-'));
+    try {
+      const checkoutDir = join(root, basename(root));
+      const git = cutGateCheckout(req.repoPath, checkoutDir, commit);
+      try {
+        // The child writes the merged README too, under its own grants, so
+        // the gate opens no path in the checkout by name once it is cut: a
+        // link put there would aim a write of the gate's out of it.
+        await runGateChild(
+          'bash',
+          ['-c', 'cat > "$1" && exec bash "$2"', 'bash', ADR_INDEX, ADR_INDEX_SCRIPT],
+          {
+            cwd: checkoutDir,
+            repoPath: req.repoPath,
+            gateEnv: req.gateEnv,
+            timeout: GATE_COMMAND_TIMEOUT_MS,
+            input: `${before}\n${ADR_INDEX_BEGIN}\n${ADR_INDEX_END}${after}`.slice(1),
+          },
+        );
+      } catch (error) {
+        throw error instanceof GateInterruptedError
+          ? error
+          : new AdrIndexRefused(`${ADR_INDEX_SCRIPT} failed:\n${commandFailureDetail(error)}`);
+      }
+      // Hashed before it is judged, so what is judged is what the merge takes.
+      const blob = hashAdrIndex(req.repoPath, join(checkoutDir, ADR_INDEX));
+      if (JSON.stringify(aroundAdrIndex(req.repoPath, blob)) !== JSON.stringify([before, after])) {
+        throw new AdrIndexRefused(
+          `${ADR_INDEX_SCRIPT} changed ${ADR_INDEX} outside the adr-index markers`,
+        );
+      }
+      const inCheckout = { env: { ...git }, ...piped };
+      runGit(
+        checkoutDir,
+        ['update-index', '--cacheinfo', `100644,${blob},${ADR_INDEX}`],
+        inCheckout,
+      );
+      return { tree: runGit(checkoutDir, ['write-tree'], inCheckout).trim() };
+    } finally {
+      dropGateCheckout(req.repoPath, root);
+    }
+  } catch (error) {
+    if (!(error instanceof AdrIndexRefused)) throw error;
+    return `\n${ADR_INDEX} was not regenerated: ${error.message}.`;
+  }
+}
+
+/**
  * Merge `targetSha` into the branch an open PR holds, in plumbing only
  * (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
  * commit, and a compare-and-swap moves the branch from the tip the merge read.
@@ -1242,17 +1814,19 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
  * again right before `merge-tree`, which runs a merge driver on a conflicted
  * file, and before the `read-tree`, which runs a smudge filter on every file it
  * writes, as they are before the fast-forward: the last check ran before the gh
- * calls and the lock (decision 50). Returns the failure for the worker, or
- * undefined once the branch holds the merge.
+ * calls and the lock (decision 50). A conflict in the ADR index alone is
+ * resolved in a scratch checkout of its own (decision 120). Returns the failure
+ * for the worker, or undefined once the branch holds the merge.
  */
-function mergeTargetInto(
-  repoPath: string,
+async function mergeTargetInto(
+  req: MergeRequest,
   worktree: string,
   worktreeEnv: WorktreeGitEnv,
   branch: string,
   target: string,
   targetSha: string,
-): string | undefined {
+): Promise<string | undefined> {
+  const { repoPath } = req;
   const branchRef = `refs/heads/${branch}`;
   const shown = sanitizeReason(target);
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
@@ -1270,11 +1844,23 @@ function mergeTargetInto(
     // 2.38, a missing object) is git failing to merge at all, which no worker
     // can resolve: thrown to the operator, with only objects written.
     if ((error as { status?: unknown }).status !== 1) throw error;
-    return (
-      `Auto-merge of ${shown} hit conflicts. Run ` +
-      `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
-      `resolve the conflicts, and commit the merge.\n${commandFailureDetail(error)}`
+    // The merged tree, then one entry per conflicted path and stage up to an
+    // empty line, then git's messages. Not `-z`, which would fuse the report
+    // the refusal hands the worker into one line.
+    const [conflicted, ...listed] = String((error as { stdout?: unknown }).stdout).split('\n');
+    const resolved = await regenerateAdrIndex(
+      req,
+      listed.slice(0, listed.indexOf('')),
+      conflicted as string,
     );
+    if (typeof resolved === 'string') {
+      return (
+        `Auto-merge of ${shown} hit conflicts. Run ` +
+        `\`git merge ${shellWord(`refs/heads/${shown}`)}\`, ` +
+        `resolve the conflicts, and commit the merge.\n${commandFailureDetail(error)}${resolved}`
+      );
+    }
+    tree = resolved.tree;
   }
   const merged = runGit(
     repoPath,
@@ -1441,8 +2027,8 @@ async function gateAndMerge(
       }),
     );
   } else if (isPrBranch) {
-    const refused = mergeTargetInto(
-      req.repoPath,
+    const refused = await mergeTargetInto(
+      req,
       worktree,
       worktreeEnv,
       session.branch,
@@ -1458,7 +2044,11 @@ async function gateAndMerge(
     );
   } else {
     try {
-      runGit(worktree, ['rebase', targetSha], pinned);
+      // The strategy named, not left to `pull.twohead`: git's sequencer takes
+      // the first value it reads, a session's local one before the `-c` pin,
+      // and runs any name but ort as `git merge-<name>`, a path into the
+      // worktree included (decision 120, amending 79).
+      runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
@@ -1467,6 +2057,10 @@ async function gateAndMerge(
         }),
       );
     } catch (error) {
+      // Every conflict goes back to the worker, the ADR index's included: the
+      // gate resolves that one only where it merges, since a resolved stop
+      // would go on through rebase state the live session can write (decision
+      // 120).
       try {
         runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
@@ -2134,13 +2728,16 @@ export async function measureBranch(
 
   started = Date.now();
   const changed = countChangedLines(req.repoPath, targetSha, sha);
+  const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
-  if (changed.lines > DIFF_SIZE_FLAG_LINES) {
+  if (changed.source > DIFF_SIZE_FLAG_LINES) {
+    // The figure is the source count; the wording is kept so a re-gate still
+    // reads an entry filed before decision 110 as the same kind.
     flaggedDebt.push({
-      description: `Oversize diff (${changed.lines} lines) merged from session ${session.id}`,
+      description: `Oversize diff (${changed.source} lines) merged from session ${session.id}`,
       files: changedPaths,
     });
-    sizeFindings.push(`exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
+    sizeFindings.push(`source exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
   }
   // Flagged at any size: the count is honest again once recounted, but a text
   // file git was told to call binary is a write nobody reviewed (decision 53).
@@ -2164,9 +2761,9 @@ export async function measureBranch(
         ? {
             stage: 'diff-size',
             status: 'flagged',
-            detail: flagDetail(`${changed.lines} changed lines ${sizeFindings.join('; ')}`),
+            detail: flagDetail(`${split}: ${sizeFindings.join('; ')}`),
           }
-        : { stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` },
+        : { stage: 'diff-size', status: 'pass', detail: split },
     ),
   );
 

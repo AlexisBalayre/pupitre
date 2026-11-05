@@ -1,9 +1,31 @@
-import { readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// The real lstatSync, wrapped so one test can report a directory on another
+// device, as a volume mounted over it would be.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
+
 import { tempDir } from '../test/temp-dir.mock.js';
 import { sandboxProfile, writeProfile } from './sandbox-profile.utils.js';
+
+afterEach(() => {
+  vi.mocked(lstatSync).mockReset();
+});
 
 const HOME = '/Users/dev';
 
@@ -19,11 +41,15 @@ function profile(
   writablePaths: string[] = ['/repo'],
   protectedPaths: string[] = [],
   checkoutPaths: string[] = [],
+  pinnedPaths: string[] = [],
+  sealedPaths: string[] = [],
 ): string {
   return sandboxProfile({
     writablePaths,
     protectedPaths,
     checkoutPaths,
+    pinnedPaths,
+    sealedPaths,
     home: HOME,
     policyDir: '/scratch/pup-sandbox-x',
   });
@@ -57,7 +83,7 @@ describe('sandboxProfile', () => {
     // deny. Whole-text equality is the only formatting-proof pin: any grant
     // added, deny dropped, or subpath widened — anywhere, however spelled —
     // fails by construction.
-    expect(profile(['/repo', '/reports'], ['/repo/.git'], ['/repo'])).toBe(
+    expect(profile(['/repo', '/reports'], ['/repo/.git'], ['/repo'], ['/repo', '/'])).toBe(
       [
         '(version 1)',
         '(allow default)',
@@ -68,6 +94,8 @@ describe('sandboxProfile', () => {
         '(allow file-write*\n  (subpath "/repo")\n  (subpath "/reports")\n  (subpath "/dev"))',
         `(deny file-write*\n  (subpath "${HOME}/.pupitre")\n  (subpath "/scratch/pup-sandbox-x")\n  (subpath "/repo/.git"))`,
         String.raw`(deny file-write* (require-all (subpath "/repo") (regex #"/\.git(/|$)")))`,
+        '(deny file-mount file-mount-update file-unmount)',
+        '(deny file-write-unlink\n  (literal "/repo")\n  (literal "/"))',
         '',
       ].join('\n'),
     );
@@ -109,6 +137,29 @@ describe('sandboxProfile', () => {
     expect(generated.indexOf(gitDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
   });
 
+  // A volume mounted over a worktree or a `.git` swaps what pup's next git call
+  // reads without one unlink, and no write rule refused a mount (decision 117).
+  it('denies every mount, remount and unmount, after the grants', () => {
+    const generated = profile(['/repo']);
+    const mountDeny = '(deny file-mount file-mount-update file-unmount)';
+
+    expect(generated).toContain(mountDeny);
+    expect(generated.indexOf(mountDeny)).toBeGreaterThan(generated.indexOf('(allow file-write*'));
+  });
+
+  it('leaves the unlink deny out when nothing is pinned, since bare it denies every unlink', () => {
+    expect(profile(['/repo'], [], [], [], [])).not.toContain('file-write-unlink');
+  });
+
+  it('seals a path whole, under the same unlink deny as the pins', () => {
+    expect(profile(['/repo'], [], [], ['/repo/a'], ['/repo/b'])).toContain(
+      '(deny file-write-unlink\n  (literal "/repo/a")\n  (subpath "/repo/b"))',
+    );
+    expect(profile(['/repo'], [], [], [], ['/repo/b'])).toContain(
+      '(deny file-write-unlink\n  (subpath "/repo/b"))',
+    );
+  });
+
   it('escapes a path that would otherwise break out of the SBPL string', () => {
     const generated = profile([String.raw`/repo/a"b\c`]);
 
@@ -138,10 +189,187 @@ describe('writeProfile', () => {
           .map((path) => `\n  (subpath "${home}/${path}")`)
           .join('')})`,
         '(allow file-write*\n  (subpath "/x/checkout")\n  (subpath "/x/scratch")\n  (subpath "/dev"))',
-        `(deny file-write*\n  (subpath "${home}/.pupitre")\n  (subpath "${policyDir}")\n  (subpath "/x/checkout/.git"))`,
+        `(deny file-write*\n  (subpath "${home}/.pupitre")\n  (subpath "${policyDir}")\n  (subpath "/x/checkout/.git")\n  (subpath "/x/checkout/.worktrees"))`,
         String.raw`(deny file-write* (require-all (subpath "/x/checkout") (regex #"/\.git(/|$)")))`,
+        '(deny file-mount file-mount-update file-unmount)',
+        '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x/scratch")\n  (literal "/x")\n  (literal "/"))',
         '',
       ].join('\n'),
     );
+  });
+
+  // A failing vitest run removes its empty report directory and the re-run
+  // makes it again (decision 108), so an output keeps its own name free; what
+  // holds it does not (decision 117).
+  it('protects an output as a checkout and pins what holds it, but not its own name', () => {
+    const generated = readFileSync(
+      writeProfile(tempDir('pup-profile-'), ['/x/checkout'], [], ['/y/holder/report']),
+      'utf8',
+    );
+
+    expect(generated).toContain(
+      String.raw`(deny file-write* (require-all (subpath "/y/holder/report") (regex #"/\.git(/|$)")))`,
+    );
+    expect(generated).toContain(
+      '(deny file-write-unlink\n  (literal "/x/checkout")\n  (literal "/x")\n  (literal "/")\n  (literal "/y/holder")\n  (literal "/y"))',
+    );
+    // Only the child's own checkout is where pup keeps worktrees.
+    expect(generated).toContain('(subpath "/x/checkout/.worktrees")');
+    expect(generated).not.toContain('/y/holder/report/.worktrees');
+  });
+
+  // An output keeps its name free, so one holding a repo could carry it into
+  // scratch, past every .git rule, and back: no profile is written for it.
+  it.each([
+    ['holds a .git', (output: string) => mkdirSync(join(output, '.git'))],
+    [
+      'leads to a nested .git',
+      (output: string) => mkdirSync(join(output, 'a', '.git'), { recursive: true }),
+    ],
+    ['cannot be read', (output: string) => chmodSync(output, 0o000)],
+  ])('refuses an output that %s, writing no profile', (_, make) => {
+    const output = tempDir('pup-output-');
+    const policyDir = tempDir('pup-profile-');
+    // The control: the same output, fresh, is granted.
+    expect(() =>
+      writeProfile(tempDir('pup-profile-'), ['/x/checkout'], [], [output]),
+    ).not.toThrow();
+    make(output);
+
+    try {
+      expect(() => writeProfile(policyDir, ['/x/checkout'], [], [output])).toThrow(
+        `Refusing to grant ${output} as an output`,
+      );
+    } finally {
+      chmodSync(output, 0o755);
+    }
+    expect(existsSync(join(policyDir, 'gate-child.sb'))).toBe(false);
+  });
+
+  // Moved out and back, a nested worktree came home with its `.git` pointer
+  // aimed elsewhere (decision 117): each directory down to one is pinned.
+  it('pins every directory below a checkout that leads to a nested .git, and no other', () => {
+    const checkout = tempDir('pup-nested-');
+    const elsewhere = tempDir('pup-nested-target-');
+    mkdirSync(join(checkout, '.worktrees', 's1'), { recursive: true });
+    writeFileSync(join(checkout, '.worktrees', 's1', '.git'), 'gitdir: /x\n');
+    mkdirSync(join(checkout, 'vendor', 'lib', '.GIT'), { recursive: true });
+    mkdirSync(join(checkout, 'src', 'plain'), { recursive: true });
+    mkdirSync(join(checkout, '.git'));
+    mkdirSync(join(elsewhere, '.git'));
+    symlinkSync(elsewhere, join(checkout, 'linked'));
+
+    const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+    const pinned = [...generated.matchAll(/\(literal "([^"]*)"\)/g)].map(([, path = '']) => path);
+
+    expect(pinned.filter((path) => path.startsWith(`${checkout}/`)).sort()).toEqual(
+      ['.worktrees', '.worktrees/s1', 'vendor', 'vendor/lib'].map((path) => join(checkout, path)),
+    );
+  });
+
+  // A child runs as the operator, so it can `chmod 000` a directory its grant
+  // covers: read as empty, `.worktrees` hid `s1` from the next profile, and
+  // pinned alone it let the next child make it readable and move `s1`.
+  // A volume mounted over a directory reads as whatever the volume holds, and
+  // can be gone before the next child runs: no real mount here, its device is
+  // reported different instead.
+  it.each([
+    ['cannot read', (dir: string) => chmodSync(dir, 0o000)],
+    ['can search but not list', (dir: string) => chmodSync(dir, 0o111)],
+    [
+      'finds on another device',
+      (dir: string) => {
+        const real = vi.mocked(lstatSync).getMockImplementation() as unknown as (
+          path: string,
+          options?: object,
+        ) => Stats | undefined;
+        vi.mocked(lstatSync).mockImplementation(((path: string, options?: object) => {
+          const stat = real(path, options);
+          if (stat && path === dir) stat.dev += 1;
+          return stat;
+        }) as typeof lstatSync);
+      },
+    ],
+  ])('seals a directory the walk %s, and pins it and what leads to it', (_, hide) => {
+    const checkout = tempDir('pup-nested-');
+    const hidden = join(checkout, 'a', 'b', '.worktrees');
+    mkdirSync(join(hidden, 's1'), { recursive: true });
+    writeFileSync(join(hidden, 's1', '.git'), 'gitdir: /x\n');
+    hide(hidden);
+    let generated: string;
+    try {
+      generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+    } finally {
+      chmodSync(hidden, 0o755);
+    }
+
+    const pinned = [...generated.matchAll(/\(literal "([^"]*)"\)/g)].map(([, path = '']) => path);
+    expect(pinned.filter((path) => path.startsWith(`${checkout}/`)).sort()).toEqual([
+      join(checkout, 'a'),
+      join(checkout, 'a', 'b'),
+      hidden,
+    ]);
+    expect(generated).toContain(`(subpath "${hidden}"))`);
+  });
+
+  // The fail-closed cost: a child that hides the checkout itself seals it whole.
+  it('seals the whole checkout when the checkout itself cannot be read', () => {
+    const checkout = tempDir('pup-nested-');
+    mkdirSync(join(checkout, '.worktrees', 's1'), { recursive: true });
+    chmodSync(checkout, 0o000);
+    let generated: string;
+    try {
+      generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+    } finally {
+      chmodSync(checkout, 0o755);
+    }
+
+    expect(generated).toContain(`(subpath "${checkout}"))`);
+  });
+
+  // An SBPL string carries a newline raw; such a name never reaches the profile.
+  it('seals the parent of a directory named with a control character, not the name', () => {
+    const checkout = tempDir('pup-nested-');
+    mkdirSync(join(checkout, 'vendor', 'a\nb', '.git'), { recursive: true });
+    mkdirSync(join(checkout, 'vendor', 'c\u009bd', '.git'), { recursive: true });
+
+    const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [checkout]), 'utf8');
+
+    expect(generated).toContain(`(subpath "${join(checkout, 'vendor')}"))`);
+    expect(generated).toContain(`(literal "${join(checkout, 'vendor')}")`);
+    expect(generated).not.toContain('a\nb');
+    expect(generated).not.toContain('\u009b');
+  });
+
+  // A child can put a link at its own grant, and the next child's profile is
+  // written afresh: followed, it granted the link's target (decision 108).
+  it('grants a link left at a grant as the link, never its target', () => {
+    const holder = tempDir('pup-grant-holder-');
+    const target = tempDir('pup-grant-target-');
+    symlinkSync(target, join(holder, 'report'));
+
+    const generated = readFileSync(
+      writeProfile(tempDir('pup-profile-'), [join(holder, 'report')]),
+      'utf8',
+    );
+
+    expect(generated).toContain(`(subpath "${join(holder, 'report')}")`);
+    expect(generated).not.toContain(target);
+  });
+
+  // A failing vitest run removes its report directory before the re-run's
+  // profile is written; named as given, `/var/...` never matched the kernel's
+  // `/private/var/...`. A directory that is there resolves the same way.
+  it.each([
+    ['is gone', () => {}],
+    ['is a directory', (path: string) => mkdirSync(path)],
+  ])('grants a path that %s under its resolved parent', (_, make) => {
+    const holder = tempDir('pup-grant-holder-');
+    const unresolved = join(tmpdir(), basename(holder), 'report');
+    make(unresolved);
+
+    const generated = readFileSync(writeProfile(tempDir('pup-profile-'), [unresolved]), 'utf8');
+
+    expect(generated).toContain(`(subpath "${join(holder, 'report')}")`);
   });
 });

@@ -127,19 +127,50 @@ export class WorktreeRepointedError extends Error {
   }
 }
 
+/** One shell word, for a command the operator is asked to paste. */
+function shellWord(word: string): string {
+  return `'${word.replaceAll("'", `'\\''`)}'`;
+}
+
+/** What turned per-worktree config on: the file, the extension, or a value git cannot read. */
+type WorktreeConfigCause = 'file' | 'on' | 'unreadable';
+
 export class WorktreeConfigError extends Error {
-  constructor(repoPath: string, problem: string) {
+  constructor(repoPath: string, cause: WorktreeConfigCause) {
+    const dotGit = join(repoPath, '.git');
+    const config = sanitizeReason(join(dotGit, 'config'));
+    const problem =
+      cause === 'file'
+        ? `${sanitizeReason(join(dotGit, 'config.worktree'))} exists`
+        : cause === 'on'
+          ? `extensions.worktreeConfig is on in ${config}`
+          : `extensions.worktreeConfig is on, or holds a value git cannot read, in ${config}`;
+    // Pasted, the line must name the very file: sanitizeReason folds runs of
+    // whitespace, blanks control chars and truncates, so a path it changes is
+    // left for the operator to type rather than printed as another file.
+    const raw = join(dotGit, 'config');
+    const unset =
+      config === raw
+        ? `\`git -C / config --file ${shellWord(raw)} --unset-all extensions.worktreeConfig\``
+        : '`git -C / config --file <repo>/.git/config --unset-all extensions.worktreeConfig` ' +
+          "with <repo> typed by hand, as the repo's path holds characters this message cannot " +
+          'show as they are';
+    // `disable` turns the extension back on, so the unset comes after it, and
+    // again after it when git needed the unset first to open the repo at all.
+    const steps =
+      cause === 'unreadable'
+        ? `${unset} first (\`-C /\`: git opens the repo for nothing else while the value is ` +
+          'unreadable), then `git sparse-checkout disable` if the checkout is sparse and, as ' +
+          'that turns the extension back on, the unset again'
+        : `\`git sparse-checkout disable\` if the checkout is sparse, then ${unset}`;
     super(
       `Refusing to launch a session in ${sanitizeReason(repoPath)}: ${problem}. Usually ` +
         '`git sparse-checkout` or `git clone --sparse` turned per-worktree config on, and with ' +
         "it on a session's git would read a config.worktree the session can write (decision " +
         '101). If no sparse checkout ran here, a session may have written it: inspect ' +
         '.git/config and .git/config.worktree before removing anything, and treat a session ' +
-        'that wrote them as compromised. Otherwise run `git sparse-checkout disable` if the ' +
-        'checkout is sparse, then `git -C / config --file ' +
-        `${sanitizeReason(join(repoPath, '.git', 'config'))} --unset extensions.worktreeConfig\` ` +
-        '(`-C /`: git will not open the repo while the value is unreadable) and ' +
-        'remove .git/config.worktree, and retry.',
+        `that wrote them as compromised. Otherwise run ${steps}, remove .git/config.worktree, ` +
+        'and retry.',
     );
     this.name = 'WorktreeConfigError';
   }
@@ -180,7 +211,7 @@ export function verifiedWorktreeGitEnv(repoPath: string, worktreePath: string): 
   }
   if (
     lstatSync(join(env.GIT_DIR, 'config.worktree'), { throwIfNoEntry: false }) ||
-    worktreeConfigOn(worktreePath, env.GIT_COMMON_DIR, env)
+    worktreeConfigState(worktreePath, env.GIT_COMMON_DIR, env) !== 'off'
   ) {
     throw new WorktreeRepointedError(
       worktreePath,
@@ -241,26 +272,25 @@ export function assertNoWorktreeConfig(repoPath: string): void {
         '`--separate-git-dir` clone, whose .git is a gitfile. Run it from the main checkout.',
     );
   }
+  // The extension first: `git sparse-checkout` writes the file too, and while
+  // the value is unreadable only the hint that leads with the unset works.
+  const extension = worktreeConfigState(repoPath, dotGit);
+  if (extension !== 'off') throw new WorktreeConfigError(repoPath, extension);
   if (lstatSync(join(dotGit, 'config.worktree'), { throwIfNoEntry: false })) {
-    throw new WorktreeConfigError(
-      repoPath,
-      `${sanitizeReason(join(dotGit, 'config.worktree'))} exists`,
-    );
-  }
-  if (worktreeConfigOn(repoPath, dotGit)) {
-    throw new WorktreeConfigError(
-      repoPath,
-      `extensions.worktreeConfig is on in ${sanitizeReason(join(dotGit, 'config'))}`,
-    );
+    throw new WorktreeConfigError(repoPath, 'file');
   }
 }
 
 /**
  * Whether the common dir's own config turns `extensions.worktreeConfig` on, as
  * git reads it for the repository format: that file alone, no includes. A
- * value git cannot read as a boolean counts as on.
+ * value git cannot read as a boolean is `unreadable`, which counts as on.
  */
-function worktreeConfigOn(gitPath: string, commonDir: string, env?: WorktreeGitEnv): boolean {
+function worktreeConfigState(
+  gitPath: string,
+  commonDir: string,
+  env?: WorktreeGitEnv,
+): 'off' | 'on' | 'unreadable' {
   try {
     const value = runGit(
       gitPath,
@@ -275,16 +305,13 @@ function worktreeConfigOn(gitPath: string, commonDir: string, env?: WorktreeGitE
       ],
       { env: env ? { ...env } : undefined, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return value.trim() !== 'false';
+    return value.trim() === 'false' ? 'off' : 'on';
   } catch (error) {
     rethrowIfKilled(error);
     // Exit 1 is git's "no such key"; anything else is a config it could not read.
-    return !(
-      typeof error === 'object' &&
-      error !== null &&
-      'status' in error &&
-      error.status === 1
-    );
+    return typeof error === 'object' && error !== null && 'status' in error && error.status === 1
+      ? 'off'
+      : 'unreadable';
   }
 }
 
@@ -323,6 +350,10 @@ function worktreeConfigOn(gitPath: string, commonDir: string, env?: WorktreeGitE
  * in the shared ref store: a replacement for the target's tip would hand
  * every diff, and the scope audit reading it, a tree the session chose in
  * place of the one the sha names (decision 99).
+ * `core.bigFileThreshold` is pinned to git's default, far above
+ * `GIT_MAX_BUFFER`: a session-written low value makes git call every file
+ * binary, so `--numstat` reads `-\t-` for a text file, which then lands in the
+ * gate's `forged` list when it should count plainly (decision 113).
  * The `lfs` filter is emptied and made optional, so no pup git call runs
  * git-lfs: with the operator's global `git lfs install`, a tracked
  * `.gitattributes` naming `filter=lfs` makes it the smudge driver of every
@@ -359,6 +390,8 @@ export const GIT_SAFE_CONFIG = [
   'core.useReplaceRefs=false',
   '-c',
   'worktree.useRelativePaths=false',
+  '-c',
+  'core.bigFileThreshold=512m',
   '-c',
   'filter.lfs.required=false',
   '-c',
@@ -461,10 +494,27 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
 }
 
 /**
+ * Git config that keeps a path argument the bytes it was given. On macOS
+ * `core.precomposeUnicode`, which `git init` turns on and a session can set in
+ * the shared config, rewrites an NFD path to NFC in a pathspec and in a
+ * `<rev>:<path>` object name alike, so a tree holding both spellings would
+ * answer for the other file (decision 114).
+ */
+const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
+
+/**
  * The `-U0` hunk headers of one file's branch diff (merge-base diff): where
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
- * need de-quoting.
+ * need de-quoting. The path is a literal pathspec, or a file named
+ * `:(top)foo` would be read as magic and return no hunks. The inter-hunk
+ * context is pinned to 0 and the algorithm to myers, or a session-written
+ * `diff.interHunkContext` would merge the hunks and a `diff.algorithm` of
+ * patience or histogram could read an unchanged block as deleted and
+ * re-added, both reporting unchanged lines as added (decision 113).
+ * `core.precomposeUnicode` is pinned off, or on macOS git would rewrite an NFD
+ * path to NFC before matching it and read the hunks of an NFC sibling the tree
+ * also holds (decision 114).
  */
 function diffHunks(
   repoPath: string,
@@ -473,9 +523,13 @@ function diffHunks(
   path: string,
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
+    ...PATH_AS_GIVEN,
+    '--literal-pathspecs',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-U0',
+    '--inter-hunk-context=0',
+    '--diff-algorithm=myers',
     `${target}...${branch}`,
     '--',
     path,
@@ -517,8 +571,14 @@ export function gitDiffAddedLines(
 /** Per-file add/delete counts for the branch diff (merge-base diff), rename-aware. */
 export function gitDiffNumstat(repoPath: string, target: string, branch: string): DiffFileStat[] {
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
-  // paths as two separate NUL fields.
+  // paths as two separate NUL fields. An inline path is never quoted, so a tab
+  // in it is the path's own and everything after the second tab is the path.
+  // Renames are pinned to plain detection: a session-written
+  // `diff.renames=copies` would score a new file copied from a changed one as
+  // that copy's edits alone, under the oversize flag (decision 113).
   const fields = runGit(repoPath, [
+    '-c',
+    'diff.renames=true',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-z',
@@ -529,7 +589,8 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];
     if (!field) continue;
-    const [added, deleted, inlinePath] = field.split('\t');
+    const [added, deleted, ...rest] = field.split('\t');
+    const inlinePath = rest.join('\t');
     const path = inlinePath || fields[i + 2];
     if (!inlinePath) i += 2;
     if (!path) continue;
@@ -552,15 +613,19 @@ const BINARY_SNIFF_BYTES = 8000;
 function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
   const spec = `${rev}:${path}`;
   try {
-    runGit(repoPath, ['cat-file', '-e', spec]);
+    runGit(repoPath, [...PATH_AS_GIVEN, 'cat-file', '-e', spec]);
   } catch {
     return false;
   }
   // `runGit`'s argv and env, read as bytes: a NUL is the whole question.
-  const blob = execFileSync('git', safeArgv(repoPath, ['cat-file', 'blob', spec]), {
-    ...spawnOptions({}),
-    encoding: 'buffer',
-  });
+  const blob = execFileSync(
+    'git',
+    safeArgv(repoPath, [...PATH_AS_GIVEN, 'cat-file', 'blob', spec]),
+    {
+      ...spawnOptions({}),
+      encoding: 'buffer',
+    },
+  );
   return blob.subarray(0, BINARY_SNIFF_BYTES).includes(0);
 }
 
@@ -569,9 +634,9 @@ function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
  * `-\t-`, or null when the file really is binary. `--text` does not restore a
  * numstat the way it restores a patch, and what git calls binary is not only
  * content: a `-diff` or `binary` attribute from `info/attributes` or a
- * `core.attributesFile`, or a `core.bigFileThreshold` below the file's size,
- * all written where no diff shows them, make every text file `-\t-` — and a
- * skipped null would then let a 5 000-line diff count as zero (decision 53).
+ * `core.attributesFile`, both written where no diff shows them, make every
+ * text file `-\t-` — and a skipped null would then let a 5 000-line diff
+ * count as zero (decision 53).
  *
  * Content is the question, asked of both sides of the merge-base diff, because
  * the patch cannot answer it: `--text` parses hunks out of a real binary too,

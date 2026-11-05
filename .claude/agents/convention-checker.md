@@ -21,7 +21,7 @@ For architectural obligations, map the path to its design doc:
 - `src/adapters/` → `docs/06-adapters.md` (the `Adapter` interface)
 - `**/*.test.ts` → `docs/conventions/testing.md`
 
-`docs/09-decisions.md` **wins over `docs/00`–`08` wherever they conflict** — check it before reporting a design violation.
+`docs/adr/` **wins over `docs/00`–`08` wherever they conflict** — check it before reporting a design violation.
 
 ## 2. Load the spec
 

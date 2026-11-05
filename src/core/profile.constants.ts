@@ -14,3 +14,16 @@ export const EVENT_HOOK_TIMEOUT_SECONDS = 10;
 export const RECHECK_MAX_DIRTY_PATHS = 200;
 /** A file larger than this is fingerprinted by its size, not read whole (decision 63). */
 export const RECHECK_HASH_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Every compiled settings file's `env`, the conductor's too (decision 107). The
+ * settings file is the one route: `tmuxEnv` strips `CLAUDE*` from what a window
+ * inherits (decision 47). Each names a part of the startup context no window
+ * pup opens uses: the Artifact and Workflow tools' definitions, and the
+ * suggested next prompt Claude Code generates after every turn.
+ */
+export const SLIM_CONTEXT_ENV = {
+  CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+  CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+};

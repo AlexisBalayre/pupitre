@@ -1,16 +1,18 @@
 ---
 name: security-reviewer
-description: Use PROACTIVELY after editing gate stages, adapter capabilities, hook generation, profile compilation, PR adoption, or anything that shells out (git, gh, tmux, `claude -p`). MUST BE USED before committing changes in those areas. Reviews for gate evasion, forged measurements, environment and credential exposure, and command injection, grounded in `docs/09-decisions.md`.
+description: Use PROACTIVELY after editing gate stages, adapter capabilities, hook generation, profile compilation, PR adoption, or anything that shells out (git, gh, tmux, `claude -p`). MUST BE USED before committing changes in those areas. Reviews for gate evasion, forged measurements, environment and credential exposure, and command injection, grounded in the decisions under `docs/adr/`.
 tools: Read, Glob, Grep, Bash
 model: opus
+effort: high
 ---
 
 # Security Review Protocol
 
 Review the specified files or recent changes for ways a **session** could get code past the
-gate, or reach something it should not. Ground every finding in `docs/09-decisions.md` —
-decisions 24–30 record the accepted exposures and their reasoning, and a finding that
-re-reports a knowingly-accepted one is noise.
+gate, or reach something it should not. Ground every finding in the decisions under
+`docs/adr/` (found through `docs/adr/README.md`) — decisions 24–30 record the accepted
+exposures and their reasoning, and a finding that re-reports a knowingly-accepted one is
+noise.
 
 ## The trust boundary
 

@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -11,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -42,6 +43,7 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
@@ -50,6 +52,7 @@ import { WorktreeRepointedError } from './git-diff.client.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
+import { TOOLCHAIN_CACHE_DIRNAME } from './sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -77,6 +80,29 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
+
+// The file's temp dirs, its children's included, go to a TMPDIR of its own,
+// which must hold no pup-* entry once every test has removed its own
+// (decision 100). The gate's toolchain cache stays, by design, but empty.
+let sharedTmp: string | undefined;
+let fileTmp: string;
+beforeAll(() => {
+  sharedTmp = process.env.TMPDIR;
+  fileTmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-round-tmp-')));
+  process.env.TMPDIR = fileTmp;
+});
+afterAll(() => {
+  const left = readdirSync(fileTmp).flatMap((name) => {
+    if (name === TOOLCHAIN_CACHE_DIRNAME) {
+      return readdirSync(join(fileTmp, name)).map((cache) => join(name, cache));
+    }
+    return name.startsWith('pup-') ? [name] : [];
+  });
+  if (sharedTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = sharedTmp;
+  rmSync(fileTmp, { recursive: true, force: true, maxRetries: 3 });
+  expect(left).toEqual([]);
+});
 
 function sh(cwd: string, ...args: string[]): string {
   return execFileSync(args[0] as string, args.slice(1), {
@@ -148,12 +174,12 @@ describe('startFixRound', { timeout: 30_000 }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-repo-')));
+    repo = tempDir('pup-fix-repo-');
     sh(repo, 'git', 'init', '-q', '-b', 'main');
     commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
     // GitHub-shaped origin, rewritten by the operator's global config into a
     // local bare repo so every push and fetch stays offline.
-    const host = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-origin-')));
+    const host = tempDir('pup-fix-origin-');
     origin = join(host, 'owner', 'repo.git');
     mkdirSync(origin, { recursive: true });
     sh(origin, 'git', 'init', '-q', '--bare', '-b', 'main');
@@ -186,14 +212,14 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     transitionSession(db, SESSION_ID, 'awaiting-review');
 
     // projectPaths defaults to ~/.pupitre; tests must never write there.
-    stateBase = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-state-')));
+    stateBase = tempDir('pup-fix-state-');
     const compiled = projectPaths(repo, stateBase).compiledDir(SESSION_ID);
     mkdirSync(compiled, { recursive: true });
     writeFileSync(join(compiled, 'context.md'), '# task context\n');
     writeFileSync(join(compiled, 'settings.json'), '{}');
 
-    claudeUserDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-claude-')));
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-gh-')));
+    claudeUserDir = tempDir('pup-fix-claude-');
+    ghDir = tempDir('pup-fix-gh-');
     writeFileSync(
       join(ghDir, 'gh'),
       [
@@ -399,6 +425,26 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     effort: 'medium',
     override: false,
   });
+  /**
+   * A round before this one that opened its window and was gated again: on an
+   * older head, so the review's threads now carry ids it never saw.
+   */
+  const seedFinishedRound = () => {
+    appendEvent(db, SESSION_ID, 'fix_round', {
+      prUrl: PR_URL,
+      head: '1'.repeat(40),
+      threads: ['PRRT_round1'],
+      rejectBase: 0,
+    });
+    appendEvent(db, SESSION_ID, 'respawn', { delivered: true });
+    appendEvent(db, SESSION_ID, 'merge', {
+      branch: BRANCH,
+      sha: pinned,
+      target: 'main',
+      files: ['src/feature.ts'],
+      prUrl: PR_URL,
+    });
+  };
 
   it('hands the threads the review opened on the head to a fresh window in a restored worktree', async () => {
     await gateWithPr();
@@ -444,19 +490,19 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     expect(payloads('respawn')).toEqual([{ delivered: true }]);
     // By name only: the pane the gate recorded may be another window's by now.
     expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID]]);
-    // One rung up the ladder, for the CI fix round (decision 92).
-    const rung1 = LADDERS.standard[1];
+    // A first round stays on the rung its last window ran on (decision 92).
+    const rung0 = LADDERS.standard[0];
     expect(vi.mocked(launchSession).mock.calls[0]?.[0]).toMatchObject({
       sessionId: SESSION_ID,
       worktreePath: worktree,
       settingsPath: join(projectPaths(repo, stateBase).compiledDir(SESSION_ID), 'settings.json'),
-      route: { model: rung1?.model, effort: rung1?.effort },
+      route: { model: rung0?.model, effort: rung0?.effort },
       mcpConfigPath: undefined,
     });
     expect(getSession(db, SESSION_ID)).toMatchObject({
       tmux_target: '%9',
-      rung: 1,
-      rung_reason: 'ci-fix-round',
+      rung: 0,
+      rung_reason: null,
     });
     expect(vi.mocked(kickoff).mock.calls[0]?.[0]).toEqual({ sessionId: SESSION_ID, paneId: '%9' });
     const context = readFileSync(
@@ -790,7 +836,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
   /** A git on PATH that runs `shimCase` (given its one-shot flag file) before the real one. */
   function shimGit(shimCase: (once: string) => string): void {
     const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-    const shim = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-git-')));
+    const shim = tempDir('pup-fix-git-');
     const once = join(shim, 'once');
     writeFileSync(once, '');
     writeFileSync(
@@ -872,9 +918,31 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     );
   });
 
-  it('refuses on the top rung unless the operator names a route', async () => {
+  // A reviewer's finding is no failure, but a second round is a repeat: the
+  // review mints new thread ids on every head a round pushes (decision 92).
+  it('climbs one rung for a second round, its threads new ids on a new head', async () => {
+    seedPrMerge();
+    recordSessionRoute(db, SESSION_ID, routeAt(1));
+    seedFinishedRound();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await fix();
+
+    const rung2 = LADDERS.standard[2];
+    expect(vi.mocked(launchSession).mock.calls[0]?.[0].route).toMatchObject({
+      model: rung2?.model,
+      effort: rung2?.effort,
+    });
+    expect(getSession(db, SESSION_ID)).toMatchObject({
+      rung: 2,
+      rung_reason: 'repeat-fix-round',
+    });
+  });
+
+  it('refuses a repeat on the top rung unless the operator names a route', async () => {
     seedPrMerge();
     recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));
+    seedFinishedRound();
     reviewOnGitHub({ threads: OPEN_THREAD });
 
     await expectRefusedUnwritten(/top rung .*`pup fix s1 --model <model> --effort <effort>`/);
@@ -1039,6 +1107,7 @@ describe('startFixRound', { timeout: 30_000 }, () => {
     it('kills the window and takes the session back to merged, to be re-run', async () => {
       seedPrMerge();
       recordSessionRoute(db, SESSION_ID, routeAt(0));
+      seedFinishedRound();
       reviewOnGitHub({ threads: OPEN_THREAD });
       vi.mocked(kickoff).mockReturnValueOnce(false);
 
@@ -1055,14 +1124,14 @@ describe('startFixRound', { timeout: 30_000 }, () => {
         { from: 'merged', to: 'running', kind: 'fix-round' },
         { from: 'running', to: 'merged', kind: 'fix-round-killed' },
       ]);
-      expect(payloads('respawn')).toEqual([{ delivered: false }]);
-      // The route is left for the retry, which climbs once.
+      expect(payloads('respawn')).toEqual([{ delivered: true }, { delivered: false }]);
+      // The route is left for the retry, which climbs once for the repeat.
       expect(getSession(db, SESSION_ID)?.rung).toBe(0);
 
       await fix();
 
       expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', rung: 1 });
-      expect(payloads('fix_round')).toHaveLength(2);
+      expect(payloads('fix_round')).toHaveLength(3);
     });
 
     // A second kill would refuse merged -> killed and mask why the round failed.
@@ -1885,7 +1954,7 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-lookup-')));
+    repo = tempDir('pup-fix-lookup-');
     const pid = projectId(repo);
     ensureProject(db, pid, repo);
     saveProjectOriginUrl(db, pid, ORIGIN_URL);
@@ -1910,7 +1979,7 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
     // `pushTarget` reads origin from the repo, as the gate does.
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: GIT_ENV });
     execFileSync('git', ['remote', 'add', 'origin', ORIGIN_URL], { cwd: repo, env: GIT_ENV });
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-fix-lookup-gh-')));
+    ghDir = tempDir('pup-fix-lookup-gh-');
     originalPath = process.env.PATH;
     process.env.PATH = `${ghDir}:${originalPath}`;
   });

@@ -12,7 +12,12 @@ import {
   recordWatcherBeat,
   replaceOverlaps,
 } from './overlap.repository.js';
-import { intersectSessionFiles, scanOverlaps, scopeConflicts } from './overlap.service.js';
+import {
+  filesWorthANotice,
+  intersectSessionFiles,
+  scanOverlaps,
+  scopeConflicts,
+} from './overlap.service.js';
 import { projectId } from './paths.utils.js';
 import {
   ensureProject,
@@ -54,6 +59,22 @@ describe('intersectSessionFiles', () => {
 
   it('returns no pairs when nothing overlaps', () => {
     expect(intersectSessionFiles({ s1: ['a'], s2: ['b'] })).toEqual([]);
+  });
+});
+
+// Every write under docs/adr/ is an append, so two workers there conflict
+// whatever they agree (decision 104).
+describe('filesWorthANotice', () => {
+  it('drops the decision records and their index, keeping every other file', () => {
+    expect(
+      filesWorthANotice([
+        'docs/adr/README.md',
+        'docs/adr/0104-peer-joined-introductions.md',
+        'docs/adrift.md',
+        'docs/01-architecture.md',
+        'src/core/overlap.service.ts',
+      ]),
+    ).toEqual(['docs/adrift.md', 'docs/01-architecture.md', 'src/core/overlap.service.ts']);
   });
 });
 

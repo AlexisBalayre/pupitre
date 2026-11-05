@@ -8,8 +8,8 @@ Instructions for AI coding agents, whatever the tool. Tool-specific layers build
 
 ## Design docs
 
-`docs/00`–`08` are the design; `docs/09-decisions.md` records resolved decisions and **wins over
-00–08 where they conflict**. Read 09 before implementing anything it touches.
+`docs/00`–`08` are the design; `docs/adr/` holds one file per resolved decision and **wins over
+00–08 where they conflict**. Read the ADRs your change touches, found through `docs/adr/README.md`.
 
 ## Module boundaries
 

@@ -29,6 +29,7 @@ import {
   WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
+import { LOCKFILE_NAMES } from './merge-gate.constants.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
 // surrounding hook's GIT_DIR away from the temp repos.
@@ -90,6 +91,70 @@ describe('gitDiffAddedLines', () => {
   });
 });
 
+// Each file's hunks are read with its path as a pathspec, which git would
+// parse as magic unless told it is literal (decision 113).
+describe('a changed path that reads as pathspec magic', () => {
+  it('has its hunks read, so patch coverage and the recount count its lines', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, ':(top)foo'), 'one\ntwo\n');
+    commitAll(repo, 'magic');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ':(top)foo': [1, 2] });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', ':(top)foo')).toEqual({
+      added: 2,
+      deleted: 0,
+    });
+  });
+});
+
+// On macOS `core.precomposeUnicode`, which `git init` turns on and a session
+// can write into the shared config, rewrites an NFD path argument to NFC, so
+// the gate read the hunks and blob of an NFC sibling instead (decision 114).
+// Elsewhere git ignores the key and these pass either way.
+describe('a changed NFD path with an NFC sibling under core.precomposeUnicode', () => {
+  const nfd = 'e\u0301.ts';
+  const nfc = '\u00e9.ts';
+
+  // A working tree on APFS cannot hold both spellings, so they go straight to the index.
+  function siblingRepo(nfcContent: string): string {
+    const repo = makeRepo();
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    for (const [path, content] of [
+      [nfd, 'one\ntwo\nthree\n'],
+      [nfc, nfcContent],
+    ] as const) {
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: content,
+        encoding: 'utf8',
+      }).trim();
+      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `100644,${blob},${path}`);
+    }
+    sh(repo, 'git', 'commit', '-m', 'siblings');
+    sh(repo, 'git', 'config', 'core.precomposeUnicode', 'true');
+    return repo;
+  }
+
+  it('reads the NFD file its own hunks', () => {
+    const repo = siblingRepo('x\n');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ [nfd]: [1, 2, 3], [nfc]: [1] });
+  });
+
+  it('recounts the NFD file when its NFC sibling is binary', () => {
+    const repo = siblingRepo('x\0y\n');
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', nfd)).toEqual({ added: 3, deleted: 0 });
+  });
+});
+
 // A session can write `diff.external` or a textconv driver into the shared,
 // untracked `$GIT_COMMON_DIR/config` and `info/attributes`. Without the
 // per-call disarm git runs the command and emits no hunks, and an empty
@@ -119,6 +184,59 @@ describe('a changed path that starts with a space', () => {
     const repo = spacedRepo();
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ' a.ts': [1, 2] });
+  });
+});
+
+// `-z` never quotes a path, so a tab in one reaches the numstat line as is. Cut
+// at its first tab, a file under a directory named `a.test.ts<TAB>z` read as a
+// test, and one under `pnpm-lock.yaml<TAB>x` as the root lockfile. A path that
+// starts with a tab left the third field empty and read as a rename, swallowing
+// the two records after it (decision 111).
+describe('a changed path with a tab in it', () => {
+  function tabbedRepo(files: string[]): string {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'b.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    for (const file of files) {
+      mkdirSync(dirname(join(repo, file)), { recursive: true });
+      writeFileSync(join(repo, file), 'one\ntwo\n');
+    }
+    commitAll(repo, 'tabbed');
+    return repo;
+  }
+
+  it('is counted under its full path, so a source file never reads as a test', () => {
+    const repo = tabbedRepo(['src/a.test.ts\tz/impl.ts', 'src/c.ts']);
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'src/a.test.ts\tz/impl.ts', added: 2, deleted: 0 },
+      { path: 'src/c.ts', added: 2, deleted: 0 },
+    ]);
+  });
+
+  it('is not the lockfile when only its root directory starts with the lockfile name', () => {
+    const repo = tabbedRepo(['pnpm-lock.yaml\tx/big.ts']);
+
+    const paths = gitDiffNumstat(repo, 'main', 'feature').map((stat) => stat.path);
+
+    expect(paths).toEqual(['pnpm-lock.yaml\tx/big.ts']);
+    expect(paths.filter((path) => LOCKFILE_NAMES.includes(path))).toEqual([]);
+  });
+
+  it('starting the path is no rename, so the records after it parse whole', () => {
+    const repo = tabbedRepo(['\tlead.ts']);
+    writeFileSync(join(repo, 'a.bin'), 'x\0y\n');
+    writeFileSync(join(repo, 'c.bin'), 'q\0z\n');
+    writeFileSync(join(repo, 'd.ts'), 'one\n');
+    commitAll(repo, 'after');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: '\tlead.ts', added: 2, deleted: 0 },
+      { path: 'a.bin', added: null, deleted: null },
+      { path: 'c.bin', added: null, deleted: null },
+      { path: 'd.ts', added: 1, deleted: 0 },
+    ]);
   });
 });
 
@@ -165,6 +283,59 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
   });
+
+  // Merged, the two hunks would report every line between them as added, lines
+  // tests already cover, and lift an untested change over the bar (decision 113).
+  it('keeps the hunks exact when diff.interHunkContext is set', () => {
+    const lines = Array.from({ length: 100 }, (_, index) => `line ${index + 1}`);
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `top\n${lines.join('\n')}\nend\n`);
+    commitAll(repo, 'change');
+    sh(repo, 'git', 'config', 'diff.interHunkContext', '1000');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
+  });
+
+  // Patience and histogram anchor only on lines unique to each file, so they
+  // read the block a swap moves past as deleted and re-added: 101 covered
+  // lines that would lift an untested change over the bar (decision 113).
+  it('keeps the hunks to the swapped lines when diff.algorithm is set', () => {
+    const repeated = Array.from({ length: 100 }, () => 'x++;').join('\n');
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `first\n${repeated}\nlast\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `last\n${repeated}\nfirst\n`);
+    commitAll(repo, 'swap');
+    sh(repo, 'git', 'config', 'diff.algorithm', 'patience');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 102] });
+  });
+});
+
+// Under `diff.renames=copies` a new file copied from one the branch changes is
+// scored as its edits from that file's old content, so a 300-line file counted
+// as a few lines and slipped under the oversize flag (decision 113).
+describe('gitDiffNumstat under a session-written diff.renames=copies', () => {
+  it('counts every line of a new file copied from a changed one', () => {
+    const lines = Array.from({ length: 300 }, (_, index) => `line ${index + 1}`);
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), `${lines.join('\n')}\nend\n`);
+    writeFileSync(join(repo, 'b.ts'), `${lines.join('\n')}\n`);
+    commitAll(repo, 'copy');
+    sh(repo, 'git', 'config', 'diff.renames', 'copies');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: 1, deleted: 0 },
+      { path: 'b.ts', added: 300, deleted: 0 },
+    ]);
+  });
 });
 
 // `--text` restores the `-U0` patch above but not `--numstat`: under the same
@@ -191,7 +362,7 @@ describe('gitDiffBinaryRecount', () => {
     expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 3, deleted: 2 });
   });
 
-  it('recounts a new text file under core.attributesFile and core.bigFileThreshold', () => {
+  it('recounts a new text file under core.attributesFile', () => {
     const repo = repoWith({ 'a.ts': 'one\n' }, { 'fresh.ts': 'one\ntwo\n' });
     const attributes = join(repo, '.git', 'forged-attributes');
     writeFileSync(attributes, '* binary\n');
@@ -201,14 +372,21 @@ describe('gitDiffBinaryRecount', () => {
       added: 2,
       deleted: 0,
     });
+  });
 
-    sh(repo, 'git', 'config', '--unset', 'core.attributesFile');
+  // Below the threshold git calls every file binary; pinned, a text file is
+  // counted plainly and never needs the recount (decision 113).
+  it('counts a text file plainly under a session-written core.bigFileThreshold of 1', () => {
+    const repo = repoWith({ 'a.ts': 'one\n' }, { 'a.ts': 'one\ntwo\n', 'fresh.ts': 'one\ntwo\n' });
     sh(repo, 'git', 'config', 'core.bigFileThreshold', '1');
 
-    expect(gitDiffNumstat(repo, 'main', 'feature')[0]?.added).toBeNull();
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts')).toEqual({
-      added: 2,
-      deleted: 0,
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: 1, deleted: 0 },
+      { path: 'fresh.ts', added: 2, deleted: 0 },
+    ]);
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({
+      'a.ts': [2],
+      'fresh.ts': [1, 2],
     });
   });
 
@@ -950,6 +1128,33 @@ describe('worktree git pins (decision 101)', () => {
 describe('assertNoWorktreeConfig', () => {
   let repo: string;
 
+  // Written from outside the repo, which git refuses to open once the value is unreadable.
+  const setExtension = (target: string, value: string) =>
+    sh(
+      dirname(target),
+      'git',
+      'config',
+      '--file',
+      join(target, '.git/config'),
+      'extensions.worktreeConfig',
+      value,
+    );
+
+  /** The commands the refusal's hint asks the operator to paste, in order. */
+  const hintCommands = (target: string): string[] => {
+    try {
+      assertNoWorktreeConfig(target);
+    } catch (error) {
+      const steps = (error as Error).message.split('Otherwise run ')[1] ?? '';
+      return [...steps.matchAll(/`(git [^`]*)`/g)].map((match) => match[1] as string);
+    }
+    throw new Error(`${target} was not refused`);
+  };
+
+  /** What pasting `command` into a shell in `cwd` does. */
+  const paste = (cwd: string, command: string) =>
+    execFileSync('sh', ['-c', command], { cwd, encoding: 'utf8', env: GIT_ENV, stdio: 'pipe' });
+
   beforeEach(() => {
     repo = makeRepo();
     mkdirSync(join(repo, 'src'));
@@ -977,30 +1182,93 @@ describe('assertNoWorktreeConfig', () => {
     expect(() => assertNoWorktreeConfig(repo)).toThrow(/config\.worktree exists/);
     unlinkSync(join(repo, '.git/config.worktree'));
 
-    // Written from outside the repo, which git refuses to open once the value is unreadable.
-    const setExtension = (value: string) =>
-      sh(
-        dirname(repo),
-        'git',
-        'config',
-        '--file',
-        join(repo, '.git/config'),
-        'extensions.worktreeConfig',
-        value,
-      );
-    setExtension('true');
-    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on/);
-    setExtension('maybe');
-    const unset = ['-C', '/', 'config', '--file', join(repo, '.git/config')];
+    setExtension(repo, 'true');
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on in /);
+    setExtension(repo, 'maybe');
     expect(() => assertNoWorktreeConfig(repo)).toThrow(
-      `git ${unset.join(' ')} --unset extensions.worktreeConfig`,
+      /extensions\.worktreeConfig is on, or holds a value git cannot read, in /,
     );
-    // The hint's unset works on a value git cannot read, run from inside the repo too.
-    sh(repo, 'git', ...unset, '--unset', 'extensions.worktreeConfig');
-    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
-    setExtension('false');
+    setExtension(repo, 'false');
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
   });
+
+  // `git sparse-checkout disable` fails while the value is unreadable, and turns
+  // the extension back on once it runs, so the hint unsets before and after it.
+  it('leads an unreadable value with the unset, and its steps clear a sparse checkout', () => {
+    sh(repo, 'git', 'sparse-checkout', 'set', 'src');
+    setExtension(repo, 'maybe');
+    const [unset, disable] = hintCommands(repo);
+    expect(unset).toBe(
+      `git -C / config --file '${join(repo, '.git/config')}' --unset-all extensions.worktreeConfig`,
+    );
+    expect(disable).toBe('git sparse-checkout disable');
+    expect(() => paste(repo, disable as string)).toThrow(/bad boolean config value/);
+
+    paste(repo, unset as string);
+    paste(repo, disable as string);
+    expect(() => assertNoWorktreeConfig(repo)).toThrow(/extensions\.worktreeConfig is on in /);
+    paste(repo, unset as string);
+    unlinkSync(join(repo, '.git/config.worktree'));
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // `--unset` refuses a key set twice ("multiple values"), so the hint's would fail here.
+  it('unsets every copy of a key set twice', () => {
+    writeFileSync(
+      join(repo, '.git/config'),
+      `${readFileSync(join(repo, '.git/config'), 'utf8')}[extensions]\n` +
+        '\tworktreeConfig = maybe\n\tworktreeConfig = maybe\n',
+    );
+    const [unset] = hintCommands(repo);
+
+    paste(repo, unset as string);
+    expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+
+  // sanitizeReason folds whitespace, blanks control chars and truncates, so a
+  // command built from its output would unset some other file.
+  it.each([
+    ['two spaces', 'My  Project'],
+    ['a tab', 'My\tProject'],
+    ['a newline', 'My\nProject'],
+    ['ESC and CSI', 'My\u001b[31m\u009bProject'],
+    // Two components: under Linux's short /tmp one name of NAME_MAX stays under the cap.
+    ['a path past the truncation', `${'p'.repeat(200)}/${'p'.repeat(200)}`],
+  ])('prints no paste-ready unset for a path with %s, and no control char', (_, name) => {
+    const odd = join(tempDir('pup-diff-'), name);
+    mkdirSync(odd, { recursive: true });
+    sh(odd, 'git', 'init', '-q', '-b', 'main');
+    setExtension(odd, 'maybe');
+    let message = '';
+    try {
+      assertNoWorktreeConfig(odd);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is the point
+    expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(hintCommands(odd)[0]).toBe(
+      'git -C / config --file <repo>/.git/config --unset-all extensions.worktreeConfig',
+    );
+    expect(message).toContain('with <repo> typed by hand');
+  });
+
+  it.each(['true', 'maybe'])(
+    'quotes a repo path a shell would split, so the pasted unset runs alone (%s)',
+    (value) => {
+      const parent = tempDir('pup-diff-');
+      const odd = join(parent, 'a b; $(touch pwned) repo');
+      mkdirSync(odd);
+      sh(odd, 'git', 'init', '-q', '-b', 'main');
+      setExtension(odd, value);
+      const unset = hintCommands(odd).find((command) => command.startsWith('git -C / config'));
+
+      paste(parent, unset as string);
+      expect(existsSync(join(parent, 'pwned'))).toBe(false);
+      expect(() => assertNoWorktreeConfig(odd)).not.toThrow();
+    },
+  );
 
   // Under a gitfile, `<repo>/.git/config` names nothing: the check would read
   // no config and pass, and the pins built from the same path would be refused

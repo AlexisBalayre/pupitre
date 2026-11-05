@@ -503,17 +503,17 @@ describe('landSession', { timeout: 20_000 }, () => {
       }
     });
 
-    // Two entries appended at the log's end always conflict, and the gate
+    // Two lines appended at the index's end always conflict, and the gate
     // counts a failed rebase as a rejection (decision 104).
-    it('steers a running peer sharing only the decisions log, naming it', async () => {
-      pinned = commitIn(worktree, 'docs/09-decisions.md', '# Decisions\n');
+    it('steers a running peer sharing only the decisions index, naming it', async () => {
+      pinned = commitIn(worktree, 'docs/adr/README.md', '# Decisions\n');
       sh(repo, 'git', 'push', '-q', origin, BRANCH);
-      seedPeer('s2', 'docs/09-decisions.md');
+      seedPeer('s2', 'docs/adr/README.md');
 
       await landMerged();
 
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
-      expect(String(steersTo('s2')[0]?.[1])).toContain('docs/09-decisions.md');
+      expect(String(steersTo('s2')[0]?.[1])).toContain('docs/adr/README.md');
     });
 
     it('tells a branch with no open PR to rebase onto main, never to force-push', async () => {
