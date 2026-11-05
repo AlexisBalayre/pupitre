@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-05T10:29:26.961Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42010971230",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42010971230",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b671f6b941f18c0bcdf59e3ed36dfb4b7c034e02",
+  "source": "pr",
+  "pr_number": 184,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed before running, so nothing was reviewed. Three calls (`gh pr view 184 --json ...`, `git diff --stat d0587cc50b0a04c92112190ffddcc9fcdf7b605a..HEAD`, `git rev-parse HEAD`) all exited 1 with: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied`. The bubblewrap sandbox can't start on this runner, so I couldn't read the PR diff, metadata or head SHA. The reviewer subagents use the same Bash tool to fetch the diff, so I spawned none rather than pay for empty reviews. This round reviewed nothing and must not be read as a clean review. Fix the runner's user-namespace/seccomp capability, or the sandbox config, then re-run."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewers were spawned because the platform failure above made the change unreadable, so 0 of 0 reviewers returned. PR #184 has had no review at all: treat this round as incomplete and re-run it in full."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": true,
+  "incomplete_reason": "Not reviewed: no reviewer was spawned; re-run",
+  "cost_usd": 0.1163554,
+  "duration_ms": 15872,
+  "num_turns": 5,
+  "tokens": {
+    "input": 6,
+    "output": 1385,
+    "cache_read": 103797,
+    "cache_creation": 8484,
+    "total": 113672
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 6,
+      "output": 1385,
+      "cache_read": 103797,
+      "cache_creation": 8484,
+      "cost_usd": 0.1163554
+    }
+  ],
+  "permission_denials": []
+}
