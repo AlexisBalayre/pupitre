@@ -26,7 +26,7 @@ export type { DiffFileStat };
  * it, its tests included, would otherwise inherit it into the scope audit's
  * diff and stop seeing a gitlink change.
  */
-export function scrubbedGitEnv(): NodeJS.ProcessEnv {
+function scrubbedGitEnv(): NodeJS.ProcessEnv {
   const scrubbed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
   return Object.fromEntries(
     Object.entries(process.env).filter(
