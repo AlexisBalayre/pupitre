@@ -4,7 +4,8 @@
 #
 # Complements the Claude Code Stop hook (.claude/hooks/quality-checks.sh): the Stop
 # hook gates agent sessions, this gates human/CLI commits. Commands come from
-# .claude/project.env; an empty command is skipped.
+# .claude/project.env; an empty command is skipped. Tests are the exception: the
+# hook runs only the vitest files related to the staged ones, never TEST_CMD.
 #
 # The profile is read from the MAIN checkout (the git common dir's parent), never
 # from the worktree being committed, and parsed rather than sourced: this hook runs
@@ -80,30 +81,50 @@ fi
 
 # --- Code quality checks ---
 
+# Each staged path, prefixed with ./ so a name starting with a dash is not an option.
+run_on_paths() {
+  printf '%s\n' "$1" | sed 's|^|./|' | tr '\n' '\0' | xargs -0 sh -c "$2 \"\$@\"" _
+}
+
+STAGED=$(git diff --cached --diff-filter=d --name-only)
 EXT_RE=$(printf '%s' "${SOURCE_EXTENSIONS:-}" | tr -s ' ' '|')
 STAGED_SOURCE=""
 if [ -n "$EXT_RE" ]; then
-  STAGED_SOURCE=$(git diff --cached --diff-filter=d --name-only | grep -E "\.($EXT_RE)$" || true)
+  STAGED_SOURCE=$(printf '%s\n' "$STAGED" | grep -E "\.($EXT_RE)$" || true)
 fi
 
-if [ -n "${LINT_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
+# Every staged file, whatever its extension: the linter's own includes decide
+# which it checks, and LINT_CMD carries --no-errors-on-unmatched for the rest.
+if [ -n "${LINT_CMD:-}" ] && [ -n "$STAGED" ]; then
   echo "Running lint: $LINT_CMD"
-  if ! printf '%s\n' "$STAGED_SOURCE" | sed 's|^|./|' | tr '\n' '\0' | xargs -0 sh -c "$LINT_CMD \"\$@\"" _; then
+  if ! run_on_paths "$STAGED" "$LINT_CMD"; then
     echo ""
     echo "ERROR: Lint failed on staged files. Run 'pnpm lint:fix' to auto-fix issues."
     exit 1
   fi
 fi
 
-for step in TYPECHECK_CMD TEST_CMD; do
-  cmd="${!step:-}"
-  [ -z "$cmd" ] && continue
-  echo "Running $step: $cmd"
-  if ! bash -c "$cmd"; then
+if [ -n "${TYPECHECK_CMD:-}" ]; then
+  echo "Running TYPECHECK_CMD: $TYPECHECK_CMD"
+  if ! bash -c "$TYPECHECK_CMD"; then
     echo ""
-    echo "ERROR: $step failed. Fix it before committing."
+    echo "ERROR: TYPECHECK_CMD failed. Fix it before committing."
     exit 1
   fi
-done
+fi
+
+# Only the test files that import a staged source file, directly or through
+# others, and the staged test files themselves (decision 130). The full suite
+# is TEST_CMD's, which the merge gate's test stage runs; an empty TEST_CMD still
+# turns tests off here. A commit with no staged source runs no tests.
+RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
+if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
+  echo "Running related tests: $RELATED_TEST_CMD"
+  if ! run_on_paths "$STAGED_SOURCE" "$RELATED_TEST_CMD"; then
+    echo ""
+    echo "ERROR: Tests related to the staged files failed. Fix them before committing."
+    exit 1
+  fi
+fi
 
 echo "All pre-commit checks passed."
