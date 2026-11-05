@@ -4752,6 +4752,34 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
       });
 
+      // The stop is still aborted and reported: a listing that throws must not
+      // leave the worktree mid-rebase or replace the refusal with its error.
+      it('keeps the plain refusal when listing the stop fails, still aborting the rebase', async () => {
+        seedAdr();
+        const worktree = seedSession(db, repo, adrScope);
+        addDecision(worktree, 2);
+        const tip = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+        addDecision(repo, 3);
+        beforeGit(
+          (args) => args.includes('ls-files') && args.includes('--unmerged'),
+          () => {
+            throw new Error('index unreadable');
+          },
+        );
+        vi.mocked(execFileSync).mockClear();
+
+        const outcome = await merge();
+
+        expect(outcome.status).toBe('rejected');
+        const detail = outcome.report.stages.at(-1)?.detail ?? '';
+        expect(detail).toContain('Auto-rebase onto main hit conflicts');
+        expect(detail).not.toContain('merged main in instead');
+        expect(ran('--abort')).toBe(true);
+        expect(ran('merge-tree')).toBe(false);
+        expect(sh(worktree, 'git', 'status', '--porcelain')).toBe('');
+        expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
+      });
+
       it('reports the rebase and the merge it fell back to when that merge refuses', async () => {
         seedAdr();
         const worktree = seedSession(db, repo, adrScope);
