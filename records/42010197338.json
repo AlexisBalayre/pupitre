@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-05T10:23:40.042Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42010197338",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42010197338",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b671f6b941f18c0bcdf59e3ed36dfb4b7c034e02",
+  "source": "pr",
+  "pr_number": 184,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash invocation failed before it ran with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied'. Three commands were tried and all failed: gh pr view 184, git rev-parse HEAD and git status --porcelain. Without Bash there was no PR diff, no file list, no intent and no head-SHA freshness check."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewers were spawned because the change could not be determined, and reviewer subagents depend on the same broken Bash tool (gh pr diff / git diff). PR #184 was NOT reviewed, so this record must not be read as a clean review. Re-run after the runner's sandbox or user-namespace capability is fixed."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": true,
+  "incomplete_reason": "Not reviewed: no reviewer was spawned; re-run",
+  "cost_usd": 0.3404348,
+  "duration_ms": 14282,
+  "num_turns": 5,
+  "tokens": {
+    "input": 6,
+    "output": 1252,
+    "cache_read": 74494,
+    "cache_creation": 37559,
+    "total": 113311
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 6,
+      "output": 1252,
+      "cache_read": 74494,
+      "cache_creation": 37559,
+      "cost_usd": 0.3404348
+    }
+  ],
+  "permission_denials": []
+}
