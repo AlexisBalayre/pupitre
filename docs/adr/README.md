@@ -142,11 +142,14 @@ for the cross-references the text states, then the decision itself.
 - [0118. The conductor's security review runs a general-purpose subagent on Opus at high, which runs the pinned diff and no other git, within ten turns (2026-10-28, amends 92)](0118-the-conductor-s-security-review-runs-a-general-purpose.md) (accepted)
 - [0120. Fresh-base regenerates a conflicted ADR index in the gate's scratch checkout (2026-10-28)](0120-fresh-base-regenerates-a-conflicted-adr-index-in-the.md) (accepted)
 - [0121. `pup ui` never draws a frame as tall as the terminal (2026-10-28).](0121-pup-ui-never-draws-a-frame-as-tall-as-the-terminal.md) (accepted)
+- [0122. `pup usage` reports where the Claude usage went, read from the transcripts (2026-10-28).](0122-pup-usage-reports-where-the-claude-usage-went-from-the.md) (accepted)
 - [0123. The Health sheet charts every gate metric across every snapshot, merges marked on the time axis (2026-10-29)](0123-the-health-sheet-charts-every-gate-metric-across.md) (accepted)
 - [0124. The worktree hooks' reads run under a deadline, and the served code graph's git runs pinned (2026-10-29)](0124-the-worktree-hooks-reads-run-under-a-deadline.md) (accepted)
 - [0125. Claude Code mods do not register their hooks in a pup window, so conductor-worker messaging stays on tmux and `pup status` (2026-10-30)](0125-claude-code-mods-do-not-load-in-a-pup-window-so-no.md) (accepted)
+- [0126. An intent is a file under `docs/intent/` the operator alone accepts, once it names two or three questions they must answer after review (2026-10-30)](0126-an-intent-is-a-file-under-docs-intent-the.md) (accepted)
 - [0128. A kickoff names the tracked files its scope-in matches, at most 40, and the globs that match none as files to create (2026-10-30)](0128-a-kickoff-names-the-tracked-files-its-scope-in-matches.md) (accepted)
 - [0129. Workers and the conductor learn the code through an Explore subagent on Sonnet at low effort that runs no git or shell, and read a file only to edit it or for its exact lines (2026-10-30)](0129-workers-and-the-conductor-learn-the-code-through-an-explore.md) (accepted)
+- [0130. Dead-export analysis resolves tsconfig `paths` from the measured checkout (2026-10-30)](0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes

@@ -1,4 +1,5 @@
 import { dirname, join, normalize } from 'node:path';
+import ts from 'typescript';
 
 export const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
 
@@ -69,7 +70,94 @@ export function isInNestedPackage(file: string, nested: Set<string>): boolean {
 }
 
 /**
- * Resolve a relative import specifier to a repo file. Tries the literal path,
+ * A tsconfig's `compilerOptions.paths`: pattern -> substitutions, each already
+ * joined to the repo-relative directory it resolves from (`baseUrl`, else the
+ * tsconfig's own, which is the repo root), in longest-wildcard-prefix-first
+ * order. A Map, so no specifier can reach a prototype key.
+ */
+export type PathAliases = Map<string, string[]>;
+
+/**
+ * Bounds on the `paths` honoured from one tsconfig. The tsconfig is the
+ * session's, `readPlainFile` lets it reach 1 MiB, and every bare import is
+ * resolved synchronously inside the merge lock, where no stage timeout or
+ * interrupt forwarding can reach (decisions 31 and 110). Each bound caps one
+ * term of what an import costs. Entries (patterns plus substitutions) cap the
+ * wildcard scan. Characters cap the length of every string built from a
+ * substitution, so an explicit `baseUrl`, which prefixes each one, counts once
+ * per substitution. Substitutions per pattern cap how many targets one import
+ * fans out to, each one about 17 candidate paths and a copy of the matched
+ * specifier. A real `paths` has a handful of short entries.
+ */
+const MAX_PATH_ALIAS_ENTRIES = 256;
+const MAX_PATH_ALIAS_CHARS = 2048;
+const MAX_PATH_ALIAS_SUBSTITUTIONS = 8;
+
+/**
+ * The `paths` of a root `tsconfig.json`'s text. `extends` is not followed.
+ * Text TypeScript cannot parse, or a `paths` over any of the bounds above,
+ * yields no aliases, which is today's relative-only resolution. A `paths` or
+ * `baseUrl` of a shape tsc rejects throws, and the caller falls back to no
+ * aliases.
+ */
+export function parsePathAliases(tsconfigText: string): PathAliases {
+  const { config, error } = ts.parseConfigFileTextToJson('tsconfig.json', tsconfigText);
+  if (error) return new Map();
+  const { baseUrl = '.', paths = {} } = config.compilerOptions ?? {};
+  const entries = Object.entries(paths) as [string, string[]][];
+  const size = entries.reduce((n, [, targets]) => n + 1 + targets.length, 0);
+  const baseChars = (config.compilerOptions?.baseUrl ?? '').length;
+  const chars = entries.reduce(
+    (n, [p, targets]) => n + p.length + targets.join('').length + targets.length * baseChars,
+    0,
+  );
+  if (
+    size > MAX_PATH_ALIAS_ENTRIES ||
+    chars > MAX_PATH_ALIAS_CHARS ||
+    entries.some(([, targets]) => targets.length > MAX_PATH_ALIAS_SUBSTITUTIONS)
+  ) {
+    return new Map();
+  }
+  return new Map(
+    entries
+      .sort(([a], [b]) => b.indexOf('*') - a.indexOf('*'))
+      .map(([pattern, targets]) => [pattern, targets.map((t) => join(baseUrl, t))]),
+  );
+}
+
+/**
+ * The substitutions of the pattern TypeScript picks for a bare specifier: an
+ * exact key first, else the first matching wildcard, which `parsePathAliases`'
+ * order makes the one with the longest prefix, its `*` replaced literally by
+ * what it matched, as tsc does: a replacement string would expand `$'`,
+ * `` $` `` and `$&` in the specifier into copies of the target. A specifier
+ * no pattern matches has none.
+ */
+function aliasTargets(specifier: string, aliases: PathAliases): string[] {
+  const exact = aliases.get(specifier);
+  if (exact) return exact;
+  for (const [pattern, targets] of aliases) {
+    const star = pattern.indexOf('*');
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    if (
+      star === -1 ||
+      specifier.length < prefix.length + suffix.length ||
+      !specifier.startsWith(prefix) ||
+      !specifier.endsWith(suffix)
+    ) {
+      continue;
+    }
+    const matched = specifier.slice(prefix.length, specifier.length - suffix.length);
+    return targets.map((t) => t.replace('*', () => matched));
+  }
+  return [];
+}
+
+/**
+ * Resolve an import specifier to a repo file: a relative one from `fromFile`,
+ * a bare one through `aliases` and nowhere else, so a package import never
+ * lands on a same-named repo file. Each target tries the literal path,
  * `.js`->`.ts` and `.js`->`.tsx` (ESM-style extensioned imports of TS sources:
  * under NodeNext a `.tsx` module is imported as `.js` too, so a `.ts`-only
  * mapping read every component of the first `.tsx` files as unimported and
@@ -79,8 +167,15 @@ export function resolveImport(
   fromFile: string,
   specifier: string,
   files: Set<string>,
+  aliases: PathAliases = new Map(),
 ): string | undefined {
-  const base = normalize(join(dirname(fromFile), specifier));
+  const targets = specifier.startsWith('.')
+    ? [join(dirname(fromFile), specifier)]
+    : aliasTargets(specifier, aliases);
+  return targets.map((t) => resolveFile(normalize(t), files)).find((f) => f !== undefined);
+}
+
+function resolveFile(base: string, files: Set<string>): string | undefined {
   if (base.startsWith('..')) return undefined;
   const candidates = [base];
   if (/\.js$/.test(base)) {

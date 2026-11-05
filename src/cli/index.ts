@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { constants as osConstants, tmpdir } from 'node:os';
+import { homedir, constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
@@ -62,6 +62,8 @@ import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
+import { IntentRefusedError } from '../core/intent.errors.js';
+import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
@@ -145,6 +147,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
+import { buildUsageReport, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -1326,6 +1329,90 @@ export function buildProgram(): Command {
       );
     });
 
+  const intent = program
+    .command('intent')
+    .description(
+      'Intents under docs/intent/: what to build, and what to understand after review (new|show|list|accept)',
+    );
+  /**
+   * Every refusal core raises for an intent, scrubbed: they quote file names
+   * in `docs/intent/`, which a session's shell can write (decision 126).
+   */
+  const intentOrRefuse = (run: () => void): void => {
+    try {
+      run();
+    } catch (error) {
+      if (!(error instanceof IntentRefusedError)) throw error;
+      refuse(sanitizeReason(error.message));
+    }
+  };
+  intent
+    .command('new <title...>')
+    .description('Draft an intent, numbered one past the highest, from the template')
+    .action((words: string[]) => {
+      const { repoPath } = project();
+      intentOrRefuse(() => {
+        const created = createIntent(repoPath, words.join(' '));
+        console.log(
+          `Drafted ${sanitizeReason(created.path)}. Fill it in, then run \`pup intent accept ${sanitizeReason(created.id)}\`.`,
+        );
+      });
+    });
+  intent
+    .command('show <id>')
+    .description('Print an intent')
+    .action((id: string) => {
+      const { repoPath } = project();
+      // Stripped of control characters by core, newlines and tabs kept, as
+      // `pup brief show` prints the brief.
+      intentOrRefuse(() => console.log(readIntent(repoPath, id).text.trimEnd()));
+    });
+  intent
+    .command('list')
+    .description("Every intent's id, status and title")
+    .action(() => {
+      const { repoPath } = project();
+      intentOrRefuse(() => {
+        const entries = listIntents(repoPath);
+        if (entries.length === 0) {
+          console.log('No intents yet; `pup intent new <title>` drafts one in docs/intent/.');
+          return;
+        }
+        for (const entry of entries) {
+          console.log(
+            'intent' in entry
+              ? `${entry.id}  ${sanitizeReason(entry.intent.status).padEnd(10)}  ${sanitizeReason(entry.intent.title)}`
+              : `${entry.id}  ${'unreadable'.padEnd(10)}  ${sanitizeReason(entry.unreadable)}`,
+          );
+        }
+      });
+    });
+  intent
+    .command('accept <id>')
+    .description(
+      'Accept a draft whose understanding section holds 2 or 3 questions (operator only)',
+    )
+    .action((id: string) => {
+      const { repoPath, db } = project();
+      // Accepting is the operator's word that this is what they want built,
+      // and that these are the questions they will answer after review. A
+      // session or the conductor accepting one would be setting its own
+      // brief and its own exam (decision 126).
+      if (callingSession(db) || callingConductor()) {
+        return refuse(
+          '`pup intent accept` is operator-only; the operator accepts an intent once they have read it.',
+        );
+      }
+      intentOrRefuse(() => {
+        const accepted = acceptIntent(repoPath, id);
+        console.log(
+          `Accepted intent ${sanitizeReason(accepted.id)}: ${sanitizeReason(accepted.title)}.`,
+        );
+        console.log('After review, you must be able to answer:');
+        for (const question of accepted.questions) console.log(`  - ${sanitizeReason(question)}`);
+      });
+    });
+
   program
     .command('project <action> [id]')
     .description(
@@ -2499,6 +2586,42 @@ export function buildProgram(): Command {
         return;
       }
       printAuditOutcome(db, report, repoPath);
+    });
+  program
+    .command('usage')
+    .description('Report where the Claude usage went, from the project transcripts (read-only)')
+    .option('--since <date>', 'start of the window (default: 7 days ago)')
+    .option('--json', 'print the report as JSON')
+    .action((opts: { since?: string; json?: boolean }) => {
+      const { repoPath, db } = project();
+      // The transcripts hold every session's prompts and tool output, and the
+      // report is for the operator's budget, not for the fleet to steer by.
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup usage` is operator-only; sessions and the conductor cannot run it.');
+      }
+      const since = opts.since ? new Date(opts.since) : new Date(Date.now() - 7 * 86_400_000);
+      if (Number.isNaN(since.getTime())) {
+        return refuse(
+          `--since needs a date such as 2026-10-21, not "${sanitizeReason(opts.since ?? '')}".`,
+        );
+      }
+      // Workers and the conductor write under the dir the project's windows run
+      // on; the console under the operator shell's own.
+      const userDir = configDirOrRefuse(repoPath);
+      if (userDir === undefined) return;
+      const claudeDirs = [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
+      const report = buildUsageReport(db, repoPath, { since, claudeDirs });
+      // JSON.stringify leaves DEL and C1 raw, and a terminal can read U+009B
+      // as CSI; outside a string literal JSON has no such character, so the
+      // `\uXXXX` form parses back to the same value (decision 68).
+      console.log(
+        opts.json
+          ? JSON.stringify(report, null, 2).replace(
+              /[\u007f-\u009f]/g,
+              (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+            )
+          : formatUsageReport(report),
+      );
     });
 
   const session = program.command('session').description('Session-internal protocol commands');
