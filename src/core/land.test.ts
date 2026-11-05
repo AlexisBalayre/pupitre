@@ -1274,41 +1274,49 @@ describe('landSession', { timeout: 20_000 }, () => {
     expectNothingChanged(before);
   });
 
-  it('refuses, landing nothing, when git fails reading what the merge landed', async () => {
-    seedPrMerge();
-    const clone = cloneOrigin();
-    moveOriginMain(clone);
-    const squash = squashOnGitHub(clone);
-    fakeGh({
-      state: 'MERGED',
-      baseRefName: 'main',
-      headRefOid: pinned,
-      mergeCommit: { oid: squash },
-    });
-    const real = vi.mocked(withScratchGitDir).getMockImplementation();
-    vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
-      (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
-        fn((args, opts) => {
-          if (args.includes('rev-list')) throw new Error('fatal: bad object');
-          return git(args, opts);
-        }),
-      ),
-    );
-    const before = mainSha();
-
-    try {
-      await expect(land()).rejects.toThrow(
-        new RegExp(
-          `^Reading what ${squash} landed failed\\. Nothing was landed\\.\\n.*bad object`,
-          's',
+  // A merge-tree that fails other than by a conflict (status 1), as one without
+  // `--write-tree` does, is git failing, not content the gate never measured.
+  it.each([
+    ['rev-list', Object.assign(new Error('fatal: bad object'), { status: 128 })],
+    ['merge-tree', Object.assign(new Error('fatal: bad object'), { status: 128 })],
+  ])(
+    'refuses, landing nothing, when %s fails reading what the merge landed',
+    async (failing, failure) => {
+      seedPrMerge();
+      const clone = cloneOrigin();
+      moveOriginMain(clone);
+      const squash = squashOnGitHub(clone);
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: squash },
+      });
+      const real = vi.mocked(withScratchGitDir).getMockImplementation();
+      vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+        (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+          fn((args, opts) => {
+            if (args.includes(failing)) throw failure;
+            return git(args, opts);
+          }),
         ),
       );
-    } finally {
-      vi.mocked(withScratchGitDir).mockReset();
-    }
-    expectNothingChanged(before);
-    expect(hasTrackingRef()).toBe(false);
-  });
+      const before = mainSha();
+
+      try {
+        await expect(land()).rejects.toThrow(
+          new RegExp(
+            `^Reading what ${squash} landed failed\\. Nothing was landed\\.\\n.*bad object`,
+            's',
+          ),
+        );
+      } finally {
+        vi.mocked(withScratchGitDir).mockReset();
+      }
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    },
+  );
 
   // Ancestry alone would take a merge commit carrying changes of its own.
   it('refuses a merge commit with a change the gate never measured, changing nothing', async () => {

@@ -383,8 +383,10 @@ function mergedOnto(repoPath: string, sha: string, mergeCommit: string): string 
           });
           if (replays) return base;
         } catch (error) {
-          // no commit that far down, or a conflict
-          rethrowIfKilled(error);
+          // 1 is no commit that far down, or a conflict. Any other status (a
+          // signal, no `--write-tree` before git 2.38, a missing object) is git
+          // failing outright, refused as such below, as the gate does (decision 105).
+          if ((error as { status?: unknown }).status !== 1) throw error;
         }
       }
       return undefined;
