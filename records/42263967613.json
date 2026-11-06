@@ -1,0 +1,239 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T17:45:41.191Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42263967613",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42263967613",
+  "actor": "AlexisBalayre",
+  "commit_sha": "69e5727136925d1a21c793f462863224ebbfe835",
+  "source": "pr",
+  "pr_number": 230,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/settings.json",
+      "line": "126-136",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The hook is registered only on PostToolUse, which Claude Code fires only when a tool succeeds; a Bash command that exits non-zero (a failing pnpm test, tsc --noEmit with errors, a broken build) goes to PostToolUseFailure instead, so the 10k test-log threshold almost never fires on the large logs it was written for.",
+      "body": "**The hook never sees the failing test, typecheck or build runs it was written for.**\n\nClaude Code fires `PostToolUse` only when a tool succeeds. When a Bash command exits non-zero, Claude Code treats it as a tool error and sends it to `PostToolUseFailure`. That event's payload has an `error` string and no `tool_response`.\n\nThis repo already relies on that behaviour, and tests it:\n- `src/core/profile-compiler.service.ts:1073-1074` says \"a command that writes and then exits non-zero ends in PostToolUseFailure, not PostToolUse\", and wires `PostToolUseFailure` for that reason.\n- ADR 0063 says the same and has a mutation check for it.\n\nThe hook's own header gives its purpose as \"cutting it would hide a failing test's output\" ([tool-result-size.sh#L3](https://github.com/AlexisBalayre/pupitre/blob/69e5727136925d1a21c793f462863224ebbfe835/.claude/hooks/tool-result-size.sh#L3)). But a failing `pnpm test`, a `pnpm typecheck` with errors, or a broken `pnpm build` all exit non-zero, so none of them reach this hook. A passing `vitest`/`tsc` run prints little, so the 10k `$log` branch almost never fires:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/69e5727136925d1a21c793f462863224ebbfe835/.claude/settings.json#L126-L136\n\nThe tests can't catch this, because they pipe hand-made success payloads straight into the script.\n\n**Suggested fix:**\n- Also register the script under `PostToolUseFailure`, with the same command and timeout.\n- In the jq, measure `.error` when there is no `.tool_response`, for example `(.tool_response // {stdout: .error})` feeding the Bash branch.\n- Echo `.hook_event_name` back as `hookEventName` instead of hard-coding `\"PostToolUse\"` (line 30).\n- Add a test with a `PostToolUseFailure`-shaped payload: a 15k `error` and a `pnpm test` command.",
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "24",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `pup ... (gate|test)` branch only matches the installed `pup` binary; `pnpm dev gate` (how AGENTS.md says to run the CLI from source in this repo) matches neither the `pnpm` branch (gate is not test/typecheck/build) nor the `pup` branch, so gate logs run from source get the 20k threshold instead of 10k.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.test.sh",
+      "line": "28",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The case named \"a piped test run is still a test log\" uses `pnpm test 2>&1`, which has no pipe, and its `&` comes after `test`, so it never checks the `[^|;&\\n]*` boundary it seems meant for; there are also no cases for the Grep/Glob `filenames`, WebFetch `result`, MCP array-of-blocks, or Bash `isImage` paths the header says are counted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "17-22",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Only tool_name \"Bash\" gets the stdout+stderr count and the log threshold; a background test run read back through BashOutput/TaskOutput (`{stdout, stderr, ...}` object, no `content`/`filenames`) falls through to the object branch and counts as 0.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "17-22",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `tool_response` field names (`stdout`, `stderr`, `isImage`, `file.content`, `file.numLines`, `result`, `filenames`) are Claude Code internals, not a documented contract; if one is renamed, `try ... catch 0` counts the result as 0 and the hook silently stops warning.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "12-14",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `text` helper does `.[] | .text?`; an array element that is a plain string rather than a `{text}` object yields nothing and counts as 0, undercounting the result.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "4-5",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The header says Bash \"test, verify, typecheck and build logs\" warn from 10k, but the `$log` regex on line 24 has no `verify` term (it matches `vitest`, `tsc`, `pnpm … test|typecheck|build`, `pup … gate|test`); say \"pup gate\" instead of \"verify\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "2-7",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Header lines 4-7 mostly narrate what the jq does (thresholds, what is counted), which the README row already states; per AGENTS.md §Comments keep only the non-obvious WHYs (warn-only rationale, the line-number prefix counted in Read).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/README.md",
+      "line": "164-172",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`tool-result-size.sh` is added to `.claude/hooks/README.md` but not to the parallel hook table and file tree in `.claude/README.md`, where every other hook is listed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/architecture-explainer.md",
+      "line": "5",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The only change here is `model: haiku` → `model: sonnet`, unrelated to the size hook and not mentioned in the PR description; split it out or explain it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "23-24",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The log-command regex hardcodes `pnpm (test|typecheck|build)` etc., a second copy of TEST_CMD/TYPECHECK_CMD in `.claude/project.env` (loaded via `lib/project-env.sh`); if the project's test command changes, the 10k threshold silently stops applying.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "11-31",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "One jq program carries size extraction, log classification and hint selection; the Read arm's `7 * numLines` is an unexplained magic number, and a named `def size:` would make the per-tool arms easier to read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "17, 20",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Bash `isImage` arm and the explicit `Write or Edit then 0` arm are defensive branches; `isImage` has no test, so under the AGENTS.md Altitude rule it should get a test or be dropped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.test.sh",
+      "line": "23-39",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The tests skip the 10000/10001 and 20000/20001 boundaries, the non-Bash hints (Read `offset`, other `narrow the query`), `pnpm build`/`pup gate` matches, false-positive guards such as `echo tsc`, and the Read `7 * numLines` arithmetic.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "32-33",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`2>/dev/null` plus `exit 0` swallows every jq failure, including a typo in the program itself, so a broken hook looks the same as a quiet one; only the positive-warning tests would catch a broken program.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed for the orchestrator and all seven subagents with `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied`. No gh or git command ran: no `gh pr view`/`gh pr diff`, no `git diff`. The review was done with Read/Grep/Glob only. Reviewers compared the PR copies in `.claude-pr/` against the in-tree base copies, which was possible only because every changed file is under `.claude/`."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The second freshness assertion (§2) could not compare HEAD against GitHub's `headRefOid`, because `gh` was unavailable. HEAD was read from `.git/refs/heads/feature/output-size-hook` as 69e5727136925d1a21c793f462863224ebbfe835, which matches the local `refs/remotes/origin/feature/output-size-hook`. A push that landed mid-review would go undetected."
+    },
+    {
+      "component": "orchestrator",
+      "description": "PR title, body, comments and closing issues could not be read (`gh pr view` failed). Intent came from the commit message alone. No spec sources could be found, so review-spec was not spawned, and no steering context was available."
+    },
+    {
+      "component": "correctness",
+      "description": "Without Bash, no one could check whether `.claude/hooks/tool-result-size.sh` has its executable bit. settings.json runs it directly by path, and `.claude/hooks/README.md` says scripts must stay executable. The test runs it via `bash \"$HOOK\"`, so the tests would not catch a missing bit."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5878153000000002,
+  "duration_ms": 199924,
+  "num_turns": 17,
+  "tokens": {
+    "input": 20,
+    "output": 11112,
+    "cache_read": 383251,
+    "cache_creation": 45133,
+    "total": 439516
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 50,
+      "output": 26696,
+      "cache_read": 517571,
+      "cache_creation": 107851,
+      "cost_usd": 1.3122882
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 9115,
+      "cache_read": 207731,
+      "cache_creation": 65408,
+      "cost_usd": 0.27552709999999997
+    }
+  ],
+  "permission_denials": []
+}
