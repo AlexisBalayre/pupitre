@@ -27,3 +27,4 @@ area/tooling:
           - .claude/**
           - .github/**
           - scripts/**
+          - tools/**

@@ -39,12 +39,13 @@ jobs:
             };
             const pr = context.payload.pull_request;
             const prefix = /^(\w+)(\([^)]*\))?!?:/.exec(pr.title)?.[1];
-            const want = TYPES[prefix];
+            const want = Object.hasOwn(TYPES, prefix) ? TYPES[prefix] : undefined;
             const have = pr.labels.map((l) => l.name);
             const issue_number = pr.number;
             const { owner, repo } = context.repo;
 
-            for (const name of Object.values(TYPES)) {
+            // No recognised prefix says nothing about the type, so hand-added labels stay.
+            for (const name of want ? Object.values(TYPES) : []) {
               if (name !== want && have.includes(name)) {
                 await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
               }
