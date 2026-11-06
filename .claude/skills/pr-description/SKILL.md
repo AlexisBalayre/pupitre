@@ -173,6 +173,10 @@ The blast radius is the potential impact or scope of the changes introduced by t
 
 In this repo the doors worth naming: a `SCHEMA` or `MIGRATIONS` change in `src/core/db.client.ts` reaches every store under `~/.pupitre/` on next open (say whether it is additive and nullable, and what a store created before it does); a gate stage, compiled hook, or profile-compiler change reaches every session launched after it merges, including the conductor's; anything that shells out (`git`, `gh`, `tmux`, `claude -p`) is where the security review looks, so name what a session-controlled worktree could feed it.
 
+### Review dispositions (optional)
+
+After a review round, add one line per round to the body: `Round N (<sha>), disposition: <what and why>`. `pr-ci-review/REVIEW.md` counts it as the author's deferral of a minor; it never defers an `important`.
+
 ## Workflow
 
 1. **Gather context** (run together):
