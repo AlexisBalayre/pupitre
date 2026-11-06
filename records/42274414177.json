@@ -1,0 +1,117 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T18:53:18.494Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42274414177",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42274414177",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f88478fdc713d9d3f2734e8d564eae544329d870",
+  "source": "pr",
+  "pr_number": 232,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "conventions",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "2760a8f476f32ca8e9f8e1cded01fc81925d43e9",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/labeler.yml",
+      "line": "2-3",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "With a recognised prefix, the loop still removes other type labels added by hand (a `test` label on a `fix:` PR is removed on every `synchronize`). Lines 2-3 promise that \"labels a person adds by hand stay\", which is only true when the title has no prefix. Either the comment overstates the guarantee, or the one-type-label rule should be stated there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/labeler.yml",
+      "line": "47-48",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When an `edited` event takes a recognised prefix off the title (e.g. `fix: x` becomes `Fix x`), the type label the bot added earlier now stays for good. The script cannot tell bot-added labels from hand-added ones, and the line 47 comment only describes the hand-added case. This is the intended trade-off, but nothing documents that an outdated label survives.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/labeler.yml",
+      "line": "43, 50",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`have` comes from the event payload, not a fresh `listLabelsOnIssue`. If the label was removed by hand after the event, or by a concurrent run (the workflow has no `concurrency` group, so `edited` and `synchronize` can overlap), `removeLabel` gets a 404 and the job fails. A try/catch that ignores 404, or a `concurrency` group keyed on the PR number, would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/labeler.yml",
+      "line": "41-42",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The match is case-sensitive, so `Fix:` or `Feat(core):` get no type label. Many titles in this repo are plain sentences (\"Add the intent.md stage...\", \"Test that a stale listing...\"), and on those the script now correctly does nothing.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied'. So git diff, gh pr diff/view and git show were all unavailable. Nobody could read the delta 2760a8f..HEAD. The reviewers only saw the final state of .github/workflows/labeler.yml, and they inferred the delta from the commit message f88478f."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The prior record records/42264635477.json could not be read (git show failed), so its important findings could not be checked and prior_importants is empty because nothing was checked, not because nothing was found. The second freshness assertion (HEAD vs headRefOid) could not run, and PR comments/reviews were not read for steering. Only correctness and context ran, gated on a delta that looked CI-only. Their gating was inferred and not checked against a diff, so treat this round as partial and re-run."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5025832,
+  "duration_ms": 67966,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 4325,
+    "cache_read": 206360,
+    "cache_creation": 27610,
+    "total": 238307
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 6980,
+      "cache_read": 216611,
+      "cache_creation": 39333,
+      "cost_usd": 0.46248120000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 4,
+      "output": 1172,
+      "cache_read": 9840,
+      "cache_creation": 10956,
+      "cost_usd": 0.040102
+    }
+  ],
+  "permission_denials": []
+}
