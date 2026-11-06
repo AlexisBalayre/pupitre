@@ -6346,4 +6346,43 @@ describe('waitForLoad (decisions 88, 134)', () => {
         'runs its tests anyway.',
     ]);
   });
+
+  // The default reads the slots under `HOME`, here a temp dir this test fills.
+  describe("with the machine's own test slots", () => {
+    let home: string;
+    beforeEach(() => {
+      home = tempDir('pup-load-home-');
+      vi.stubEnv('HOME', home);
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('returns at once, saying nothing, above the ceiling while no slot is held', async () => {
+      await waitForLoad(() => 20, 8);
+
+      expect(errors).not.toHaveBeenCalled();
+    });
+
+    it('waits above the ceiling while another process holds a slot', async () => {
+      const slots = join(home, '.pupitre', 'slots');
+      mkdirSync(slots, { recursive: true });
+      writeFileSync(
+        join(slots, 'slot-0.lock'),
+        JSON.stringify({ kind: 'worker', label: 'other', pid: process.ppid, token: 'x' }),
+      );
+      let done = false;
+      const waited = waitForLoad(() => 20, 8).then(() => {
+        done = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(done).toBe(false);
+      expect(errors).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(GATE_SLOT_WAIT_MS);
+
+      await waited;
+      expect(errors).toHaveBeenCalledTimes(2);
+    });
+  });
 });
