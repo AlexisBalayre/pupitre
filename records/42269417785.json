@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T18:19:06.937Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42269417785",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42269417785",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2a81133ccd171018a2a6db9fbf997da0a41173b6",
+  "source": "pr",
+  "pr_number": 230,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "69e5727136925d1a21c793f462863224ebbfe835",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash invocation failed before executing with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied' (tried git rev-parse HEAD, git diff --stat 69e5727..HEAD, git show origin/ci/review-metrics:records/42263967613.json, gh pr view 230). The delta, prior record, PR intent/threads, and head SHA were all unreadable."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewers were spawned: without git/gh the incremental delta since 69e5727 could not be determined, so no grounded review was possible, and subagents run Bash in the same broken sandbox. prior_importants is empty because the prior record could not be read, not because none existed. THIS ROUND DID NOT REVIEW THE PR; it must not be read as a clean review. Re-run after the runner sandbox is fixed."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.26561359999999995,
+  "duration_ms": 25637,
+  "num_turns": 7,
+  "tokens": {
+    "input": 8,
+    "output": 2266,
+    "cache_read": 128948,
+    "cache_creation": 24309,
+    "total": 155531
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 2266,
+      "cache_read": 128948,
+      "cache_creation": 24309,
+      "cost_usd": 0.26561359999999995
+    }
+  ],
+  "permission_denials": []
+}
