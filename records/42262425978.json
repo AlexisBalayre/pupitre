@@ -1,0 +1,87 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T17:33:07.751Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42262425978",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42262425978",
+  "actor": "AlexisBalayre",
+  "commit_sha": "97946fd9bb6505834c8d1d3c28539ec0c3a11a80",
+  "source": "pr",
+  "pr_number": 229,
+  "action": "review",
+  "reviewers_spawned": [
+    "context",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "context",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/agents/README.md",
+      "line": "16",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The agent tables still list `architecture-explainer` as Sonnet (`.claude/agents/README.md:16` \"Sonnet · Read/Glob/Grep\" and `.claude/README.md:143` \"| Sonnet |\"), but this PR sets `model: haiku`. Update both rows to Haiku.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied', so `gh pr view`/`gh pr diff`/`git diff` were unavailable. The orchestrator could not read the PR title, body, comment threads, or file list, and could not check the PR for spec sources (closing keywords or linked issues). It also could not run §2's second freshness assertion (HEAD vs headRefOid). The change was rebuilt by comparing `.claude-pr/.claude/agents/architecture-explainer.md` line by line with the base copy: the only difference is line 5, `model: sonnet` → `model: haiku`. That matches the head commit message and git status. If the PR also changes files outside the restored config set, they were not reviewed."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The gate skipped correctness, security, maintainability, docs, and spec. The change is a one-line frontmatter model swap with no logic, no trust boundary, and no prose edit, and no spec source could be found because Bash was down."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6140188999999999,
+  "duration_ms": 53472,
+  "num_turns": 13,
+  "tokens": {
+    "input": 22,
+    "output": 4072,
+    "cache_read": 364210,
+    "cache_creation": 46171,
+    "total": 414475
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 22,
+      "output": 4072,
+      "cache_read": 364210,
+      "cache_creation": 46171,
+      "cost_usd": 0.5237379999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 2027,
+      "cache_read": 42219,
+      "cache_creation": 26306,
+      "cost_usd": 0.0902809
+    }
+  ],
+  "permission_denials": []
+}
