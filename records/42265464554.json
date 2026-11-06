@@ -1,0 +1,131 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T17:53:27.501Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42265464554",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42265464554",
+  "actor": "AlexisBalayre",
+  "commit_sha": "266851803726996e7965b00fb32a84be6735a9cd",
+  "source": "pr",
+  "pr_number": 233,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "150",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The closing attribution reads 'The Summary views are adapted from Dex Horthy's `show-me` skill (humanlayer/skills).' This PR removed the multiple Summary 'views' (pseudocode, call tree, component tree, file tree, diff variants, whole block) and replaced them with a single Mermaid-diagram rule plus a diagram-type table. The sentence still describes a structure that no longer exists. Reword it, for example 'The Summary diagram guidance is adapted from ...', or drop it if the lineage no longer applies.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "49-56",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The text says to 'mark the change with `classDef` (`added`, `removed`, `changed`)'. The example defines only `classDef added fill:#d4f8d4,stroke:#2a7`. An agent copying the instruction can use `:::removed` or `:::changed` without defining them, and Mermaid then renders the nodes unstyled with no error. Either give the three one-line `classDef` definitions in the example or say each class must be defined before use.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "13, 58, 62",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The template placeholder `<one mermaid diagram, and at most two sentences>` makes the diagram look mandatory. Line 58 then allows 'Skip the diagram when it adds nothing ... gets one sentence' and 'Use a fenced `diff` block only for a change too small to draw'. The Evidence template says 'one line each', while the section recommends a screenshot ('A screenshot is best'), which is not a line. An agent can read each pair as contradictory. Make the template placeholder carry the exception, for example '<one mermaid diagram (omit for trivial changes), at most two sentences>', and say 'one line or one screenshot'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "15-17, 35",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new Sections prose says to use 'the terms `docs/09-decisions.md` fixed'. That adds a reference to a nonexistent file. The rule being broken is AGENTS.md 'docs/adr/ holds one file per resolved decision'. The PR could have repointed this to `docs/adr/README.md`, since it rewrote the line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "25, 28-31, 35, 85, 147",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The skill still points at `docs/09-decisions.md` (Lands decision NN, 'Lands decision 56', the grep step, and the Body rules anchor line). No such file exists in the tree: `Glob docs/09*` returns nothing. AGENTS.md says resolved decisions live in `docs/adr/`, one file per numbered decision. These references are unchanged from base, but the PR re-touches the template line (25) and the Sections line (35) without correcting them.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied', including `gh pr view`, `git diff --stat` and `git rev-parse HEAD`. Without a diff, the changed-file set was inferred from the session's initial git status: the dirty config-restored files .claude/skills/pr-description/SKILL.md and .claude/agents/architecture-explainer.md, plus commit 2668518. Reviewers derived the change by Reading the .claude-pr/ copies against the base copies. If the PR changes any file outside the config-restore set, it was not seen or reviewed."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Bash was unavailable, so neither the §2 second freshness assertion (HEAD vs headRefOid) nor the PR comment/review steering read (gh pr view) could run. Reviewers had no unresolved-thread context, and a mid-review push would not have been detected."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Gating assumed a prose/config-only change (one skill markdown and an agent's model frontmatter). Only docs and conventions were spawned. Correctness, security, context and maintainability were skipped as untouched, and spec was skipped because no closing keywords could be read."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5019357000000001,
+  "duration_ms": 68944,
+  "num_turns": 8,
+  "tokens": {
+    "input": 12,
+    "output": 4607,
+    "cache_read": 205307,
+    "cache_creation": 27954,
+    "total": 237880
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 4607,
+      "cache_read": 205307,
+      "cache_creation": 27954,
+      "cost_usd": 0.3568814
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3935,
+      "cache_read": 78723,
+      "cache_creation": 39120,
+      "cost_usd": 0.14505430000000002
+    }
+  ],
+  "permission_denials": []
+}
