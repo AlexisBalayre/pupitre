@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T08:29:49.939Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42187934959",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42187934959",
+  "actor": "AlexisBalayre",
+  "commit_sha": "359ddc2253d804e0c839af514d7713bbf11c6362",
+  "source": "pr",
+  "pr_number": 226,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed before the command could run. The sandbox could not start: 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied'. This hit `gh pr view 226`, `git diff --stat fde86d1e..HEAD` and `git rev-parse HEAD`, so the PR diff, file list, intent, review threads and head SHA could not be read, and the head-freshness check could not run. Reviewer subagents use the same sandboxed Bash and would have had no way to fetch the change, so no reviewer was spawned. PR #226 was NOT reviewed. Re-run once the runner allows nested user namespaces (or provides CAP_SYS_ADMIN to bubblewrap)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Stopped at gating (§2/§3): with no diff access, any reviewer finding would have been speculative. The run emitted 0 of 0 reviewers on purpose. This empty record is not a clean review."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": true,
+  "incomplete_reason": "Not reviewed: no reviewer was spawned; re-run",
+  "cost_usd": 0.22148240000000002,
+  "duration_ms": 16801,
+  "num_turns": 5,
+  "tokens": {
+    "input": 8,
+    "output": 1252,
+    "cache_read": 127572,
+    "cache_creation": 21362,
+    "total": 150194
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 1252,
+      "cache_read": 127572,
+      "cache_creation": 21362,
+      "cost_usd": 0.22148240000000002
+    }
+  ],
+  "permission_denials": []
+}
