@@ -10,11 +10,11 @@ Use this template for writing the PR body:
 ```markdown
 ## Summary
 
-<one mermaid diagram, and at most two sentences>
+<one mermaid diagram (omit for a trivial change), at most two sentences>
 
 ## Evidence
 
-<before -> after, one line each>
+<before -> after: one line each, or one screenshot>
 
 ## Merge Danger
 
@@ -26,13 +26,13 @@ Lands decision NN. Follow-up to #NNNN.
 ```
 
 > **This repo has no issue tracker.** There is no ticket id in the title and no `Closes` line.
-> A PR anchors itself to the numbered entry in `docs/09-decisions.md` it lands or sharpens
+> A PR anchors itself to the numbered entry in `docs/adr/` it lands or sharpens
 > (`Lands decision 56.`) and to the PRs it follows from (`Follow-up to #93.`); drop the closing
 > line when neither applies. The tracker wording below is kept for reuse in a repo that has one.
 
 ## Sections
 
-Short beats complete: a reviewer reads the diagram, not the prose. The whole body fits on one screen. Skip preambles, never restate the diff or the commit list, and drop a sentence that the diagram already says. Use the project's own language: the `SCHEMA` nouns in `src/core/db.client.ts`, the terms `docs/09-decisions.md` fixed, and the role taxonomy in `docs/conventions/naming.md`.
+Short beats complete: a reviewer reads the diagram, not the prose. The whole body fits on one screen. Skip preambles, never restate the diff or the commit list, and drop a sentence that the diagram already says. Use the project's own language: the `SCHEMA` nouns in `src/core/db.client.ts`, the terms `docs/adr/` fixed, and the role taxonomy in `docs/conventions/naming.md`.
 
 ### Summary
 
@@ -53,9 +53,11 @@ flowchart LR
     submit --> createSession --> launchAgent
     createSession --> expandSkill:::added --> launchAgent
     classDef added fill:#d4f8d4,stroke:#2a7
+    classDef removed fill:#f8d4d4,stroke:#a22
+    classDef changed fill:#f8f0c8,stroke:#a82
 ```
 
-Skip the diagram when it adds nothing: a one-line config or docs-only change gets one sentence. Use a fenced `diff` block only for a change too small to draw, and never paste a file tree, a pseudocode block or a whole function.
+Define every class you use; an undefined one renders unstyled with no error. Skip the diagram when it adds nothing: a one-line config or docs-only change gets one sentence. Use a fenced `diff` block only for a change too small to draw, and never paste a file tree, a pseudocode block or a whole function.
 
 ### Evidence
 
@@ -82,7 +84,7 @@ Doors worth naming in this repo: a `SCHEMA` or `MIGRATIONS` change in `src/core/
 
    Read the diff for the key files (`git diff <trunk>...HEAD -- <path>`); on large diffs lean on `--stat` plus the important files.
 
-2. **Ground in the decisions log (read-only).** Grep the diff and commit bodies for `decision \d+` and read those entries in `docs/09-decisions.md`; grep `git log <trunk>..HEAD` for `#\d+` to find the PRs this one follows from. A PR that edits the decisions log lands the entry it adds. No decision touched: derive from diff + commits.
+2. **Ground in the decisions log (read-only).** Grep the diff and commit bodies for `decision \d+` and read those entries in `docs/adr/`; grep `git log <trunk>..HEAD` for `#\d+` to find the PRs this one follows from. A PR that edits the decisions log lands the entry it adds. No decision touched: derive from diff + commits.
 
 3. **Draft title + body together.** Title per [Title format](#title-format); body to a temp file (`mktemp`) per the template and [Sections](#sections), obeying [Body rules](#body-rules). For an existing PR, treat the current title and body as a draft, not a constraint.
 
@@ -144,7 +146,7 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
 
 - **No em-dash** (`—` / `–`). Hyphen or colon.
 - **No hardcoded hostnames/URLs.** Derive from config; link tracker issues by id/URL only.
-- **Anchor, don't close.** End the body with `Lands decision NN.` when the PR adds or sharpens an entry in `docs/09-decisions.md`, and `Follow-up to #NNNN.` when it continues an earlier PR; GitHub links the `#NNNN`. No `Closes` line: there is no tracker to close anything on.
+- **Anchor, don't close.** End the body with `Lands decision NN.` when the PR adds or sharpens an entry in `docs/adr/`, and `Follow-up to #NNNN.` when it continues an earlier PR; GitHub links the `#NNNN`. No `Closes` line: there is no tracker to close anything on.
 - **No attribution footer.** Never add `🤖 Generated with Claude Code` (or any agent attribution) to the PR body. The `Co-Authored-By` trailer on commits is the only attribution.
 
-The Summary views are adapted from Dex Horthy's `show-me` skill (humanlayer/skills).
+The Summary diagram guidance is adapted from Dex Horthy's `show-me` skill (humanlayer/skills).
