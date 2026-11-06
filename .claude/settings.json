@@ -145,6 +145,17 @@
           }
         ]
       }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/tool-result-size.sh",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

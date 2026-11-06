@@ -25,13 +25,21 @@ expect "15k of plain bash output is silent" silent "$(bash_payload 'ls' "$(pad 1
 expect "25k of plain bash output warns" warns "$(bash_payload 'ls' "$(pad 25000)")"
 expect "15k of vitest output warns" warns "$(bash_payload 'pnpm vitest run' "$(pad 15000)")"
 expect "15k of typecheck output warns" warns "$(bash_payload 'pnpm typecheck' "$(pad 15000)")"
-expect "a piped test run is still a test log" warns "$(bash_payload 'pnpm test 2>&1' "$(pad 15000)")"
+expect "a test run with redirected stderr is still a test log" warns "$(bash_payload 'pnpm test 2>&1' "$(pad 15000)")"
 
 read_payload=$(jq -nc --arg c "$(pad 25000)" '{tool_name: "Read", tool_input: {}, tool_response: {file: {content: $c, numLines: 10}}}')
 expect "a big Read warns" warns "$read_payload"
 
 edit_payload=$(jq -nc --arg c "$(pad 30000)" '{tool_name: "Edit", tool_input: {}, tool_response: {content: $c}}')
 expect "an Edit echo counts as 0" silent "$edit_payload"
+
+fail_payload=$(jq -nc --arg e "$(pad 15000)" '{hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_input: {command: "pnpm test"}, error: $e}')
+expect "a failing test run (PostToolUseFailure, no tool_response) warns" warns "$fail_payload"
+[[ $(printf '%s' "$fail_payload" | bash "$HOOK") == *'"hookEventName":"PostToolUseFailure"'* ]] || { echo "FAIL: failure event name is echoed"; fail=1; }
+expect "pnpm dev gate counts as a log" warns "$(bash_payload 'pnpm dev gate' "$(pad 10001)")"
+expect "exactly 10000 of a test log is silent" silent "$(bash_payload 'pnpm test' "$(pad 10000)")"
+expect "exactly 20000 of plain output is silent" silent "$(bash_payload 'ls' "$(pad 20000)")"
+expect "echo tsc is still a test log by design, but 5k stays silent" silent "$(bash_payload 'echo tsc' "$(pad 5000)")"
 
 expect "malformed input is silent" silent 'not json'
 
