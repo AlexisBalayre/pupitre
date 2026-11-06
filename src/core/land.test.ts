@@ -14,6 +14,11 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
   return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
 });
+// The real scratch git dir, so a test can fail one git call made in it.
+vi.mock('./merge-gate.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.service.js')>();
+  return { ...actual, withScratchGitDir: vi.fn(actual.withScratchGitDir) };
+});
 // The real audit, so a test can make the one after a land throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./audit.service.js')>();
@@ -29,7 +34,7 @@ import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -379,15 +384,18 @@ describe('landSession', { timeout: 20_000 }, () => {
       seedPeer('s2', 'src/feature.ts');
       const real = vi.mocked(gitDiffPaths).getMockImplementation();
       vi.mocked(gitDiffPaths).mockImplementation((repoPath, target, branch) => {
-        if (target.endsWith('^1')) throw new Error('fatal: bad revision');
+        // The landed files are the merge commit's; a peer's are its branch's.
+        if (!branch.startsWith('refs/heads/')) throw new Error('fatal: bad revision');
         return real?.(repoPath, target, branch) ?? [];
       });
 
       await landMerged();
 
-      expect(vi.mocked(gitDiffPaths).mock.calls.some(([, target]) => target.endsWith('^1'))).toBe(
-        true,
-      );
+      expect(
+        vi
+          .mocked(gitDiffPaths)
+          .mock.calls.some(([, , branch]) => !branch.startsWith('refs/heads/')),
+      ).toBe(true);
       expect(landedEvents()).toHaveLength(1);
       expect(steersTo('s2')).toEqual([]);
       expect(steerEvents('s2')).toEqual([]);
@@ -862,43 +870,6 @@ describe('landSession', { timeout: 20_000 }, () => {
     expectNothingChanged(mainBefore);
   });
 
-  // A squash merge, with the pinned commit then reaching origin's main by
-  // another route: both containments pass but the merge commit never held it.
-  it('refuses a merge commit that does not contain the pinned sha, changing nothing', async () => {
-    seedPrMerge();
-    const gitCommit = (...args: string[]) =>
-      sh(
-        origin,
-        'git',
-        '-c',
-        'user.email=gh@test',
-        '-c',
-        'user.name=github',
-        'commit-tree',
-        ...args,
-      );
-    const squash = gitCommit(
-      `${pinned}^{tree}`,
-      '-p',
-      sh(origin, 'git', 'rev-parse', 'main'),
-      '-m',
-      'squash',
-    );
-    const later = gitCommit(`${pinned}^{tree}`, '-p', squash, '-p', pinned, '-m', 'another route');
-    sh(origin, 'git', 'update-ref', 'refs/heads/main', later);
-    fakeGh({
-      state: 'MERGED',
-      baseRefName: 'main',
-      headRefOid: pinned,
-      mergeCommit: { oid: squash },
-    });
-    const mainBefore = mainSha();
-
-    await expect(land()).rejects.toThrow(/the pinned commit reached the target some other way/);
-
-    expectNothingChanged(mainBefore);
-  });
-
   it("refuses a row whose branch is not the session's own, asking gh nothing", async () => {
     seedPrMerge();
     db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run('main', SESSION_ID);
@@ -1147,26 +1118,54 @@ describe('landSession', { timeout: 20_000 }, () => {
     },
   );
 
-  // A squash merge puts other commits on main than the ones the gate measured.
-  it("refuses when origin's main does not contain the pinned sha, changing nothing", async () => {
-    seedPrMerge();
-    // The pinned tree on one new commit over origin's main, as GitHub squashes.
-    const squash = sh(
-      origin,
+  /** The refusal of a merge commit whose tree is not the pinned content merged onto its base. */
+  const refusal = (merge: string) =>
+    `${merge}, the commit GitHub says merged ${PR_URL}, does not have the tree git gives ` +
+    `merging ${pinned}, the commit the gate pinned`;
+
+  /** A clone of origin, where GitHub's side of a squash or rebase merge is made. */
+  function cloneOrigin(): string {
+    const clone = tempDir('pup-land-clone-');
+    sh(clone, 'git', 'clone', '-q', origin, '.');
+    return clone;
+  }
+
+  /** Another PR merged first: origin's main moves past the base the gate rebased onto. */
+  function moveOriginMain(clone: string): string {
+    const moved = commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    return moved;
+  }
+
+  /** GitHub's squash button onto origin's main, `edit` run on the squash before its commit. */
+  function squashOnGitHub(clone: string, edit: () => void = () => undefined): string {
+    sh(clone, 'git', 'merge', '--squash', '-q', `origin/${BRANCH}`);
+    edit();
+    sh(clone, 'git', 'add', '-A');
+    sh(
+      clone,
       'git',
       '-c',
       'user.email=gh@test',
       '-c',
       'user.name=github',
-      'commit-tree',
-      `${pinned}^{tree}`,
-      '-p',
-      'main',
+      'commit',
+      '-q',
+      '--allow-empty',
       '-m',
       'Squashed (#7)',
     );
-    sh(origin, 'git', 'update-ref', 'refs/heads/main', squash);
-    const before = mainSha();
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    return sh(clone, 'git', 'rev-parse', 'HEAD');
+  }
+
+  // Decision 131: GitHub's squash merges the pinned content onto a main that
+  // moved, so main holds the content the gate measured but not the pinned sha.
+  it('lands a squash of the pinned content onto a moved main, fast-forwarding and auditing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone);
     fakeGh({
       state: 'MERGED',
       baseRefName: 'main',
@@ -1174,8 +1173,225 @@ describe('landSession', { timeout: 20_000 }, () => {
       mergeCommit: { oid: squash },
     });
 
-    await expect(land()).rejects.toThrow(`does not contain ${pinned}`);
+    const outcome = await land();
+
+    expect(outcome).toMatchObject({
+      mergeCommit: squash,
+      targetSha: squash,
+      fastForwarded: true,
+      removedWorktree: true,
+    });
+    expect(outcome.keptBranch).toBeUndefined();
+    expect(mainSha()).toBe(squash);
+    expect(sh(repo, 'git', 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(repo, 'src/feature.ts'), 'utf8')).toContain('feature');
+    expect(readFileSync(join(repo, 'src/other.ts'), 'utf8')).toContain('other');
+    expect(sh(repo, 'git', 'rev-parse', 'refs/remotes/origin/main')).toBe(squash);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(getProject(db, pid)?.baseline).not.toBeNull();
+    expect(landedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+      { sha: squash, target: 'main', prUrl: PR_URL },
+    ]);
+  });
+
+  // A rebase merge replays each pinned commit, so the last one's tree is
+  // checked against the base the first went onto, as many commits down.
+  it('lands a rebase merge of a two-commit pin onto a moved main', async () => {
+    pinned = commitIn(worktree, 'src/second.ts', 'export const second = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    const moved = moveOriginMain(clone);
+    sh(clone, 'git', 'checkout', '-q', '-b', 'rebased', `origin/${BRANCH}`);
+    sh(clone, 'git', '-c', 'user.email=gh@test', '-c', 'user.name=github', 'rebase', '-q', 'main');
+    sh(clone, 'git', 'push', '-q', 'origin', 'rebased:main');
+    const last = sh(clone, 'git', 'rev-parse', 'HEAD');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: last },
+    });
+
+    const outcome = await land();
+
+    expect(outcome).toMatchObject({ mergeCommit: last, targetSha: last, fastForwarded: true });
+    expect(mainSha()).toBe(last);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(landedEvents()).toHaveLength(1);
+    // The landed files are both replayed commits', not the last one's alone.
+    expect(vi.mocked(gitDiffPaths)).toHaveBeenCalledWith(repo, moved, last);
+  });
+
+  it.each([
+    ['an extra change', (clone: string) => writeFileSync(join(clone, 'src/extra.ts'), 'x;\n')],
+    ['a missing change', (clone: string) => rmSync(join(clone, 'src/feature.ts'))],
+    [
+      'an altered change',
+      (clone: string) =>
+        writeFileSync(join(clone, 'src/feature.ts'), 'export const feature = 2;\n'),
+    ],
+  ])('refuses a squash with %s the gate never measured, changing nothing', async (_, edit) => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone, () => edit(clone));
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
     expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
+  });
+
+  // Squashed onto the moved main, but undoing it: the tree is the pinned one
+  // exactly, which only a rebase onto main's older tip could give, and no
+  // replayed commit there is the other PR's.
+  it("refuses a squash of a two-commit pin that drops another PR's change, changing nothing", async () => {
+    pinned = commitIn(worktree, 'src/second.ts', 'export const second = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone, () => rmSync(join(clone, 'src/other.ts')));
+    expect(sh(clone, 'git', 'rev-parse', `${squash}^{tree}`)).toBe(
+      sh(clone, 'git', 'rev-parse', `${pinned}^{tree}`),
+    );
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expectNothingChanged(before);
+  });
+
+  // A merge-tree that fails other than by a conflict (status 1), as one without
+  // `--write-tree` does, is git failing, not content the gate never measured.
+  it.each([
+    ['rev-list', Object.assign(new Error('fatal: bad object'), { status: 128 })],
+    ['merge-tree', Object.assign(new Error('fatal: bad object'), { status: 128 })],
+  ])(
+    'refuses, landing nothing, when %s fails reading what the merge landed',
+    async (failing, failure) => {
+      seedPrMerge();
+      const clone = cloneOrigin();
+      moveOriginMain(clone);
+      const squash = squashOnGitHub(clone);
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: squash },
+      });
+      const real = vi.mocked(withScratchGitDir).getMockImplementation();
+      vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+        (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+          fn((args, opts) => {
+            if (args.includes(failing)) throw failure;
+            return git(args, opts);
+          }),
+        ),
+      );
+      const before = mainSha();
+
+      try {
+        await expect(land()).rejects.toThrow(
+          new RegExp(
+            `^Reading what ${squash} landed failed\\. Nothing was landed\\.\\n.*bad object`,
+            's',
+          ),
+        );
+      } finally {
+        vi.mocked(withScratchGitDir).mockReset();
+      }
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    },
+  );
+
+  // Ancestry alone would take a merge commit carrying changes of its own.
+  it('refuses a merge commit with a change the gate never measured, changing nothing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    sh(clone, 'git', 'merge', '--no-ff', '--no-commit', '-q', `origin/${BRANCH}`);
+    const merge = commitIn(clone, 'src/extra.ts', 'x;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    expect(sh(clone, 'git', 'rev-list', '--parents', '-n', '1', merge).split(' ')).toContain(
+      pinned,
+    );
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(merge));
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // GitHub resolved the conflict its own way: no merge of the pin gives that tree.
+  it('refuses a squash of a pin that conflicts with the moved main, changing nothing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    commitIn(clone, 'src/feature.ts', 'export const feature = 0;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    const squash = commitIn(clone, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // The tree check merges a file both sides changed, which runs a merge driver
+  // the repo's attributes and config name; the scratch git dir reads neither.
+  it('runs no merge driver armed in the repo while checking the tree', async () => {
+    pinned = commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    const moved = commitIn(clone, 'src/app.ts', 'export const app = 3;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    writeFileSync(join(clone, 'src/feature.ts'), 'export const feature = 1;\n');
+    const squash = commitIn(clone, 'src/app.ts', 'export const app = 2;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    const marker = join(tempDir('pup-land-driver-'), 'ran');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* merge=x\n');
+    sh(repo, 'git', 'config', 'merge.x.driver', `touch ${marker}; false`);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expect(existsSync(marker)).toBe(false);
+    expectNothingChanged(before);
+    // The same merge run by the repo's own git does run it.
+    expect(() => sh(repo, 'git', 'merge-tree', '--write-tree', moved, pinned)).toThrow();
+    expect(existsSync(marker)).toBe(true);
   });
 });
