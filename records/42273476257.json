@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-06T18:45:53.684Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42273476257",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42273476257",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9a41efac949140ccb17546276ea73d6f33f4b873",
+  "source": "pr",
+  "pr_number": 233,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "266851803726996e7965b00fb32a84be6735a9cd",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed before running, including bare `git rev-parse HEAD`, `git diff --stat 266851803726996e7965b00fb32a84be6735a9cd..HEAD`, `git show origin/ci/review-metrics:records/42265464554.json` and `gh pr view 233`. Each one stopped with `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied`. The bubblewrap sandbox cannot start on this runner."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewers were spawned, so nothing in this PR was reviewed. Without git or gh I could not read the delta since 2668518, the PR title, body or threads, the prior record's important findings, or the head SHA for the freshness check. Reviewer subagents use the same Bash sandbox and would have been just as blind, and a review whose scope can't be grounded in the diff breaks the grounded-findings rule. The working tree shows only the restored config paths (.claude/agents/architecture-explainer.md, .claude/skills/pr-description/SKILL.md) as changed, and the PR's copies are present under .claude-pr/. prior_importants is empty because the prior record could not be read, not because those findings were resolved. Treat this round as unreviewed and re-run once the runner allows unprivileged user namespaces, or the sandbox is configured to work without them."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.25420580000000004,
+  "duration_ms": 21392,
+  "num_turns": 7,
+  "tokens": {
+    "input": 8,
+    "output": 1889,
+    "cache_read": 128769,
+    "cache_creation": 23830,
+    "total": 154496
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 1889,
+      "cache_read": 128769,
+      "cache_creation": 23830,
+      "cost_usd": 0.25420580000000004
+    }
+  ],
+  "permission_denials": []
+}
