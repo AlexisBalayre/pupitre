@@ -552,6 +552,14 @@ describe('testRunsElsewhere (decision 134)', () => {
 
     expect(testRunsElsewhere({ dir: planted, slots: 2 })).toBe(true);
   });
+
+  // Reading through it fails with ENOENT, the error a missing directory gives.
+  it('answers true for a dangling link planted where the slots go, so the gate keeps its wait', () => {
+    const planted = join(dir, 'slots');
+    symlinkSync(join(dir, 'nowhere'), planted);
+
+    expect(testRunsElsewhere({ dir: planted, slots: 2 })).toBe(true);
+  });
 });
 
 describe('runSessionTest (decision 96)', () => {

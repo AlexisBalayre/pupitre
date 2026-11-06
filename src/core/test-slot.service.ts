@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   linkSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -199,19 +200,21 @@ function waitingGates(dir: string): SlotHolder[] {
  * Whether a process other than this one holds a test slot or waits for one as
  * a gate (decision 134, amending 88). While none does, no test run of pup's
  * adds to the machine's load, so the gate's load wait has nothing of pup's to
- * wait out. A slots directory not made yet holds none; one that cannot be read
- * answers true, so the gate keeps the bounded wait it had. A dead holder's slot
- * is reclaimed, as every reader of the slots does.
+ * wait out. Only a slots path with nothing at it, not even a link, holds none;
+ * anything that cannot be read, a dangling link included, answers true, so the
+ * gate keeps the bounded wait it had. A dead holder's slot is reclaimed, as
+ * every reader of the slots does.
  */
 export function testRunsElsewhere(options: Pick<TestSlotOptions, 'dir' | 'slots'> = {}): boolean {
   const dir = options.dir ?? slotsDir();
   const token = randomBytes(8).toString('hex');
   try {
+    if (!lstatSync(dir, { throwIfNoEntry: false })) return false;
     return [...liveHolders(dir, options.slots ?? TEST_SLOTS, token), ...waitingGates(dir)].some(
       (holder) => holder !== undefined && holder.pid !== process.pid,
     );
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  } catch {
+    return true;
   }
 }
 
