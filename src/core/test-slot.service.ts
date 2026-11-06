@@ -195,6 +195,26 @@ function waitingGates(dir: string): SlotHolder[] {
   return gates;
 }
 
+/**
+ * Whether a process other than this one holds a test slot or waits for one as
+ * a gate (decision 134, amending 88). While none does, no test run of pup's
+ * adds to the machine's load, so the gate's load wait has nothing of pup's to
+ * wait out. A slots directory not made yet holds none; one that cannot be read
+ * answers true, so the gate keeps the bounded wait it had. A dead holder's slot
+ * is reclaimed, as every reader of the slots does.
+ */
+export function testRunsElsewhere(options: Pick<TestSlotOptions, 'dir' | 'slots'> = {}): boolean {
+  const dir = options.dir ?? slotsDir();
+  const token = randomBytes(8).toString('hex');
+  try {
+    return [...liveHolders(dir, options.slots ?? TEST_SLOTS, token), ...waitingGates(dir)].some(
+      (holder) => holder !== undefined && holder.pid !== process.pid,
+    );
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
 /** A write the gate's sandbox refused: its children may read `HOME`, never write it. */
 function isUnwritable(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
