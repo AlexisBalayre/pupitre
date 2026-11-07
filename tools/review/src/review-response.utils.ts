@@ -3,8 +3,6 @@ export type Outcome = "fixed" | "dismissed" | "ignored";
 /** One inline review thread opened by the review bot, as the GraphQL API returns it. */
 export interface BotThread {
   pr: number;
-  /** The commit the first comment was made on; one commit is one review round. */
-  commit: string;
   createdAt: string;
   isResolved: boolean;
   isOutdated: boolean;
@@ -12,9 +10,10 @@ export interface BotThread {
   humanReplies: number;
 }
 
-/** The review bot's posted reviews of one PR, oldest first, with the minors each carried. */
+/** One review the bot posted. The poster posts one every round, thread or not, so the n-th review is round n. */
 export interface BotReview {
   pr: number;
+  submittedAt: string;
   minors: number;
 }
 
@@ -51,25 +50,32 @@ function roundLabel(index: number): string {
   return index + 1 >= ROUND_CAP ? `${ROUND_CAP}+` : String(index + 1);
 }
 
-/** Round numbers per thread: the n-th distinct commit a PR's bot threads were opened on. */
-export function roundsOf(threads: BotThread[]): Map<BotThread, number> {
-  const byPr = new Map<number, BotThread[]>();
-  for (const t of threads) byPr.set(t.pr, [...(byPr.get(t.pr) ?? []), t]);
+/** Each PR's bot reviews, oldest first: the n-th is round n. */
+function reviewsByPr(reviews: BotReview[]): Map<number, BotReview[]> {
+  const byPr = new Map<number, BotReview[]>();
+  for (const r of reviews) byPr.set(r.pr, [...(byPr.get(r.pr) ?? []), r]);
+  for (const list of byPr.values()) list.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+  return byPr;
+}
+
+/**
+ * Round index (from 0) per thread: the review that posted it, which is the first of the PR's bot
+ * reviews submitted at or after the thread's first comment. Threads and minors then share one
+ * numbering, so a clean round between two that open threads is still a round.
+ */
+export function roundsOf(threads: BotThread[], reviews: BotReview[]): Map<BotThread, number> {
+  const byPr = reviewsByPr(reviews);
   const rounds = new Map<BotThread, number>();
-  for (const list of byPr.values()) {
-    const firstSeen = new Map<string, string>();
-    for (const t of list) {
-      const seen = firstSeen.get(t.commit);
-      if (seen === undefined || t.createdAt < seen) firstSeen.set(t.commit, t.createdAt);
-    }
-    const order = [...firstSeen.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([c]) => c);
-    for (const t of list) rounds.set(t, order.indexOf(t.commit));
+  for (const t of threads) {
+    const list = byPr.get(t.pr) ?? [];
+    const i = list.findIndex((r) => r.submittedAt >= t.createdAt);
+    rounds.set(t, i === -1 ? Math.max(list.length - 1, 0) : i);
   }
   return rounds;
 }
 
 export function summarize(threads: BotThread[], reviews: BotReview[]): RoundRow[] {
-  const rounds = roundsOf(threads);
+  const rounds = roundsOf(threads, reviews);
   const rows = new Map<string, RoundRow>();
   const row = (label: string): RoundRow => {
     let r = rows.get(label);
@@ -84,11 +90,10 @@ export function summarize(threads: BotThread[], reviews: BotReview[]): RoundRow[
     r.importantPosted += 1;
     r[classifyThread(t)] += 1;
   }
-  const seenPerPr = new Map<number, number>();
-  for (const rv of reviews) {
-    const i = seenPerPr.get(rv.pr) ?? 0;
-    seenPerPr.set(rv.pr, i + 1);
-    row(roundLabel(i)).minorsPosted += rv.minors;
+  for (const list of reviewsByPr(reviews).values()) {
+    list.forEach((rv, i) => {
+      row(roundLabel(i)).minorsPosted += rv.minors;
+    });
   }
   const out = [...rows.values()].sort((a, b) => a.round.localeCompare(b.round));
   for (const r of out) r.actionableRate = r.importantPosted ? r.fixed / r.importantPosted : null;

@@ -1,4 +1,5 @@
 import {
+  type BotReview,
   type BotThread,
   classifyThread,
   minorsIn,
@@ -12,13 +13,16 @@ import { describe, expect, it } from "vitest";
 function thread(overrides: Partial<BotThread> = {}): BotThread {
   return {
     pr: 1,
-    commit: "aaa",
     createdAt: "2026-11-01T10:00:00Z",
     isResolved: false,
     isOutdated: false,
     humanReplies: 0,
     ...overrides,
   };
+}
+
+function review(overrides: Partial<BotReview> = {}): BotReview {
+  return { pr: 1, submittedAt: "2026-11-01T10:00:01Z", minors: 0, ...overrides };
 }
 
 describe("classifyThread", () => {
@@ -48,56 +52,88 @@ describe("minorsIn", () => {
 });
 
 describe("roundsOf", () => {
-  it("numbers a PR's rounds by the order its commits first drew a thread", () => {
-    const a = thread({ commit: "c1", createdAt: "2026-11-01T10:00:00Z" });
-    const b = thread({ commit: "c2", createdAt: "2026-11-01T12:00:00Z" });
-    const c = thread({ commit: "c1", createdAt: "2026-11-01T10:00:05Z" });
-    const rounds = roundsOf([b, a, c]);
-    expect([rounds.get(a), rounds.get(b), rounds.get(c)]).toEqual([0, 1, 0]);
+  it("puts a thread in the review that posted it", () => {
+    const a = thread({ createdAt: "2026-11-01T10:00:00Z" });
+    const b = thread({ createdAt: "2026-11-01T12:00:00Z" });
+    const rounds = roundsOf(
+      [b, a],
+      [review({ submittedAt: "2026-11-01T12:00:01Z" }), review({ submittedAt: "2026-11-01T10:00:01Z" })],
+    );
+    expect([rounds.get(a), rounds.get(b)]).toEqual([0, 1]);
+  });
+
+  it("counts a round that opened no thread", () => {
+    const first = thread({ createdAt: "2026-11-01T10:00:00Z" });
+    const third = thread({ createdAt: "2026-11-01T14:00:00Z" });
+    const rounds = roundsOf(
+      [first, third],
+      [
+        review({ submittedAt: "2026-11-01T10:00:01Z" }),
+        review({ submittedAt: "2026-11-01T12:00:01Z" }),
+        review({ submittedAt: "2026-11-01T14:00:01Z" }),
+      ],
+    );
+    expect([rounds.get(first), rounds.get(third)]).toEqual([0, 2]);
   });
 
   it("numbers each PR on its own", () => {
-    const a = thread({ pr: 1, commit: "x" });
-    const b = thread({ pr: 2, commit: "y" });
-    const rounds = roundsOf([a, b]);
+    const a = thread({ pr: 1 });
+    const b = thread({ pr: 2 });
+    const rounds = roundsOf([a, b], [review({ pr: 1 }), review({ pr: 2 })]);
     expect([rounds.get(a), rounds.get(b)]).toEqual([0, 0]);
+  });
+
+  it("falls back to the last review for a thread no review claims", () => {
+    const late = thread({ createdAt: "2026-11-02T00:00:00Z" });
+    expect(roundsOf([late], [review(), review({ submittedAt: "2026-11-01T11:00:00Z" })]).get(late)).toBe(1);
   });
 });
 
 describe("summarize", () => {
+  const reviews = [
+    review({ submittedAt: "2026-11-01T10:00:01Z", minors: 3 }),
+    review({ submittedAt: "2026-11-01T12:00:01Z", minors: 2 }),
+  ];
   const threads = [
-    thread({ commit: "c1", isOutdated: true }),
-    thread({ commit: "c1", isResolved: true }),
-    thread({ commit: "c2", createdAt: "2026-11-01T12:00:00Z" }),
+    thread({ isOutdated: true }),
+    thread({ isResolved: true }),
+    thread({ createdAt: "2026-11-01T12:00:00Z" }),
   ];
 
-  it("tallies the outcomes per round and the minors by review order", () => {
-    const rows = summarize(threads, [
-      { pr: 1, minors: 3 },
-      { pr: 1, minors: 2 },
-    ]);
-    expect(rows).toEqual([
+  it("tallies the outcomes per round and the minors of the same round", () => {
+    expect(summarize(threads, reviews)).toEqual([
       { round: "1", importantPosted: 2, fixed: 1, dismissed: 1, ignored: 0, actionableRate: 0.5, minorsPosted: 3 },
       { round: "2", importantPosted: 1, fixed: 0, dismissed: 0, ignored: 1, actionableRate: 0, minorsPosted: 2 },
     ]);
   });
 
-  it("folds the fourth round onward into one row", () => {
-    const many = ["c1", "c2", "c3", "c4", "c5"].map((commit, i) =>
-      thread({ commit, createdAt: `2026-11-01T1${i}:00:00Z` }),
+  it("keeps a clean round's minors out of the next round's importants", () => {
+    const rows = summarize(
+      [thread({ createdAt: "2026-11-01T12:00:00Z", isOutdated: true }), thread({ createdAt: "2026-11-01T12:00:00Z" })],
+      [review({ submittedAt: "2026-11-01T10:00:01Z", minors: 3 }), review({ submittedAt: "2026-11-01T12:00:01Z" })],
     );
-    expect(summarize(many, []).map((r) => r.round)).toEqual(["1", "2", "3", "4+"]);
+    expect(rows).toEqual([
+      { round: "1", importantPosted: 0, fixed: 0, dismissed: 0, ignored: 0, actionableRate: null, minorsPosted: 3 },
+      { round: "2", importantPosted: 2, fixed: 1, dismissed: 0, ignored: 1, actionableRate: 0.5, minorsPosted: 0 },
+    ]);
+  });
+
+  it("folds the fourth round onward into one row", () => {
+    const hours = ["10", "11", "12", "13", "14"];
+    const many = hours.map((h) => thread({ createdAt: `2026-11-01T${h}:00:00Z` }));
+    const rs = hours.map((h) => review({ submittedAt: `2026-11-01T${h}:00:01Z` }));
+    expect(summarize(many, rs).map((r) => r.round)).toEqual(["1", "2", "3", "4+"]);
   });
 
   it("leaves the rate null for a round with only minors", () => {
-    const rows = summarize([], [{ pr: 1, minors: 4 }]);
+    const rows = summarize([], [review({ minors: 4 })]);
     expect(rows[0]?.actionableRate).toBeNull();
   });
 });
 
 describe("totals and renderTable", () => {
   it("adds the rounds up and renders a markdown table with an all row", () => {
-    const rows = summarize([thread({ isOutdated: true }), thread({ commit: "z" })], []);
+    const rows = summarize([thread({ isOutdated: true }), thread()], [review()]);
     expect(totals(rows)).toMatchObject({ importantPosted: 2, fixed: 1, actionableRate: 0.5 });
     expect(renderTable(rows)).toContain("| all | 2 | 1 | 0 | 1 | 50% | 0 |");
   });

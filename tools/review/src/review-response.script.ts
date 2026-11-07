@@ -14,7 +14,7 @@ const THREADS_QUERY = `query($owner:String!,$repo:String!,$n:Int!,$after:String)
   repository(owner:$owner,name:$repo){pullRequest(number:$n){
     reviewThreads(first:100,after:$after){
       pageInfo{hasNextPage endCursor}
-      nodes{isResolved isOutdated comments(first:50){nodes{createdAt author{__typename} originalCommit{oid}}}}
+      nodes{isResolved isOutdated comments(first:50){nodes{createdAt author{__typename}}}}
     }
   }}
 }`;
@@ -27,7 +27,7 @@ interface ThreadsPage {
         nodes: {
           isResolved: boolean;
           isOutdated: boolean;
-          comments: { nodes: { createdAt: string; author: { __typename: string } | null; originalCommit: { oid: string } | null }[] };
+          comments: { nodes: { createdAt: string; author: { __typename: string } | null }[] };
         }[];
       };
     };
@@ -58,10 +58,9 @@ function botThreads(owner: string, repo: string, pr: number): BotThread[] {
     const page = (JSON.parse(gh(args)) as { data: ThreadsPage }).data.repository.pullRequest.reviewThreads;
     for (const n of page.nodes) {
       const [first, ...replies] = n.comments.nodes;
-      if (first?.author?.__typename !== "Bot" || !first.originalCommit) continue;
+      if (first?.author?.__typename !== "Bot") continue;
       threads.push({
         pr,
-        commit: first.originalCommit.oid,
         createdAt: first.createdAt,
         isResolved: n.isResolved,
         isOutdated: n.isOutdated,
@@ -76,8 +75,8 @@ function botThreads(owner: string, repo: string, pr: number): BotThread[] {
 function botReviews(owner: string, repo: string, pr: number): BotReview[] {
   const out = gh(["api", `repos/${owner}/${repo}/pulls/${pr}/reviews`, "--paginate"]);
   const pages = out.replaceAll("][", ",");
-  const reviews = JSON.parse(pages) as { user: { type: string } | null; body: string }[];
-  return reviews.filter((r) => r.user?.type === "Bot").map((r) => ({ pr, minors: minorsIn(r.body) }));
+  const reviews = JSON.parse(pages) as { user: { type: string } | null; body: string; submitted_at: string }[];
+  return reviews.filter((r) => r.user?.type === "Bot").map((r) => ({ pr, submittedAt: r.submitted_at, minors: minorsIn(r.body) }));
 }
 
 function main(): void {
