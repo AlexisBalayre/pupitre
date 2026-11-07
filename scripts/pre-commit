@@ -30,7 +30,7 @@ load_project_env() {
     key=${line%%=*}
     val=${line#*=}
     case "$key" in
-      SOURCE_EXTENSIONS|LINT_CMD|TYPECHECK_CMD|TEST_CMD) ;;
+      SOURCE_EXTENSIONS|LINT_CMD|TYPECHECK_CMD|TEST_CMD|TEST_RELATED_CMD) ;;
       *) continue ;;
     esac
     case "$val" in
@@ -95,15 +95,42 @@ if [ -n "${LINT_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
   fi
 fi
 
-for step in TYPECHECK_CMD TEST_CMD; do
-  cmd="${!step:-}"
-  [ -z "$cmd" ] && continue
-  echo "Running $step: $cmd"
-  if ! bash -c "$cmd"; then
-    echo ""
-    echo "ERROR: $step failed. Fix it before committing."
-    exit 1
+# --- Typecheck and tests, scoped to what the commit touches ---
+#   no src/ and no global config staged : skip both (docs, ADRs, CI, skills, scripts)
+#   global config staged                : the full suite
+#   src/ staged                         : the tests related to the staged files (TEST_RELATED_CMD)
+# PRE_COMMIT_FULL=1 forces the full suite. The merge gate still runs the whole suite.
+
+STAGED_ALL=$(git diff --cached --diff-filter=d --name-only)
+GLOBAL_RE='^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|vitest\.config\.[a-z]+|tsconfig[^/]*\.json|biome\.jsonc?|\.nvmrc)$'
+STAGED_SRC=$(printf '%s\n' "$STAGED_ALL" | grep -E '^src/.*\.(ts|tsx)$' || true)
+STAGED_GLOBAL=$(printf '%s\n' "$STAGED_ALL" | grep -E "$GLOBAL_RE" || true)
+
+if [ -z "$STAGED_SRC" ] && [ -z "$STAGED_GLOBAL" ]; then
+  echo "No source or config staged: typecheck and tests skipped."
+else
+  if [ -n "${TYPECHECK_CMD:-}" ]; then
+    echo "Running TYPECHECK_CMD: $TYPECHECK_CMD"
+    if ! bash -c "$TYPECHECK_CMD"; then
+      echo ""
+      echo "ERROR: TYPECHECK_CMD failed. Fix it before committing."
+      exit 1
+    fi
   fi
-done
+  if [ -n "${TEST_CMD:-}" ]; then
+    if [ "${PRE_COMMIT_FULL:-}" = 1 ] || [ -n "$STAGED_GLOBAL" ] || [ -z "${TEST_RELATED_CMD:-}" ]; then
+      echo "Running TEST_CMD: $TEST_CMD"
+      ok=0; bash -c "$TEST_CMD" || ok=1
+    else
+      echo "Running TEST_RELATED_CMD on the staged source: $TEST_RELATED_CMD"
+      ok=0; printf '%s\n' "$STAGED_SRC" | tr '\n' '\0' | xargs -0 sh -c "$TEST_RELATED_CMD \"\$@\"" _ || ok=1
+    fi
+    if [ "$ok" -ne 0 ]; then
+      echo ""
+      echo "ERROR: TEST_CMD failed. Fix it before committing."
+      exit 1
+    fi
+  fi
+fi
 
 echo "All pre-commit checks passed."
