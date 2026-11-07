@@ -191,6 +191,47 @@ describe("collapsedSections", () => {
     );
     expect(rendered).toContain("2 minor issues (not blocking)");
   });
+
+  describe("the minors cap", () => {
+    const nits = (count: number) =>
+      Array.from({ length: count }, (_, index) => finding({ tag: "nit", description: `nit ${index + 1}` }));
+    const old = (count: number) =>
+      Array.from({ length: count }, (_, index) => finding({ tag: "pre-existing", description: `old ${index + 1}` }));
+
+    it("lists every minor up to the cap and holds none back", () => {
+      const rendered = collapsedSections(summary({ findings: [...nits(3), ...old(2)] })).join("\n");
+      expect(rendered).toContain("nit 3");
+      expect(rendered).toContain("old 2");
+      expect(rendered).not.toContain("held back");
+    });
+
+    it("lists the first five nits and counts the rest as held back", () => {
+      const rendered = collapsedSections(summary({ findings: nits(8) })).join("\n");
+      expect(rendered).toContain("<summary>8 minor issues (not blocking)</summary>");
+      expect(rendered).toContain("nit 5");
+      expect(rendered).not.toContain("nit 6");
+      expect(rendered).toContain("3 more minor issues held back (the review lists at most 5).");
+    });
+
+    it("fills the cap with nits before pre-existing issues", () => {
+      const rendered = collapsedSections(summary({ findings: [...old(3), ...nits(4)] })).join("\n");
+      expect(rendered).toContain("nit 4");
+      expect(rendered).toContain("old 1");
+      expect(rendered).not.toContain("old 2");
+      expect(rendered).toContain("2 more minor issues held back");
+    });
+
+    it("drops the pre-existing block when nits use the whole cap", () => {
+      const rendered = collapsedSections(summary({ findings: [...nits(5), ...old(2)] })).join("\n");
+      expect(rendered).not.toContain("pre-existing issue");
+      expect(rendered).toContain("2 more minor issues held back");
+    });
+
+    it("singularizes a single held-back minor", () => {
+      const rendered = collapsedSections(summary({ findings: nits(6) })).join("\n");
+      expect(rendered).toContain("1 more minor issue held back");
+    });
+  });
 });
 
 describe("bodyLines", () => {

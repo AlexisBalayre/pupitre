@@ -24,7 +24,7 @@ The governing rule is **spend only where it buys recall**. Deterministic tooling
 
 - **Grounded, not speculative:** every finding is grounded in the actual changed code. No speculation; a false positive erodes trust.
 - **Tag by severity, not by whether to post:** tag each finding `important` (fix before merge), `nit` (real but minor), or `pre-existing` (predates this diff).
-- **Record-all, rank by display:** the structured record captures every confirmed finding plus the refuted ones, and CI renders all of it: `important` findings as inline comments on the diff, `nit`, `pre-existing`, and refuted findings in collapsed sections of the review body. You do not do the posting: the record is not a companion to the comments, it is what they are made from. A sub-important finding's `description` is therefore read by the author, not only the retro; write it as a self-contained one-liner.
+- **Record-all, rank by display:** the structured record captures every confirmed finding plus the refuted ones, and CI renders it: `important` findings as inline comments on the diff, `nit`, `pre-existing` (at most five together, nits first, with a count of those held back), and refuted findings in collapsed sections of the review body. You do not do the posting: the record is not a companion to the comments, it is what they are made from. A sub-important finding's `description` is therefore read by the author, not only the retro; write it as a self-contained one-liner.
 - **Leave linters alone:** do not raise anything the project's formatter, linter, or typechecker (`FORMAT_FIX_CMD` / `LINT_CMD` / `TYPECHECK_CMD` in `.claude/project.env`) already catches; that is noise, not a finding.
 
 ## 1. Parse arguments -> source + action + mode

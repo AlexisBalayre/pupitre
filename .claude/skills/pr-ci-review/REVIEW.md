@@ -6,7 +6,7 @@ Three rules, each standing on its own.
 
 ## 1. The round rule
 
-- **Rounds 1 to 3:** the author fixes every minor the review lists, a pre-existing one included when the fix is small.
+- **Rounds 1 to 3:** the author fixes every minor the review lists, a pre-existing one included when the fix is small. A review lists at most five minors, nits before pre-existing, and says how many it held back; held-back minors are not owed.
 - **Round 4 on:** the author fixes each `important` §2 makes blocking, carried ones included. A minor no longer needs an answer, and nits alone never justify another round.
 
 A round's delta is the PR's own changes from the head the previous complete round reviewed to the head this round reviewed. When the base branch changed since then, or that head is not an ancestor of this one, the delta is the whole PR. An `important` is on the delta when the delta's hunks hold a line it names, or the delta introduced it.
