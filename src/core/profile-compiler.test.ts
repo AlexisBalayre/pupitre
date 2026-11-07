@@ -1205,6 +1205,10 @@ describe('generated hooks over a merge of the target', () => {
     expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
   });
 
+  // Four runs of the generated re-check, each some fifty forks (jq, two git
+  // statuses, a diff, a hash per dirty path, a watcher and a sleep per bounded
+  // read), around a real merge and the eight git calls that plant the replace:
+  // under 2 s idle, past vitest's default 5 s once the load passes the cores.
   it('reads the merged tip through no replace ref a session planted', () => {
     fork({}, { 'src/cli/index.ts': 'main\n' });
     bash('git merge main');
@@ -1227,7 +1231,7 @@ describe('generated hooks over a merge of the target', () => {
 
     expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
     expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
-  });
+  }, 20_000);
 
   it('refuses an Edit over marker lines whose conflict was staged by hand', () => {
     const markers = '<<<<<<< a\nkeep\n=======\ngate()\n>>>>>>> b';
