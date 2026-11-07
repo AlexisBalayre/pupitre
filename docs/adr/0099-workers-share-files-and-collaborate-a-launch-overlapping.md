@@ -122,18 +122,25 @@
     status` does, so a session that forges index entries could hide a write from the re-check,
     and a session whose branch already holds marker lines in an out-of-scope file can stage the
     branch-and-tip conflict by hand and edit within that block. Either way the file differs from
-    the target, and the gate's scope audit refuses it. A failed steer is not reported per peer
-    yet: core returns an outcome the CLI prints, and `LandOutcome` has no field for it. Recording
-    it as a `steer` event with `delivered: false` would be wrong, since the inbox reads any steer
-    as the answer to an open question and `decodeEvent` drops `delivered`. Carrying the skipped
-    sessions on `LandOutcome` and printing them is a follow-up. A `pup land` run git-diffs each live
+    the target, and the gate's scope audit refuses it. A session the land could not steer, its
+    steer failed or git could not read its branch, is carried on `LandOutcome.unsteered` with the
+    reason (amended 2026-11-07). The land prints one line for each to stderr, the session id and
+    the reason through `sanitizeReason`, right after the steer and before its audit starts, so a
+    failed or killed audit cannot lose them (decision 88), and `pup land` still exits as its
+    audit says. It is recorded nowhere: a `steer` event with `delivered: false` would be wrong,
+    since the inbox reads any steer as the answer to an open question and `decodeEvent` drops
+    `delivered`. That line is its only trace, so a peer whose land output nobody reads takes the
+    target in at the gate's rebase, as before. A `pup land` run git-diffs each live
     session's branch, as the gate and the overlap check already do, so the transport pins owed
     against a planted promisor remote cover it too.
     Tests: after a land, a live session sharing a landed file gets one `main-landed` steer and
     one sharing none gets nothing. The steer says rebase without an open PR and merge with one,
-    and neither mentions a force-push. A refused paste records no steer and leaves the land
-    done. Any other steer error leaves the land done with its audit and the other sessions
-    steered, while an interrupt during a steer still stops it. The steer scrubs the landed name, the target and the files, and shell-quotes a target
+    and neither mentions a force-push. A refused paste records no steer, leaves the land done
+    and names the peer on the outcome, as does a branch git cannot read; a land that steered
+    every peer names none. The land prints one line per unsteered peer with its reason scrubbed,
+    before its audit starts, and an audit that throws after it leaves that line printed; `pup
+    land` with an unsteered peer exits 0 with its audit. Any other steer error leaves the land
+    done with its audit and the other sessions steered, while an interrupt during a steer still stops it. The steer scrubs the landed name, the target and the files, and shell-quotes a target
     holding `;`. In a real repo with a
     linked worktree, a `git merge main` stopped on a conflict, with main's out-of-scope and
     scope-out files staged, passes the re-check, and so does committing the resolved merge. After

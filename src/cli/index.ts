@@ -67,7 +67,7 @@ import { acceptIntent, createIntent, listIntents, readIntent } from '../core/int
 import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
-import { runMergeGate } from '../core/merge-gate.service.js';
+import { MergeLockLostError, runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
@@ -2192,6 +2192,7 @@ export function buildProgram(): Command {
           );
         }
         let outcome: MergeOutcome;
+        let lockLost: MergeLockLostError | undefined;
         // No signal handler here: under its lock the gate outlives a Ctrl-C
         // and the SIGTERM `pup ui`'s `q` sends this child, stops every stage
         // child and removes the lock in its own `finally` (decision 95).
@@ -2214,9 +2215,15 @@ export function buildProgram(): Command {
           });
         } catch (error) {
           if (error instanceof GateInterruptedError) throw error;
-          // Refusals here are expected outcomes with operator instructions in the
-          // message (held lock, adoptable-PR checks) — a stack trace buries them.
-          return refuseScrubbed(error);
+          // The gate ran whole but unprotected: what it did is printed, then
+          // why that cannot be trusted alone, and the run fails (decision 88).
+          if (!(error instanceof MergeLockLostError)) {
+            // Refusals here are expected outcomes with operator instructions in the
+            // message (held lock, adoptable-PR checks) — a stack trace buries them.
+            return refuseScrubbed(error);
+          }
+          outcome = error.result as MergeOutcome;
+          lockLost = error;
         }
         printGateReport(outcome.report);
         switch (outcome.status) {
@@ -2288,6 +2295,7 @@ export function buildProgram(): Command {
             );
             break;
         }
+        if (lockLost !== undefined) refuseScrubbed(lockLost);
         if (outcome.status !== 'merged') process.exitCode = 1;
       },
     );
@@ -2308,6 +2316,7 @@ export function buildProgram(): Command {
       }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
+      let lockLost: MergeLockLostError | undefined;
       try {
         outcome = await landSession(db, {
           repoPath,
@@ -2319,8 +2328,14 @@ export function buildProgram(): Command {
         });
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
-        return refuseScrubbed(error);
+        // Landed and steered, and a re-run refuses it, but unprotected:
+        // reported as landed, then failed on the lost lock (decision 88).
+        if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+        outcome = error.result as LandOutcome;
+        lockLost = error;
       }
+      // Each peer the land could not steer was named on stderr before its
+      // audit started, so a failed audit cannot lose them (decision 99).
       const target = sanitizeReason(outcome.target);
       console.log(
         `Landed ${sanitizeReason(session)}: ${outcome.prUrl} merged as ${outcome.mergeCommit}; ` +
@@ -2342,6 +2357,7 @@ export function buildProgram(): Command {
       }
       if (outcome.audit) printAuditOutcome(db, outcome.audit, repoPath);
       else console.log('Audit skipped: run `pup audit` once after the last land.');
+      if (lockLost !== undefined) refuseScrubbed(lockLost);
     });
   program
     .command('fix <session>')

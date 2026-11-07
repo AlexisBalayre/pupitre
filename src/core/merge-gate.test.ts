@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -125,6 +126,7 @@ import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.erro
 import {
   countChangedLines,
   firstOwnSubject,
+  MergeLockLostError,
   pullRequestText,
   runMergeGate as runGate,
   waitForLoad,
@@ -141,6 +143,7 @@ import {
 } from './session.repository.js';
 import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type { MergeOutcome } from './types/merge-gate.types.js';
 import type { TaskId } from './types/profile.types.js';
 
 describe('runMergeGate', { timeout: 20_000 }, () => {
@@ -563,6 +566,33 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     await expect(merge()).rejects.toThrow(MergeLockHeldError);
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  // A session moving the lock away mid-gate lets another run in: the merge
+  // happened, so the error carries the whole outcome `pup merge` prints
+  // before it fails (decision 88).
+  it('fails a gate whose lock was moved away while it ran, carrying its merged outcome', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    const movingTheLock: Adapter = {
+      ...passingAdapter,
+      duplication: () => {
+        renameSync(lock, `${lock}.moved`);
+        return { duplicatedLines: 0, blocks: [] };
+      },
+    };
+
+    const error = await merge(movingTheLock).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    );
+
+    expect(error).toBeInstanceOf(MergeLockLostError);
+    const outcome = (error as MergeLockLostError<MergeOutcome>).result;
+    expect(outcome.status).toBe('merged');
+    expect(outcome.report.passed).toBe(true);
+    expect(sh(repo, 'git', 'log', '--oneline', 'main')).toContain('edit src/feature.ts');
   });
 
   it('refuses a branch that introduces a new unused export', async () => {
@@ -1918,8 +1948,8 @@ describe('withMergeLock', () => {
       });
     };
 
-    it('leaves the link and what it points at on release, and names it', async () => {
-      await withMergeLock(repo, swap);
+    it('leaves the link and what it points at on release, and fails on the lost lock', async () => {
+      await expect(withMergeLock(repo, swap)).rejects.toThrow(MergeLockLostError);
 
       expect(readFileSync(join(elsewhere, 'pid'), 'utf8')).toBe('123\n');
       expect(errors.mock.calls.flat().join('\n')).toMatch(
@@ -1968,6 +1998,90 @@ describe('withMergeLock', () => {
     expect(errors.mock.calls.flat().join('\n')).toContain(
       `Could not remove ${join(repo, '.git', aside as string)}:`,
     );
+  });
+
+  // What ran under the lock is done whatever the release does: a land's event
+  // already refuses a re-run, so its outcome must reach the caller. A lock moved
+  // away meant another run could take a fresh one meanwhile, so that is no
+  // clean success (decision 88).
+  describe('a release that fails', () => {
+    let repo: string;
+    let lock: string;
+    let errors: ReturnType<typeof vi.spyOn>;
+    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+    let before: ReturnType<typeof process.listeners>[];
+    beforeEach(() => {
+      repo = lockedRepo();
+      lock = join(repo, '.git', 'pup-merge.lock');
+      errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      before = signals.map((signal) => process.listeners(signal));
+    });
+    afterEach(() => {
+      errors.mockRestore();
+      expect(signals.map((signal) => process.listeners(signal))).toEqual(before);
+    });
+
+    it('fails on a lock moved away under it, carrying what the section returned', async () => {
+      const locked = withMergeLock(repo, () => {
+        renameSync(lock, `${lock}.moved`);
+        return 'landed';
+      });
+
+      await expect(locked).rejects.toThrow(MergeLockLostError);
+      await expect(locked).rejects.toMatchObject({ result: 'landed' });
+      await expect(locked).rejects.toThrow(/was gone or replaced when this run released it/);
+    });
+
+    it("keeps the section's own error on a lock moved away, naming the lost lock beside it", async () => {
+      await expect(
+        withMergeLock(repo, () => {
+          renameSync(lock, `${lock}.moved`);
+          throw new Error('audit failed');
+        }),
+      ).rejects.toThrow('audit failed');
+
+      expect(errors.mock.calls.flat()).toContainEqual(
+        expect.stringMatching(/pup-merge\.lock was gone or replaced when this run released it/),
+      );
+    });
+
+    // A session that owns `.git` can move the lock aside, let another run take
+    // a fresh one, then make the release's rename fail with something other
+    // than ENOENT: still a lost lock, not a warning (decision 88).
+    it('fails on a lock replaced under it whose release meets another error', async () => {
+      const git = join(repo, '.git');
+      onTestFinished(() => chmodSync(git, 0o755));
+
+      const locked = withMergeLock(repo, () => {
+        renameSync(lock, `${lock}.moved`);
+        mkdirSync(lock);
+        writeFileSync(join(lock, 'pid'), '123\n');
+        chmodSync(git, 0o555);
+        return 'merged';
+      });
+
+      await expect(locked).rejects.toThrow(MergeLockLostError);
+      expect(errors.mock.calls.flat().join('\n')).not.toContain('Could not release');
+      expect(readFileSync(join(lock, 'pid'), 'utf8')).toBe('123\n');
+    });
+
+    it('returns the result of a lock it still holds but cannot move, and says so', async () => {
+      const git = join(repo, '.git');
+      onTestFinished(() => chmodSync(git, 0o755));
+
+      const result = await withMergeLock(repo, () => {
+        chmodSync(git, 0o555);
+        return 'merged';
+      });
+
+      expect(result).toBe('merged');
+      expect(errors.mock.calls.flat()).toContainEqual(
+        expect.stringMatching(
+          /^Could not release .*pup-merge\.lock: .*EACCES.*A later run reclaims it/,
+        ),
+      );
+      expect(readFileSync(join(lock, 'pid'), 'utf8')).toBe(`${process.pid}\n`);
+    });
   });
 
   describe('waiting for a live holder (decision 88)', () => {

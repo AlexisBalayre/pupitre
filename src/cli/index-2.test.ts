@@ -89,7 +89,10 @@ vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
   gitDiffPaths: vi.fn(() => []),
   gitDiffNumstat: vi.fn(() => []),
 }));
-vi.mock('../core/merge-gate.service.js', () => ({
+vi.mock('../core/merge-gate.service.js', async (importOriginal) => ({
+  // The real class, which the commands tell apart from every other refusal.
+  MergeLockLostError: (await importOriginal<typeof import('../core/merge-gate.service.js')>())
+    .MergeLockLostError,
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
   // are rows in a store and not real branches, so there is nothing to count.
@@ -164,6 +167,7 @@ import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { landSession } from '../core/land.service.js';
+import { MergeLockLostError } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import {
@@ -1752,6 +1756,46 @@ describe('CLI commands', () => {
       expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
       expect(process.exitCode).toBe(1);
       expect(landSession).not.toHaveBeenCalled();
+    });
+
+    // The land named each peer it could not steer before its audit started; the
+    // command adds no second line for them and exits as the audit says (decision 99).
+    it('exits 0 with its audit outcome when a peer went unsteered', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.mocked(landSession).mockResolvedValue({
+        ...landedOutcome(),
+        unsteered: [{ sessionId: 's2', reason: 'tmux: server exited' }],
+      });
+
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
+
+      expect(logs).toContain('No stored baseline yet — captured one now, like `pup init`.');
+      expect(logs).toContain(`Project p (${repo})`);
+      expect(errors).toEqual([]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    // Landed and steered, and a re-run refuses it, but another run may have run
+    // alongside: reported as landed, then failed on the lost lock (decision 88).
+    it('reports a land made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', landedOutcome()),
+      );
+
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        `Landed s1: ${PR} merged as ${'a'.repeat(40)}; main fast-forwarded to ${'a'.repeat(40)}.`,
+      );
+      expect(logs).toContain('No stored baseline yet — captured one now, like `pup init`.');
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     it('prints a refusal on one line with its control characters gone', async () => {
