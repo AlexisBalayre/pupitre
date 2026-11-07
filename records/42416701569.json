@@ -1,0 +1,191 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T21:41:06.006Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42416701569",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42416701569",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ee7d1d7674220a7de959ca8ea7ed6a1d23d7037f",
+  "source": "pr",
+  "pr_number": 256,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "54-92",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Threads get a round from the order of the distinct commits they were opened on. Minors get a round from the order of bot reviews. Every bot review that opens no thread, and every re-review of the same head, pushes the two numberings apart. So one row mixes different rounds, and threads get the wrong round.",
+      "body": "**Each row's two halves are counted against different rounds.**\n\nThreads get their round from `roundsOf`, which orders a PR's distinct `originalCommit`s by first appearance:\n```ts\nconst order = [...firstSeen.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([c]) => c);\nfor (const t of list) rounds.set(t, order.indexOf(t.commit));\n```\nMinors get theirs from a per-PR count of bot reviews:\n```ts\nconst i = seenPerPr.get(rv.pr) ?? 0;\nseenPerPr.set(rv.pr, i + 1);\nrow(roundLabel(i)).minorsPosted += rv.minors;\n```\n`post-review.script.ts` posts a review on every round, including rounds that open no thread. It says so itself: \"a clean review is the commonest round\". These rounds advance the review counter but not the commit counter:\n- clean rounds and minors-only rounds\n- no-reviewer rounds\n- no-verdict and failed rounds\n- rounds whose importants were all unanchored\n\nThe opposite also happens: an `@claude review` re-run on an unchanged head opens threads on the same commit, so two review rounds count as one thread round.\n\n**Example:** round 1 is clean and posts 3 minors; round 2 posts 2 importants. Row `1` then shows round 2's importants next to round 1's minors, and row `2` shows 0 importants. The per-round actionable rate that this PR is meant to baseline therefore mixes rounds. The only `summarize` test passes because every review in its fixture opens threads on its own commit.\n\n**Suggested direction:** number rounds once, from the bot's summary reviews in `submitted_at` order. Then assign each thread to the first summary review submitted at or after the thread's `createdAt`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/ee7d1d7674220a7de959ca8ea7ed6a1d23d7037f/tools/review/src/review-response.utils.ts#L54-L92",
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "76-81",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Important findings the poster puts in the review body (unanchored ones, and anchors rejected by the 422 fallback) are never counted, so the \"Important posted\" column counts threads only. Rename it, or parse the body's \"N important finding(s) with no line\" count into its own untracked column.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "61, 80",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Threads are kept when `__typename === \"Bot\"` and reviews when `user.type === \"Bot\"`, so any bot (e.g. Dependabot) counts as the review bot. Each extra review also shifts the per-PR minors index. Match the poster's login (`github-actions[bot]`) instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "77-79",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`out.replaceAll(\"][\", \",\")` joins the `--paginate` pages as strings, so it also rewrites any `][` inside a review body. `gh api --paginate --slurp` returns valid JSON instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "39-43",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`if (t.isOutdated) return \"fixed\"` takes priority over resolved and answered. GitHub also marks a thread outdated when a nearby edit or a rebase shifts its hunk, so a dismissed thread can count as fixed and inflate the actionable rate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "46-50",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--since` only filters inside the `--limit 30` that `gh pr list` returns, so `--since 2026-01-01` silently stops at 30 PRs. `gh pr list` also sorts by creation date, not merge date.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "41-44",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`flag()` only matches the bare `--last <n>` form, so `--last=10`, or a trailing `--last` with no value, silently falls back to 30.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "45-48",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`minorsIn` copies the poster's `<summary>N minor issue(s)` label with a regex and no shared constant or parser. If the label changes in `review-body.utils.ts`, the Minors column drops to 0 with no error, and the hand-written test fixture can't catch it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "37-39",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`gh()` is the fourth near-identical `execFileSync(\"gh\", …)` helper in tools/review (after post-review, review-preflight and review-eval), which is past the third-use bar for a shared util.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "84-95",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`totals` and the `row()` initialiser each build the same zero `RoundRow` literal. `totals` is exported but its only caller is `renderTable`, so the row list is split across `summarize` and `renderTable`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "5-7",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The header and the README row say the script reads only through `gh api`, but it also runs `gh pr list` and `gh repo view`. Say \"read-only, through `gh`\" instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "14",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `humanReplies` doc says \"Replies from anyone but a bot\", but the script counts only `author.__typename === \"User\"` (Organization and Mannequin authors are excluded). Say \"Replies from users\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5840598000000004,
+  "duration_ms": 208772,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 9586,
+    "cache_read": 235296,
+    "cache_creation": 40112,
+    "total": 285006
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 27192,
+      "cache_read": 601158,
+      "cache_creation": 122102,
+      "cost_usd": 1.3951576000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 5434,
+      "cache_read": 114212,
+      "cache_creation": 49242,
+      "cost_usd": 0.1889022
+    }
+  ],
+  "permission_denials": []
+}
