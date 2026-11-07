@@ -106,14 +106,24 @@ describe('scripts/pre-commit', () => {
     );
   });
 
-  it('runs lint and typecheck but no vitest when only docs are staged', () => {
+  it('runs lint but no typecheck and no vitest when only docs are staged', () => {
     const repo = makeRepo();
     write(repo, 'docs/notes.md', '# notes\n');
 
     const { status, calls } = runHook(repo, ['docs/notes.md']);
 
     expect(status).toBe(0);
-    expect(calls).toEqual(['exec biome check ./docs/notes.md', 'typecheck']);
+    expect(calls).toEqual(['exec biome check ./docs/notes.md']);
+  });
+
+  it('runs the typecheck when the staged change only deletes a TypeScript file', () => {
+    const repo = makeRepo();
+    git(repo, 'rm', '-q', 'src/sum.ts');
+
+    const { status, calls } = runHook(repo, []);
+
+    expect(status).toBe(0);
+    expect(calls).toContain('typecheck');
   });
 
   it('blocks the commit when a related test fails', () => {

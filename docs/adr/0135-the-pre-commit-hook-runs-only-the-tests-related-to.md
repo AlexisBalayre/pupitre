@@ -37,3 +37,7 @@
     file, and never `pnpm test`. Staged source and test files are all passed to `vitest
     related`, and a staged doc is not. A docs-only commit runs lint and typecheck and no
     vitest. A failing related run blocks the commit, and an empty `TEST_CMD` runs no tests.
+    *Amendment (2026-11-07).* A commit that stages no TypeScript and no `package.json` or
+    `tsconfig*.json` also skips typecheck: a doc, a workflow or a skill cannot break a type.
+    `vitest.config.ts` caps workers at half the cores, at least two, so concurrent suites stop
+    swamping the machine and timing out the tests that spawn real git.
