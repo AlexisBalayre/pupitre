@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, vi } from 'vitest';
 import { SteerNotDeliveredError } from '../../claude/session-runtime.service.js';
 import { resolveProject } from '../../cli/project.utils.js';
+import { runGit } from '../../core/git-diff.client.js';
 import { insertLedgerEntry } from '../../core/ledger.repository.js';
 import { projectId, projectPaths } from '../../core/paths.utils.js';
 import { endSandboxRun } from '../../core/sandbox.utils.js';
@@ -34,7 +34,7 @@ export const GIT_ENV: NodeJS.ProcessEnv = {
 /** A repo with no adapter markers (no package.json, pyproject.toml, ...). */
 export function initRepo(): string {
   const repo = tempDir('pup-cli-');
-  execFileSync('git', ['init', '-b', 'main'], { cwd: repo, env: GIT_ENV, encoding: 'utf8' });
+  runGit(repo, ['init', '-b', 'main']);
   return repo;
 }
 
