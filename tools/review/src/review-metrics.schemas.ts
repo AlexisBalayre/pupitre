@@ -48,6 +48,9 @@ const reviewModeSchema = z.enum(["full", "incremental"]);
 const priorImportantSchema = z.object({
   file: z.string().nullable().describe("Repo-relative file path from the prior record."),
   line: z.string().nullable().describe("Line number or range from the prior record."),
+  description: z
+    .string()
+    .describe("The prior finding's one-line description, copied from the prior record, so an unresolved one can be named."),
   status: z.enum(["resolved", "unresolved"]).describe("Whether the current head resolves the prior finding."),
 });
 
