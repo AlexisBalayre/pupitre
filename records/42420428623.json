@@ -1,0 +1,347 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:29:37.906Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42420428623",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42420428623",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3d9c6c115696962c4b52c59d135bbd400795606e",
+  "source": "pr",
+  "pr_number": 262,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "159-167",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Repeated reads are grouped by the display path, which `repoRelative` cuts to the basename for any file outside the repo. Different files that share a basename therefore count as one file read again and again.",
+      "body": "**Different outside files with the same basename are counted as one repeated read**\n\n`repeatedReads` groups a session's reads by `repoRelative(path, repoPath)`:\n\n```ts\nfor (const { path, range, tokens } of read.reads) {\n  const shown = repoRelative(path, repoPath);\n  const key = `${shown}\\u0000${range}`;\n```\n\nSince 3d9c6c1, `repoRelative` cuts every path outside the repo (absolute, `~/…`, or `../…`) to its basename. Say one session reads `~/.claude/skills/a/SKILL.md`, `~/.claude/skills/b/SKILL.md` and `~/.claude/skills/c/SKILL.md` with no offset or limit. All three land on the key `SKILL.md\\0:`. The group reaches `REPEATED_READS`, a \"files read repeatedly\" finding is raised, and the second and third files' tokens count as `rereadTokens`, even though no file was read twice. Three sibling repos' `package.json` hit the same case. Inside the repo, `/repo/src/a.ts` and `/repo/.worktrees/w1/src/a.ts` also merge as `src/a.ts`.\n\nShowing the basename is right (the ADR 0150 privacy contract), but the grouping key should be the real path. The cross-session `byPath` merge by display path can stay as it is.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3d9c6c115696962c4b52c59d135bbd400795606e/src/core/retro-signals.service.ts#L159-L167",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "17-20",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still unresolved from the earlier round: `retroWindowStart` checks the day count but not the date it builds. A `--since` above ~1e8 days yields an Invalid Date, which is truthy, so it gets past the CLI's `if (!since)` refusal, scans everything (`sinceMs = NaN`), then `buildRetroReport`'s `since.toISOString()` throws an uncaught RangeError. Also reject when `Number.isNaN(start.getTime())`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "41",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Still unresolved: `now.toISOString().slice(0, 10)` names the report by its UTC day, so away from UTC one local day's run can overwrite the previous local day's `retro-<date>.*`, or one local day can write two files. That goes against the JSDoc's \"a second run on a day replaces that day's report\". The `# Retro since` header (retro-signals.service.ts:323) is also a UTC day.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "106-118",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "MCP tool names (`mcp__<server>__<tool>`) pass through `label()` unchanged. The operator-chosen server name, often an employer or internal system such as `mcp__acme-jira__getIssue`, therefore appears in the carry rows, evidence and fix text of both outputs. ADR 0150 allows \"tool names\", so either reduce the server part or say in the ADR that MCP server names are kept.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "106-118, 159-175, 199",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Carried tool output is multiplied by every later call, even after a `compact_boundary` has dropped it from context, and a re-read after a compaction counts as waste. So sessions that compact get inflated carry and re-read findings. The formula predates the PR (`pup usage`), but the new `why` text \"every later request of the session reads this output again from the cache\" is wrong for those sessions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "242-247",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"files read repeatedly\" finding sums `rereadTokens` over the top `TOP_ROWS` paths only, while `reads.files` counts every repeated (session, file, range) group. Its evidence \"N file reads of the same file 3+ times\" also labels that group count as reads, so with more than 10 paths the finding ranks below its true size and the copy names the wrong unit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "168-175",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Read groups are now keyed per offset/limit range, so a session that re-reads two chunks of one file 3+ times each adds 2 to that file's `sessions` and to `filesReadRepeatedly`. `row.sessions += 1` runs per (path, range) group, not per session.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.test.ts",
+      "line": "31, 141-176",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still unresolved: the end-to-end privacy test can't catch an outside-path leak. The outside file is read only once, so it never reaches `repeatedReads`, and `EMPLOYER` contains a space that `label()` turns into `?`, so `not.toContain(EMPLOYER)` would pass even if the full path printed. Only the `repoRelative` unit test covers this.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "87, 112",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two unreachable fallbacks (general.md §Altitude: no unreachable defensiveness). `sizeBucket: c.sizeBucket ?? ''` can't take `''` because `carryRows` always passes `bucketOf`. `SIZE_BUCKETS.find(...)?.label ?? '20k+'` can't miss because the last bucket's `max` is Infinity, and the literal duplicates that bucket's label.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "61-62, 445-465",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The optional `bucketOf` param and optional `ToolCarry.sizeBucket` exist only for retro. They fork the shared loop (conditional key and spread) and force the `?? ''` fill in the caller. A required key function that returns the label would keep `ToolCarry` non-optional and the loop single-path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "120-150",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still present: `classRows` keeps a parallel per-class `transcripts` map, copying the array on every push, next to `buckets`, then re-filters every bucket once per class. Grouping buckets by class once would remove the second structure.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "104, 137",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Local `sum` and the inline cache-hit-rate expression duplicate usage-report.service.ts's private `total` and `cacheHitRate`. If the hit-rate definition changes, `pup usage` and `pup retro` will disagree. Export them next to `contextOf`/`percentile` instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "106, 120, 153",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`carryRows`, `classRows` and `repeatedReads` are exported but only called from `buildRetroReport` in the same file, so drop the `export`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "14-17, 111, 290, 310",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The header says `serializeRetro` is \"the one place the output is composed\", yet `label()` runs at build time (`carryRows`, `repoRelative`), and that pass is the only one `formatRetro` relies on. `serializeRetro`'s second `label` on the same fields does nothing, so a reader trusting the header could remove the pass that matters.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "231-247, 269-300, 315",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`Transcript` now carries retro-only state (`readPaths`, `reads`, `compactions`) that every `pup usage` scan fills and never reads, and `readPaths` repeats the `toolNames` lookup on the same `tool_use_id`. One map keyed by id (tool name plus an optional read target) would remove the second lookup.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2620, 2629-2635",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup retro --since` is a day count parsed in core (`retroWindowStart`), while sibling `pup usage --since` is still a date parsed inline in the CLI. The two commands read the same flag differently, with two parsers in two layers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "136-181",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Exported interfaces `CarryRow`, `ClassRow`, `RepeatedRead`, `RetroFinding` and `RetroReport` are declared inline in a `*.service.ts` (general.md §Type separation says never). They belong in `src/core/types/retro.types.ts`, though the sibling usage-report service has the same drift.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "125-134",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The thresholds `SIZE_BUCKETS`, `REPEATED_READS`, `TOP_ROWS` and `CACHE_HIT_TARGET` sit in the service file with no JSDoc saying why each value is what it is. general.md §No hardcoded values puts them in the area's `*.constants.ts` with that line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "136, 144, 258",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ClassRow.class`'s size-bucket labels and `RetroFinding.signal` are closed value sets carried as bare strings. general.md §Code layout asks for string enums. This is a weak case: nothing compares `signal` today.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0150-pup-retro-reads-the-claude-code-traces-locally-and.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR says the files are written owner-only \"(directory 0700, files 0600)\", but `writeRetro` now chmods only a folder it created, so an existing `--out` folder keeps its mode. Qualify it, for example \"a folder created here is 0700\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "26-30",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still present: the `writeRetro` JSDoc sentence \"The Markdown file is for reading and the JSON one for the next tool that reads it, so a retro always leaves both\" restates the code and names a consumer that doesn't exist. Keep only the owner-only WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "61",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `ToolCarry.sizeBucket` doc \"Set when the carry is split by result size, as `pup retro` does\" ties the usage module's type to one consumer. \"Set when the carry is split by result size\" says all of it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2639-2643",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`writeRetro` runs before the report is printed, so a write failure (`--out` pointing at a file, or a folder the user can't write to) throws uncaught and the user loses the console output too, which needed no write.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "94",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`repoRelative` reduces a non-absolute path to its basename only for leading `..` or `~/`. So `~alice/Acme/notes.md`, `$HOME/Acme/notes.md` and `file:///home/…` keep their directory names after `label()`. This is unlikely, since Read wants absolute paths, but widening the prefix test (e.g. `~`, `$`, `scheme:`) closes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "224-231",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The cache hit rate includes each session's first request, which can't hit the cache. Classes made of short sessions (Subagent, Utility) therefore fall below 0.9 by construction and get a \"prefix that changes between requests\" fix even when nothing in the prefix changes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "194-253",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Findings are ranked by token counts in different units: carry and low-hit are token×request sums mostly billed at the 0.1x read price, while re-caches are one-off 1.25x-2x writes. Low-hit also already includes re-cache and post-compaction writes, so \"biggest first\" doesn't follow cost and the same tokens can appear in two findings.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "455-463",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Carried tool output keeps being multiplied by every later call even after a compaction has dropped it from the context. The repeated-read check also counts a re-read made after a compaction as waste. Retro detects compactions but neither signal uses them.",
+      "refutation": "The mechanism is real but doesn't block the merge. The carry formula `entry.carriedTokens += result.tokens * (read.calls.size - result.callsBefore)` is an unchanged line from `pup usage`, which already labels it an estimate. ADR 0150 doesn't define carry or re-reads as net of compactions. The effect is a ranking bias in sessions that compact, not a malfunction. An earlier round rated it minor, and the code hasn't changed since. It stays in the record as a nit (including the new `why` text at L199)."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6385265000000007,
+  "duration_ms": 289409,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 18629,
+    "cache_read": 283202,
+    "cache_creation": 64727,
+    "total": 366570
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 132,
+      "output": 71743,
+      "cache_read": 1158385,
+      "cache_creation": 308492,
+      "cost_usd": 3.403706
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 7128,
+      "cache_read": 280120,
+      "cache_creation": 54189,
+      "cost_usd": 0.2348205
+    }
+  ],
+  "permission_denials": []
+}
