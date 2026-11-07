@@ -1,7 +1,6 @@
 # 0026. `pup merge --pr` = same gate, pull request instead of local merge (2026-07-25)
 
 - Status: accepted
-- Amended by: [0136](0136-the-pr-title-is-a-commit-subject-a-squash.md)
 
 26. **`pup merge --pr` = same gate, pull request instead of local merge (2026-07-25).**
     Dogfooding pupitre on itself showed the collision: `pup merge` ff-merges local main,
