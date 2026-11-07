@@ -1,0 +1,151 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:30:24.523Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42420461566",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42420461566",
+  "actor": "AlexisBalayre",
+  "commit_sha": "096c6ee1b677b2010ca291f93a572678285718cd",
+  "source": "pr",
+  "pr_number": 265,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2645-2652",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "SUBJECT_LOG_PINS adds `-c core.commitGraph=false`, which runGit's GIT_SAFE_CONFIG already sets (git-diff.client.ts:409). Its JSDoc says runGit's own pins only turn replace refs off, which is wrong. The new test asserts the duplicate's argv position, so it passes whether or not the constant exists.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2935-2936",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "scrubTitleText strips ANSI escapes before invisible characters. So `\\u001b​[31m` slips past ANSI_ESCAPE, and once the zero-width space is dropped and ESC is spaced, the title shows ` [31m…`. That contradicts the 'dropped whole' comment. Drop INVISIBLE_FORMAT_CHARS first. The effect is cosmetic: no live escape survives.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2914-2916",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment and the ADR say 'the Hangul fillers' are dropped, but INVISIBLE_FORMAT_CHARS misses U+1160 and U+FFA0. It also misses other blank format characters: U+206A-206F, U+FFF9-FFFB, U+17B4/17B5 and U+1D173-1D17A. Add them, or narrow the documented list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2919-2920",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new ANSI_ESCAPE nearly duplicates the existing CSI_ESCAPE at line 144 of the same file; it only adds the 8-bit `\\u009b` introducer. Widening CSI_ESCAPE and reusing it would leave one regex.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1901-1902",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Both call sites (here and regate.service.ts:202-203) run commitSubjectsBetween and then firstOwnSubject: two `git log` calls over the same range. A single helper returning `{ commitSubjects, ownSubject }` would make it one log call and drop the extra positional parameter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0137-the-pr-title-is-a-commit-subject-a-squash.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR says the closing keyword is caught 'in any tense', but CLOSING_REFERENCE matches only GitHub's nine forms (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved). List those nine instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0137-the-pr-title-is-a-commit-subject-a-squash.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two ADR lines run past the roughly 100-character hard wrap the rest of the file uses: the `sanitizeReason spaces out C0 and C1 controls…` sentence and the `GH-n or an issue or pull URL)` line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2946-2950",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The CLOSING_REFERENCE fallback only cleans the title. Under GitHub's default squash message, a one-commit PR lands its commit's own subject and body, and a multi-commit PR lists every commit message in the squash body. So a session's `closes #12` still reaches main. ADR 0137 claims the guard prevents this: either narrow the claim to the title or record the commit-message route as an accepted exposure.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.1840734,
+  "duration_ms": 320109,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 8862,
+    "cache_read": 199895,
+    "cache_creation": 44943,
+    "total": 253710
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 74,
+      "output": 44056,
+      "cache_read": 1252253,
+      "cache_creation": 133534,
+      "cost_usd": 1.9343656000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 6529,
+      "cache_read": 248813,
+      "cache_creation": 63789,
+      "cost_usd": 0.24970779999999998
+    }
+  ],
+  "permission_denials": []
+}
