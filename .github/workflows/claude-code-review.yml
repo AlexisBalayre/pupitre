@@ -443,6 +443,7 @@ jobs:
           REVIEW_STEP_OUTCOME: ${{ steps.claude-review.outcome }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_COMMIT_SHA: ${{ steps.preflight.outputs.sha }}
+          REVIEW_BASE_REF: ${{ steps.preflight.outputs.base_ref }}
           REVIEW_POSTED_INPUT: ${{ runner.temp }}/posted.json
           REVIEW_COMMENT: ${{ github.event.comment.body }}
           REVIEW_METRICS_OUTPUT: ${{ runner.temp }}/review-metrics.json

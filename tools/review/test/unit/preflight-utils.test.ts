@@ -17,6 +17,7 @@ function record(overrides: Partial<PriorRecord> = {}): PriorRecord {
   return {
     path: "records/1.json",
     commit_sha: "aaa",
+    base_ref: "main",
     timestamp: "2026-08-01T00:00:00.000Z",
     is_error: false,
     partial: false,
@@ -72,6 +73,7 @@ describe("newestCleanRecord", () => {
 describe("decideMode", () => {
   const base = {
     headSha: "bbb",
+    baseRef: "main",
     trigger: "synchronize",
     forceFull: false,
     isAncestor: true,
@@ -96,6 +98,24 @@ describe("decideMode", () => {
 
   it("resolves incremental from the prior head on a clean fast-forward", () => {
     expect(decideMode({ ...base, prior: record() })).toEqual({
+      kind: "incremental",
+      fromSha: "aaa",
+      priorPath: "records/1.json",
+    });
+  });
+
+  it("falls back to full when the PR was retargeted since the prior review", () => {
+    expect(decideMode({ ...base, prior: record({ base_ref: "feature/x" }) })).toEqual({ kind: "full" });
+  });
+
+  it("reviews an already-reviewed head in full when its base changed", () => {
+    expect(decideMode({ ...base, prior: record({ commit_sha: "bbb", base_ref: "feature/x" }) })).toEqual({
+      kind: "full",
+    });
+  });
+
+  it("does not read a record from before schema 7 as a base change", () => {
+    expect(decideMode({ ...base, prior: record({ base_ref: null }) })).toEqual({
       kind: "incremental",
       fromSha: "aaa",
       priorPath: "records/1.json",

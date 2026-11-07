@@ -1,9 +1,12 @@
 # Marks the head's `claude-review` commit status pending when a PR is retargeted, so a verdict
-# earned against the old base cannot satisfy the gate. The next review (a push, or the owner's
-# `@claude review`) replaces the status. A title or body edit does not match `changes.base`.
+# earned against the old base cannot satisfy the gate. The preflight reviews in full when the
+# prior record's base differs, so the next review (a push, or the owner's `@claude review`) reads
+# the new diff and replaces the status. A title or body edit does not match `changes.base`.
 #
-# pull_request_target so fork PRs are covered too. It is safe because nothing here checks out or
-# runs the PR's code: it only calls the statuses API with values from the event payload.
+# pull_request_target because it needs a write token. Only the owner's same-repo PRs count: reviews
+# run for nobody else, and a status belongs to the SHA, so a fork carrying the owner's head commit
+# must not be able to park it as not reviewed. Nothing here checks out or runs the PR's code: it
+# only calls the statuses API with values from the event payload.
 name: Claude Review base change
 
 on:
@@ -16,7 +19,10 @@ permissions:
 
 jobs:
   mark-pending:
-    if: github.event.changes.base
+    if: >-
+      github.event.changes.base
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login == github.repository_owner
     # Same group as the review, so a retarget never races a review run that is posting its verdict.
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}

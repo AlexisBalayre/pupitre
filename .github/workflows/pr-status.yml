@@ -133,7 +133,7 @@ jobs:
               const running = combined.statuses.some(
                 (s) =>
                   s.state === "pending" &&
-                  (!s.description?.startsWith("Not reviewed") || s.description.includes("base branch changed")),
+                  (!s.description?.startsWith("Not reviewed") || s.description.startsWith("Not reviewed: base branch changed")),
               );
               if (runs.some((c) => c.status !== "completed") || running) {
                 return "pr/ci-pending";
