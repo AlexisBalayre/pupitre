@@ -11,7 +11,7 @@ import { listSessions } from './session.repository.js';
 // than recalled. It writes nothing: the transcripts and the sessions table are
 // only read.
 
-enum UsageClass {
+export enum UsageClass {
   Worker = 'worker',
   Conductor = 'conductor',
   Console = 'console',
@@ -29,7 +29,7 @@ const MODEL_PRICES: Record<string, { input: number; output: number }> = {
 /** What a cached token costs, as a multiple of the model's uncached input price. */
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_5M_MULTIPLIER = 1.25;
-const CACHE_WRITE_1H_MULTIPLIER = 2;
+export const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /** A request after a gap longer than this finds its cache expired (the 1h tier). */
 const IDLE_RECACHE_MS = 60 * 60 * 1000;
@@ -71,13 +71,13 @@ interface UsageReport {
   unpricedModels: string[];
 }
 
-interface UsageOptions {
+export interface UsageOptions {
   since: Date;
   /** Every Claude config dir a window of the project may have written to. */
   claudeDirs: string[];
 }
 
-interface Call {
+export interface Call {
   at: number;
   model: string;
   effort: string;
@@ -103,6 +103,7 @@ interface Bucket {
 interface TranscriptEntry {
   type?: string;
   timestamp?: unknown;
+  subtype?: unknown;
   requestId?: string;
   effort?: unknown;
   entrypoint?: string;
@@ -124,16 +125,17 @@ interface ContentBlock {
   type?: string;
   id?: string;
   name?: unknown;
+  input?: unknown;
   tool_use_id?: string;
   content?: unknown;
   text?: unknown;
 }
 
-function contextOf(call: Call): number {
+export function contextOf(call: Call): number {
   return call.input + call.read + call.write5m + call.write1h;
 }
 
-function priceOf(model: string): { input: number; output: number } | undefined {
+export function priceOf(model: string): { input: number; output: number } | undefined {
   return Object.entries(MODEL_PRICES).find(([prefix]) => model.startsWith(prefix))?.[1];
 }
 
@@ -162,7 +164,7 @@ function sum(parts: CostParts): number {
 }
 
 /** Nearest-rank percentile of an unsorted list; 0 for an empty one. */
-function percentile(values: number[], p: number): number {
+export function percentile(values: number[], p: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)] as number;
@@ -217,12 +219,21 @@ interface ToolResult {
   callsBefore: number;
 }
 
-interface Transcript {
+export interface FileRead {
+  path: string;
+  tokens: number;
+}
+
+export interface Transcript {
   calls: Map<string, Call>;
   /** The last call before the window, when the transcript began before it. */
   before: Call | undefined;
   toolNames: Map<string, string>;
   toolResults: ToolResult[];
+  readPaths: Map<string, string>;
+  reads: FileRead[];
+  /** Compactions inside the window. */
+  compactions: number;
   conductor: boolean;
   headless: boolean;
   sawUser: boolean;
@@ -244,10 +255,18 @@ function noteOrigin(state: Transcript, entry: TranscriptEntry): void {
   state.conductor = textOf(entry.message?.content).includes('# Pupitre conductor ');
 }
 
+function readPathOf(input: unknown): string | undefined {
+  const path = (input as { file_path?: unknown } | null)?.file_path;
+  return typeof path === 'string' && path ? path : undefined;
+}
+
 function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): void {
   for (const block of blocksOf(entry.message?.content)) {
-    if (block.type === 'tool_use' && block.id && typeof block.name === 'string')
+    if (block.type === 'tool_use' && block.id && typeof block.name === 'string') {
       state.toolNames.set(block.id, block.name);
+      const path = block.name === 'Read' ? readPathOf(block.input) : undefined;
+      if (path !== undefined) state.readPaths.set(block.id, path);
+    }
   }
   const call = parseCall(entry, at);
   const key = entry.requestId ?? entry.message?.id;
@@ -257,11 +276,14 @@ function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): v
 function noteToolResults(state: Transcript, entry: TranscriptEntry): void {
   for (const block of blocksOf(entry.message?.content)) {
     if (block.type !== 'tool_result') continue;
+    const tokens = Math.ceil(textOf(block.content).length / CHARS_PER_TOKEN);
     state.toolResults.push({
       tool: state.toolNames.get(block.tool_use_id ?? '') ?? 'unknown',
-      tokens: Math.ceil(textOf(block.content).length / CHARS_PER_TOKEN),
+      tokens,
       callsBefore: state.calls.size,
     });
+    const path = state.readPaths.get(block.tool_use_id ?? '');
+    if (path !== undefined) state.reads.push({ path, tokens });
   }
 }
 
@@ -277,6 +299,7 @@ function scanLine(state: Transcript, line: string, sinceMs: number): void {
   if (at < sinceMs) state.before = parseCall(entry, at) ?? state.before;
   else if (entry.type === 'assistant') noteAssistant(state, entry, at);
   else if (entry.type === 'user') noteToolResults(state, entry);
+  else if (entry.type === 'system' && entry.subtype === 'compact_boundary') state.compactions += 1;
 }
 
 /**
@@ -290,6 +313,9 @@ function readTranscript(file: string, sinceMs: number): Transcript {
     before: undefined,
     toolNames: new Map(),
     toolResults: [],
+    readPaths: new Map(),
+    reads: [],
+    compactions: 0,
     conductor: false,
     headless: false,
     sawUser: false,
@@ -379,7 +405,7 @@ function bucketFor(buckets: Map<string, Bucket>, klass: UsageClass, call: Call):
 }
 
 /** Tokens a call wrote again after the cache expired idle, or 0 when it did not. */
-function recachedTokens(call: Call, previous: Call | undefined): number {
+export function recachedTokens(call: Call, previous: Call | undefined): number {
   if (!previous || call.at - previous.at <= IDLE_RECACHE_MS) return 0;
   const written = call.write5m + call.write1h;
   return written > call.read ? written : 0;
@@ -467,15 +493,28 @@ function unpricedModelsOf(buckets: Bucket[]): string[] {
   return [...new Set(models.filter((m) => !priceOf(m)))].sort();
 }
 
-export function buildUsageReport(db: Database, repoPath: string, opts: UsageOptions): UsageReport {
+export interface ScannedTranscript {
+  class: UsageClass;
+  read: Transcript;
+}
+
+/** Every transcript of the project with a call inside the window, read once. */
+export function scanUsage(db: Database, repoPath: string, opts: UsageOptions): ScannedTranscript[] {
   const claudeDirs = [...new Set(opts.claudeDirs)];
   const sinceMs = opts.since.getTime();
-  const buckets = new Map<string, Bucket>();
-  const carry = new Map<string, ToolCarry>();
+  const scanned: ScannedTranscript[] = [];
   for (const source of sourcesOf(db, repoPath, claudeDirs)) {
     const read = readTranscript(source.file, sinceMs);
-    if (read.calls.size === 0) continue;
-    addCalls(buckets, classOf(source, read), read);
+    if (read.calls.size > 0) scanned.push({ class: classOf(source, read), read });
+  }
+  return scanned;
+}
+
+export function buildUsageReport(db: Database, repoPath: string, opts: UsageOptions): UsageReport {
+  const buckets = new Map<string, Bucket>();
+  const carry = new Map<string, ToolCarry>();
+  for (const { class: klass, read } of scanUsage(db, repoPath, opts)) {
+    addCalls(buckets, klass, read);
     addToolCarry(carry, read);
   }
   const all = [...buckets.values()];
