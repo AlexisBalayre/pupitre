@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T10:48:35.565Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42365429096",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42365429096",
+  "actor": "AlexisBalayre",
+  "commit_sha": "92ca985e83fdd689413daf7a1a0b163d035bf0bd",
+  "source": "pr",
+  "pr_number": 235,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed before running: 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied'. This hit even trivial commands (`git rev-parse HEAD`, `git diff --stat b98e363e..HEAD`, `gh pr view 235`), so the sandbox runner can't start a process on this host."
+    },
+    {
+      "component": "orchestrator",
+      "description": "PR #235 was NOT reviewed. Without Bash there was no way to read the PR diff, metadata, intent or comment threads, or to confirm the checkout is the PR head. The local branch is pup/t-mvqja6al and HEAD is commit 92ca985, which moves the src/adapters tests to test/unit/adapters and test/helpers. The reviewer subagents share the same sandbox, so they couldn't have read the diff either. Spawning them would have produced reviews with nothing to ground them, so none were spawned. Treat this round as incomplete, not clean, and re-run once the sandbox can run commands (for example a runner that allows nested user namespaces, or with the Bash sandbox off for this job)."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": true,
+  "incomplete_reason": "Not reviewed: no reviewer was spawned; re-run",
+  "cost_usd": 0.25833059999999997,
+  "duration_ms": 25431,
+  "num_turns": 7,
+  "tokens": {
+    "input": 10,
+    "output": 2054,
+    "cache_read": 165493,
+    "cache_creation": 23014,
+    "total": 190571
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 2054,
+      "cache_read": 165493,
+      "cache_creation": 23014,
+      "cost_usd": 0.25833059999999997
+    }
+  ],
+  "permission_denials": []
+}
