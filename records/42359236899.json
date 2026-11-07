@@ -1,0 +1,87 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T09:20:55.044Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42359236899",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42359236899",
+  "actor": "AlexisBalayre",
+  "commit_sha": "55c4c0fc2c2a08efac7186526f7702533ae872af",
+  "source": "pr",
+  "pr_number": 236,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "1210",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The spawnSync shell at lines 1222-1226 runs seven git calls (hash-object, read-tree, update-index, write-tree, rev-parse, commit-tree, replace), not eight. The eighth is only the `cat-file` assertion helper at line 1230, which doesn't plant the replace. Say seven or drop the count.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied'. As a result, gh pr view/gh pr diff/git diff/git rev-parse could not run. The orchestrator could not read the PR's diff, files list, body, closing issues, or comment threads, and could not run the second freshness assertion (HEAD vs headRefOid)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Without a diff, the orchestrator inferred the change's scope from the git-status snapshot: one commit (55c4c0f, 'Give the replace-ref merge test a timeout its hook runs fit under load') on top of merge base b98e363. It then read the working tree and took the changed lines to be the new comment and the 20_000 timeout at src/core/profile-compiler.test.ts:1208-1234. Because the change looked test-only, it gated out correctness, security, maintainability, and context. It could not check spec sources, so spec did not run. If the PR touches anything else, this review did not cover it."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.42605380000000004,
+  "duration_ms": 51052,
+  "num_turns": 9,
+  "tokens": {
+    "input": 14,
+    "output": 3694,
+    "cache_read": 206605,
+    "cache_creation": 27184,
+    "total": 237497
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 14,
+      "output": 3694,
+      "cache_read": 206605,
+      "cache_creation": 27184,
+      "cost_usd": 0.332729
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2547,
+      "cache_read": 50728,
+      "cache_creation": 25100,
+      "cost_usd": 0.0933248
+    }
+  ],
+  "permission_denials": []
+}
