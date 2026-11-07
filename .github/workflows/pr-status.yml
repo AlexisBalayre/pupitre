@@ -2,8 +2,9 @@
 # to merge. First match wins:
 #   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
 #
-# Recomputed when the PR is opened, reopened, pushed to, marked ready or draft or closed, on a review, when a Claude Code Review or Label PRs run ends,
-# and on a push to main (which can introduce conflicts in other PRs). A closed PR loses its label.
+# Recomputed when the PR is opened, reopened, pushed to, marked ready or draft or closed, on a
+# review, when a Claude Code Review or Label PRs run ends, and on a push to main (which can
+# introduce conflicts in other PRs). A closed PR loses its label.
 # The workflow names under `workflow_run` must match the `name:` of those workflows.
 #
 # pull_request_target and workflow_run run with write access, so nothing here checks out or runs
@@ -30,13 +31,17 @@ permissions:
 jobs:
   pr-status:
     # Per PR, so one PR's event cannot cancel another's pending recompute. The group is on the job
-    # so a run skipped by the `if` below never joins it. Runs without a PR payload (a push to main,
-    # a workflow_run) get their own group: they recompute every open PR and are idempotent.
+    # so a run skipped by the `if` below never joins it. Runs with no linked PR (a push to main, a
+    # run on main) share one group: each recomputes every open PR, so a burst collapses to one
+    # running and one pending run.
     concurrency:
-      group: pr-status-${{ github.event.pull_request.number || github.run_id }}
+      group: pr-status-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'all' }}
     # A fork's review event gets a read-only token and cannot label; its PR is still relabelled by
-    # pull_request_target and by pushes to main.
-    if: github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository
+    # pull_request_target and by pushes to main. A skipped workflow_run did no work (Claude Code
+    # Review fires on every issue comment, and its jobs skip unless the comment asks for a review).
+    if: >-
+      (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Set the pr/* status label
@@ -104,7 +109,7 @@ jobs:
                   owner, repo, ref: pr.head.sha, per_page: 100,
                 })
               ).filter((c) => c.name !== context.job && !contexts.has(c.name));
-              const bad = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+              const bad = new Set(["failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"]);
               // Not combined.state: it is "pending" when a head has no status at all.
               if (
                 runs.some((c) => bad.has(c.conclusion)) ||
@@ -112,7 +117,12 @@ jobs:
               ) {
                 return "pr/ci-failing";
               }
-              if (runs.some((c) => c.status !== "completed") || combined.statuses.some((s) => s.state === "pending")) {
+              // The review preflight leaves a final "Not reviewed" pending status on a comment-only
+              // push: nothing is running, so it does not count as pending.
+              const running = combined.statuses.some(
+                (s) => s.state === "pending" && !s.description?.startsWith("Not reviewed"),
+              );
+              if (runs.some((c) => c.status !== "completed") || running) {
                 return "pr/ci-pending";
               }
               return "pr/ready";
