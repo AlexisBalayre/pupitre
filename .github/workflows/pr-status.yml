@@ -1,6 +1,7 @@
 # Keeps one `pr/*` status label on every open PR, so the list shows at a glance which are ready
 # to merge. First match wins:
-#   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
+#   pr/draft > pr/conflicts > pr/changes-requested > pr/review-open > pr/ci-failing >
+#   pr/ci-pending > pr/ready
 #
 # Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
 # closed, on a review, and when a Claude Code Review run for it ends. Two events recompute every
@@ -62,6 +63,7 @@ jobs:
               "pr/draft": ["ededed", "Still a draft"],
               "pr/conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
               "pr/changes-requested": ["d93f0b", "A reviewer asked for changes"],
+              "pr/review-open": ["e99695", "The CI review has important findings to address"],
               "pr/ci-failing": ["d73a4a", "A check failed"],
               "pr/ci-pending": ["fbca04", "Checks are still running"],
               "pr/ready": ["0e8a16", "Ready to merge"],
@@ -80,6 +82,32 @@ jobs:
             })();
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            // The newest bot-opened, unresolved review thread, as `ci-wait.service.ts` reads them.
+            async function hasOpenBotThread(number) {
+              let after = null;
+              do {
+                const { repository } = await github.graphql(
+                  `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $after) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes { isResolved comments(first: 1) { nodes { author { login } } } }
+                        }
+                      }
+                    }
+                  }`,
+                  { owner, repo, number, after },
+                );
+                const threads = repository.pullRequest.reviewThreads;
+                if (threads.nodes.some((t) => !t.isResolved && t.comments.nodes[0]?.author?.login === "github-actions")) {
+                  return true;
+                }
+                after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
+              } while (after);
+              return false;
+            }
 
             async function statusOf(number) {
               // `mergeable` is computed lazily: null until GitHub has worked it out.
@@ -113,6 +141,17 @@ jobs:
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 owner, repo, ref: pr.head.sha, per_page: 100,
               });
+              // The poster sets `success` on every run it posted, findings or not (decision 90).
+              const review = combined.statuses.find((s) => s.context === "claude-review");
+              // An unresolved bot thread is an important the review raised and nobody closed: it
+              // outlives the pushes that clear the status description (an incremental round never
+              // re-raises a prior important). The description covers the round just posted.
+              if (
+                (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
+                (await hasOpenBotThread(number))
+              ) {
+                return "pr/review-open";
+              }
               const contexts = new Set(combined.statuses.map((s) => s.context));
               const runs = (
                 await github.paginate(github.rest.checks.listForRef, {
@@ -126,6 +165,11 @@ jobs:
                 combined.statuses.some((s) => ["failure", "error"].includes(s.state))
               ) {
                 return "pr/ci-failing";
+              }
+              // A quick or area-restricted pass is no merge signal. It comes after the failure scan
+              // so a partial round cannot hide a failing check.
+              if (review?.state === "success" && review.description?.startsWith("partial review")) {
+                return "pr/ci-pending";
               }
               // The review preflight leaves a final "Not reviewed" pending status on a comment-only
               // push: nothing is running, so it does not count as pending.
