@@ -1,0 +1,187 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:15:21.508Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42395090458",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42395090458",
+  "actor": "AlexisBalayre",
+  "commit_sha": "40c51430d9e593d90f3d5cfce07368586419d493",
+  "source": "pr",
+  "pr_number": 230,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/hooks/tool-result-size.test.sh",
+      "line": "33-34",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The only test for the `Write or Edit then 0` arm sends an Edit payload with an invented `content` field. Write is the tool whose real response carries the whole file in `content`, so dropping `$tool == \"Write\"` would fail no test, and every Write over 20k would then get a false warning. Use a `tool_name: \"Write\"` payload.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.test.sh",
+      "line": "41",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The case \"echo tsc is still a test log by design, but 5k stays silent\" uses 5000 characters, which is under both thresholds, so it passes whether or not `echo tsc` is classified as a log. To pin the classification, use 10001-20000 characters and expect `warns`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "23",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test checks that the regex's `[^|;&\\n]*` stops at a command boundary. The `pnpm test 2>&1` case has its `&` after `test`, so replacing the class with `.*` fails nothing. Add a negative case such as `pnpm install && cat test.txt` at 15k, expecting `silent`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "16-24",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Only `tool_name == \"Bash\"` gets the stdout+stderr count and the 10k log threshold. A background `pnpm test` read back through TaskOutput has no `content`/`filenames` and counts as 0, and one read through Read gets the 20k plain threshold. Long backgrounded test runs are never warned at the log threshold.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "23-24",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The log-command regex hard-codes `pnpm test|typecheck|build`, a second copy of `TEST_CMD`/`TYPECHECK_CMD` in `.claude/project.env`, which other hooks read through `lib/project-env.sh`. If those commands change, the 10k threshold silently stops applying, and the tests still pass because they hard-code the same strings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "31-32",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`2>/dev/null` plus `exit 0` swallows every jq failure, including a syntax error in the program or a missing `jq`, so a broken hook looks like a quiet one. Nothing catches that: `tool-result-size.test.sh` is wired into no `pnpm` script, lint step or CI workflow.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "16",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Bash `isImage == true then 0` arm is a defensive branch with no test. Under AGENTS.md §Altitude it should get a test that names the real case, or be dropped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.test.sh",
+      "line": "23-48",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "No test exercises the generic `($r | type) == \"object\"` arm (`content` array via `text`, plus `filenames`), the `else` arm, WebFetch `result`, or a Read under the threshold. That leaves the most intricate jq paths uncovered.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/README.md",
+      "line": "87",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The file-tree annotation `PostToolUse(Failure)` reads as a matcher on PostToolUse, because every other line uses `Event(matcher)`. The hook is actually wired on two events, so write it as `PostToolUse + PostToolUseFailure`, as the table row below does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/README.md",
+      "line": "21",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The row says \"Edit and Write echoes and images count as 0\", but only Bash `isImage` output is zeroed; an image returned by Read or an MCP tool is still counted. Write \"Edit and Write echoes and Bash image output count as 0\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/hooks/tool-result-size.sh",
+      "line": "4-5",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the header, the clause \"and failing test, typecheck and build runs are exactly what this is for\" is motivational and adds no WHY beyond the payload-shape note before it. Drop it to tighten the comment.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The PR's restored config copies were at `.claude-pr/.claude/<path>`, not the `.claude-pr/<path>` the briefs named first. The security and maintainability reviewers missed that fallback and read the PR's files from `gh pr diff 230` instead. The diff shows both new files in full, so coverage was not lost."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4492316,
+  "duration_ms": 175177,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 10734,
+    "cache_read": 267962,
+    "cache_creation": 47947,
+    "total": 326655
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 40,
+      "output": 25522,
+      "cache_read": 468069,
+      "cache_creation": 98324,
+      "cost_usd": 1.2396748
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 7256,
+      "cache_read": 135248,
+      "cache_creation": 49368,
+      "cost_usd": 0.2095568
+    }
+  ],
+  "permission_denials": []
+}
