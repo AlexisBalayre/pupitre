@@ -3,9 +3,10 @@
 #   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
 #
 # Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
-# closed, on a review, and when a Claude Code Review run for it ends. Only a push to main
-# recomputes every open PR (it can introduce conflicts anywhere): no event an outsider can start
-# does. A closed PR loses its label.
+# closed, on a review, and when a Claude Code Review run for it ends. Two events recompute every
+# open PR: a push to main (it can introduce conflicts anywhere) and the owner's `@claude review`
+# retry, which runs on main and links no PR. No event an outsider can start does. A closed PR
+# loses its label.
 # The name under `workflow_run` must match that workflow's `name:`.
 #
 # pull_request_target and workflow_run run with write access, so nothing here checks out or runs
@@ -31,21 +32,26 @@ permissions:
 
 jobs:
   pr-status:
-    # Per PR, so one PR's event cannot cancel another's pending recompute; a push to main, which
-    # recomputes them all, has its own group. The group is on the job so a skipped run never joins.
+    # Per PR, so one PR's event cannot cancel another's pending recompute; the events that
+    # recompute them all share the `main` group. The group is on the job so a skipped run never
+    # joins.
     concurrency:
       group: pr-status-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'main' }}
     # A fork's review event gets a read-only token and cannot label; its PR is still relabelled by
     # pull_request_target and by pushes to main. A workflow_run counts only when it is a real
-    # review of this repo's own PR: a fork can name a workflow "Claude Code Review" too, and a
-    # skipped run (every issue comment starts one) or a run on main links no PR. A title or body
-    # edit cannot change the label; a new base branch can (conflicts).
+    # review of this repo's own PR: a fork can name a workflow "Claude Code Review" too, and every
+    # issue comment starts a run that skips. A run on main that links no PR counts only when the
+    # owner started it: only the owner's comment makes that workflow's review job run, so no
+    # outsider can start a recompute-all. A title or body edit cannot change the label; a new base
+    # branch can (conflicts).
     if: >-
       (github.event_name != 'pull_request_target' || github.event.action != 'edited' || github.event.changes.base)
       && (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion != 'skipped'
           && github.event.workflow_run.head_repository.full_name == github.repository
-          && github.event.workflow_run.pull_requests[0].number != null))
+          && (github.event.workflow_run.pull_requests[0].number != null
+              || (github.event.workflow_run.event == 'issue_comment'
+                  && github.event.workflow_run.triggering_actor.login == github.repository_owner))))
     runs-on: ubuntu-latest
     steps:
       - name: Set the pr/* status label
@@ -65,7 +71,9 @@ jobs:
             const numbers = await (async () => {
               if (context.payload.pull_request) return [context.payload.pull_request.number];
               if (context.payload.workflow_run) {
-                return context.payload.workflow_run.pull_requests.map((p) => p.number);
+                // Empty for the owner's `@claude review` retry, which runs on main.
+                const linked = context.payload.workflow_run.pull_requests.map((p) => p.number);
+                if (linked.length) return linked;
               }
               const open = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open" });
               return open.map((p) => p.number);
