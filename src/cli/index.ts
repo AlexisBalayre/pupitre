@@ -1049,14 +1049,14 @@ export function buildProgram(): Command {
           }
           const outcome = dropTask(db, target);
           if (outcome.kind === 'unknown') {
-            return refuse(`No planned task ${target}.`);
+            return refuse(`No planned task ${sanitizeReason(target)}.`);
           }
           if (outcome.kind === 'claimed') {
             return refuse(
-              `Task ${target} is claimed by session ${sanitizeReason(outcome.sessionId)}, so it cannot be dropped.`,
+              `Task ${sanitizeReason(target)} is claimed by session ${sanitizeReason(outcome.sessionId)}, so it cannot be dropped.`,
             );
           }
-          console.log(`Dropped ${target}.`);
+          console.log(`Dropped ${sanitizeReason(target)}.`);
           return;
         }
         case 'edit': {

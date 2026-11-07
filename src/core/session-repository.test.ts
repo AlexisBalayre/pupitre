@@ -316,6 +316,30 @@ describe('the backlog', () => {
 });
 
 describe('dropped_at (decision 147)', () => {
+  // Immediate: the lock comes before the claim is read, so a launch cannot
+  // slip a session in between. Seen from a second connection: while another
+  // writer holds the lock, even a drop that would only read cannot start.
+  it('takes the write lock before it reads the claim', () => {
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
+    const writer = openStore(dbPath);
+    ensureProject(writer, 'proj-1', '/repo');
+    insertTask(writer, { id: 't-1', projectId: 'proj-1', spec: '{}' });
+    const dropper = openStore(dbPath);
+    dropper.pragma('busy_timeout = 0');
+
+    writer.exec('BEGIN IMMEDIATE');
+    try {
+      expect(() => dropTask(dropper, 'no-such-task')).toThrow(/locked|busy/i);
+    } finally {
+      writer.exec('ROLLBACK');
+    }
+    const outcome = dropTask(dropper, 't-1');
+    writer.close();
+    dropper.close();
+
+    expect(outcome).toEqual({ kind: 'dropped' });
+  });
+
   it('is added to a store created before it, its tasks still live', () => {
     const dbPath = join(tempDir('pup-store-'), 'pup.db');
     const old = openStore(dbPath);

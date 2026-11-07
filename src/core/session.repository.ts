@@ -292,26 +292,32 @@ export type DropTaskOutcome =
  * entry (decision 40). A task some session still claims stays, and the
  * outcome names that session. An already-dropped task is unknown, as it is
  * not in the backlog to drop.
+ *
+ * Immediate, so the write lock is taken before the claim is read: a launch
+ * cannot insert a session between the check and the write, and a concurrent
+ * writer makes this wait for the lock rather than fail on a stale snapshot.
  */
 export function dropTask(db: Database, id: string): DropTaskOutcome {
-  return db.transaction((): DropTaskOutcome => {
-    const row = getTask(db, id);
-    if (!row || row.dropped_at !== null) return { kind: 'unknown' };
-    const sessionId = claimingSession(db, id);
-    if (sessionId) return { kind: 'claimed', sessionId };
-    const deleted =
-      db
-        .prepare(
-          `DELETE FROM tasks
+  return db
+    .transaction((): DropTaskOutcome => {
+      const row = getTask(db, id);
+      if (!row || row.dropped_at !== null) return { kind: 'unknown' };
+      const sessionId = claimingSession(db, id);
+      if (sessionId) return { kind: 'claimed', sessionId };
+      const deleted =
+        db
+          .prepare(
+            `DELETE FROM tasks
             WHERE id = ?
               AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = tasks.id)`,
-        )
-        .run(id).changes > 0;
-    if (!deleted) {
-      db.prepare("UPDATE tasks SET dropped_at = datetime('now') WHERE id = ?").run(id);
-    }
-    return { kind: 'dropped' };
-  })();
+          )
+          .run(id).changes > 0;
+      if (!deleted) {
+        db.prepare("UPDATE tasks SET dropped_at = datetime('now') WHERE id = ?").run(id);
+      }
+      return { kind: 'dropped' };
+    })
+    .immediate();
 }
 
 /**
