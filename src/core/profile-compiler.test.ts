@@ -24,6 +24,10 @@ import { ContextBudgetExceededError, InvalidProfileError } from './profile.error
 import * as ProfileCompiler from './profile-compiler.service.js';
 import type { CompileInput, SessionId, TaskId, TaskSpec } from './types/profile.types.js';
 
+// Many tests here spawn real git and sh; under load or coverage the 5 s default
+// times out a different one each run, which also stops `pup audit` measuring coverage.
+vi.setConfig({ testTimeout: 30_000 });
+
 const task: TaskSpec = {
   id: 'task-1' as TaskId,
   goal: 'Add retry logic to the fetch client',
@@ -1205,6 +1209,10 @@ describe('generated hooks over a merge of the target', () => {
     expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
   });
 
+  // Four runs of the generated re-check, each some fifty forks (jq, two git
+  // statuses, a diff, a hash per dirty path, a watcher and a sleep per bounded
+  // read), around a real merge and the eight git calls that plant the replace:
+  // under 2 s idle, past vitest's default 5 s once the load passes the cores.
   it('reads the merged tip through no replace ref a session planted', () => {
     fork({}, { 'src/cli/index.ts': 'main\n' });
     bash('git merge main');
@@ -1227,7 +1235,7 @@ describe('generated hooks over a merge of the target', () => {
 
     expect(bash('printf "evil\\n" > src/cli/index.ts').status).toBe(2);
     expect(violations()).toEqual(['src/cli/index.ts outside-scope-in']);
-  });
+  }, 20_000);
 
   it('refuses an Edit over marker lines whose conflict was staged by hand', () => {
     const markers = '<<<<<<< a\nkeep\n=======\ngate()\n>>>>>>> b';

@@ -152,6 +152,7 @@ for the cross-references the text states, then the decision itself.
 - [0130. Dead-export analysis resolves tsconfig `paths` from the measured checkout (2026-10-30)](0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md) (accepted)
 - [0131. `pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged onto its base (2026-11-04)](0131-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md) (accepted)
 - [0132. A gate child's group dies with pup, through a lifeline watcher in the group (2026-11-07)](0132-a-gate-child-s-group-dies-with-pup-through-a.md) (accepted)
+- [0132. `pup land --no-audit` lets several lands share one `pup audit` (2026-11-07)](0132-pup-land-no-audit-lets-several-lands-share-one.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes

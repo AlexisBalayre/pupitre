@@ -25,7 +25,19 @@ REL_PATH="${FILE_PATH#"$CLAUDE_PROJECT_DIR"/}"
 [[ "$REL_PATH" =~ $FILE_NAMING_SCOPE_REGEX ]] || exit 0
 
 FILENAME=$(basename "$FILE_PATH")
-[[ "$FILENAME" =~ $FILE_NAMING_REGEX ]] && exit 0
+if [[ "$FILENAME" =~ $FILE_NAMING_REGEX ]]; then
+  STEM="${FILENAME%.*}"
+  ROLE="${STEM##*.}"
+  PARENT=$(basename "$(dirname "$FILE_PATH")")
+  for PAIR in ${FILE_NAMING_ROLE_DIRS:-}; do
+    [ "${PAIR%%=*}" = "$ROLE" ] || continue
+    [ "${PAIR#*=}" = "$PARENT" ] && exit 0
+    echo "BLOCKED: '$FILENAME' is a .$ROLE file and must sit in a folder named '${PAIR#*=}/' (it is in '$PARENT/')." >&2
+    echo "Per-area layout: src/<area>/{types,enums,errors,interfaces,constants}/, test mocks in test/helpers/. Full naming rules: docs/conventions/naming.md" >&2
+    exit 2
+  done
+  exit 0
+fi
 
 echo "BLOCKED: file name '$FILENAME' does not match the project naming convention ($FILE_NAMING_REGEX)." >&2
 [ -n "${FILE_NAMING_HINT:-}" ] && echo "$FILE_NAMING_HINT" >&2

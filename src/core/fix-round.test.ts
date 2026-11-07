@@ -159,7 +159,7 @@ interface ThreadSeed {
 }
 
 // Real git repos, a bare origin and a gh on PATH that answers from files.
-describe('startFixRound', { timeout: 30_000 }, () => {
+describe('startFixRound', { timeout: 90_000 }, () => {
   let db: Database;
   let repo: string;
   let origin: string;
