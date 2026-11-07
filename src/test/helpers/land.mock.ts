@@ -1,11 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Adapter } from '../../adapters/types/adapter.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR &
 // co., which a pre-commit hook run would aim at the pupitre repo instead.
-export const GIT_ENV: NodeJS.ProcessEnv = {
+const GIT_ENV: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
@@ -31,13 +30,3 @@ export const SESSION_ID = 's1';
 export const BRANCH = `pup/${SESSION_ID}`;
 export const ORIGIN_URL = 'git@github.com:owner/repo.git';
 export const PR_URL = 'https://github.com/owner/repo/pull/7';
-
-export const passingAdapter: Adapter = {
-  id: 'fake',
-  detect: () => true,
-  gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
-  ],
-};
