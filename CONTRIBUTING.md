@@ -36,6 +36,15 @@ pnpm worktree:remove my-change      # after the merge; the worktree, then its br
 
 `main` is protected: pull requests only, no force-push, no deletion. The scripts read the trunk name and branch prefix from [`.claude/project.env`](.claude/project.env), so they stay in agreement with the guard hooks.
 
+## Keeping the loop fast
+
+- **The pre-commit hook scopes itself.** It lints the staged files, typechecks, and runs `vitest related` on the staged source, never the whole suite; a commit with no staged source runs no tests. The full suite is `pnpm test`, and the merge gate runs it on every PR. Once #246 merges, a commit that stages no TypeScript or type config also skips typecheck.
+- **The installed hook is a copy.** Refresh it after the script changes: `cp scripts/pre-commit .git/hooks/pre-commit`.
+- **Slow test files are split into shards.** A file's tests run in series on one worker, so the biggest file sets the floor for the whole suite. Once #247-#250 merge, `merge-gate`, `land`, `profile-compiler` and `fix-round` each run as three or four files of under a minute; their shared fixtures live in `src/test/helpers/<name>.mock.ts`. Split any file that passes about 60 s. Once #246 merges, Vitest runs at half the cores.
+- **Land several, audit once.** `pup land --no-audit <session>` skips the audit; run `pup audit` once after the last land.
+- **One suite at a time under load.** Concurrent pre-commit suites time each other out. Commit one worktree at a time while others are running.
+- **No `pgrep -f` waiters.** `pgrep -f "git commit"` matches the waiter's own command line and never exits; wait on the process id, or read the output file.
+
 ## Commands
 
 | What | Command |
