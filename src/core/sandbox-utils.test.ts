@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -218,13 +218,36 @@ describe('runGateChild', () => {
     );
   }
 
+  /** Only ESRCH is dead: EPERM means a process is there that may not be signalled. */
   function alive(pid: number): boolean {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
     }
+  }
+
+  /**
+   * The group a stage child leads, named by the child's pid. Killed when the
+   * test ends only if the test never saw it go, so a failing test does not
+   * leave it running; once it is gone, its pgid may name someone else's group.
+   */
+  function stageGroup(leader: number): {
+    alive: () => boolean;
+    gone: (timeout?: number) => Promise<void>;
+  } {
+    let seenGone = false;
+    onTestFinished(() => {
+      if (!seenGone && alive(-leader)) process.kill(-leader, 'SIGKILL');
+    });
+    return {
+      alive: () => alive(-leader),
+      gone: async (timeout = 1_000) => {
+        await vi.waitFor(() => expect(alive(-leader)).toBe(false), { timeout });
+        seenGone = true;
+      },
+    };
   }
 
   /** Under pup's own gate, HOME is already denied — and then it already exists. */
@@ -306,17 +329,59 @@ describe('runGateChild', () => {
     }
   }, 15_000);
 
-  it('kills a timed-out child that ignores SIGTERM once the grace runs out', async () => {
+  it('kills a timed-out child that ignores SIGTERM, and its group, once the grace runs out', async () => {
     const cwd = fakeCheckout();
 
-    const failure = await runGateChild('sh', ['-c', "trap '' TERM; while :; do sleep 0.1; done"], {
-      cwd,
-      repoPath: cwd,
-      timeout: 200,
-    }).catch((error: unknown) => error);
+    const run = runGateChild(
+      'sh',
+      ['-c', "trap '' TERM; echo $$ > sh.pid; while :; do sleep 0.1; done"],
+      { cwd, repoPath: cwd, timeout: 1_000 },
+    ).catch((error: unknown) => error);
+    // Read while the run is still in its timeout and grace, so the group is
+    // seen alive before it is seen gone.
+    const group = stageGroup(await pidIn(cwd, 'sh.pid'));
+    expect(group.alive()).toBe(true);
 
-    expect(failure).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGKILL' });
+    expect(await run).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGKILL' });
+    await group.gone();
   }, 15_000);
+
+  // Decision 136. The case that ran for three days: vitest stops a worker with
+  // SIGTERM, which pup forwards and gives a grace, then SIGKILLs it 500 ms
+  // later, before the grace ends.
+  it('takes a child that ignores SIGTERM down with a pup killed inside its grace', {
+    timeout: 20_000,
+  }, async () => {
+    const tmp = tempDir('pup-killed-');
+    const cwd = fakeCheckout();
+    const script = join(tmp, 'killed.mts');
+    writeFileSync(
+      script,
+      [
+        `import { runGateChild } from ${JSON.stringify(join(process.cwd(), 'src', 'core', 'sandbox.utils.ts'))};`,
+        `const cwd = ${JSON.stringify(cwd)};`,
+        `void runGateChild('sh', ['-c', "trap '' TERM; echo $$ > sh.pid; while :; do sleep 0.1; done"], { cwd, repoPath: cwd }).catch(() => undefined);`,
+        `setInterval(() => undefined, 1_000);`,
+      ].join('\n'),
+    );
+    // TMPDIR too, so the run pup never ends is removed with the rest.
+    const pup = spawn(process.execPath, ['--import', 'tsx', script], {
+      env: { ...process.env, TMPDIR: tmp },
+      cwd: process.cwd(),
+      stdio: 'ignore',
+    });
+    onTestFinished(() => {
+      pup.kill('SIGKILL');
+    });
+    const group = stageGroup(await pidIn(cwd, 'sh.pid'));
+    expect(group.alive()).toBe(true);
+
+    pup.kill('SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    pup.kill('SIGKILL');
+
+    await group.gone(5_000);
+  });
 
   // A stage child is in a process group of its own, out of reach of the
   // terminal's Ctrl-C, so pup forwards what it receives (decision 95).
