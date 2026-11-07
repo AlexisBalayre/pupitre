@@ -1,0 +1,182 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T15:41:16.638Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42387219565",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42387219565",
+  "actor": "AlexisBalayre",
+  "commit_sha": "34797ba84ef2aaf4405ba8253843dd0202d2240c",
+  "source": "pr",
+  "pr_number": 245,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/pre-commit",
+      "line": "104-109",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A commit that only deletes src/*.ts files skips typecheck and tests, because `--diff-filter=d` drops deleted paths before classification. A broken import commits cleanly.",
+      "body": "**A commit that only deletes `src/` files now skips typecheck and tests**\n\nThe list that decides whether to typecheck is built with deleted paths filtered out:\n\n```bash\nSTAGED_ALL=$(git diff --cached --diff-filter=d --name-only)\n...\nSTAGED_SRC=$(printf '%s\\n' \"$STAGED_ALL\" | grep -E '^src/.*\\.(ts|tsx)$' || true)\n...\nif [ -z \"$STAGED_SRC\" ] && [ -z \"$STAGED_GLOBAL\" ]; then\n  echo \"No source or config staged: typecheck and tests skipped.\"\n```\n\nTake a commit whose only change is `git rm src/core/foo.utils.ts` while other modules still import it. `STAGED_SRC` and `STAGED_GLOBAL` are both empty, so the hook takes the skip branch and the broken import commits cleanly. Before this PR, the `for step in TYPECHECK_CMD TEST_CMD` loop ran on every commit, and `tsc` would have failed it. Nothing else in the hook catches it: the lint step also uses `--diff-filter=d`, and lint doesn't resolve imports.\n\nMoving a file from `src/` to somewhere outside it does the same thing. Rename detection lists only the new path, and that path doesn't match `^src/`.\n\nThe PR's design runs typecheck when `src/*.ts(x)` is staged, and a deletion is a staged `src/` change. The merge gate still catches it, but the hook no longer does.\n\n**Fix:** collect deleted src paths separately, for example `git diff --cached --diff-filter=D --name-only | grep -E '^src/.*\\.(ts|tsx)$'`. Count them as source in the skip test on line 109, and add them to the full-suite condition on line 121. Don't pass them to `TEST_RELATED_CMD`: `vitest related` can't take files that no longer exist.\n\n(Raised by both the correctness and security reviewers.)\n\nhttps://github.com/AlexisBalayre/pupitre/blob/34797ba84ef2aaf4405ba8253843dd0202d2240c/scripts/pre-commit#L104-L109",
+      "suggestion": null
+    },
+    {
+      "file": "docs/workflow.md",
+      "line": "47",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Each of these says pre-commit runs `TEST_CMD` or the full suite on every commit. After this PR it skips typecheck and tests for commits with no `src/` or global config staged, and runs only related tests for `src/` changes.",
+      "body": "**Docs still say pre-commit runs the full suite on every commit**\n\nAfter this PR, `scripts/pre-commit`:\n- skips typecheck and tests when no `src/*.ts(x)` or global config is staged,\n- runs `TEST_RELATED_CMD` (`vitest related`) on staged src files,\n- runs the full `TEST_CMD` only for global config, `PRE_COMMIT_FULL=1`, or when `TEST_RELATED_CMD` is unset.\n\nThese statements are now false:\n- `docs/workflow.md:47`: \"Runs `TEST_CMD` from `.claude/project.env` before every commit.\"\n- `docs/workflow.md:33`: \"pre-commit runs TEST_CMD\"\n- `CONTRIBUTING.md:22`: \"lints the staged sources, typechecks, and runs the test suite before every commit\"\n- `README.md:157`: \"lints, typechecks and runs the tests before every commit\"\n- `.claude/hooks/README.md:15`: \"`scripts/pre-commit` runs `TEST_CMD`, the full Vitest suite\". The reason it gives, why the Stop hook skips tests, still holds, but \"the full Vitest suite\" is wrong for the default path.\n\nA developer or agent who reads these would assume every commit ran the whole suite and skip running affected tests themselves. Update them to describe the scoped behaviour and the `PRE_COMMIT_FULL=1` override.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/34797ba84ef2aaf4405ba8253843dd0202d2240c/docs/workflow.md#L47",
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "128-132",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When `TEST_RELATED_CMD` is the command that ran, the failure still prints `ERROR: TEST_CMD failed.`. The two copy-pasted run blocks and the `ok` flag replaced the old loop's `$step` message. Set `step=TEST_CMD` or `step=TEST_RELATED_CMD` in each branch and print `$step`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "102, 109",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The header says `PRE_COMMIT_FULL=1` forces the full suite, but on a commit with no src or config staged the skip branch on line 109 is taken first, so the variable does nothing there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "104-106",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`STAGED_ALL` repeats the `git diff --cached --diff-filter=d --name-only` call from line 86, and `STAGED_SRC` hardcodes `ts|tsx` instead of reusing `EXT_RE`/`SOURCE_EXTENSIONS`. If an extension is added to `project.env`, lint will cover it but typecheck and tests will skip it. Deriving `STAGED_SRC` from `STAGED_SOURCE` filtered on `^src/` keeps one source of truth.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "105",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `GLOBAL_RE` config-file list is hardcoded and will drift from the toolchain. A commit that touches only a file missing from the list, such as a new vitest setup file or `.npmrc`, silently skips typecheck and tests. At least comment that the list must stay in step with the toolchain.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "104-106",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "With the default `core.quotePath=true`, `git diff --name-only` writes any path with non-ASCII characters, a `\"`, a backslash or a newline as a quoted, escaped string, for example `\"src/caf\\303\\251.ts\"`. That string doesn't match `^src/`. If it's the only staged source file, typecheck and tests are skipped; alongside other files, it's just left out of `vitest related`. It's not injectable and only reachable with unusual names, which the naming convention rules out for new `src/` files. The lint filter at line 86 already behaves this way, so this is not new to the PR. A fix: `git -c core.quotePath=false diff --cached -z ...` and filter on NUL-separated names.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "23",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment says this reader is the \"Same reader as .claude/hooks/lib/project-env.sh\", but their key whitelists now differ: only pre-commit accepts `TEST_RELATED_CMD`. `AGENTS.md`'s list of `project.env` keys also omits it. Note the divergence, or add the key in both places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "98-103",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new block comment partly narrates WHAT the code directly below does, for example \"global config staged : the full suite\", which AGENTS.md §Comments discourages. The sentence \"the merge gate still runs the whole suite\" is also repeated in `.claude/project.env`; keep it in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "vitest.config.ts",
+      "line": "7-9",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `maxWorkers` comment, the first sentence is a real WHY, but \"Half the cores, at least two.\" restates `Math.max(2, Math.floor(availableParallelism() / 2))`. Trim it, per AGENTS.md §Comments.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/project.env",
+      "line": "20",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Pre-commit runs this on the staged src files instead of TEST_CMD\" omits the cases where `TEST_CMD` still runs: global config staged, `PRE_COMMIT_FULL=1`. The comment on `TEST_CMD` above it (\"Run by scripts/pre-commit\") now describes only the fallback.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8595135,
+  "duration_ms": 213716,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 15646,
+    "cache_read": 255907,
+    "cache_creation": 52022,
+    "total": 323587
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 48,
+      "output": 33495,
+      "cache_read": 507640,
+      "cache_creation": 114856,
+      "cost_usd": 1.501966
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 13309,
+      "cache_read": 215460,
+      "cache_creation": 81131,
+      "cost_usd": 0.3575475
+    }
+  ],
+  "permission_denials": []
+}
