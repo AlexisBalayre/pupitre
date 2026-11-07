@@ -33,7 +33,8 @@
     two grow together. The wait checks its deadline once a poll (1 s), and the file can outlive
     the window by up to that poll before it is removed. That margin is unchanged by this
     decision.
-    *The rule.* A test run, the root suite or a nested package's, that runs out
+    *The rule.* A test run, the root suite or a nested package's, and the first run or the
+    re-run a failing first run earns (decision 94), that runs out
     `GATE_COMMAND_TIMEOUT_MS` counts as timed out under load only on evidence that the load is
     not the session's own. All three must hold, at the ceiling decision 88's wait uses,
     `availableParallelism()`. First, the 1-minute load average was at or over it before the
@@ -71,13 +72,17 @@
     time. Such a suite is now rejected unless another run is testing and the machine was loaded
     before it. A session can still meet the first condition. It can load the machine from its
     pane before the gate starts, and the reading comes after the build stage (and the load
-    wait, if any), and the build runs the session's code. The third condition it cannot meet through pup alone. A `pup session test`
-    from its own pane holds a slot labelled with its own id, which the gate leaves out, so a
-    timeout counts only while another session or gate is testing at the same moment. What a
-    session could still do, and pup does not stop, is write a record under another label by
-    hand into `~/.pupitre/slots`, naming a live process of its own. As a wait file it must also
-    be named for that process's pid. Closing that would take slot records the session cannot
-    write, which this decision does not attempt. A real
+    wait, if any), and the build runs the session's code. The third condition it can meet
+    too, and this decision does not stop it. A `pup session test` from its own pane holds a
+    slot labelled with its own id, which the gate leaves out. But the label is the session's
+    word: a session that `cd`s into another live session's worktree with `PUP_SESSION_ID` set
+    to that session's id and runs `pup session test` there takes a slot labelled with the
+    other session, which counts. That is decision 44's residual, an impersonator who also
+    changes directory, and the same ceiling, decision 27's: a sandbox that keeps a session out
+    of other worktrees is the instrument for it. A session can also write a record under
+    another label by hand into `~/.pupitre/slots`, naming a live process of its own; as a wait
+    file it must also be named for that process's pid. Closing either would take slot records
+    the session cannot write, which this decision does not attempt. A real
     overload with no other pup test run going, such as
     decision 134's scanner, still rejects on a timeout. With the cap at 25 minutes and the suite
     at about 9.5, that should be rare. Nothing bounds how many times the operator can re-run a
@@ -110,6 +115,8 @@
     - a wait file whose name carries another pid than its record.
 
     The first three sit in a slot the slots module does not read, so they reach the gate's
-    own read. A runner's failing exit at four times the cores is re-run once, then rejected. No test
+    own read. A first run that fails by itself and a re-run that runs out its timeout under
+    load, with another run holding a slot, throws the refusal after both runs, steering and
+    counting nothing; with no other run going, it is rejected. A runner's failing exit at four times the cores is re-run once, then rejected. No test
     pinned the 10 minutes: the timeout tests shorten the cap through a mock, and the wait tests
     read `GATE_SLOT_WAIT_MS`.

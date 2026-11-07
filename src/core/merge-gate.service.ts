@@ -2093,7 +2093,7 @@ type FlaggedDebt = { description: string; files: string[] };
  * which `runGateChild` marks with a `code` even when the runner traps the
  * SIGTERM and exits 1, and whose re-run would hold the merge lock twice as long
  * on a hung suite. A test stage timed out under load never gets here: it
- * refuses the merge first (`refuseTimeoutUnderLoad`).
+ * refuses the merge first (`refuseTimeoutUnderLoad`), and so does a re-run.
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -2115,20 +2115,31 @@ function oneMinuteLoad(): number {
  * suite runs longer than its cap whatever the branch holds, so the timeout says
  * nothing about the code. Loaded means three things, at the ceiling
  * `waitForLoad` uses: the 1-minute load average was at or over the available
- * parallelism before the suites started (`loadBefore`), it still is, and a
- * test run other than the gated session's own is going (`otherTestRunGoing`).
+ * parallelism before the suites started (`loadBefore`, `undefined` when no
+ * reading was taken, which is no evidence), it still is, and a test run other
+ * than the gated session's own is going (`otherTestRunGoing`).
  * That last is the evidence a session's own tests cannot make: a suite that
  * fills the cores by itself until its cap is still rejected. It throws, so it
  * climbs no rung of the reject cap and injects nothing into the session, and
  * the gate stops before any merge or push. Every other timeout, and every
  * failure that is not a timeout, returns, and the stage fails and rejects as
- * before.
+ * before. It judges a test stage's re-run as it judges the first run.
  */
-function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: string): void {
+function refuseTimeoutUnderLoad(
+  error: unknown,
+  loadBefore: number | undefined,
+  sessionId: string,
+): void {
   if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
   const cores = availableParallelism();
   const load = oneMinuteLoad();
-  if (loadBefore < cores || load < cores || !otherTestRunGoing(sessionId)) return;
+  if (
+    loadBefore === undefined ||
+    loadBefore < cores ||
+    load < cores ||
+    !otherTestRunGoing(sessionId)
+  )
+    return;
   throw new Error(
     `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
       `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
@@ -2289,14 +2300,23 @@ export async function measureBranch(
   };
 
   /**
+   * The 1-minute load read once before the suites (decision 138), set below
+   * after the build and the load wait. Declared before `commandStage` reads
+   * it, so a test stage run before the reading finds `undefined`, which counts
+   * as no evidence, rather than a temporal dead zone.
+   */
+  let loadBeforeSuites: number | undefined;
+
+  /**
    * Runs one hard stage to its result. A failed test
    * stage runs once more, still under the lock, before it counts: a suite that
    * passes on the re-run passes, named flaky with what failed the first time,
    * so a timing-sensitive test the host's load tipped over is no rejection
    * (decision 94). Build and lint are deterministic and never re-run, and
    * neither is a test run that ended other than by the runner's own failing
-   * exit (`isRerunnable`). A test run timed out under load throws instead of
-   * failing (`refuseTimeoutUnderLoad`, decision 138).
+   * exit (`isRerunnable`). A test run, the first or the re-run, timed out
+   * under load throws instead of failing (`refuseTimeoutUnderLoad`, decision
+   * 138).
    */
   const commandStage = async (
     stage: string,
@@ -2307,13 +2327,14 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
-    // Only a test stage reads `loadBeforeSuites`, and every one runs after it
-    // is set below.
     if (command.stage === 'test') refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id);
     if (command.stage !== 'test' || !isRerunnable(first)) {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
     const rerun = await runCommand(command, cwd);
+    // A first run that failed on its own and a re-run the load ran out: the
+    // re-run's timeout says no more about the code than a first run's would.
+    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id);
     if (rerun === undefined) {
       return timedSince(started, {
         stage,
@@ -2389,7 +2410,7 @@ export async function measureBranch(
   // test run that times out counts as timed out under load only if the machine
   // was loaded before it (decision 138). The build ran the session's code, so
   // this reading is not one the session cannot touch; the other test run is.
-  const loadBeforeSuites = oneMinuteLoad();
+  loadBeforeSuites = oneMinuteLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;

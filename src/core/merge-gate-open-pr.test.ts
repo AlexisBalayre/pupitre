@@ -836,6 +836,43 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await merge()).status).toBe('merged');
     });
 
+    // The first run failed on its own, so it gets its re-run; the re-run is
+    // what the load ran out, and it is judged as a first run would be.
+    it('refuses a test stage whose re-run ran out its timeout under load, after a first run that failed', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      shortTimeout();
+      const slots = ownSlots('s-other');
+      const cores = availableParallelism();
+      loadAt(cores);
+
+      await expect(merge(adapterWith('test', failsOnce(timesOut)))).rejects.toThrow(
+        underLoad(cores),
+      );
+
+      expect(runsOf('test-run')).toBe(2);
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.reject_count).toBe(0);
+      expect(readdirSync(slots)).toEqual(['slot-0.lock']);
+      expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    });
+
+    it('still rejects a test stage whose re-run ran out its timeout under load with no other test run', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      shortTimeout();
+      ownSlots();
+      loadAt(availableParallelism());
+
+      const outcome = await merge(adapterWith('test', failsOnce(timesOut)));
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(2);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+      expect(steerPane).toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
+    });
+
     it("counts another gate's wait, named as the slots module names one, as another test run", async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
