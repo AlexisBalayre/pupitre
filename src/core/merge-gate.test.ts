@@ -1559,6 +1559,24 @@ describe('pullRequestText (decision 136)', () => {
     expect(title('x'.repeat(80), undefined)).toBe(`pup session ${SESSION_ID}`);
     expect(title('  ', undefined)).toBe(`pup session ${SESSION_ID}`);
   });
+
+  it('scrubs escape sequences, controls, bidi overrides and zero-width characters', () => {
+    const planted = '\u001b[31mFix\u001b[0m\u0007 the \u202eretry\u202c lo\u200bop\u0085';
+    expect(title('the goal', planted)).toBe('Fix the retry loop');
+    // The goal the subject falls back to is scrubbed the same way.
+    expect(title('the \u202egoal\u200b', 'x'.repeat(73))).toBe('the goal');
+  });
+
+  it('falls back to the goal when the subject names an issue to close', () => {
+    expect(title('the goal', 'Fix the gate, closes #12')).toBe('the goal');
+    expect(title('the goal', 'Resolved owner/repo#3')).toBe('the goal');
+    expect(title('the goal', 'FIXES: https://github.com/o/r/issues/4')).toBe('the goal');
+    // A zero-width space cannot split the keyword past the check.
+    expect(title('the goal', 'clo\u200bses #5')).toBe('the goal');
+    // A closing word with no reference after it, or none at all, is kept.
+    expect(title('the goal', 'Fix the closer for #12')).toBe('Fix the closer for #12');
+    expect(title('the goal', 'Close the lock file')).toBe('Close the lock file');
+  });
 });
 
 describe('firstOwnSubject (decision 136)', () => {
@@ -1579,6 +1597,19 @@ describe('firstOwnSubject (decision 136)', () => {
 
     expect(firstOwnSubject(repo, targetSha, sha)).toBe('edit src/fix.ts');
     expect(firstOwnSubject(repo, targetSha, merge)).toBeUndefined();
+  });
+
+  it("takes a commit of the session's whose message reads like a merge, read without the commit graph", () => {
+    const repo = initRepo();
+    const targetSha = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    sh(repo, 'git', 'commit', '-q', '--allow-empty', '-m', 'Merge main into pup/s1');
+    const sha = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    vi.mocked(execFileSync).mockClear();
+
+    expect(firstOwnSubject(repo, targetSha, sha)).toBe('Merge main into pup/s1');
+    const read = vi.mocked(execFileSync).mock.calls.at(-1)?.[1] as string[];
+    expect(read.join(' ')).toContain('-c core.useReplaceRefs=false');
+    expect(read.join(' ')).toContain('-c core.commitGraph=false log --reverse --no-merges');
   });
 });
 

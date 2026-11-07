@@ -2630,17 +2630,34 @@ export function refuseGate(
  * leave entries filed with no kept note.
  */
 export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
-  return runGit(repoPath, ['log', '--reverse', '--format=%s', `${targetSha}..${sha}`])
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
     .trim()
     .split('\n')
     .filter(Boolean);
 }
 
 /**
+ * What a subject read pins past `runGit`'s own, which already turn replace refs
+ * off: the commit graph is a cache in the object store a session can write, and
+ * a planted one can hand `log` other parents, so a merge would read as a commit
+ * of the session's and a commit as a merge (decision 136, as decision 131 pins
+ * it for `pup land`).
+ */
+const SUBJECT_LOG_PINS = ['-c', 'core.commitGraph=false'];
+
+/**
  * The oldest gated commit's subject that is not a merge's, for the PR title: a
  * `Merge main into …` the gate wrote (decision 105) or the session ran is never
- * the change a squash lands. Undefined when every commit is a merge. Read
- * before the ledger write, as `commitSubjectsBetween` is.
+ * the change a squash lands. Merges are told by their parents, so a commit of
+ * the session's whose message reads like one is still its own. Undefined when
+ * every commit is a merge. Read before the ledger write, as
+ * `commitSubjectsBetween` is. Session-written: `prTitle` scrubs it.
  */
 export function firstOwnSubject(
   repoPath: string,
@@ -2648,6 +2665,7 @@ export function firstOwnSubject(
   sha: string,
 ): string | undefined {
   return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
     'log',
     '--reverse',
     '--no-merges',
@@ -2885,13 +2903,48 @@ export function withScratchGitDir<TResult>(
 }
 
 /**
- * A title that reads as a commit subject: `ownSubject` when it fits, else the
- * goal's first line, cut at the last word boundary that fits with no ellipsis
- * and no dangling separator. Empty when no boundary fits, never a cut word.
+ * Characters that render as nothing or reorder what follows them: zero-width
+ * spaces and joiners, directional marks, embeddings, overrides and isolates,
+ * invisible operators and the byte-order mark. Dropped, not spaced, so one
+ * cannot split a closing keyword past `CLOSING_REFERENCE`.
+ */
+const INVISIBLE_FORMAT_CHARS =
+  /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+
+/** A terminal escape sequence (CSI, 7-bit or 8-bit), dropped whole so no `[31m` is left. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const ANSI_ESCAPE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
+
+/**
+ * A GitHub closing keyword followed by an issue reference, `#n`,
+ * `owner/repo#n` or an issue or pull URL: on the default branch's commit a
+ * squash writes, GitHub closes the issue it names.
+ */
+const CLOSING_REFERENCE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:(?:[\w.-]+\/[\w.-]+)?#\d+|https?:\/\/\S+\/(?:issues|pull)\/\d+)/i;
+
+/**
+ * A line as a title can carry it: escape sequences and invisible format
+ * characters dropped, then `sanitizeReason`'s one line with C0/C1 controls
+ * spaced out.
+ */
+function scrubTitleText(text: string): string {
+  return sanitizeReason(text.replace(ANSI_ESCAPE, '').replace(INVISIBLE_FORMAT_CHARS, ''));
+}
+
+/**
+ * A title that reads as a commit subject: `ownSubject`, scrubbed, when it fits
+ * and names no issue to close (it is session-written, decision 136), else the
+ * goal's first line scrubbed the same way, cut at the last word boundary that
+ * fits with no ellipsis and no dangling separator. Empty when no boundary
+ * fits, never a cut word.
  */
 function prTitle(goal: string, ownSubject: string | undefined): string {
-  if (ownSubject !== undefined && ownSubject.length <= PR_TITLE_MAX_CHARS) return ownSubject;
-  const line = (goal.split('\n')[0] as string).trim();
+  const subject = scrubTitleText(ownSubject ?? '');
+  if (subject && subject.length <= PR_TITLE_MAX_CHARS && !CLOSING_REFERENCE.test(subject)) {
+    return subject;
+  }
+  const line = scrubTitleText(goal.split('\n')[0] as string);
   if (line.length <= PR_TITLE_MAX_CHARS) return line;
   // The last whitespace at or before the limit: what precedes it is whole words.
   const cut = line.slice(0, PR_TITLE_MAX_CHARS + 1).search(/\s\S*$/);
