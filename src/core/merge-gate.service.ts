@@ -1115,14 +1115,13 @@ function sessionMark(db: Database, sessionId: string): string {
  * sandbox in the moment between the add and the read, or plant
  * `config.worktree` there. `GIT_WORK_TREE` also does what `--work-tree` did,
  * outranking a `core.worktree` in the shared config that would aim the writes
- * elsewhere. Returns those pins, for a caller that runs git in the checkout.
+ * elsewhere.
  */
-function cutGateCheckout(repoPath: string, dir: string, sha: string): WorktreeGitEnv {
+function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
   const git = checkoutPinned(repoPath, dir, sha);
   refuseEscapingLinks(dir, sha, git);
-  return git;
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -1845,10 +1844,8 @@ async function gateAndMerge(
         }),
       );
     } catch (error) {
-      // Every conflict goes back to the worker, the ADR index's included: the
-      // gate resolves that one only where it merges, since a resolved stop
-      // would go on through rebase state the live session can write (decision
-      // 120).
+      // Every conflict goes back to the worker: a resolved stop would go on
+      // through rebase state the live session can write (decision 120).
       try {
         runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
