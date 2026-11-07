@@ -5,173 +5,86 @@ description: Write a PR title and description in this repo's house style, then c
 
 # Write a PR title and description
 
-Use this template for writing the PR body:
+Pick the template for the kind of PR, copy it from `templates/`, fill it, and delete every
+section it does not need. A body is a few lines per section, never a wall of text.
+
+| The PR is | Template | Sections beyond the base |
+| :--- | :--- | :--- |
+| a new capability or flag (`feat`) | `templates/feature.md` | Why, Behaviour, Out of scope, Rollback |
+| a bug fix (`fix`) | `templates/fix.md` | Symptom, Cause, Why it will not return |
+| a restructuring (`refactor`) | `templates/refactor.md` | Why, Behaviour change (none), Review guide |
+| an ADR or design doc (`docs`) | `templates/adr.md` | Decision, Context, Consequences |
+| tooling, CI, dependencies (`chore`) | `templates/chore.md` | Why, Rollback |
+| tests only (`test`) | `templates/test.md` | Why, Before/After rate |
+| a speed-up (`perf`) | `templates/perf.md` | Measurement table, Trade-off |
+| a revert | `templates/revert.md` (title type `chore`) | Why, Next |
+| a task from a `pup` session | `templates/session.md` | Task, Gate, Scope |
+
+No template fits: use the base body below.
+
+Base body:
 
 ```markdown
 ## Summary
 
-<diagram, diff-sketch, or tree>
+<one mermaid diagram (omit for a trivial change), at most two sentences>
 
 ## Evidence
 
-- **Before:** <screenshot/output/failing test run>
-  **After:** <screenshot/output/passing test run>
+<before -> after: one line each, or one screenshot>
 
 ## Merge Danger
 
-**Door:** <one-way or two-way>
+**Door:** <one-way or two-way>. **Blast Radius:** <one word>.
 
-<optional: description>
-
-**Blast Radius:** <one-word description>
-
-<optional: potential ramifications of merge>
+<only if non-obvious: what a merge reaches>
 
 Lands decision NN. Follow-up to #NNNN.
 ```
 
 > **This repo has no issue tracker.** There is no ticket id in the title and no `Closes` line.
-> A PR anchors itself to the numbered entry in `docs/09-decisions.md` it lands or sharpens
+> A PR anchors itself to the numbered entry in `docs/adr/` it lands or sharpens
 > (`Lands decision 56.`) and to the PRs it follows from (`Follow-up to #93.`); drop the closing
 > line when neither applies. The tracker wording below is kept for reuse in a repo that has one.
 
 ## Sections
 
-Skip all preambles and keep prose brief. Use the project's own language: the `SCHEMA` nouns in `src/core/db.client.ts`, the terms `docs/09-decisions.md` fixed, and the role taxonomy in `docs/conventions/naming.md`.
+Short beats complete: a reviewer reads the diagram, not the prose. The whole body fits on one screen. Skip preambles, never restate the diff or the commit list, and drop a sentence that the diagram already says. Use the project's own language: the `SCHEMA` nouns in `src/core/db.client.ts`, the terms `docs/adr/` fixed, and the role taxonomy in `docs/conventions/naming.md`.
 
 ### Summary
 
-Pick the smallest view that makes the key point clear.
+One Mermaid diagram that shows the shape of the change, then at most two sentences on why. Pick the diagram type by what the change is:
 
-- Show logic or an algorithm as pseudocode:
+| The change is | Diagram |
+| :--- | :--- |
+| a control or data flow, a pipeline, a call path | `flowchart` |
+| components talking to each other over time | `sequenceDiagram` |
+| a lifecycle or state machine | `stateDiagram-v2` |
+| entities and how they relate (a `SCHEMA` change) | `erDiagram` |
+| modules, types or responsibilities | `classDiagram`, or a `flowchart` of module boxes |
 
-```text
-on(save)
-  if content is unchanged
-    return cached result
-  write new content
-  return fresh result
-```
-
-- Show runtime control flow as a call tree:
-
-```text
-submitForm
-  createSession
-    persistPrompt
-    launchAgent
-  navigateToSession
-```
-
-- Show UI structure as a component tree, including state and module boundaries that matter:
-
-```tsx
-<SessionPage> (apps/example/src/routes/session.tsx)
-  useSessionEvents()
-  <SessionToolbar>
-    <RunSkillButton> (packages/ui)
-```
-
-- Show file responsibility or a broad refactor as a shallow file tree:
-
-```text
-src/
-├── commands/       # parses user actions
-├── sessions/       # owns session state
-└── transport/      # sends API requests
-```
-
-- Show component interaction, control flow, or data flow with Mermaid:
+Show what changed, not the whole system: draw only the nodes the reader needs. In a `flowchart`, `classDiagram` or `stateDiagram-v2`, mark the change with `classDef` (`added`, `removed`, `changed`) so the diff reads at a glance; `sequenceDiagram` has no `classDef` (and `erDiagram` support depends on the renderer's Mermaid version), so name the changed participant or entity in its label or a note instead. The three `classDef` lines below are the palette to paste.
 
 ```mermaid
-sequenceDiagram
-    participant User
-    participant UI
-    participant Daemon
-    User->>UI: choose command
-    UI->>Daemon: send expanded prompt
-    Daemon-->>UI: stream result
+flowchart LR
+    submit --> createSession --> launchAgent
+    createSession --> expandSkill:::added --> launchAgent
+    classDef added fill:#d4f8d4,stroke:#2a7
+    classDef removed fill:#f8d4d4,stroke:#a22
+    classDef changed fill:#f8f0c8,stroke:#a82
 ```
 
-- Use `diff` when the point is what changes and the surrounding shape already exists. Match the diff shape to the topic.
-
-For a component change:
-
-```diff
- <SessionPage>
-   useSessionEvents()
-   <SessionToolbar>
-+    <RunSkillButton />
-   <SessionTimeline>
-+    <SkillResultCard />
-```
-
-For a file-layout change:
-
-```diff
- src/
- ├── commands/
-+│   └── show-me.ts       # expands the slash command
- ├── sessions/
--└── transport.ts
-+└── transport/
-+    ├── client.ts
-+    └── stream.ts
-```
-
-For a call-tree or call-stack change:
-
-```diff
- submitForm
-   createSession
-     persistPrompt
-+    expandSkillMention
-     launchAgent
-   navigateToSession
-+    subscribeToEvents
-```
-
-For a state or control-flow change:
-
-```diff
- on(save)
--  write content
-+  if content is unchanged
-+    return cached result
-+  write new content
-+  invalidate cache
-```
-
-- Show the whole block when most of it is new, when omitted context would hide ownership or order, or when the user needs a copyable target shape:
-
-```ts
-function expandSkill(command: string): string {
-  const skillName = command.slice(1);
-  return `use the ${skillName} skill`;
-}
-```
-
-#### Guidance
-
-Place each visual next to the short text it supports. Keep only the calls, files, props, states, and boundaries needed to answer the user's current question or the options to resolve the current discussion point.
-
-You may use one of these, you may use several, it is unlikely you will use all of them. Use your judgement and don't overwhelm the user.
+Define every class you use; an undefined one renders unstyled with no error. Skip the diagram when it adds nothing: a one-line config or docs-only change gets one sentence. Use a fenced `diff` block only for a change too small to draw, and keep the body to the one line that matters: link a file or quote a single changed line instead of pasting a file tree, a pseudocode block or a whole function.
 
 ### Evidence
 
-Concrete evidence that the change works. Show a before and after.
-
-Screenshots are S-tier, when the environment is set up for it and the change is visual.
-
-Execution-based evidence is A-tier. Test results, console output. Show the exact test that now fails and passes, using pseudocode.
+One line each for before and after. A screenshot is best for a visual change. Otherwise name the test that now passes and the one-line result it gave, or the command and its output trimmed to the line that matters. Never paste a log.
 
 ### Merge Danger
 
-Describe whether it's a one-way or two-way door. You can walk back through two-way doors, but not one-way doors. A PR that is cheap to roll back is lower risk. Changes that involve destructive actions or hard-to-reverse decisions are one-way doors.
+**Door:** one-way when the change is destructive or hard to reverse, otherwise two-way. **Blast Radius:** one word from `none`, `docs`, `cli`, `gate`, `store`, `sessions`, `fleet`. Add a sentence only when what a merge reaches is not obvious from those two.
 
-The blast radius is the potential impact or scope of the changes introduced by this PR. Consider all possibilities. Examples are layout shift, breakages for consumers, mobile responsiveness, etc. Name it in one word first so it scans (in this repo: `none`, `docs`, `cli`, `gate`, `store`, `sessions`, `fleet`), then put the ramifications below it.
-
-In this repo the doors worth naming: a `SCHEMA` or `MIGRATIONS` change in `src/core/db.client.ts` reaches every store under `~/.pupitre/` on next open (say whether it is additive and nullable, and what a store created before it does); a gate stage, compiled hook, or profile-compiler change reaches every session launched after it merges, including the conductor's; anything that shells out (`git`, `gh`, `tmux`, `claude -p`) is where the security review looks, so name what a session-controlled worktree could feed it.
+Doors worth naming in this repo: a `SCHEMA` or `MIGRATIONS` change in `src/core/db.client.ts` reaches every store under `~/.pupitre/` on next open (additive and nullable, and what an older store does); a gate stage, compiled hook, or profile-compiler change reaches every session launched after it merges, the conductor's included; anything that shells out (`git`, `gh`, `tmux`, `claude -p`) is where the security review looks, so name what a session-controlled worktree could feed it.
 
 ### Review dispositions (optional)
 
@@ -192,9 +105,9 @@ After a review round, add one line per round to the body: `Round N (<sha>), disp
 
    Read the diff for the key files (`git diff <trunk>...HEAD -- <path>`); on large diffs lean on `--stat` plus the important files.
 
-2. **Ground in the decisions log (read-only).** Grep the diff and commit bodies for `decision \d+` and read those entries in `docs/09-decisions.md`; grep `git log <trunk>..HEAD` for `#\d+` to find the PRs this one follows from. A PR that edits the decisions log lands the entry it adds. No decision touched: derive from diff + commits.
+2. **Ground in the decisions log (read-only).** Grep the diff and commit bodies for `decision \d+` and read those entries in `docs/adr/`; grep `git log <trunk>..HEAD` for `#\d+` to find the PRs this one follows from. A PR that edits the decisions log lands the entry it adds. No decision touched: derive from diff + commits.
 
-3. **Draft title + body together.** Title per [Title format](#title-format); body to a temp file (`mktemp`) per the template and [Sections](#sections), obeying [Body rules](#body-rules). For an existing PR, treat the current title and body as a draft, not a constraint.
+3. **Draft title + body together.** Start from the template in the table above. Title per [Title format](#title-format); body to a temp file (`mktemp`) per the template and [Sections](#sections), obeying [Body rules](#body-rules). For an existing PR, treat the current title and body as a draft, not a constraint.
 
 4. **Create or update the PR.** Show the drafted **title** and **body** + the exact `gh` command; quick confirm before running (notifies reviewers + CODEOWNERS) unless told to just do it.
 
@@ -213,7 +126,7 @@ After a review round, add one line per round to the body: `Round N (<sha>), disp
 Communicate *what changed and why* at a glance, specific enough that a reviewer can predict the diff. GitHub auto-appends ` (#NNNN)` on merge; do not write it yourself.
 
 ```
-<type>(<scope>): <summary> (PROJ-XXXX)
+<type>(<scope>): <summary>
 ```
 
 - **`<type>`**: dominant intent of the diff.
@@ -231,13 +144,13 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
   Mixed diff: pick the user-visible win, mention the rest in the Summary.
 - **`<scope>`**: optional but usually present. Lowercase kebab, naming the component or area touched. Common scopes in this repo: `gate`, `cli`, `ui`, `conductor`, `watch`, `profile`, `init`, `store`, `adapters`, `claude`, `report`, `tooling`, `skills`, `deps`. Multi-scope `(gate,cli)` only when both are non-trivial. Drop the scope when the change is repo-wide.
 - **`<summary>`**: imperative present tense, lowercase first word, no trailing period. Proper nouns keep their case (`Biome`, `SQLite`, `Vitest`, `GitHub`); double quotes around identifiers are fine.
-- **`(PROJ-XXXX)`**: a tracker id; there is none here, so drop it. Follow-ups read `(follow-up to #NNNN)`.
+- **Follow-ups** end the summary with `(follow-up to #NNNN)`. There is no tracker id.
 
 **Lint:**
 
 - No em-dash (`—` / `–`). Hyphen, colon, or rephrase.
 - No trailing period; no capital after the colon (proper nouns excepted).
-- ≲ 80 chars including `(PROJ-XXXX)`; if over, trim adjectives, not specificity.
+- ≲ 80 chars; if over, trim adjectives, not specificity.
 - Reject generic verbs (`update`, `improve`, `change`, `various`). Strong fix-title names cause, surface, impact: `fix(api): race condition in cache invalidation that caused 502s under load`, not `fix bug`.
 
 **Worked examples:**
@@ -254,7 +167,7 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
 
 - **No em-dash** (`—` / `–`). Hyphen or colon.
 - **No hardcoded hostnames/URLs.** Derive from config; link tracker issues by id/URL only.
-- **Anchor, don't close.** End the body with `Lands decision NN.` when the PR adds or sharpens an entry in `docs/09-decisions.md`, and `Follow-up to #NNNN.` when it continues an earlier PR; GitHub links the `#NNNN`. No `Closes` line: there is no tracker to close anything on.
+- **Anchor, don't close.** End the body with `Lands decision NN.` when the PR adds or sharpens an entry in `docs/adr/`, and `Follow-up to #NNNN.` when it continues an earlier PR; GitHub links the `#NNNN`. No `Closes` line: there is no tracker to close anything on.
 - **No attribution footer.** Never add `🤖 Generated with Claude Code` (or any agent attribution) to the PR body. The `Co-Authored-By` trailer on commits is the only attribution.
 
-The Summary views are adapted from Dex Horthy's `show-me` skill (humanlayer/skills).
+The Summary diagram guidance is adapted from Dex Horthy's `show-me` skill (humanlayer/skills).
