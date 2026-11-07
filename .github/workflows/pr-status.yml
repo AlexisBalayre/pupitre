@@ -83,6 +83,32 @@ jobs:
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+            // The newest bot-opened, unresolved review thread, as `ci-wait.service.ts` reads them.
+            async function hasOpenBotThread(number) {
+              let after = null;
+              do {
+                const { repository } = await github.graphql(
+                  `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $after) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes { isResolved comments(first: 1) { nodes { author { login } } } }
+                        }
+                      }
+                    }
+                  }`,
+                  { owner, repo, number, after },
+                );
+                const threads = repository.pullRequest.reviewThreads;
+                if (threads.nodes.some((t) => !t.isResolved && t.comments.nodes[0]?.author?.login === "github-actions")) {
+                  return true;
+                }
+                after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
+              } while (after);
+              return false;
+            }
+
             async function statusOf(number) {
               // `mergeable` is computed lazily: null until GitHub has worked it out.
               let pr;
@@ -115,12 +141,20 @@ jobs:
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 owner, repo, ref: pr.head.sha, per_page: 100,
               });
-              // The poster sets `success` on every run it posted, findings or not (`pup fix` relays
-              // a review's threads only behind a `success` status, decision 90), so the findings
-              // are read from the description. A crashed review is `failure` and stays ci-failing.
+              // The poster sets `success` on every run it posted, findings or not (decision 90).
               const review = combined.statuses.find((s) => s.context === "claude-review");
-              if (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) {
+              // An unresolved bot thread is an important the review raised and nobody closed: it
+              // outlives the pushes that clear the status description (an incremental round never
+              // re-raises a prior important). The description covers the round just posted.
+              if (
+                (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
+                (await hasOpenBotThread(number))
+              ) {
                 return "pr/review-open";
+              }
+              // A quick or area-restricted pass is no merge signal.
+              if (review?.state === "success" && review.description?.startsWith("partial review")) {
+                return "pr/ci-pending";
               }
               const contexts = new Set(combined.statuses.map((s) => s.context));
               const runs = (
