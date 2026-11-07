@@ -1,0 +1,131 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:35:56.253Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381910775",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381910775",
+  "actor": "AlexisBalayre",
+  "commit_sha": "92ca985e83fdd689413daf7a1a0b163d035bf0bd",
+  "source": "pr",
+  "pr_number": 235,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "context",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "context",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "package.json",
+      "line": "43",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new build script type-checks only non-test `src` files. The merge gate's only root type-check runs through `build`, so after this change no test file is type-checked by the gate.",
+      "body": "**After this change the merge gate type-checks no test file.**\n\nThe gate runs exactly three root stages: `build`, `test` and `lint` (`const GATE_STAGES: GateStage[] = ['build', 'test', 'lint'];` in `src/adapters/typescript.adapter.ts`). `gateCommands` runs the package.json script with the same name as each stage. The root `typecheck` script is never run, because the `typecheck` stage exists only for nested packages (`NESTED_STAGES`, `merge-gate.service.ts` L2574-2578).\n\nBefore this PR, `build` was a bare `tsc` over `include: [\"src\"]` with no exclude, so the gate's build stage type-checked every `src/**/*.test.ts`. The new build is:\n\n```json\n\"build\": \"tsc -p tsconfig.build.json\",\n```\n\n`tsconfig.build.json` sets `include: [\"src\"]` and `exclude: [\"src/**/*.test.ts\"]`. That covers neither the test files still in `src/` nor anything under `test/`. The other two stages don't fill the gap: `vitest run` strips types without checking them, and `lint` is `biome check . && bash scripts/adr-index.sh --check`. The only workflow in `.github/workflows/` is the review workflow.\n\nResult: a test with a type error (wrong call signature, stale fixture type, bad `@src`/`@test` import) now passes the gate and lands. Before this PR it failed `build`. The `pnpm typecheck covers test/` acceptance criterion holds, but only the local Stop hook runs that script.\n\nTo restore the coverage and keep `dist` free of tests, run the full type-check as part of `build` (`pnpm typecheck && tsc -p tsconfig.build.json` also works and doesn't repeat the command).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/92ca985e83fdd689413daf7a1a0b163d035bf0bd/package.json#L43-L43\nhttps://github.com/AlexisBalayre/pupitre/blob/92ca985e83fdd689413daf7a1a0b163d035bf0bd/tsconfig.build.json#L1-L10\nhttps://github.com/AlexisBalayre/pupitre/blob/92ca985e83fdd689413daf7a1a0b163d035bf0bd/src/adapters/typescript.adapter.ts#L49-L49",
+      "suggestion": "    \"build\": \"tsc --noEmit && tsc -p tsconfig.build.json\","
+    },
+    {
+      "file": "src/core/audit.test.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/conventions/testing.md:21-22 says '`src/` keeps relative imports; an alias never appears in a file under `src/`', but this PR adds `import { tempDir } from '@test/helpers/temp-dir.mock.js'` to 34 colocated tests under src/. Nothing breaks, because tsconfig.build.json excludes src/**/*.test.ts and sets paths {}. Either use the relative `../../test/helpers/temp-dir.mock.js` until each area moves, or have the convention say that tests still under src/ during the migration are exempt.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0100-every-temp-directory-a-test-makes-is-removed.md",
+      "line": "12",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0100 still says '`tempDir(prefix)` in `src/test/temp-dir.mock.ts` is the one way a test makes a temp directory'. The helper is now test/helpers/temp-dir.mock.ts, and this is the only reference to the old path left in the repo.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "63-65",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The convention still says \"`pnpm build` is a bare `tsc`\", but build is now `tsc -p tsconfig.build.json` (the point about no specifier rewriting still holds).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "vitest.config.ts",
+      "line": "11",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The transitional comment `// Both trees while the tests move out of src/ (decision 116).` will go stale once the move completes; saying what removes it (e.g. \"drop `src/**` once no test lives there\") would make it hold up better.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/testing.md",
+      "line": "3-22",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "testing.md (lines 3-22) and naming.md (lines 121-129) state the mirrored test/unit layout as already in force, while about 33 test files still sit beside their subjects in src/; the docs don't note the migration in progress.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6374845,
+  "duration_ms": 278142,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 11306,
+    "cache_read": 281951,
+    "cache_creation": 58502,
+    "total": 351771
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 130,
+      "output": 41576,
+      "cache_read": 2409889,
+      "cache_creation": 197383,
+      "cost_usd": 2.4764388
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 6806,
+      "cache_read": 150877,
+      "cache_creation": 31140,
+      "cost_usd": 0.16104569999999999
+    }
+  ],
+  "permission_denials": []
+}
