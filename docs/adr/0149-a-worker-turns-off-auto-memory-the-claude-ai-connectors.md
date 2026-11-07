@@ -37,11 +37,12 @@
     and the code-graph server, neither of which moves the difference. `before` read 14,313
     tokens and `after` 9,714, which is 4,599 fewer (32%). The Chrome instructions, the
     memory file and the denied names were in `before`'s first request and missing from
-    `after`'s. `SendMessage` and the agent listing were in both. In neither run had the
-    claude.ai connectors connected by the first request. In a real worker they had: this
-    session's own first request, 20,292 tokens with the kickoff and the code graph, lists
-    them. So their share of the saving is not in the 4,599.
-    *Tests.* In `profile-compiler.test.ts`, a worker's settings carry `autoMemoryEnabled:
+    `after`'s. `SendMessage` and the agent listing were in both. The claude.ai connectors
+    never connected in either run, so the 4,599 holds nothing of theirs, and what
+    `ENABLE_CLAUDEAI_MCP_SERVERS=false` saves is unmeasured. A real worker does carry them:
+    this session's own first request (20,292 tokens with the kickoff and the code graph)
+    lists them.
+    *Tests.* In `profile-compiler-context.test.ts`, a worker's settings carry `autoMemoryEnabled:
     false` and the five env variables. A worker's deny list holds the fifteen unused tools in
     order, and never `SendMessage`, `ListAgents` or `Agent`. The conductor's env is the
     three variables, and its settings have only `env`, `hooks` and `permissions`.
