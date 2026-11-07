@@ -25,6 +25,10 @@ Coding agents routinely emit low-quality comments and docstrings: restating the 
 
 - Genuinely insightful comments and docstrings that earn their place.
 - Pure wording or tone preferences where the existing prose is accurate and useful.
+- Prose that is accurate but could be worded differently: column width, a vague-but-true header, "reword to ...", or a repeat of a rule the same file already states for another reader. Flag a repeat only when the two copies now contradict.
+- An example or template block that defines more than it uses (an unused `classDef`, a spare placeholder) when it is meant to be copied from.
+- A sibling document that still cites something the PR did not touch. That is a pre-existing gap, not this change's.
+- The same note twice in different words. Merge duplicates into one finding before you return.
 - A comment or docstring carrying a non-obvious WHY (an invariant, unit, ordering, locale or rounding choice, wire or protocol contract, or an error-swallowing / fire-and-forget guarantee), even when it sits over a short or self-descriptive-looking statement. Confirm the line restates only WHAT before flagging it as noise or seam-duplication; load-bearing WHY is exactly what the policy keeps.
 
 When self-validating, confirm a reader would be worse off keeping the prose as written.

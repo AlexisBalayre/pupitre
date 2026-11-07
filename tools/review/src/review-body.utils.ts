@@ -4,9 +4,12 @@ import { type Finding, REVIEWER_AREAS, type RefutedFinding, type ReviewSummary }
  * Renders what the poster submits: the review body, and the line comment for
  * each important anchored inline on the diff. Everything else the run
  * confirmed, and everything validation refuted, renders in the body in
- * collapsed sections, so severity decides how loudly a finding is displayed,
- * never whether it is displayed at all.
+ * collapsed sections, so severity decides how loudly a finding is displayed.
+ * Only the minors are capped (`MINOR_CAP`), and the body says how many it held
+ * back, so a long tail of nits cannot keep a PR in review.
  */
+
+export const MINOR_CAP = 5;
 
 type Listed = Pick<Finding, "file" | "line" | "area" | "description"> & { body?: string | null };
 
@@ -77,18 +80,25 @@ function plural(count: number, noun: string): string {
 export function collapsedSections(summary: ReviewSummary): string[] {
   const nits = summary.findings.filter((finding) => finding.tag === "nit");
   const preExisting = summary.findings.filter((finding) => finding.tag === "pre-existing");
+  // Nits fill the cap first: they are what this diff introduced, pre-existing issues are not.
+  const shownNits = nits.slice(0, MINOR_CAP);
+  const shownPreExisting = preExisting.slice(0, MINOR_CAP - shownNits.length);
+  const heldBack = nits.length + preExisting.length - shownNits.length - shownPreExisting.length;
   const sections: string[] = [];
   if (nits.length > 0) {
     // description, not body: sub-important findings carry no body by contract.
-    sections.push(...detailsBlock(`${plural(nits.length, "minor issue")} (not blocking)`, nits.map(findingLine)));
+    sections.push(...detailsBlock(`${plural(nits.length, "minor issue")} (not blocking)`, shownNits.map(findingLine)));
   }
-  if (preExisting.length > 0) {
+  if (shownPreExisting.length > 0) {
     sections.push(
       ...detailsBlock(
         `${plural(preExisting.length, "pre-existing issue")} (predate this diff)`,
-        preExisting.map(findingLine),
+        shownPreExisting.map(findingLine),
       ),
     );
+  }
+  if (heldBack > 0) {
+    sections.push("", `${plural(heldBack, "more minor issue")} held back (the review lists at most ${MINOR_CAP}).`);
   }
   if (summary.refuted_findings.length > 0) {
     // Displayed so a validator that over-killed a real finding is catchable by
