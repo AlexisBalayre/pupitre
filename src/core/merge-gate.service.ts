@@ -746,21 +746,25 @@ function directoryIdentity(path: string): LockIdentity | undefined {
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
  * could be another lock's (decision 88). False for such a directory. One
- * whose identity cannot be read is left and named too, but counts as the
- * take's: nothing shows it is another's, and the rename that moved a released
- * lock aside already took it off the lock path, so a correct release never
- * fails the run it ends.
+ * whose identity cannot be read is left and named too. A filesystem fault (EIO,
+ * say) counts it as the take's, so a correct release never fails the run it
+ * ends: the rename already took it off the lock path. EACCES or EPERM does
+ * not, since a session that owns `.git` can chmod it to hide a swapped lock.
  */
 function removeLockDir(dir: string, identity: LockIdentity): boolean {
   let now: LockIdentity | undefined;
   try {
     now = directoryIdentity(dir);
   } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const denied = code === 'EACCES' || code === 'EPERM';
     console.error(
-      `Could not read ${dir}: ${failureSummary(error)}, so it was left as it is. No run reads ` +
-        'it; remove it from the trusted checkout.',
+      `Could not read ${dir}: ${failureSummary(error)}, so it was left as it is. ` +
+        (denied
+          ? 'Treat a session that denied pup its lock as compromised.'
+          : 'No run reads it; remove it from the trusted checkout.'),
     );
-    return true;
+    return !denied;
   }
   if (now?.dev !== identity.dev || now.ino !== identity.ino) {
     console.error(

@@ -2093,19 +2093,25 @@ describe('withMergeLock', () => {
       },
     );
 
-    // The rename took the lock off its path, so it was released: a directory
-    // left aside that cannot be read must not fail the merge it ends.
-    it('returns the result when the moved-aside lock cannot be read, and names it', async () => {
+    /** lstat of the moved-aside lock failing with `code`, every other lstat real. */
+    const asideUnreadable = (code: string) => {
       const real = vi.mocked(lstatSync).getMockImplementation();
       vi.mocked(lstatSync).mockImplementation(((...args: Parameters<typeof lstatSync>) => {
         if (String(args[0]).includes('pup-merge.lock.released-')) {
-          throw Object.assign(new Error('EIO: i/o error, lstat'), { code: 'EIO' });
+          throw Object.assign(new Error(`${code}: lstat failed`), { code });
         }
         return real?.(...args);
       }) as never);
       onTestFinished(() => {
         vi.mocked(lstatSync).mockImplementation(real as never);
       });
+    };
+
+    // The rename took the lock off its path, so it was released: a directory
+    // left aside that a filesystem fault keeps from being read must not fail
+    // the merge it ends.
+    it('returns the result when a fault keeps the moved-aside lock from being read', async () => {
+      asideUnreadable('EIO');
 
       const result = await withMergeLock(repo, () => 'merged');
 
@@ -2116,6 +2122,26 @@ describe('withMergeLock', () => {
       );
       expect(errors.mock.calls.flat().join('\n')).not.toContain('was gone or replaced');
     });
+
+    // A session that owns `.git` can deny pup the moved-aside directory to
+    // hide that it swapped the lock: that stays a lost lock (decision 88).
+    it.each(['EACCES', 'EPERM'])(
+      'fails on the lost lock when %s keeps the moved-aside lock from being read',
+      async (code) => {
+        asideUnreadable(code);
+
+        const locked = withMergeLock(repo, () => 'merged');
+
+        await expect(locked).rejects.toThrow(MergeLockLostError);
+        await expect(locked).rejects.toMatchObject({ result: 'merged' });
+        expect(errors.mock.calls.flat().join('\n')).toMatch(
+          new RegExp(
+            `^Could not read .*pup-merge\\.lock\\.released-[0-9a-f]{16}: .*${code}.*compromised`,
+            'm',
+          ),
+        );
+      },
+    );
   });
 
   describe('waiting for a live holder (decision 88)', () => {
