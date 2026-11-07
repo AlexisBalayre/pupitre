@@ -327,6 +327,31 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(needsYou(buildDashboardSnapshot(db, repo, Date.now()))).toEqual([]);
   });
 
+  it('lands without the audit when asked, leaving the baseline for pup audit (decision 132)', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    vi.mocked(auditProject).mockClear();
+
+    const outcome = await landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [],
+      audit: false,
+    });
+
+    expect(outcome.audit).toBeUndefined();
+    expect(auditProject).not.toHaveBeenCalled();
+    expect(mainSha()).toBe(merge);
+    expect(existsSync(worktree)).toBe(false);
+    expect(landedEvents()).toHaveLength(1);
+  });
+
   describe('steering the live sessions it overlaps (decision 99)', () => {
     /**
      * A running session forked from main before the land, its branch changing
@@ -449,7 +474,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const outcome = await landMerged();
 
       expect(landedEvents()).toHaveLength(1);
-      expect(outcome.audit.heldOnRegression).toBe(false);
+      expect(outcome.audit?.heldOnRegression).toBe(false);
       expect(getProject(db, pid)?.baseline).not.toBeNull();
       expect(steerEvents('s3')).toEqual([]);
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
@@ -910,7 +935,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       adapters: [measuring(40)],
     });
 
-    expect(outcome.audit.heldOnRegression).toBe(true);
+    expect(outcome.audit?.heldOnRegression).toBe(true);
     expect(getProject(db, pid)?.baseline).toBe(stored);
     expect(landedEvents()).toHaveLength(1);
   });

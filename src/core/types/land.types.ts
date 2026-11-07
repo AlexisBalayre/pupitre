@@ -23,5 +23,6 @@ export interface LandOutcome {
    * worktree on a branch that does not exist.
    */
   keptWorktree?: string;
-  audit: AuditOutcome;
+  /** Absent when the land skipped it (`--no-audit`, decision 132): `pup audit` is then the operator's. */
+  audit?: AuditOutcome;
 }
