@@ -1,0 +1,185 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T15:58:41.337Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42388708419",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42388708419",
+  "actor": "AlexisBalayre",
+  "commit_sha": "03b44c450cf266124b7f780723ddcaad08c91053",
+  "source": "pr",
+  "pr_number": 246,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/pre-commit",
+      "line": "108",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "STAGED_TYPED is built from lists that use --diff-filter=d, so they leave out deleted files. A commit that only deletes a .ts file still imported elsewhere now skips typecheck. Before this change typecheck always ran and caught it.",
+      "body": "`STAGED_TYPED` comes from `\"$STAGED_SOURCE\"` and `\"$STAGED\"`. Both come from `git diff --cached --diff-filter=d --name-only` (line 89), which leaves out deletions:\n\n```sh\nSTAGED=$(git diff --cached --diff-filter=d --name-only)\n...\nSTAGED_TYPED=$(printf '%s\\n%s\\n' \"$STAGED_SOURCE\" \"$STAGED\" | grep -E '\\.(ts|tsx)$|^(package\\.json|tsconfig[^/]*\\.json)$' || true)\n\nif [ -n \"${TYPECHECK_CMD:-}\" ] && [ -n \"$STAGED_TYPED\" ]; then\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/03b44c450cf266124b7f780723ddcaad08c91053/scripts/pre-commit#L89-L110>\n\nTake `git rm src/core/old.service.ts && git commit` while another module still imports that file. `STAGED` is empty, so `STAGED_TYPED` is empty and typecheck is skipped. The hook prints \"All pre-commit checks passed.\" and lets through a commit that does not compile. The same happens when the deletion is committed together with docs-only edits, or when a `.ts` file is renamed to a non-TS name. Before this PR, typecheck ran on every commit (`if [ -n \"${TYPECHECK_CMD:-}\" ]`), so this is a regression in the gate. The amendment's own reasoning (\"a doc, a workflow or a skill cannot break a type\") does not cover deleting TypeScript, because a deletion can break a type.\n\nThe `d` filter is right for lint and `vitest related`, which need files that exist on disk. It is wrong for deciding whether to typecheck. The fix is to build the list from the unfiltered name list, which also drops the redundant `$STAGED_SOURCE` input. No test stages a deletion. A case that commits a module and an importer, `git rm`s the module, and expects `typecheck` in `calls` would cover this.",
+      "suggestion": "STAGED_TYPED=$(git diff --cached --name-only | grep -E '\\.(ts|tsx)$|^(package\\.json|tsconfig[^/]*\\.json)$' || true)"
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "108",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Passing \"$STAGED_SOURCE\" into STAGED_TYPED adds nothing. STAGED_SOURCE is a grep-filtered subset of STAGED, and the hardcoded ts|tsx regex filters it again, so the extra input is dead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "108",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ts/tsx extension list now appears twice, in SOURCE_EXTENSIONS and in the new regex, so the typecheck gate will drift if SOURCE_EXTENSIONS gains an extension such as mts. The lines just above (89-94) build the pattern from SOURCE_EXTENSIONS instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "108",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pnpm-lock.yaml is not in the typecheck trigger. A lockfile-only change (for example a dependency moved within its ^ range, such as @types/node ^26 or typescript ^5.9) can change the resolved types without touching package.json, and that commit now skips typecheck.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/pre-commit.test.ts",
+      "line": "109-117",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test covers the config half of the new trigger. If the `|^(package\\.json|tsconfig[^/]*\\.json)$` alternative is deleted or mistyped, every test still passes and typecheck silently stops running for package.json and tsconfig-only commits. A case that stages only tsconfig.json and expects 'typecheck' in calls would pin it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "vitest.config.ts",
+      "line": "8",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The floor of 2 raises the worker count on small machines, which works against the stated goal. Vitest 4's default in run mode is availableParallelism()-1, so 1 worker on a 2-core runner; with Math.max(2, ...) it becomes 2 (and 2 on a 1-core box). The comment says 'half the cores', but on 2 cores this goes above the default.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0135-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "40",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The amendment is dated but does not name the PR. docs/adr/README.md says a later change appends an amendment \"(dated, with the PR)\". Line 40 reads `*Amendment (2026-11-07).*` with no #246.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0135-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "40-41",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The amendment says \"no `package.json` or `tsconfig*.json`\", but the script's regex only matches those at the repo root (`^package\\.json$`, `^tsconfig[^/]*\\.json$`). A staged `tools/review/package.json` or a nested tsconfig does not trigger typecheck.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "CONTRIBUTING.md",
+      "line": "22",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "CONTRIBUTING.md:22 and README.md:157 say the hook typechecks (and runs the tests) before every commit. This PR makes that false for commits with no TypeScript or type config staged.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "vitest.config.ts",
+      "line": "6-7",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment's second sentence, \"Half the cores, at least two.\", restates the expression below it. Only the first sentence (the WHY) earns its place.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "docs/adr/0135-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "13-14, 38",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The unamended ADR text still says a docs-only commit \"runs lint and typecheck\", which the new amendment and script contradict.",
+      "refutation": "ADR 0135 had already landed with #224. docs/adr/README.md lines 19-21 say a later change appends a dated amendment and \"does not rewrite the landed text\", so the proposed in-place edit would break the rule. The appended amendment is the prescribed form, and its 'also skips typecheck' makes the override explicit. No written rule requires an amendment to list the sentences it supersedes."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1000078,
+  "duration_ms": 149975,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 8960,
+    "cache_read": 233833,
+    "cache_creation": 38913,
+    "total": 281718
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 30,
+      "output": 17889,
+      "cache_read": 330550,
+      "cache_creation": 68802,
+      "cost_usd": 0.8847590000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 7006,
+      "cache_read": 158738,
+      "cache_creation": 51702,
+      "cost_usd": 0.2152488
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 246 --repo AlexisBalayre/pupitre"
+    }
+  ]
+}
