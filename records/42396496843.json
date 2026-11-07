@@ -1,0 +1,78 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:33:29.313Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42396496843",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42396496843",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a7b4da7116a829d6c15c1b5a5900881188285d53",
+  "source": "pr",
+  "pr_number": 253,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/test/helpers/cli-index.mock.ts",
+      "line": "37",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "initRepo's `git init` now goes through runGit without GIT_ENV, so GIT_CONFIG_GLOBAL/SYSTEM are no longer /dev/null; init-time keys (init.templateDir copying template hooks into .git/hooks, init.defaultObjectFormat, init.defaultRefFormat) from /etc/gitconfig or $XDG_CONFIG_HOME/git/config leak into every test repo and stay there.",
+      "body": "**Test repos lose their git-config isolation.** This file's own rule (L25-L27) says *\"Test repos must not inherit the developer's global git config (hooks, signing)\"*. The old call enforced it by passing `GIT_ENV`, which sets `GIT_CONFIG_GLOBAL: '/dev/null'` and `GIT_CONFIG_SYSTEM: '/dev/null'`. The new call passes no env:\n\n```ts\nrunGit(repo, ['init', '-b', 'main']);\n```\n\nNothing in `runGit` takes over that job. It builds its env as `{ ...scrubbedGitEnv(), ...opts.env, ...GIT_HISTORY_ENV }` (`src/core/git-diff.client.ts:524`):\n- `scrubbedGitEnv` (L29-36) only removes the `GIT_DIR` family and the `GIT_CONFIG_PARAMETERS/COUNT/KEY_n/VALUE_n` keys.\n- `GIT_HISTORY_ENV` only sets the replace/graft keys.\n- `GIT_SAFE_CONFIG` pins `core.hooksPath` and the signing keys, but no `init.*` key and no `--template=`.\n\nThe production `git init` that goes through `runGit` passes `--template=` explicitly for this reason (`src/core/merge-gate.service.ts:2826`).\n\nThe callers' `beforeEach` stubs `HOME` to a temp dir, so `~/.gitconfig` stays hidden. `/etc/gitconfig` and `$XDG_CONFIG_HOME/git/config` are now read, though. Any `init.templateDir`, `init.defaultObjectFormat` or `init.defaultRefFormat` set there is written into the fixture repo, and later `GIT_ENV` calls cannot undo it. For example, `src/cli/index.test.ts:297-300` runs `commit` and `checkout` under `GIT_ENV`, with no `hooksPath` pin, so hooks copied in from a template would run. CI runners have no such config, so this would only break on developer machines.\n\nPassing `GIT_ENV` as `opts.env` still routes the call through `runGit`, which is all the decision-73 guard checks, and restores the old behaviour exactly. `opts.env` is applied over the scrubbed env, and `GIT_HISTORY_ENV` still applies last.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a7b4da7116a829d6c15c1b5a5900881188285d53/src/test/helpers/cli-index.mock.ts#L25-L39",
+      "suggestion": "  runGit(repo, ['init', '-b', 'main'], { env: GIT_ENV });"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3055520999999999,
+  "duration_ms": 241284,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 5718,
+    "cache_read": 179299,
+    "cache_creation": 33695,
+    "total": 218722
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 74,
+      "output": 23651,
+      "cache_read": 887935,
+      "cache_creation": 99386,
+      "cost_usd": 1.2489179999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 8,
+      "output": 1849,
+      "cache_read": 33506,
+      "cache_creation": 13911,
+      "cost_usd": 0.05663410000000001
+    }
+  ],
+  "permission_denials": []
+}
