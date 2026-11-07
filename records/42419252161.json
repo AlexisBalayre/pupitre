@@ -1,0 +1,160 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:16:40.179Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42419252161",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42419252161",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7263fdb7280399f3ab1e498346ca514817c78eb3",
+  "source": "pr",
+  "pr_number": 262,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9d0f522a1cbe09fea99dd00556af7dc8a395fd0e",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "91-101",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "39-40",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "139-144",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "215-223",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "156-179",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "3-14",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "416",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`recachedTokens` was exported earlier in this PR for `retro-signals.utils.ts`, but this commit removed that import; its only caller is now `addCalls` in the same file, so drop the `export`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "111",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sizeBucket: c.sizeBucket ?? ''` is a fallback no input can reach: `carryRows` always passes `sizeBucket` as `bucketOf`, which never returns an empty label. It exists only because `ToolCarry.sizeBucket` is now optional (general.md §Altitude / YAGNI: no fallback for a state the surrounding code already guarantees).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "119-150",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`classRows` keeps a second `transcripts` map grouped by class next to the class+model+effort `buckets`, then re-filters all buckets per class (`[...buckets.values()].filter((b) => b.class === klass)`). Grouping the buckets by class once would remove the parallel structure.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2599-2600",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Workers and the conductor write under the dir the project's windows run on; the console under the operator shell's own\" explains both entries of the dirs list, but the second entry now lives in `claudeDirsOf`, and `pup retro` calls it with no comment. Move the who-writes-where explanation onto `claudeDirsOf`'s JSDoc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "29-30",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `writeRetro` JSDoc sentence (\"The Markdown file is for reading and the JSON one for the next tool that reads it, so a retro always leaves both\") restates what the code and return type already show, and names a consumer that does not exist yet. Drop it and keep the owner-only/same-day-replacement sentence.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Incremental delta 9d0f522..7263fdb (one refactor commit, 5 files, ~167 lines). Spawned correctness (opus), maintainability, conventions, docs (sonnet). Skipped security: the delta moves `--since` parsing, `--out` resolution and the CLAUDE_CONFIG_DIR read verbatim into src/core and adds no new trust boundary. Skipped context: no spec, protocol or infra surface. Skipped spec: no closing issue or spec source. All 6 prior importants are unresolved: the prior round had already re-anchored them to 7263fdb, which is still the head. No new importants, so no validators ran."
+    },
+    {
+      "component": "platform",
+      "description": "The orchestrator's first `git show origin/ci/review-metrics:records/...` call failed with a bwrap error (`Can't get type of source .git/config.worktree.lock`). An identical retry succeeded."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2070324000000001,
+  "duration_ms": 102611,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 9026,
+    "cache_read": 376351,
+    "cache_creation": 68739,
+    "total": 454130
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 28,
+      "output": 12298,
+      "cache_read": 498443,
+      "cache_creation": 95441,
+      "cost_usd": 1.0291826
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 4808,
+      "cache_read": 136183,
+      "cache_creation": 46443,
+      "cost_usd": 0.1778498
+    }
+  ],
+  "permission_denials": []
+}
