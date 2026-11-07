@@ -1,0 +1,122 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T21:40:20.118Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42416540237",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42416540237",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d79374a06405d318294b1fe4d4b9258b8ed024cb",
+  "source": "pr",
+  "pr_number": 254,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/claude-review-base-change.yml",
+      "line": "19-38",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A fork PR opened at the same head SHA as one of the owner's PRs, then retargeted, makes this job write a pending `claude-review` status on that commit. The owner's PR loses its SUCCESS verdict, and getting it back takes a billed `@claude review`.",
+      "body": "**Any PR author can now reset the `claude-review` status on someone else's commit.**\n\nA commit status belongs to the repo and the SHA, not to a PR. This job runs under `pull_request_target` with the base repo's token and `statuses: write`. Its only filter is `if: github.event.changes.base`. It writes:\n\n```js\nsha: context.payload.pull_request.head.sha,\nstate: \"pending\",\ncontext: \"claude-review\",\n```\n\nBefore this PR, an outsider could not cause any `claude-review` write: the review job requires `github.actor == github.repository_owner && github.triggering_actor == github.repository_owner` (`claude-code-review.yml` L36-41). Now any GitHub user can:\n\n1. push the head commit of an open owner PR to a fork;\n2. open a PR from it;\n3. retarget that PR to any other branch (the `feature/*` branches exist).\n\nThe job then marks the owner's head `pending: Not reviewed: base branch changed; re-run`. This status is new in this PR, and nothing downstream treats it as finished:\n\n- `pup ci wait` times out and keeps timing out. `reviewDigest` in `src/core/ci-wait.service.ts` L229-270 only accepts SUCCESS, FAILURE, or the comment-only pending text.\n- `pup fix` refuses, because it needs a SUCCESS status (ADR 0090).\n- `pr-status` labels the PR `pr/ci-pending` on its next recompute.\n\nRecovery is a billed full `@claude review`, and the attacker can retarget again to repeat it. Platform details (fork `pull_request_target` runs without approval, statuses are visible per SHA) come from knowledge, not a spike.\n\n**Fix direction:** reviews only ever run for the owner, so a non-owner PR's `claude-review` status protects nothing. Gate the job on, for example, `github.event.pull_request.user.login == github.repository_owner` or `github.event.pull_request.head.repo.full_name == github.repository`. Then revise the header's \"so fork PRs are covered too\".\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d79374a06405d318294b1fe4d4b9258b8ed024cb/.github/workflows/claude-review-base-change.yml#L19-L38",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/claude-review-base-change.yml",
+      "line": "1-3",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "After a retarget, the next push gets an incremental review of only the push delta (or the preflight skips it as comment-only), so the verdict earned against the old base still satisfies the gate on the new head.",
+      "body": "**A push after a retarget restores the gate without reviewing against the new base.**\n\nThe header says \"The next review (a push, or the owner's `@claude review`) replaces the status\". That is true for `@claude review`, which forces `full` mode. It is not true for a push.\n\nThe preflight never looks at the base:\n\n- `priorRecords` (`review-preflight.script.ts` L79-106) reads only `commit_sha`, `timestamp`, `is_error` and `partial`.\n- `decideMode` measures ancestry and merges from the prior reviewed head only:\n\n```ts\nif (!isAncestor || hasMerges) return { kind: \"full\" };\nif (isCommentOnly && trigger !== \"comment\") return { kind: \"skip-comment-only\", priorPath: prior.path };\nreturn { kind: \"incremental\", fromSha: prior.commit_sha, priorPath: prior.path };\n```\n\nThat leaves two outcomes for a plain push on top of the reviewed head:\n\n- **Incremental review.** It covers only `git diff <prior>..HEAD`. Commits the retarget brought into the PR diff, such as a stacked branch's old base, are ancestors of the prior SHA, so they are never reviewed. The poster still marks the new head reviewed.\n- **Comment-only skip.** The preflight posts `Not reviewed: only comments and prose changed since …` on the new head (L204). `pr-status.yml` L133-137 treats that as not running, so with CI green the PR goes straight to `pr/ready`. The base-change marker stays behind on the old SHA.\n\nIn both cases, a verdict earned against the old base satisfies the gate, which is what this workflow exists to prevent.\n\n**Fix direction:** have the preflight detect the base change and force `full`. For example, persist the merge base or base ref in the metrics record, and treat a prior record with a different base as no prior. At minimum, correct the header so it does not claim a push restores the gate.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d79374a06405d318294b1fe4d4b9258b8ed024cb/.github/workflows/claude-review-base-change.yml#L1-L3 · https://github.com/AlexisBalayre/pupitre/blob/d79374a06405d318294b1fe4d4b9258b8ed024cb/tools/review/src/preflight.utils.ts#L219-L246",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "131-136",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `base branch changed` text is hard-coded in both workflows: `claude-review-base-change.yml:36` writes it, and `pr-status.yml` matches it with `includes(...)` on top of the existing `startsWith(\"Not reviewed\")` prefix. If the description is reworded, `pr-status` silently goes back to treating a retargeted head as not running. Matching one full prefix instead (e.g. `startsWith(\"Not reviewed: base branch changed\")`) keeps a single granularity.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/claude-review-base-change.yml",
+      "line": "29-37",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The inline status write nearly duplicates `markNotReviewed` in `tools/review/src/review-preflight.script.ts:63-73` and repeats the `claude-review` context literal a third time. Unlike `markNotReviewed`, which only warns on failure, a `createCommitStatus` error here fails the job. Keep the wording aligned with `markNotReviewed`, or hoist the literals into workflow `env`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": ".github/workflows/claude-review-base-change.yml",
+      "line": "20-22",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Sharing `claude-review-<PR>` with the review job lets a retarget cancel a review that is queued behind a running one, which silently drops the automatic follow-up review of the latest push.",
+      "refutation": "When a retarget cancels a queued review, the job then marks the current head (`context.payload.pull_request.head.sha`) pending with `base branch changed`. This PR's `pr-status.yml` change counts that status as `pr/ci-pending`, so the failure is closed and visible, not silent. The cancelled review would also have run incrementally against the old-base record, which is exactly the verdict the marker exists to block. The reverse ordering ends in the same gate state with or without the shared group, because `decideMode` ignores the base either way (that defect is filed separately under the header finding). The comment's rationale, not racing a review that is posting its verdict, holds."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.8118764,
+  "duration_ms": 277847,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 13428,
+    "cache_read": 230140,
+    "cache_creation": 64620,
+    "total": 308200
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 100,
+      "output": 44849,
+      "cache_read": 1149504,
+      "cache_creation": 238384,
+      "cost_usd": 2.5130607999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 10197,
+      "cache_read": 194151,
+      "cache_creation": 70945,
+      "cost_usd": 0.2988156
+    }
+  ],
+  "permission_denials": []
+}
