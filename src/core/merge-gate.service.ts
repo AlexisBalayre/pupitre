@@ -745,10 +745,23 @@ function directoryIdentity(path: string): LockIdentity | undefined {
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
- * could be another lock's (decision 88). False for such a directory.
+ * could be another lock's (decision 88). False for such a directory. One
+ * whose identity cannot be read is left and named too, but counts as the
+ * take's: nothing shows it is another's, and the rename that moved a released
+ * lock aside already took it off the lock path, so a correct release never
+ * fails the run it ends.
  */
 function removeLockDir(dir: string, identity: LockIdentity): boolean {
-  const now = directoryIdentity(dir);
+  let now: LockIdentity | undefined;
+  try {
+    now = directoryIdentity(dir);
+  } catch (error) {
+    console.error(
+      `Could not read ${dir}: ${failureSummary(error)}, so it was left as it is. No run reads ` +
+        'it; remove it from the trusted checkout.',
+    );
+    return true;
+  }
   if (now?.dev !== identity.dev || now.ino !== identity.ino) {
     console.error(
       `${dir} is no longer the lock directory pup made, so it was left as it is. Treat a ` +

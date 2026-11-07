@@ -84,10 +84,20 @@
       lost lock is printed beside it. `pup merge` and `pup land` catch it, print the outcome as
       usual (the gate report and its merged line, or the landed lines and the audit), then the
       lost-lock refusal, and exit non-zero, so a merge or land made unprotected never reads as a
-      clean success. Every other caller, `pup fix` among them, fails on it as it did before. Any
-      other release error, on the take's own directory still in place, is printed (`Could not
+      clean success. Every other caller fails on it as it did before. For `pup fix` that comes
+      after its section has changed the session: the worktree is restored at the PR's head, the
+      session has moved from merged to running and its `fix_round` event is written, but no
+      window is opened, so `pup fix` refuses with the lost-lock message and exits non-zero with a
+      running session that has no worker. A re-run refuses, since the session is no longer
+      merged. `pup kill <session>` ends the round and puts it back in merged, its PR still open,
+      and says to remove the restored worktree; after that `pup fix` can be run again. A
+      lost-lock `pup fix` does not resume the round, because another run may have moved the
+      branch or the worktree while the lock was gone. Any other release error, on the take's own directory still in place, is printed (`Could not
       release …`) and the result returned: the lock left in place names this process, and a later
-      run reclaims it once the process has exited. The land's audit now runs under the lock too,
+      run reclaims it once the process has exited. A rename aside that succeeds took the lock off
+      its path, so the lock is released even when the moved-aside directory cannot then be read:
+      that directory is left and named, and the result returned, so a correct release never
+      fails a valid merge. The land's audit now runs under the lock too,
       after the steer. It ran after the release, and the steer wakes the sessions most likely to
       be gated next: a gate could read `projects.baseline` before the audit stored its refresh,
       and so judge its branch against the target before the land, or ratchet its stale read over
@@ -164,7 +174,10 @@
     still holds returns its result, prints the error and leaves its pid in place; none leaves a
     signal listener; a land whose lock is renamed away still steers an overlapping session once
     and carries its outcome on the error, and a re-run refuses it; `pup merge` and `pup land`
-    print the merged or landed outcome, then the lost lock, and exit 1; a gate started during a
+    print the merged or landed outcome, then the lost lock, and exit 1; a release whose rename
+    aside succeeds but whose aside directory cannot be read returns the result, names the
+    directory and reports no lost lock; the chmod tests are skipped as root, which writes through
+    a read-only `.git`; a gate started during a
     land's audit runs once the audit has stored its refresh, judges against it and leaves it
     stored; a land without the audit still steers and leaves the baseline; under a fake clock the wait takes the lock once it is released and refuses at
     the timeout, leaving the holder its lock, waits out a pid written after the `mkdir`, and
