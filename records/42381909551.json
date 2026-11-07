@@ -1,0 +1,141 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:33:32.604Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381909551",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381909551",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5e8b829490f92ae0a0590239a8eec399459df50f",
+  "source": "pr",
+  "pr_number": 234,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2342-2347",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The wait message says \"while other test runs are going\" whenever othersTesting() is true, but testRunsElsewhere also returns true when the slots path is unreadable (a planted file, a dangling link, EACCES). In those cases the operator is told a test run is in progress when none was found, and nothing points at the broken slots path. The wait itself is correct; only the wording misleads.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "205",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The testRunsElsewhere JSDoc (and ADR 0134) says \"A dead holder's slot is reclaimed, as every reader of the slots does\", but only acquire and testRunsElsewhere call liveHolders, so \"every reader\" overstates it. \"as acquire does\" would be accurate. The JSDoc also leaves out that a dead gate's wait file is removed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0134-the-gate-waits-for-the-load-only-while-another.md",
+      "line": "36",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0134 hard-wraps at about 100 columns like its neighbours, but line 36 joins two sentences and runs well past that (\"…which already counts. Load from a worker's Claude session, which takes no slot, no longer holds a\"). The last line of the Tests paragraph also breaks short and ragged. Re-wrap both paragraphs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0134-the-gate-waits-for-the-load-only-while-another.md",
+      "line": "31",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"(security review of a4545ff)\" cites a bare commit hash that appears nowhere in the repo, and a squash merge would orphan it. Name the finding in prose or drop the citation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2325",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the waitForLoad JSDoc, \"with none, the load is none of pup's tests, which the wait cannot outlast\" has no clear antecedent for \"which\": it could mean the load, the tests or the wait. The ADR's phrasing is clearer: \"The wait cannot outlast load pup did not cause\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "6254",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The othersGoing helper comment says \"Another gate or a worker holds a test slot\", but the stub stands in for testRunsElsewhere, which is also true for a live gate wait file with no slot held. Say \"another test run is going\" to match the contract, or drop the comment, since the identifier and the test titles already say it (AGENTS.md §Comments).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "208",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Only the new tests pass testRunsElsewhere's options param (Pick<TestSlotOptions, 'dir' | 'slots'>); the one production caller passes nothing. It follows withTestSlot's existing dir/slots injection seam, so it is a borderline case under AGENTS.md §Altitude, not a clear violation.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4319731999999996,
+  "duration_ms": 133205,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8304,
+    "cache_read": 257770,
+    "cache_creation": 42947,
+    "total": 309033
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 20562,
+      "cache_read": 693705,
+      "cache_creation": 101111,
+      "cost_usd": 1.1845929999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 7098,
+      "cache_read": 177932,
+      "cache_creation": 63422,
+      "cost_usd": 0.24738020000000002
+    }
+  ],
+  "permission_denials": []
+}
