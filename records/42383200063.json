@@ -1,0 +1,177 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:52:03.738Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42383200063",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42383200063",
+  "actor": "AlexisBalayre",
+  "commit_sha": "878966a5515035a289016f5b20653c863b564b70",
+  "source": "pr",
+  "pr_number": 224,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "1-5",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new ADR takes number 0132, which `docs/adr/0132-pup-land-no-audit-lets-several-lands-share-one.md` (already on main, merged in via 878966a) uses. The next free number is 0133.",
+      "body": "**Two decisions now share the number 132.** Main already has `docs/adr/0132-pup-land-no-audit-lets-several-lands-share-one.md`: it is in the merge base `0b635b1`, from #240. After the merge, the generated index lists two `0132.` entries (`docs/adr/README.md:154-155`).\n\nThe rule this breaks, from [`docs/adr/README.md`](https://github.com/AlexisBalayre/pupitre/blob/878966a5515035a289016f5b20653c863b564b70/docs/adr/README.md#L6-L16):\n> The number is the decision's number, so every \"decision N\" reference elsewhere stays valid.\n\nIt also says to number a new decision by taking the highest `NNNN` on `origin/main` and adding one, which now gives **0133**.\n\nMain's code already uses \"decision 132\" for `--no-audit`:\n- `src/core/land.service.ts:45`\n- `src/core/types/land.types.ts:26`\n- `src/core/land.test.ts:330`\n\nThis PR also uses 132 for the pre-commit decision, in `scripts/pre-commit:117` (\"(decision 132)\") and in this ADR's heading and `132.` marker. Every \"decision 132\" reference is now ambiguous.\n\nNothing catches this before landing:\n- `scripts/adr-index.sh` regenerates the index with the duplicate in it, so lint stays green.\n- The uniqueness check in `src/core/merge-gate.service.ts` (`AdrIndexRefused`) only runs on the conflict path that regenerates the ADR index.\n\n**Fix:**\n- Rename the file to `0133-…`.\n- Change the heading to `# 0133.` and the marker to `133.`.\n- Change the `scripts/pre-commit` comment to `(decision 133)`.\n- Rerun `bash scripts/adr-index.sh`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/878966a5515035a289016f5b20653c863b564b70/docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md#L1-L5\nhttps://github.com/AlexisBalayre/pupitre/blob/878966a5515035a289016f5b20653c863b564b70/scripts/pre-commit#L116-L119",
+      "suggestion": null
+    },
+    {
+      "file": "docs/workflow.md",
+      "line": "33, 47",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Several docs still describe the hook as running `TEST_CMD` or the full suite: docs/workflow.md:33 and :47 (\"Runs `TEST_CMD` … before every commit\"), CONTRIBUTING.md:22 (\"runs the test suite\"), README.md:157, .claude/hooks/README.md:15 (\"runs `TEST_CMD`, the full Vitest suite\"), the .claude/hooks/quality-checks.sh header, and .claude/project.env:18 (\"Run by scripts/pre-commit\"). The hook now runs only `vitest related`, and `TEST_CMD` is just an on/off switch there. .claude/project.env:7 also says SOURCE_EXTENSIONS only triggers the Stop hooks, but it now also picks which staged files go to pre-commit's `vitest related`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "27-29",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR says no test is selected when `vitest.config.ts` changes. But `vitest.config.ts` matches `SOURCE_EXTENSIONS` (ts), so the hook passes it to `vitest related`. Vitest's default `forceRerunTriggers` covers `**/vitest.config.*/**`, and when a related path matches a trigger, vitest runs the whole suite. So a staged `vitest.config.ts` most likely runs everything, not nothing. Reword the ceiling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "13-14",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"A docs-only commit therefore still runs lint ... as before\" is misleading. Lint is now ungated and runs on every staged file. Before this change it ran only when sources were staged, so a docs-only commit did not run it. Only typecheck is \"as before\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "89",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still present. `git diff --cached --diff-filter=d --name-only` runs without `-z`, so git C-quotes names with unusual bytes (`\"src/caf\\303\\251.ts\"`). The trailing quote makes the `\\.(ts|tsx)$` grep drop the file from `vitest related`, and lint gets a quoted path that doesn't exist. The NUL handling in `run_on_paths` only helps once the list is NUL-separated from the start.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/pre-commit.test.ts",
+      "line": "19",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still present. The fixture `LINT_CMD` is `pnpm exec biome check`, without `--no-errors-on-unmatched`. The ADR leans on that flag for the docs-only case, so the fixture differs from the real profile. The docs-only test passes only because the stub ignores its arguments.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/pre-commit.test.ts",
+      "line": "119-126",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"Blocks the commit when a related test fails\" only checks `status !== 0`, so any earlier failure in the hook would also pass it. It should also assert that the calls reached the vitest step. The `import './sum.js'` in the `src/sum.test.ts` fixture is also never used, because the stub never runs vitest: the \"runs only the tests related to a staged source file\" test checks the arguments passed to vitest, not which tests vitest selects.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "116-119",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `RELATED_TEST_CMD` partly repeats the header (lines 7-8, \"never TEST_CMD\"). It also repeats the ADR, and its first sentence describes what `vitest related` does. The facts worth keeping are that the merge gate owns the full suite and that an empty `TEST_CMD` still turns tests off.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "35-39",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"Tests\" paragraph lists each test case. That duplicates `pre-commit.test.ts` and will drift as cases change. It also repeats claims made earlier in the ADR.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/pre-commit.test.ts",
+      "line": "11",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The new test copies the `GIT_ENV` scrub block (strip `GIT_*`, point `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` at /dev/null) that about 25 test files already carry, e.g. git-diff-client.test.ts:37 and land.test.ts:55. No shared helper exists yet, so extracting one into src/test/ would be a separate sweep.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8481056999999996,
+  "duration_ms": 259097,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 10790,
+    "cache_read": 199917,
+    "cache_creation": 47820,
+    "total": 258537
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 72,
+      "output": 31899,
+      "cache_read": 872841,
+      "cache_creation": 105800,
+      "cost_usd": 1.4852962000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 13710,
+      "cache_read": 258325,
+      "cache_creation": 79914,
+      "cost_usd": 0.36280950000000006
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-files tools/review --format=%(path) -- *.json *.config.ts"
+    }
+  ]
+}
