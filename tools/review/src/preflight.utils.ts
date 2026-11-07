@@ -91,6 +91,19 @@ export function newestCleanRecord(records: PriorRecord[]): PriorRecord | null {
   return newest;
 }
 
+/**
+ * The round this run is: the PR's complete reviews so far, one per head, plus
+ * this one. A partial review or a failed run is not a round the author owed an
+ * answer to (REVIEW.md §1), and a rerun on the same head is not a new one.
+ */
+export function reviewRound(records: PriorRecord[]): number {
+  const heads = new Set<string>();
+  for (const record of records) {
+    if (!record.is_error && !record.partial && record.commit_sha !== null) heads.add(record.commit_sha);
+  }
+  return heads.size + 1;
+}
+
 /** One file of `git diff --raw -z --no-abbrev --no-renames`. */
 export interface RawDiffEntry {
   oldMode: string;

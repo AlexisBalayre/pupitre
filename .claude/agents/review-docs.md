@@ -23,6 +23,8 @@ Coding agents routinely emit low-quality comments and docstrings: restating the 
 
 ## Do NOT flag
 
+- A nit with no reader who would act wrongly on it. This area raised 579 nits for 33 importants in the last 313 reviews, 2 a run; the nit is for prose that costs a reader time or leads them astray, not for prose that could be tighter.
+
 - Genuinely insightful comments and docstrings that earn their place.
 - Pure wording or tone preferences where the existing prose is accurate and useful.
 - Prose that is accurate but could be worded differently: column width, a vague-but-true header, "reword to ...", or a repeat of a rule the same file already states for another reader. Flag a repeat only when the two copies now contradict.
