@@ -18,6 +18,14 @@
     gate. Only a slot's holder decides this, read the way every slot is, so a dead gate's slot is
     reclaimed and holds no worker back. A run with `PUP_TEST_SLOT` set still takes no slot, so a
     gate run inside a session's test run is unaffected.
+    A worker's wait is now bounded, where decision 96 left it unbounded. A gate's whole suite
+    runs before the worker's (10 minutes at the stage cap), back-to-back gates from several
+    projects could keep a worker out without end, and a worker's Bash call runs 600 s before it
+    is moved to the background. So `pup session test` waits at most 8 minutes
+    (`SESSION_SLOT_WAIT_MS`), then runs nothing, prints `No test slot came free in 480.0s: the
+    test slots are busy with merge gates or other sessions' runs. Nothing ran; retry ``pup
+    session test``.` and exits 75 (sysexits' `EX_TEMPFAIL`). Only the wait is bounded: a run that
+    starts late in it can still outlast the 600 s.
     The wait line names the gate first, since it is what the worker waits for whatever else is
     free: `Waiting for the merge gate for t-2 (pid 4343) to end its test run, beside session t-1
     (pid 4242).` With no gate holding a slot the line is decision 96's. A run was told once; a
@@ -34,12 +42,14 @@
     session's commit-time suite to what the gate does not already run, is a follow-up; until then
     this rule protects the gate from `pup session test` runs only.
     Ceilings: a gate's slot now keeps every worker's test run waiting, not one of two, so a gate
-    run that hangs, or a live process holding a slot forged as a gate's, stalls sessions' tests
-    until it ends; a gate's run is bounded by its stages' timeouts, and a forged slot is decision
+    run that hangs, or a live process holding a slot forged as a gate's, fails every session's
+    `pup session test` after its 8-minute wait until it ends; a gate's run is bounded by its stages' timeouts, and a forged slot is decision
     96's ceiling already. The rule is fairness among cooperating sessions, as decision 96's
     priority is, not a boundary.
     Tests: a worker waits while a gate holds one slot and the other is free, and starts when the
-    gate ends; a worker waiting beside a gate and a session prints the gate's line and stays
+    gate ends; a dead gate's slot is reclaimed and holds no worker back; a `pup session test`
+    whose wait outlasts its bound runs nothing, prints the retry line and answers 75, and the
+    bound is under 600 s; a worker waiting beside a gate and a session prints the gate's line and stays
     waiting after the session's slot frees; a gate takes a free slot beside a worker's run; a
     worker that began waiting on two sessions is told again when a gate queues ahead of it; a
     gate served before longer-waiting workers now keeps both of them out until its run ends. The

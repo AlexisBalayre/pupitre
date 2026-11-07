@@ -13,7 +13,7 @@ import {
 import { constants, freemem, homedir } from 'node:os';
 import { join } from 'node:path';
 import { detectAdapters } from '../adapters/adapter.registry.js';
-import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
+import { formatDuration, readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 
@@ -49,6 +49,20 @@ const POLL_MS = 1000;
  */
 export const GATE_SLOT_WAIT_MS = GATE_COMMAND_TIMEOUT_MS;
 
+/**
+ * The longest a session's `pup session test` waits for a slot (decision 140),
+ * under the 600 s a worker's Bash call runs before it is moved to the
+ * background: with gates served first and alone, back-to-back gates could
+ * otherwise keep a worker's run waiting without end.
+ */
+export const SESSION_SLOT_WAIT_MS = 8 * 60 * 1000;
+
+/** `pup session test`'s status when no slot came free in time: sysexits' EX_TEMPFAIL, retry. */
+export const SLOTS_BUSY_STATUS = 75;
+
+/** Thrown out of `withTestSlot` when a session's wait runs out, so nothing runs. */
+class SlotWaitExpiredError extends Error {}
+
 /** Who takes a slot: the merge gate goes first, a worker's `pup session test` after it. */
 type SlotHolderKind = 'gate' | 'worker';
 
@@ -66,7 +80,10 @@ export interface TestSlotOptions {
   pollMs?: number;
   /** How long to wait before running without a slot; forever when unset. */
   maxWaitMs?: number;
-  /** Called when `maxWaitMs` ran out and the run goes ahead without a slot. */
+  /**
+   * Called when `maxWaitMs` ran out, before the run goes ahead without a slot;
+   * what it throws ends the call with nothing run, as `pup session test`'s does.
+   */
   onWaitExpired?: () => void;
   /**
    * Set, the run goes ahead without a slot when the slots cannot be used at
@@ -435,7 +452,9 @@ export function sessionTestCommand(repoPath: string): GateCommand | undefined {
  * the first word after its script as `$0`, so a custom adapter's script gets a
  * name there and the files as `"$@"`, its text untouched. Answers the
  * run's exit status; an interrupt or a stop of pup's own reaches the run too,
- * so the slot is never freed under a suite that is still going.
+ * so the slot is never freed under a suite that is still going. A wait that
+ * outlasts `SESSION_SLOT_WAIT_MS`, unless `slots` names another bound, runs
+ * nothing, says to retry and answers `SLOTS_BUSY_STATUS` (decision 140).
  */
 export async function runSessionTest(req: {
   command: GateCommand;
@@ -448,36 +467,52 @@ export async function runSessionTest(req: {
   const shellScript = command.command === 'sh' && command.args[0] === '-c';
   const separator =
     args.length === 0 ? [] : command.command === 'npm' ? ['--'] : shellScript ? ['sh'] : [];
-  return withTestSlot(
-    { kind: 'worker', label: req.sessionId },
-    () =>
-      new Promise<number>((resolve, reject) => {
-        const child = spawn(command.command, [...command.args, ...separator, ...args], {
-          cwd: req.cwd,
-          env: { ...process.env, [HELD_SLOT_ENV]: req.sessionId },
-          stdio: 'inherit',
-        });
-        const forward = (signal: NodeJS.Signals): void => {
-          child.kill(signal);
-        };
-        process.on('SIGINT', forward);
-        process.on('SIGTERM', forward);
-        const settle = (): void => {
-          process.off('SIGINT', forward);
-          process.off('SIGTERM', forward);
-        };
-        child.on('error', (error) => {
-          settle();
-          reject(error);
-        });
-        child.on('close', (status, signal) => {
-          settle();
-          // A shell's convention for a run a signal ended.
-          resolve(status ?? 128 + (signal ? constants.signals[signal] : 0));
-        });
-      }),
-    req.slots,
-  );
+  const maxWaitMs = req.slots?.maxWaitMs ?? SESSION_SLOT_WAIT_MS;
+  try {
+    return await withTestSlot(
+      { kind: 'worker', label: req.sessionId },
+      () =>
+        new Promise<number>((resolve, reject) => {
+          const child = spawn(command.command, [...command.args, ...separator, ...args], {
+            cwd: req.cwd,
+            env: { ...process.env, [HELD_SLOT_ENV]: req.sessionId },
+            stdio: 'inherit',
+          });
+          const forward = (signal: NodeJS.Signals): void => {
+            child.kill(signal);
+          };
+          process.on('SIGINT', forward);
+          process.on('SIGTERM', forward);
+          const settle = (): void => {
+            process.off('SIGINT', forward);
+            process.off('SIGTERM', forward);
+          };
+          child.on('error', (error) => {
+            settle();
+            reject(error);
+          });
+          child.on('close', (status, signal) => {
+            settle();
+            // A shell's convention for a run a signal ended.
+            resolve(status ?? 128 + (signal ? constants.signals[signal] : 0));
+          });
+        }),
+      {
+        ...req.slots,
+        maxWaitMs,
+        onWaitExpired: () => {
+          throw new SlotWaitExpiredError();
+        },
+      },
+    );
+  } catch (error) {
+    if (!(error instanceof SlotWaitExpiredError)) throw error;
+    console.error(
+      `No test slot came free in ${formatDuration(maxWaitMs)}: the test slots are busy with ` +
+        "merge gates or other sessions' runs. Nothing ran; retry `pup session test`.",
+    );
+    return SLOTS_BUSY_STATUS;
+  }
 }
 
 /**

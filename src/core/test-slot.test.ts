@@ -21,6 +21,8 @@ import {
   GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
   runSessionTest,
+  SESSION_SLOT_WAIT_MS,
+  SLOTS_BUSY_STATUS,
   type SlotHolder,
   SlotWaitInterruptedError,
   sessionTestCommand,
@@ -280,6 +282,24 @@ describe('withTestSlot (decision 96)', () => {
       expect(log).toEqual(['s1', 'gate s9', 's2']);
       worker.end();
       await worker.settled;
+    });
+
+    it("holds no worker back with a dead gate's slot, reclaiming it", async () => {
+      writeFileSync(
+        join(dir, 'slot-0.lock'),
+        JSON.stringify({ kind: 'gate', label: 'gone', pid: deadPid(), token: 'x' }),
+      );
+      const log: string[] = [];
+      const held = run('worker', 's1', log);
+      await tick();
+
+      expect(log).toEqual(['s1']);
+      expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toMatchObject({
+        kind: 'worker',
+        label: 's1',
+      });
+      held.end();
+      await held.settled;
     });
 
     it('takes a free slot beside a worker already running', async () => {
@@ -692,6 +712,39 @@ describe('runSessionTest (decision 96)', () => {
     expect(await status).toBe(143);
     expect(process.listeners('SIGTERM')).toEqual(before);
     expect(readdirSync(join(dir, 'slots'))).toEqual([]);
+  });
+
+  it('runs nothing and asks for a retry once its wait outlasts its bound (decision 140)', async () => {
+    const dir = tempDir('pup-session-test-');
+    const slots = join(dir, 'slots');
+    mkdirSync(slots);
+    // Held by a live gate in another process, the other slot free.
+    writeFileSync(
+      join(slots, 'slot-0.lock'),
+      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+    );
+    const ran = join(dir, 'ran');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+    const status = await runSessionTest({
+      command: { stage: 'test', command: 'touch', args: [ran] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: slots, pollMs: 10, maxWaitMs: 50 },
+    });
+
+    expect(status).toBe(SLOTS_BUSY_STATUS);
+    expect(existsSync(ran)).toBe(false);
+    expect(errors).toHaveBeenCalledWith(
+      "No test slot came free in 0.1s: the test slots are busy with merge gates or other sessions' " +
+        'runs. Nothing ran; retry `pup session test`.',
+    );
+    expect(readdirSync(slots)).toEqual(['slot-0.lock']);
+  });
+
+  it('bounds its wait under the 600 s a worker gives a Bash call', () => {
+    expect(SESSION_SLOT_WAIT_MS).toBeLessThan(600_000);
   });
 
   it('fails with the error of a command that cannot start, freeing its slot', async () => {
