@@ -1,0 +1,163 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:01:51.509Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42393794306",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42393794306",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3e6f30ab42d2ccbeead5ad94a2f1ca468d413df2",
+  "source": "pr",
+  "pr_number": 242,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "acf6c3105eb35202d6f4deca1189e700391ab417",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "30-33",
+      "status": "resolved"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "58-60",
+      "status": "resolved"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "91-104",
+      "status": "resolved"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "106",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "115",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A head reached by a comment-only push keeps a permanent \"Not reviewed\" pending `claude-review` status. This line reads it as a running check, so the PR is stuck on `pr/ci-pending` (\"Checks are still running\") until another code push or an `@claude review`.",
+      "body": "**A comment-only push leaves the PR stuck on `pr/ci-pending`**\n\nThis delta rewrote the line, and it still treats any individual `pending` status as a running check:\n\n```js\nif (runs.some((c) => c.status !== \"completed\") || combined.statuses.some((s) => s.state === \"pending\")) {\n  return \"pr/ci-pending\";\n}\n```\n\nThe review preflight sets a `pending` status on purpose, and it is a final marker, not an in-progress one. On a push that only changes comments or prose (`preflight.utils.ts:244`, `skip-comment-only`), it sets the status and then skips the review (`tools/review/src/review-preflight.script.ts` L198-206):\n\n```ts\n// Pending, not green, on the PR at this head, so a merge here is not read as\n// reviewed; nothing requires the check, so it never blocks the merge.\nmarkNotReviewed(headSha, `Not reviewed: only comments and prose changed since ${priorSha?.slice(0, 7)}`);\nout(\"skip\", \"true\");\n```\n\nWith `skip=true`, the poster and every later step that could write `claude-review` are skipped (`claude-code-review.yml` L398, L439, L453, L469). That status stays `pending` on that SHA for good. The `workflow_run` recompute then labels the PR `pr/ci-pending` (\"Checks are still running\"), even though nothing is running. Waiting never clears it. Only a code push or an `@claude review` does.\n\nThe pre-delta `combined.state === \"pending\"` behaved the same way. The workflow is new in this PR, so it ships with this behavior. The preflight's intent, \"not read as reviewed\", rules out `pr/ready`, but it does not make \"checks are still running\" true.\n\nPossible fixes (your design call):\n- Don't count the preflight's \"Not reviewed\" marker as pending, e.g. `!(s.context === \"claude-review\" && s.description?.startsWith(\"Not reviewed\"))`.\n- Map it to a distinct, honest label.\n- Have the preflight signal \"not reviewed\" without using `pending`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3e6f30ab42d2ccbeead5ad94a2f1ca468d413df2/.github/workflows/pr-status.yml#L108-L117\nhttps://github.com/AlexisBalayre/pupitre/blob/3e6f30ab42d2ccbeead5ad94a2f1ca468d413df2/tools/review/src/review-preflight.script.ts#L198-L206",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "56-65",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Any outside account can trigger a recompute of every open PR by posting a comment, and these runs no longer collapse, so a comment flood can use up the repo's shared GITHUB_TOKEN hourly API budget.",
+      "body": "**Any account can now start an all-PR recompute, and nothing limits how many run at once**\n\nHow it happens:\n- `Claude Code Review` triggers on `issue_comment: [created]` (`claude-code-review.yml` L23-24). The owner check sits only on the job, so every comment on any issue or PR creates a run whose jobs all skip.\n- That run still fires `workflow_run: completed` (medium confidence, this is GitHub behavior). Comment-triggered runs run on main, so `workflow_run.pull_requests` is empty. `Label PRs` runs on `pull_request_target` and gives the same empty list.\n- Before this delta, an empty list did nothing. Now lines 60-63 fall through and recompute every open PR.\n- The delta also replaced the single `pr-status` group (one running, at most one pending) with `pr-status-${{ github.event.pull_request.number || github.run_id }}`. Each such run now gets its own group, so N comments start N parallel jobs.\n\nCost per comment:\n- 6 `createLabel` calls, then `pulls.list`.\n- Per open PR: 1-5 `pulls.get`, plus `listReviews`, `getCombinedStatusForRef`, `checks.listForRef`, `listLabelsOnIssue`, and the label writes.\n- That is about 60-100 requests with 10 open PRs.\n\nGITHUB_TOKEN is limited to 1,000 requests per hour per repository, and every workflow shares that budget. Ten to twenty comments an hour can therefore starve the review preflight's and poster's `claude-review` status writes, `Label PRs`, and this job.\n\nPossible fix:\n- Skip `workflow_run` runs that did no work: `github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'skipped'`.\n- Have the recompute-all runs share one group so a burst collapses, while linked runs stay per PR: `pr-status-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'all' }}`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3e6f30ab42d2ccbeead5ad94a2f1ca468d413df2/.github/workflows/pr-status.yml#L56-L65\nhttps://github.com/AlexisBalayre/pupitre/blob/3e6f30ab42d2ccbeead5ad94a2f1ca468d413df2/.github/workflows/pr-status.yml#L35-L39",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "32-36",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The concurrency comment says workflow_run runs \"recompute every open PR\". That is not true when `workflow_run.pull_requests` is populated, e.g. a Claude Code Review run from a same-repo PR's `pull_request` event. Such a run targets only PR N, but in a `run_id` group, so it runs alongside `pr-status-N` instead of being serialized with it. Converging runs are harmless (`addLabels` of the same label is idempotent, a `removeLabel` 404 is handled). Two concurrent runs that compute different labels inside the roughly 1 s window between `listLabelsOnIssue` and `addLabels` could leave two `pr/*` labels or a stale one. Keying the group on `github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || github.run_id` would serialize the linked case. At minimum, the comment should say what actually happens.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "5",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Header line 5 is about 160 columns, against the roughly 100-column wrap of the rest of the header. The trigger list is accurate (opened, reopened, synchronize, ready_for_review, converted_to_draft, closed). It needs rewrapping, and it can be shortened too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "107",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `bad` conclusions omit `stale` and `startup_failure`, which the Checks API also reports as non-success terminal conclusions, so such a run would count as ready.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "106",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Hidden coupling: `!contexts.has(c.name)` assumes a check run and a commit status are the same thing exactly when their strings are equal. The comment says 'a context that has a status' but never names the actual pair (the review poster's status context and its check-run name). A rename on either side silently reintroduces the stale failed check run, with no failure to point at the cause. Name the pair in the comment, or filter on that one explicit name.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "93-117",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The CI-decision block is harder to read after the delta. One 5-line comment explains two unrelated filters (status overrides check run, and self-exclusion). The bad-conclusion and failure-state predicates now sit in a multi-line `if` beside an inline `pending` check on a long line. `combined.statuses` is scanned twice, and `runs` is filtered in an inline IIFE-style expression. Splitting the comment per filter, and deriving `failing` and `pending` as named booleans, would let each condition be read on its own.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2415788,
+  "duration_ms": 277942,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 13980,
+    "cache_read": 334482,
+    "cache_creation": 57609,
+    "total": 406085
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 42691,
+      "cache_read": 719521,
+      "cache_creation": 171932,
+      "cost_usd": 2.0304512
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 7206,
+      "cache_read": 112511,
+      "cache_creation": 51109,
+      "cost_usd": 0.2111276
+    }
+  ],
+  "permission_denials": []
+}
