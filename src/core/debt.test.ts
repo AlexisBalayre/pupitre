@@ -571,6 +571,7 @@ describe('judgeDebt', () => {
           complexity: {
             before: [{ file: 'src/feature.ts', complexity: 2 }],
             after: [{ file: 'src/feature.ts', complexity: 9 }],
+            sources: {},
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -583,6 +584,7 @@ describe('judgeDebt', () => {
           complexity: {
             before: [{ file: 'src/feature.ts', complexity: 2 }],
             after: [{ file: 'src/feature.ts', complexity: 17 }],
+            sources: {},
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -595,6 +597,7 @@ describe('judgeDebt', () => {
           complexity: {
             before: [{ file: 'src/feature.ts', complexity: 2 }],
             after: [{ file: 'src/feature.ts', complexity: 40 }],
+            sources: {},
           },
         },
         expected: {
@@ -608,7 +611,11 @@ describe('judgeDebt', () => {
       'a file the branch added is not read as a rise from zero',
       {
         measured: {
-          complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 20 }] },
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 20 }],
+            sources: {},
+          },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
       },
@@ -617,7 +624,11 @@ describe('judgeDebt', () => {
       'a file the branch added holds exactly the cap',
       {
         measured: {
-          complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 50 }] },
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 50 }],
+            sources: {},
+          },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
       },
@@ -626,7 +637,11 @@ describe('judgeDebt', () => {
       'a file the branch added holds more than the cap',
       {
         measured: {
-          complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 51 }] },
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 51 }],
+            sources: {},
+          },
         },
         expected: {
           stage: 'complexity',
@@ -637,14 +652,50 @@ describe('judgeDebt', () => {
       },
     ],
     [
-      // A ceiling, pinned (decision 145): under its new path the renamed file is
-      // absent from the before-measure, so its 40-point rise meets the cap, not +15.
-      'a file the branch renamed and grew to the cap',
+      'a file the branch renamed is judged by its rise from the source',
       {
         measured: {
           complexity: {
             before: [{ file: 'src/legacy.ts', complexity: 10 }],
             after: [{ file: 'src/feature.ts', complexity: 50 }],
+            sources: { 'src/feature.ts': 'src/legacy.ts' },
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+40)',
+        },
+      },
+    ],
+    [
+      'a file the branch copied is judged by its rise from the source',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/legacy.ts', complexity: 10 }],
+            after: [
+              { file: 'src/legacy.ts', complexity: 10 },
+              { file: 'src/feature.ts', complexity: 50 },
+            ],
+            sources: { 'src/feature.ts': 'src/legacy.ts' },
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+40)',
+        },
+      },
+    ],
+    [
+      'a copy that stays within 15 of its source passes',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/legacy.ts', complexity: 10 }],
+            after: [{ file: 'src/feature.ts', complexity: 25 }],
+            sources: { 'src/feature.ts': 'src/legacy.ts' },
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -664,6 +715,7 @@ describe('judgeDebt', () => {
             { file: 'src/new.ts', complexity: 60 },
             { file: 'src/small.ts', complexity: 20 },
           ],
+          sources: {},
         },
       },
       undefined,
@@ -896,7 +948,7 @@ describe('judgeDebt', () => {
         debt: { deadExports: [], duplicatedLines: 5, coverageRatio: 1 },
         duplication: { duplicatedLines: 5, blocks: [] },
         coverage: { files: { 'src/app.ts': { covered: [1], instrumented: [1] } } },
-        complexity: { before: [], after: [] },
+        complexity: { before: [], after: [], sources: {} },
         patch: { covered: 0, instrumented: 0, uncovered: [] },
         nestedNote: note,
       },

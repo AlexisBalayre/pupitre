@@ -398,10 +398,12 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   if (!measured.complexity) {
     return verdict(stage, 'skipped', 'not measured — adapter cannot measure complexity');
   }
+  const { sources } = measured.complexity;
   const before = new Map(measured.complexity.before.map((f) => [f.file, f.complexity]));
   const risen = measured.complexity.after
     .map((f) => {
-      const was = before.get(f.file);
+      const source = sources[f.file];
+      const was = before.get(f.file) ?? (source === undefined ? undefined : before.get(source));
       return was === undefined
         ? {
             file: f.file,

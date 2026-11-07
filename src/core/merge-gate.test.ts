@@ -586,6 +586,39 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
+  // Decision 145: a renamed file, and a copy of a file the branch never
+  // changed, are judged by their rise from the source, not by the new-file cap.
+  it('judges a renamed and a copied file by their rise from the source', async () => {
+    const plain = (name: string) =>
+      Array.from({ length: 60 }, (_, i) => `export const ${name}${i} = ${i};\n`).join('');
+    const branches = (n: number) => 'if (a) b();\n'.repeat(n);
+    commitIn(repo, 'src/legacy.ts', plain('legacy') + branches(10));
+    commitIn(repo, 'src/kept.ts', plain('kept') + branches(10));
+    const worktree = seedSession(db, repo);
+    sh(worktree, 'git', 'mv', 'src/legacy.ts', 'src/renamed.ts');
+    commitIn(worktree, 'src/renamed.ts', plain('legacy') + branches(50));
+    commitIn(worktree, 'src/copied.ts', plain('kept') + branches(50));
+    const ifLines = ({ measurePath }: CapabilityContext, files: string[]) =>
+      files
+        .filter((file) => existsSync(join(measurePath, file)))
+        .map((file) => ({
+          file,
+          complexity: readFileSync(join(measurePath, file), 'utf8').split('if (').length - 1,
+        }));
+
+    const outcome = await merge(debtAdapter({ complexity: ifLines }));
+
+    expect(outcome.report.stages).toContainEqual(
+      expect.objectContaining({
+        stage: 'complexity',
+        status: 'flagged',
+        detail: expect.stringContaining(
+          'complexity rose sharply in 2 touched file(s): src/copied.ts (+40), src/renamed.ts (+40)',
+        ),
+      }),
+    );
+  });
+
   // Decision 72: `pup init` always measured every detected adapter while the
   // gate measured only the first, so in a TypeScript+Python repo the second
   // stack's debt was never gated and the ratchet then overwrote the

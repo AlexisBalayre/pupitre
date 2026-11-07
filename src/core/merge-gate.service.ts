@@ -207,10 +207,11 @@ function failingTestNames(error: unknown): string {
   return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
-/** A changed path's new mode, and the path it was renamed from if git paired one. */
+/** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
 interface RawDiffEntry {
   mode: string;
   renamedFrom?: string;
+  copiedFrom?: string;
 }
 
 /**
@@ -218,12 +219,14 @@ interface RawDiffEntry {
  * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
  * shared config a session can write, so a rename onto a test name is paired
  * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
- * second file was added.
+ * second file was added. `copies` adds `-C -C`, which pairs a copy of any file
+ * the target holds, changed on the branch or not.
  */
 function rawDiffEntries(
   repoPath: string,
   target: string,
   branch: string,
+  { copies = false }: { copies?: boolean } = {},
 ): Map<string, RawDiffEntry> {
   const fields = runGit(repoPath, [
     'diff',
@@ -233,6 +236,7 @@ function rawDiffEntries(
     '-z',
     '--raw',
     '-M',
+    ...(copies ? ['-C', '-C'] : []),
     '-l0',
     `${target}...${branch}`,
   ]).split('\0');
@@ -246,7 +250,10 @@ function rawDiffEntries(
     if (/^[RC]/.test(status)) {
       const from = fields[i + 1] ?? '';
       const to = fields[i + 2] ?? '';
-      entries.set(to, status.startsWith('R') ? { mode, renamedFrom: from } : { mode });
+      entries.set(
+        to,
+        status.startsWith('R') ? { mode, renamedFrom: from } : { mode, copiedFrom: from },
+      );
       i += 2;
     } else {
       entries.set(fields[i + 1] ?? '', { mode });
@@ -2380,6 +2387,14 @@ export async function measureBranch(
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
+  // A renamed or copied file is judged against its source (decision 145).
+  const sources: Record<string, string> = {};
+  if (req.adapters.some((a) => a.complexity)) {
+    for (const [path, entry] of rawDiffEntries(req.repoPath, targetSha, sha, { copies: true })) {
+      const from = entry.renamedFrom ?? entry.copiedFrom;
+      if (from !== undefined) sources[path] = from;
+    }
+  }
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
@@ -2491,12 +2506,15 @@ export async function measureBranch(
   }
   const staticDebt = measureStaticDebt(req.adapters, capabilityContext);
   const complexityAdapters = req.adapters.filter((a) => a.complexity);
-  const complexityOf = async (ctx: CapabilityContext): Promise<FileComplexity[]> => {
-    const files: FileComplexity[] = [];
+  const complexityOf = async (
+    ctx: CapabilityContext,
+    files: string[],
+  ): Promise<FileComplexity[]> => {
+    const measuredFiles: FileComplexity[] = [];
     for (const adapter of complexityAdapters) {
-      files.push(...((await adapter.complexity?.(ctx, changedPaths)) ?? []));
+      measuredFiles.push(...((await adapter.complexity?.(ctx, files)) ?? []));
     }
-    return files;
+    return measuredFiles;
   };
   const complexityStarted = Date.now();
   const complexity =
@@ -2504,8 +2522,10 @@ export async function measureBranch(
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
           // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv)),
-          after: complexityOf(capabilityContext),
+          before: complexityOf(localContext(req.repoPath, req.gateEnv), [
+            ...new Set([...changedPaths, ...Object.values(sources)]),
+          ]),
+          after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;
   // Once both sides have settled, however either did; it never rejects.
@@ -2689,7 +2709,11 @@ export async function measureBranch(
       ...measurement,
       ...(complexity
         ? {
-            complexity: { before: await complexity.before, after: await complexity.after },
+            complexity: {
+              before: await complexity.before,
+              after: await complexity.after,
+              sources,
+            },
             elapsedMs: { ...measurement.elapsedMs, complexity: await complexityElapsed },
           }
         : {}),
