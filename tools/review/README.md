@@ -60,6 +60,8 @@ workflow installs Node and pnpm for this tool alone, whatever the host project b
 it standalone even in a pnpm workspace: the workflow runs a copy of `tools/review`, whose
 `node_modules` links must resolve inside it.
 
+Run `pnpm install --ignore-workspace` in `tools/review` first: the folder is standalone, so the repo-root install does not cover it.
+
 Verify locally with `pnpm --dir tools/review test` and `pnpm --dir tools/review typecheck`.
 
 ## Measuring recall
