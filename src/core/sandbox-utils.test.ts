@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -227,6 +227,15 @@ describe('runGateChild', () => {
     }
   }
 
+  /** So a test that fails on a group still running does not leave it running after it. */
+  function killGroup(leader: number): void {
+    try {
+      process.kill(-leader, 'SIGKILL');
+    } catch {
+      // Gone already, which is what the test asserted.
+    }
+  }
+
   /** Under pup's own gate, HOME is already denied — and then it already exists. */
   function mkdirSafely(path: string): void {
     try {
@@ -306,17 +315,59 @@ describe('runGateChild', () => {
     }
   }, 15_000);
 
-  it('kills a timed-out child that ignores SIGTERM once the grace runs out', async () => {
+  it('kills a timed-out child that ignores SIGTERM, and its group, once the grace runs out', async () => {
     const cwd = fakeCheckout();
 
-    const failure = await runGateChild('sh', ['-c', "trap '' TERM; while :; do sleep 0.1; done"], {
-      cwd,
-      repoPath: cwd,
-      timeout: 200,
-    }).catch((error: unknown) => error);
+    const failure = await runGateChild(
+      'sh',
+      ['-c', "trap '' TERM; echo $$ > sh.pid; while :; do sleep 0.1; done"],
+      { cwd, repoPath: cwd, timeout: 1_000 },
+    ).catch((error: unknown) => error);
 
     expect(failure).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGKILL' });
+    // The child leads its own group, so its pid names the group, and the
+    // negative pid asks whether anything in it is left.
+    const child = await pidIn(cwd, 'sh.pid');
+    onTestFinished(() => killGroup(child));
+    await vi.waitFor(() => expect(alive(-child)).toBe(false));
   }, 15_000);
+
+  // Decision 132. The case that ran for three days: vitest stops a worker with
+  // SIGTERM, which pup forwards and gives a grace, then SIGKILLs it 500 ms
+  // later, before the grace ends.
+  it('takes a child that ignores SIGTERM down with a pup killed inside its grace', {
+    timeout: 20_000,
+  }, async () => {
+    const tmp = tempDir('pup-killed-');
+    const cwd = fakeCheckout();
+    const script = join(tmp, 'killed.mts');
+    writeFileSync(
+      script,
+      [
+        `import { runGateChild } from ${JSON.stringify(join(process.cwd(), 'src', 'core', 'sandbox.utils.ts'))};`,
+        `const cwd = ${JSON.stringify(cwd)};`,
+        `void runGateChild('sh', ['-c', "trap '' TERM; echo $$ > sh.pid; while :; do sleep 0.1; done"], { cwd, repoPath: cwd }).catch(() => undefined);`,
+        `setInterval(() => undefined, 1_000);`,
+      ].join('\n'),
+    );
+    // TMPDIR too, so the run pup never ends is removed with the rest.
+    const pup = spawn(process.execPath, ['--import', 'tsx', script], {
+      env: { ...process.env, TMPDIR: tmp },
+      cwd: process.cwd(),
+      stdio: 'ignore',
+    });
+    onTestFinished(() => {
+      pup.kill('SIGKILL');
+    });
+    const child = await pidIn(cwd, 'sh.pid');
+    onTestFinished(() => killGroup(child));
+
+    pup.kill('SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    pup.kill('SIGKILL');
+
+    await vi.waitFor(() => expect(alive(-child)).toBe(false), { timeout: 5_000 });
+  });
 
   // A stage child is in a process group of its own, out of reach of the
   // terminal's Ctrl-C, so pup forwards what it receives (decision 95).
