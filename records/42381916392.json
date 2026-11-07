@@ -1,0 +1,201 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:39:44.141Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381916392",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381916392",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7054ef995f60ebe57863f51a79651c7cd016b50f",
+  "source": "pr",
+  "pr_number": 225,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "770",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Rewording the ArmedGitDriverError refusal dropped the space after the em dash, so it now reads 'with your environment —include.path, ...' (was `your environment — ${shown}`); restore `— ${shown}`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "806-823",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment (and ADR 0089) says `--no-includes` keeps a fifo named by an include from blocking the check, but that holds for the `config --list` call only: the check's earlier `rev-parse --git-common-dir` (L806-810) loads config with includes and can still block on such a fifo (the hang ADR 0105 already accepts). Reword to say only the listing is protected.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "89-91, 811-813",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "readRegularFile maps every open error other than ENOENT/ENOTDIR (EACCES, EMFILE, ...) to 'irregular', so an unreadable but regular small info/attributes is refused with the false reason 'not a regular file of 1 MiB or less'; refusing is right, but the reason should also cover 'unreadable'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-client.test.ts",
+      "line": null,
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Only commentOnPullRequest is tested under the fake gh that runs git, so reverting `env: pinnedGitEnv()` at ghJson, rewritePullRequest or createPullRequest (the `gh pr create` that actually runs `git status`) fails no test; the 1 MiB cap and ENOTDIR-as-missing branches of readRegularFile also have no test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "448-461",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pinnedGitEnv rebuilds GIT_CONFIG_KEY_n/VALUE_n by filtering '-c' out of GIT_SAFE_CONFIG's argv form and splitting on '=', a lossy round trip resting on an unwritten invariant ('-c' never appears as a value, every entry is key=value); a [key, value] pair list as the source, with argv derived from it, would remove that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "495-496",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The runGit JSDoc still says 'The one way pup runs git: GIT_SAFE_CONFIG in argv and scrubbedGitEnv in env', but spawnOptions now also lays GIT_HISTORY_ENV over every child; add it to the description.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "6-8",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new header comment ('Every gh runs under pinnedGitEnv: its cwd is the main checkout, whose config a session can write, and gh runs git there') restates pinnedGitEnv's JSDoc, which AGENTS.md §Comments says to delete at the call site; it also doesn't fit assertGhAvailable's `gh --version`, which has no cwd and runs no git.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0089-pup-s-git-reads-history-without-replace-refs.md",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/adr/README.md says to number a new decision by incrementing the highest NNNN on origin/main (index runs to 0130), but this decision back-fills the gap at 0089; if 89 was not reserved, renumber to 0131 and update the Amended-by lines in 0050/0101, the index and the 'decision 89' references.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0089-pup-s-git-reads-history-without-replace-refs.md",
+      "line": "95-106",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR's Tests paragraph walks through each test case and its mechanism, restating the test files and bound to go stale; the closing sentence (each test except the replace-ref one fails with its fix removed) is the part worth keeping.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "448-461",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "pinnedGitEnv carries no submodule pins, so gh's `git status` in the main checkout (gh pr create) can still recurse into a session-made gitlink whose own config/info/attributes arm a filter that runs as the operator; this predates the PR (gh ran unpinned before) and ADR 0089 doesn't claim it, but it belongs in 0089's Ceilings or as an owed item (e.g. run gh with a cwd outside the repo).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/utility.service.ts",
+      "line": "21-42",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "runUtility runs `claude -p` during the merge (draftDecisionRecord) with pup's cwd and the unscrubbed process.env, so when pup runs from the main checkout a session-written core.fsmonitor can run on Claude Code's own git, the same exposure decision 89 closes for gh; give it pinnedGitEnv() and a cwd outside the repo.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "435-438",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "ADR 0089's ceilings list replace refs, grafts, commit-graph and shallow but not the object store itself: a session that can write objects/ can replace a loose commit with a forged parent list (git doesn't re-hash on rev-walk), moving the merge-base as a graft would; worth recording next to `shallow`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.2805978000000025,
+  "duration_ms": 500965,
+  "num_turns": 15,
+  "tokens": {
+    "input": 10,
+    "output": 16041,
+    "cache_read": 206677,
+    "cache_creation": 57036,
+    "total": 279764
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 182,
+      "output": 113090,
+      "cache_read": 3309487,
+      "cache_creation": 355803,
+      "cost_usd": 4.874548400000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 11990,
+      "cache_read": 380739,
+      "cache_creation": 99195,
+      "cost_usd": 0.40604940000000006
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-tree --name-only origin/main docs/adr/"
+    }
+  ]
+}
