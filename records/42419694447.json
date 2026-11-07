@@ -1,0 +1,75 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:16:37.121Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42419694447",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42419694447",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e31eb9688759b49cd4b2a1193fd09e6eb9cc70b0",
+  "source": "pr",
+  "pr_number": 259,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4992366cf65b25c8a918fddfec55d271a87a2a37",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "155-158",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6401794000000001,
+  "duration_ms": 61000,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 5147,
+    "cache_read": 238474,
+    "cache_creation": 37081,
+    "total": 280714
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 18,
+      "output": 6569,
+      "cache_read": 270140,
+      "cache_creation": 49489,
+      "cost_usd": 0.5441680000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 1958,
+      "cache_read": 62619,
+      "cache_creation": 28055,
+      "cost_usd": 0.0960114
+    }
+  ],
+  "permission_denials": []
+}
