@@ -1,0 +1,162 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T16:01:44.460Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42388761229",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42388761229",
+  "actor": "AlexisBalayre",
+  "commit_sha": "acf6c3105eb35202d6f4deca1189e700391ab417",
+  "source": "pr",
+  "pr_number": 242,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "30-33",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "One repo-wide group without `cancel-in-progress` keeps one running run plus at most one pending; a newer queued run cancels the pending one. Runs are scoped to different PRs, so the comment's claim that \"a queued run replacing an older queued one loses nothing\" is false.",
+      "body": "**A single global concurrency group drops other PRs' recomputes**\n\n```yaml\n# One run at a time: the label update is read-modify-write, and a recompute is idempotent, so a\n# queued run replacing an older queued one loses nothing.\nconcurrency:\n  group: pr-status\n```\n\nWithout `cancel-in-progress`, GitHub keeps one running and at most one pending run per group, and a newly queued run cancels the pending one. That is lossless only if every run recomputes the same PRs. Here only the push-to-main run lists all open PRs (lines 56-63). Every other run recomputes just its own payload PR. Concretely:\n\n- **Lost updates across PRs.** While a run is in progress, any event for PR B cancels a pending run for PR A (a synchronize, a finished review, or `closed`). A keeps a stale label, for example `pr/ready` on a new head that hasn't been reviewed.\n- **Closed PRs keep their label.** If the cancelled run was A's `closed` run, nothing recovers it. The push-to-main recompute lists only `state: \"open\"` PRs.\n- **Phantom runs cancel real ones.** Concurrency is set at workflow level, so a run joins the group before the job-level `if` is evaluated. `claude-code-review.yml` L52-55 moved its group to the job for this reason. A fork's `pull_request_review`, which the `if` skips, still queues.\n- **Any account can trigger this.** A comment on any issue starts Claude Code Review. Its job is skipped for non-owners, but the run still completes and fires `workflow_run`. That run does nothing (its `pull_requests` is empty), but it still cancels the pending run.\n- **Long windows.** After a push to main, every open PR can poll `mergeable` for up to 12s in sequence while other events wait behind it.\n\nPossible fixes:\n- Move `concurrency` to the job.\n- Make each slot lossless. Either key the group per PR (e.g. `pr-status-${{ github.event.pull_request.number || github.run_id }}`), or have every run recompute all open PRs.\n- Clear `pr/*` labels on closed PRs, so a lost `closed` run is recovered.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/acf6c3105eb35202d6f4deca1189e700391ab417/.github/workflows/pr-status.yml#L30-L33",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "58-60",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`workflow_run.pull_requests` is empty for two of the three kinds of run this trigger exists to catch, so those runs relabel nothing. (1) Label PRs runs on `pull_request_target`, so its run's `head_branch`/`head_sha` are main's, and no PR is listed. (2) A Claude Code Review run started by an `@claude review` comment (`issue_comment`) also runs on main's SHA, so no PR is listed. That comment is the retry the author relies on for the accepted sandbox failures, and the comment on line 98 assumes it updates the label. Only `pull_request`-triggered review runs from same-repo branches resolve a PR.",
+      "body": "**`workflow_run.pull_requests` is empty for Label PRs runs and for `@claude review` retries**\n\nThe `workflow_run` branch trusts `pull_requests` to name the PR:\n\n```js\nif (context.payload.workflow_run) {\n  return context.payload.workflow_run.pull_requests.map((p) => p.number);\n}\n```\n\nGitHub fills `workflow_run.pull_requests` by matching the triggering run's head branch and SHA against PR heads. For two of the three run kinds this workflow listens to, those are main's:\n\n- **Label PRs** (`labeler.yml`) runs only on `pull_request_target`, which runs in the base branch's context. The list is empty, so the `\"Label PRs\"` entry under `workflow_run.workflows` never relabels anything.\n- **Claude Code Review** runs started by `@claude review` (`issue_comment`) run on main's head. That retry is the one `review-body.utils.ts:123` tells people to use, and the one the line-98 comment assumes updates the label. When it finishes, no PR is relabelled. The poster sets its status with `GITHUB_TOKEN`, which starts no other workflow, so nothing else recomputes either.\n\nFalling back to the open-PR recompute (the push path) when the list is empty covers both cases.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/acf6c3105eb35202d6f4deca1189e700391ab417/.github/workflows/pr-status.yml#L58-L60",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "91-104",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "After a review run fails on the PR head, `pr/ci-failing` stays even when a later retry succeeds. The failed run's `claude-review` check run stays the latest check of that name on the head SHA, because an `@claude review` retry runs on main's SHA and its check run lands there. The poster's commit status flips to success, but `runs.some(bad)` is still true. Only a UI \"Re-run\" (same check suite) or a new push clears the label. So the accepted false-failing state becomes permanent instead of transient.",
+      "body": "**A successful `@claude review` retry never clears `pr/ci-failing`**\n\n```js\nconst runs = (\n  await github.paginate(github.rest.checks.listForRef, {\n    owner, repo, ref: pr.head.sha, per_page: 100,\n  })\n).filter((c) => c.name !== context.job);\n// The review poster also reports a commit status, which a retry on main updates.\n...\nif (runs.some((c) => bad.has(c.conclusion)) || [\"failure\", \"error\"].includes(combined.state)) {\n```\n\nWhen the `pull_request`-triggered review dies on the sandbox error, its `claude-review` job leaves a failed check run on the head SHA. The `@claude review` retry runs on `issue_comment`, so its check runs attach to main's SHA. The poster does flip the `claude-review` commit status on the head to `success` (`post-review.script.ts` `setCommitStatus`). But the failed check run on the head is never superseded, and line 103 ORs the two signals, so `runs.some(bad)` keeps returning `pr/ci-failing`.\n\nThe PR body accepts that this check fails often, and the retry the tooling recommends (`review-body.utils.ts:123`) is the path that leaves the label stuck. Only a UI re-run or a new push clears it.\n\nOne fix: for a check run whose name matches a commit-status context (`claude-review`), let the status decide.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/acf6c3105eb35202d6f4deca1189e700391ab417/.github/workflows/pr-status.yml#L91-L104",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "106",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The combined-status API returns `state: \"pending\"` when a ref has no statuses at all. Every PR whose head never receives a `claude-review` status therefore gets `pr/ci-pending` forever and never `pr/ready`. That covers Dependabot PRs, PRs opened or pushed by anyone other than the owner (the review job's `if` skips them), and fork PRs. The commit-status addition in ff48c71 introduced this.",
+      "body": "**PRs with no commit status can never reach `pr/ready`**\n\n```js\nif (runs.some((c) => c.status !== \"completed\") || combined.state === \"pending\") {\n  return \"pr/ci-pending\";\n}\n```\n\nGitHub's docs for `GET /repos/{owner}/{repo}/commits/{ref}/status` say the combined state is `pending` \"if there are no statuses or a context is pending\". Only the review preflight (`markNotReviewed`) and the poster write a status. Both run inside the `claude-review` job, whose `if:` requires `github.actor == github.repository_owner`.\n\nSo a head that was opened or pushed by Dependabot, a collaborator, or a fork author never gets a status. It reads as pending forever and never reaches `pr/ready`. Commit ff48c71 introduced this when it added the combined-status read.\n\nChecking the individual statuses avoids the empty case. Optionally, also pass `per_page: 100` to `getCombinedStatusForRef`: the `statuses` array is paginated at 30 by default.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/acf6c3105eb35202d6f4deca1189e700391ab417/.github/workflows/pr-status.yml#L106",
+      "suggestion": "              if (runs.some((c) => c.status !== \"completed\") || combined.statuses.some((s) => s.state === \"pending\")) {"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "69-75",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `mergeable` poll runs before the `pr.state !== \"open\"` check. A closed or merged PR usually reports `mergeable: null`, so every `closed` run sleeps about 12s before returning, which holds the global concurrency slot that long. Check `state` and `draft` before polling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "97",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The filter `c.name !== context.job` works only because the job has no `name:`, so its check run takes the job id `pr-status`. Adding a `name:` to the job would silently break the self-exclusion and leave every PR on `pr/ci-pending`. Give the job an explicit `name:` and filter on that literal, or note the coupling in the comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "56-63",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR-number lookup is an immediately-invoked async arrow (`await (async () => { ... })()`). A named `async function` next to `statusOf` would read more clearly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "89",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment says \"only write access counts\", but the filter checks `author_association` (OWNER/MEMBER/COLLABORATOR), which is not a write-access test: an org MEMBER can have read-only access. Reword it to \"only repo insiders count\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "5-6",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The header's \"when the PR changes\" is vaguer than the `pull_request_target` types it stands for. Title edits and label changes, for example, do not trigger a recompute.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6340752999999992,
+  "duration_ms": 293076,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 15267,
+    "cache_read": 267033,
+    "cache_creation": 55991,
+    "total": 338303
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 76,
+      "output": 56898,
+      "cache_read": 757801,
+      "cache_creation": 199691,
+      "cost_usd": 2.4562521999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 6352,
+      "cache_read": 94581,
+      "cache_creation": 41922,
+      "cost_usd": 0.17782309999999998
+    }
+  ],
+  "permission_denials": []
+}
