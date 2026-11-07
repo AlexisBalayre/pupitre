@@ -5,7 +5,24 @@ description: Write a PR title and description in this repo's house style, then c
 
 # Write a PR title and description
 
-Use this template for writing the PR body:
+Pick the template for the kind of PR, copy it from `templates/`, fill it, and delete every
+section it does not need. A body is a few lines per section, never a wall of text.
+
+| The PR is | Template | Sections beyond the base |
+| :--- | :--- | :--- |
+| a new capability or flag (`feat`) | `templates/feature.md` | Why, Behaviour, Out of scope, Rollback |
+| a bug fix (`fix`) | `templates/fix.md` | Symptom, Cause, Why it will not return |
+| a restructuring (`refactor`) | `templates/refactor.md` | Why, Behaviour change (none), Review guide |
+| an ADR or design doc (`docs`) | `templates/adr.md` | Decision, Context, Consequences |
+| tooling, CI, dependencies (`chore`) | `templates/chore.md` | Why, Rollback |
+| tests only (`test`) | `templates/test.md` | Why, Before/After rate |
+| a speed-up (`perf`) | `templates/perf.md` | Measurement table, Trade-off |
+| a revert | `templates/revert.md` | Why, Next |
+| a task from a `pup` session | `templates/session.md` | Task, Gate, Scope |
+
+No template fits: use the base body below.
+
+Base body:
 
 ```markdown
 ## Summary
@@ -86,7 +103,7 @@ Doors worth naming in this repo: a `SCHEMA` or `MIGRATIONS` change in `src/core/
 
 2. **Ground in the decisions log (read-only).** Grep the diff and commit bodies for `decision \d+` and read those entries in `docs/adr/`; grep `git log <trunk>..HEAD` for `#\d+` to find the PRs this one follows from. A PR that edits the decisions log lands the entry it adds. No decision touched: derive from diff + commits.
 
-3. **Draft title + body together.** Title per [Title format](#title-format); body to a temp file (`mktemp`) per the template and [Sections](#sections), obeying [Body rules](#body-rules). For an existing PR, treat the current title and body as a draft, not a constraint.
+3. **Draft title + body together.** Start from the template in the table above. Title per [Title format](#title-format); body to a temp file (`mktemp`) per the template and [Sections](#sections), obeying [Body rules](#body-rules). For an existing PR, treat the current title and body as a draft, not a constraint.
 
 4. **Create or update the PR.** Show the drafted **title** and **body** + the exact `gh` command; quick confirm before running (notifies reviewers + CODEOWNERS) unless told to just do it.
 
