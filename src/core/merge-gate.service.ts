@@ -1899,6 +1899,7 @@ async function gateAndMerge(
   // checkout, with the compare-and-swap as the backstop.
   if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  const ownSubject = firstOwnSubject(req.repoPath, targetSha, sha);
   // What `--accept-debt` filed, for the refusals that must stay after it.
   const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, flaggedDebt);
 
@@ -1908,7 +1909,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(spec, session.id, report, commitSubjects, sha),
+      ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
@@ -2636,6 +2637,29 @@ export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: 
 }
 
 /**
+ * The oldest gated commit's subject that is not a merge's, for the PR title: a
+ * `Merge main into …` the gate wrote (decision 105) or the session ran is never
+ * the change a squash lands. Undefined when every commit is a merge. Read
+ * before the ledger write, as `commitSubjectsBetween` is.
+ */
+export function firstOwnSubject(
+  repoPath: string,
+  targetSha: string,
+  sha: string,
+): string | undefined {
+  return runGit(repoPath, [
+    'log',
+    '--reverse',
+    '--no-merges',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
+    .split('\n')
+    .map((subject) => subject.trim())
+    .find(Boolean);
+}
+
+/**
  * File one ledger entry per flag under `--accept-debt`, none for a flag `held`
  * says the session already carries; the count is every flag the accepted debt
  * covers, for the refusals that must stay after the write.
@@ -2697,16 +2721,22 @@ export function recordMerge(
   });
 }
 
-/** The title and body pupitre writes on a PR it opens or adopts. */
+/**
+ * The title and body pupitre writes on a PR it opens or adopts. A squash merge
+ * makes the title the subject of the commit on the target (decision 136), so
+ * it is `ownSubject`, the session's first non-merge commit subject, when that
+ * fits, else the goal's first line.
+ */
 export function pullRequestText(
   spec: TaskSpec,
   sessionId: string,
   report: GateReport,
   commitSubjects: string[],
   sha: string,
+  ownSubject: string | undefined,
 ): { title: string; body: string } {
   return {
-    title: prTitle(spec.goal) || `pup session ${sessionId}`,
+    title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
     body: prBody(spec, report, commitSubjects, sha),
   };
 }
@@ -2854,9 +2884,18 @@ export function withScratchGitDir<TResult>(
   }
 }
 
-function prTitle(goal: string): string {
+/**
+ * A title that reads as a commit subject: `ownSubject` when it fits, else the
+ * goal's first line, cut at the last word boundary that fits with no ellipsis
+ * and no dangling separator. Empty when no boundary fits, never a cut word.
+ */
+function prTitle(goal: string, ownSubject: string | undefined): string {
+  if (ownSubject !== undefined && ownSubject.length <= PR_TITLE_MAX_CHARS) return ownSubject;
   const line = (goal.split('\n')[0] as string).trim();
-  return line.length <= PR_TITLE_MAX_CHARS ? line : `${line.slice(0, PR_TITLE_MAX_CHARS - 1)}…`;
+  if (line.length <= PR_TITLE_MAX_CHARS) return line;
+  // The last whitespace at or before the limit: what precedes it is whole words.
+  const cut = line.slice(0, PR_TITLE_MAX_CHARS + 1).search(/\s\S*$/);
+  return cut < 0 ? '' : line.slice(0, cut).replace(/[\s,;:–—-]+$/, '');
 }
 
 function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {

@@ -124,6 +124,8 @@ import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import {
   countChangedLines,
+  firstOwnSubject,
+  pullRequestText,
   runMergeGate as runGate,
   waitForLoad,
   withMergeLock,
@@ -139,6 +141,7 @@ import {
 } from './session.repository.js';
 import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type { TaskId } from './types/profile.types.js';
 
 describe('runMergeGate', { timeout: 20_000 }, () => {
   let db: Database;
@@ -755,7 +758,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.prUrl).toContain('--repo github.com/owner/repo');
     expect(outcome.prUrl).toContain(`--head ${BRANCH}`);
     expect(outcome.prUrl).toContain('--base main');
-    expect(outcome.prUrl).toContain('--title test goal');
+    // The session's one commit, not the goal: a squash lands the title as main's subject.
+    expect(outcome.prUrl).toContain('--title edit src/feature.ts --body-file');
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
     expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
     expect(getSession(db, SESSION_ID)?.state).toBe('merged');
@@ -925,6 +929,20 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         { stage: 'lint', command: 'true', args: [] },
       ],
     };
+
+    it("rewrites the PR title by the rule: the session's first commit subject", async () => {
+      await gateThenFix();
+      const editsBefore = prEdits();
+
+      const outcome = await regate([fixChecking]);
+
+      expect(outcome.status).toBe('merged');
+      expect(prEdits()).toBe(editsBefore + 1);
+      const edit = ghCalls()
+        .filter((call) => call.startsWith('pr edit'))
+        .at(-1);
+      expect(edit).toContain('--title edit src/feature.ts --body-file');
+    });
 
     it('runs every stage on the new head and appends a merge event with its sha and the same PR', async () => {
       const tip = await gateThenFix();
@@ -1491,6 +1509,76 @@ describe('countChangedLines', () => {
       docs: 0,
       forged: [],
     });
+  });
+});
+
+describe('pullRequestText (decision 136)', () => {
+  const report = { sessionId: SESSION_ID, passed: true, sandbox: 'test', stages: [] };
+  const title = (goal: string, ownSubject: string | undefined): string =>
+    pullRequestText(
+      { id: 'task-s1' as TaskId, goal, scopeIn: ['src/**'], acceptance: ['done'] },
+      SESSION_ID,
+      report,
+      ownSubject === undefined ? [] : [ownSubject],
+      'a'.repeat(40),
+      ownSubject,
+    ).title;
+  /** 79 characters of nine-letter words: the 72-character limit falls mid-word. */
+  const longGoal = 'abcdefghi '.repeat(8).trim();
+
+  it('is the session commit subject when it fits 72 characters', () => {
+    expect(title('the goal', 'Fix the retry loop')).toBe('Fix the retry loop');
+    expect(title('the goal', 'x'.repeat(72))).toBe('x'.repeat(72));
+  });
+
+  it('is the goal when the subject is over 72 characters or there is none', () => {
+    expect(title('the goal\nmore detail', 'x'.repeat(73))).toBe('the goal');
+    expect(title('the goal', undefined)).toBe('the goal');
+  });
+
+  it('cuts a goal over 72 characters at the last word boundary that fits, with no ellipsis', () => {
+    const cut = title(longGoal, undefined);
+    expect(cut).toBe('abcdefghi '.repeat(7).trim());
+    expect(cut.length).toBeLessThanOrEqual(72);
+    // A word ending exactly at the limit is whole and kept.
+    const exact = `${'x'.repeat(69)} ab cdef`;
+    expect(title(exact, undefined)).toBe(`${'x'.repeat(69)} ab`);
+    expect(title(`${'x'.repeat(72)} more`, undefined)).toBe('x'.repeat(72));
+  });
+
+  it('drops a separator the cut leaves dangling', () => {
+    expect(title(`${'abcdefghi '.repeat(6)}abcdefgh, and the rest`, undefined)).toBe(
+      `${'abcdefghi '.repeat(6)}abcdefgh`,
+    );
+    expect(title(`${'abcdefghi '.repeat(6)}abcdef — andmore rest`, undefined)).toBe(
+      `${'abcdefghi '.repeat(6)}abcdef`,
+    );
+  });
+
+  it('falls back to the session id when no word boundary fits or the goal is empty', () => {
+    expect(title('x'.repeat(80), undefined)).toBe(`pup session ${SESSION_ID}`);
+    expect(title('  ', undefined)).toBe(`pup session ${SESSION_ID}`);
+  });
+});
+
+describe('firstOwnSubject (decision 136)', () => {
+  it('skips a merge the session ran before its first commit', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'branch', 'side');
+    commitIn(repo, 'src/main.ts', 'export const main = 1;\n');
+    const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
+    sh(repo, 'git', 'checkout', '-q', 'side');
+    sh(repo, 'git', 'merge', '-q', '--no-ff', '--no-edit', 'main');
+    const merge = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(repo, 'src/fix.ts', 'export const fix = 1;\n');
+    const sha = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    // The merge is the oldest commit past the target.
+    expect(sh(repo, 'git', 'log', '--reverse', '--format=%s', `${targetSha}..${sha}`)).toMatch(
+      /^Merge branch 'main' into side\n/,
+    );
+
+    expect(firstOwnSubject(repo, targetSha, sha)).toBe('edit src/fix.ts');
+    expect(firstOwnSubject(repo, targetSha, merge)).toBeUndefined();
   });
 });
 
