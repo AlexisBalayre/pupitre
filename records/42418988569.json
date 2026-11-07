@@ -1,0 +1,311 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:14:08.498Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42418988569",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42418988569",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9d0f522a1cbe09fea99dd00556af7dc8a395fd0e",
+  "source": "pr",
+  "pr_number": 262,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "91-101",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`repoRelative` checks the worktree prefix on the raw path, not a normalized one, and keeps relative paths whole. So `/repo/.worktrees/w1/../../../home/jdoe/Zorblax/notes.md` or `~/Zorblax/notes.md` reaches the report with its outside-repo directories, against ADR 0150's \"a path outside the repo is reduced to its basename\".",
+      "body": "**Outside-repo directory names can reach the report, which breaks ADR 0150's allowlist.**\n\nADR 0150 says the report keeps only repo-relative paths, and that \"a path outside the repo is reduced to its basename\". The `file_path` here is whatever the model wrote in the Read call. `readPathOf` does not normalize it. Two branches of `repoRelative` let outside directories through:\n\n```ts\nif (!isAbsolute(path)) return label(path);\nconst worktree = path.match(\n  new RegExp(`^${...}/\\\\.worktrees/[^/]+/(.+)$`),\n);\nif (worktree?.[1]) return label(worktree[1]);\n```\n\n1. **Relative paths are kept whole.** `~/work/Zorblax/notes.md` becomes `?/work/Zorblax/notes.md`, and `../../client-acme/notes.md` passes unchanged. `label()` keeps `.` and `/`, so every directory segment survives.\n2. **The worktree regex runs before normalization.** On `/repo/.worktrees/w1/../../../home/jdoe/Zorblax/notes.md` it captures `../../../home/jdoe/Zorblax/notes.md`. The `relative()` / `startsWith('..')` check that would catch this only runs after that branch.\n\nIf one such path is read 3 times in a session, it lands in both `formatRetro` (`- ${r.path}: …`) and `serializeRetro`.\n\n**Possible fix:**\n- Return `label(basename(path))` for a non-absolute path.\n- Match the worktree regex against `resolve(path)` rather than the raw string.\n- Add a `..`-in-worktree case and a `~/` case to the `repoRelative` tests.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7263fdb7280399f3ab1e498346ca514817c78eb3/src/core/retro-signals.utils.ts#L91-L101",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "39-40",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`chmodSync(outDir, 0o700)` runs on whatever folder `--out` names, even one that already exists. So `pup retro --out .` (run in the repo root), `--out ~`, or `--out ~/Documents` silently changes that folder to 0700. `--out /tmp` throws EPERM after the full scan, so no report is written.",
+      "body": "**`writeRetro` changes the permissions of any existing folder passed to `--out`.**\n\n```ts\nconst outDir = out ? resolve(out) : join(projectPaths(repoPath).root, 'retro');\nmkdirSync(outDir, { recursive: true, mode: 0o700 });\nchmodSync(outDir, 0o700);\n```\n\n`mkdirSync`'s `mode` only applies to folders it creates. So the `chmodSync` only changes anything when the folder already exists, and that is exactly when the folder belongs to the operator rather than to pupitre.\n\n- `pup retro --out .` from a checkout turns the repo root into `drwx------`.\n- `--out ~` does the same to the home folder.\n- `--out /tmp` hits EPERM, because `/tmp` is root-owned. That happens after `scanUsage` has read every transcript and before anything is printed, so the run produces nothing.\n\nThe ADR's \"directory 0700\" still holds for every folder pupitre creates, through the `mkdirSync` mode. The files are written 0600, which protects the content inside an existing folder.\n\n**Fix:** drop the `chmodSync` call and its import. The current test (`retro.test.ts`, fresh `out` folder) keeps passing. No test covers an existing `--out` folder.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7263fdb7280399f3ab1e498346ca514817c78eb3/src/core/retro.service.ts#L39-L40",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "139-144",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`recacheCost` prices every re-written token at the 1h write multiplier (2x), including `write5m` tokens. `pup usage` (`costOf`) prices those at 1.25x, so the \"about N USD\" figure overstates by up to 60%.",
+      "body": "**The re-cache USD estimate prices 5m-tier writes at the 1h rate, so it disagrees with `pup usage`.**\n\n```ts\nrecacheCost: sum(\n  mine.map(\n    (b) =>\n      (b.recachedTokens * (priceOf(b.model)?.input ?? 0) * CACHE_WRITE_1H_MULTIPLIER) / 1e6,\n  ),\n),\n```\n\n- `bucket.recachedTokens` adds up `recachedTokens(call, previous)`, which returns `call.write5m + call.write1h`.\n- `parseCall` puts every write with no `ephemeral_1h_input_tokens` split into `write5m`, and its comment says those writes are \"priced at the shorter one\".\n- `costOf` charges `write5m` at `CACHE_WRITE_5M_MULTIPLIER` (1.25).\n- An idle gap over 1h only means the cache expired. It does not mean the new write is 1h-tier.\n\n**Example:** an Opus re-cache of 200k tokens with no tier split.\n- `pup usage` costs it at 1.25 USD.\n- `pup retro` reports \"about 2.00 USD\".\n\nBoth commands claim to come from one scan, yet they disagree by 1.6x on the same transcript.\n\n**Fix:** keep the tier split when re-caches are accumulated (separate `recached5m` / `recached1h` on `Bucket`, or a re-cache cost computed next to `costOf`). Then price each tier with its own multiplier.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7263fdb7280399f3ab1e498346ca514817c78eb3/src/core/retro-signals.utils.ts#L139-L144",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "215-223",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The compaction finding's impact is `compactions * firstRequestFloor`. The floor only comes from transcripts that began inside the window, so a class whose compacting sessions started before `--since` gets impact 0. Its compactions then sink to the bottom of the ranking, with evidence reading \"median first-request context 0 tokens\".",
+      "body": "**Compactions in sessions that started before `--since` get zero impact and drop to the bottom of the ranking.**\n\n```ts\nimpactTokens: row.compactions * row.firstRequestFloor,\nevidence: `${row.class}: ${row.compactions} compactions, median first-request context ${Math.round(row.firstRequestFloor)} tokens`,\n```\n\nThe two inputs are counted on different bases:\n- `firstRequestFloor` is `percentile(mine.flatMap((b) => b.floors), 0.5)` (lines 146-149). `addCalls` only pushes a floor `if (!previous)`, and `previous` starts as `read.before`. So a transcript that began before the window adds no floor, and `percentile([])` returns 0.\n- `read.compactions` counts every `compact_boundary` inside the window, whenever the transcript started.\n\n**Example:** with the default `--since 7`, a conductor transcript started 10 days ago that compacted 6 times this week gives `compactions: 6` and `floor: 0`, so `impactTokens: 0`. `findingsOf` then ranks that finding below everything else, and the evidence reads \"median first-request context 0 tokens\".\n\nThis is the common case, not an edge case: long-lived sessions are the ones that compact, and the conductor class is usually one transcript per project.\n\n**Possible fix:** measure each compaction directly, for example the context of the first call after each boundary, recorded during the scan. At minimum, fall back when there are no floors rather than scoring zero.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7263fdb7280399f3ab1e498346ca514817c78eb3/src/core/retro-signals.utils.ts#L215-L223",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "156-179",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Repeated reads are keyed on `file_path` alone. A big file read in three offset/limit chunks counts as \"read 3+ times\", and its distinct chunks are reported as \"tokens read again\". That is the exact pattern the finding's own fix recommends.",
+      "body": "**Reading a large file in offset/limit chunks is reported as re-reading it.**\n\n`readPathOf` (usage-report.service.ts) keeps only `file_path`, so `offset` and `limit` are lost. `repeatedReads` then groups reads by path alone:\n\n```ts\nconst key = repoRelative(path, repoPath);\nperFile.set(key, [...(perFile.get(key) ?? []), tokens]);\n...\nrow.rereadTokens += sum(sizes) - (sizes[0] ?? 0);\n```\n\n**Example:** three Reads of `src/big.ts` at offsets 1, 2001 and 4001, about 8k tokens each.\n- The report shows `{ reads: 3, rereadTokens: 16000 }` and a \"files read repeatedly\" finding.\n- Its fix text (line ~249), like `fixFor`'s Read advice, recommends \"read with offset and limit\", which is exactly what the session did.\n- No byte was read twice, yet the 16k counts toward the ranking.\n\nClaude Code's Read caps a call at about 2000 lines by default, which makes chunked reads routine for big files. That cap is dependency knowledge, hence medium confidence.\n\n**Possible fix:** carry `offset`/`limit` into `FileRead` and key `perFile` on path plus range. Alternatively, count a read as a repeat only when its range overlaps an earlier one.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7263fdb7280399f3ab1e498346ca514817c78eb3/src/core/retro-signals.utils.ts#L156-L179",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "3-14",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A `.utils.ts` file imports from `usage-report.service.js` (value imports `addCalls`, `addToolCarry`, `contextOf`, `percentile`, `priceOf`, `CACHE_WRITE_1H_MULTIPLIER`), which naming.md forbids for the `utils` role.",
+      "body": "**A `.utils.ts` file imports values from a `.service.ts` file, which naming.md forbids for the `utils` role.**\n\n`retro-signals.utils.ts` imports values from `./usage-report.service.js`: `addCalls`, `addToolCarry`, `CACHE_WRITE_1H_MULTIPLIER`, `contextOf`, `percentile` and `priceOf`. `retro.service.ts` imports this file and also calls `scanUsage`, so the dependency runs utils → service, the inverted direction.\n\n**Rule:** `docs/conventions/naming.md` §The 25 valid roles (Constrained):\n> `utils` | **Pure functions only.** Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\n\nNo other `src/core/*.utils.ts` imports a service, so there is no precedent for this.\n\n**Fix options:**\n- Move the shared pure pieces (`contextOf`, `percentile`, `priceOf`, the multipliers, `addCalls`/`addToolCarry` and their types) into a `usage-report.utils.ts` that both files import.\n- Or rename this file to a role that may depend on a service.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7263fdb7280399f3ab1e498346ca514817c78eb3/src/core/retro-signals.utils.ts#L3-L14",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.test.ts",
+      "line": "22, 132-167",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The privacy test can't detect an outside-path leak. The outside file is read only once, so it never reaches `repeatedReads`, and `EMPLOYER` contains a space that `label()` turns into `?`, so `not.toContain(EMPLOYER)` passes even if the full path leaked. (The `repoRelative` unit test still catches the basic regression.)",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "105-117",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Carried tokens multiply each tool result by every later call in the transcript, including calls after a compaction that already dropped that output. The formula is shared with `pup usage`'s `addToolCarry`, but `pup retro` now ranks its top findings by it, so sessions that compact get overstated \"carried tool output\" findings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "242-251",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The repeated-read finding sums `impactTokens` over the top 10 rows only, while `reads.files` counts every (session, file) pair. Its evidence \"N file reads of the same file 3+ times\" labels that pair count as reads: three files each read 3 times print \"3 file reads\" for 9 reads.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "17-20",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A very large `--since` (e.g. `200000000`) passes `retroWindowStart`'s finite-and-positive check but yields an Invalid Date. The whole history is scanned, then `buildRetroReport`'s `since.toISOString()` throws `RangeError: Invalid time value` instead of a one-line refusal. Also reject when `Number.isNaN(start.getTime())`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "41",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`now.toISOString().slice(0, 10)` names the file by UTC date. In UTC-7, an 18:00 run on Nov 7 writes `retro-2026-11-08.md`, and a 09:00 run on Nov 8 then overwrites it. The `# Retro since` header is also a UTC date.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "103, 136",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `sum` helper and the inline cache-hit-rate expression re-implement `total` and `cacheHitRate(calls)`, which already exist in usage-report.service.ts. The two commands' hit-rate figures can drift apart; export and reuse the existing helpers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "191",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The user-facing fix text names \"the tool-result-size hook\" and a hard-coded 10k. That hook is pupitre's own dev tooling (`.claude/hooks/tool-result-size.sh`), not something `pup` ships, and its real threshold differs (10k for logs, 20k otherwise).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "21-26, 88, 182",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Bucket labels are bare strings repeated in `SIZE_BUCKETS`, in the unreachable `?? '20k+'` fallback and in `SMALL_BUCKETS`. Renaming one silently disables `fixFor`'s small-result branch; mark small buckets on the `SIZE_BUCKETS` entries instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro.test.ts",
+      "line": "77-129",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No test exercises the idle re-cache finding (`recaches`, `recachedTokens`, `recacheCost`), the low-cache-hit finding, or the compaction finding's `impactTokens`. The fixtures always read 900/1000 tokens from the cache, less than an hour apart.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "32-76",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Exported report interfaces (`CarryRow`, `ClassRow`, `RepeatedRead`, `RetroFinding`, `RetroReport`) live in a behavioural file. The newly exported `UsageClass` enum and the `UsageOptions`/`Call`/`Bucket`/`ToolCarry`/`Transcript`/`ScannedTranscript` types in usage-report.service.ts likewise belong in `src/core/enums/` and `src/core/types/` (general.md §Type separation).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.utils.ts",
+      "line": "28-30",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SIZE_BUCKETS`, `REPEATED_READS`, `TOP_ROWS` and `CACHE_HIT_TARGET` are thresholds declared inline without JSDoc. general.md §No hardcoded values wants them in the area's `*.constants.ts` with a JSDoc line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-report.service.ts",
+      "line": "227-245",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refactor exports `Call`, `FileRead` and `Transcript`, but no module imports them. Keep them module-private and export only what `retro-signals.utils.ts` uses.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0150-pup-retro-reads-the-claude-code-traces-locally-and.md",
+      "line": "1-3",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0150 changes how `pup usage` gets its data (the shared `scanUsage`) but does not link decision 122, so a reader of 0122 never finds it. Add an `Amends:` or \"See also\" line.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/retro.service.ts",
+      "line": "39-44",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`writeRetro` writes the dated report with a plain `writeFileSync` into the session-writable store. A worker can plant a symlink at `~/.pupitre/<pid>/retro/retro-<date>.md` or `.json`, and the operator's `pup retro` then truncates and overwrites the link target. The 0600 mode is also not applied when the file already exists.",
+      "refutation": "The mechanics are accurate, but the plant crosses no boundary. Sessions run as the operator's own user with no OS sandbox (decisions 44 and 106), so a worker that can plant a link can overwrite the target itself. It also does not control what gets written: the allowlisted counts report. Decision 57 states the store is reachable from a session's shell and leaves that to the sandbox. Other operator-side writers into the store (`conductor.service.ts`, `brief.service.ts`, `profile-compiler.service.ts`) use plain `writeFileSync` too. The `wx`+rename sites address integrity concerns, not a same-user privilege boundary."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The PR head moved mid-review from 9d0f522 to 7263fdb (\"refactor(retro): reuse the usage scan's aggregation and keep the CLI thin\"). The checkout stayed at 9d0f522, so all 8 reviewers read the older commit. The orchestrator re-checked every finding against `gh pr diff 262` at the new head. It updated line numbers, dropped the `RetroFiles`-inline-interface nit (resolved by the new commit), and replaced suggestions that no longer applied with null. Validators read the new head from `gh pr diff`."
+    },
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned: the PR touches no spec, protocol or infra surface (CORS, HTTP, docker, CI, settings). review-spec was not spawned: the PR names no closing issue or spec source."
+    },
+    {
+      "component": "validator",
+      "description": "Several validators had piped `gh pr diff 262 | awk/grep` calls denied, and one `cd … && gh pr diff` failed on a bwrap worktree lock. Each fell back to reading the saved diff output. No verdict was affected."
+    }
+  ],
+  "comments_posted_actual": 6,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.0452042,
+  "duration_ms": 424948,
+  "num_turns": 28,
+  "tokens": {
+    "input": 18,
+    "output": 28380,
+    "cache_read": 552301,
+    "cache_creation": 89776,
+    "total": 670475
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 258,
+      "output": 95991,
+      "cache_read": 2763578,
+      "cache_creation": 404516,
+      "cost_usd": 4.765475599999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 7776,
+      "cache_read": 223716,
+      "cache_creation": 71818,
+      "cost_usd": 0.27972860000000005
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 262 | grep -n \"usage-report.service.ts\" ; gh pr diff 262 | awk '/^diff --git a\\/src\\/core\\/usage-report.service.ts/{p=1} p' | head -300"
+    },
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 262 | awk '/^diff --git/{f=0} /^diff --git a\\/src\\/core\\/(retro-signals.utils.ts|usage-report.service.ts)/{f=1} f'"
+    },
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 262 --repo AlexisBalayre/pupitre | grep -n -E \"chmodSync|outDir|--out|0o700|0700|mkdirSync|\\+\\+\\+ \" | head -80"
+    },
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 262 | awk '/^diff --git a\\/src\\/core\\/retro.test.ts/{p=1} /^diff --git/ && !/retro.test.ts/{p=0} p'"
+    },
+    {
+      "tool": "Bash",
+      "input": "ls docs/adr | grep -E '^00(44|46)'; sed -n 1,40p docs/adr/0044-*.md | head -60; echo ----; sed -n 165,182p src/core/intent.service.ts; echo ---; sed -n 220,240p src/core/test-slot.service.ts; echo ---"
+    }
+  ]
+}
