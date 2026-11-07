@@ -1,0 +1,142 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:34:35.348Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381907185",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381907185",
+  "actor": "AlexisBalayre",
+  "commit_sha": "14830e9d5bca0e3eeacd677ef64cc88f0c582626",
+  "source": "pr",
+  "pr_number": 224,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/workflow.md",
+      "line": "33, 47",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Docs still describe the old hook: docs/workflow.md:33 and :47 say pre-commit \"Runs `TEST_CMD`\", CONTRIBUTING.md:22 says it lints \"the staged sources\" and \"runs the test suite\", README.md:157 says it \"runs the tests before every commit\", and in the restored config .claude/hooks/README.md:15 (\"runs `TEST_CMD`, the full Vitest suite\") and .claude/project.env:18 (\"Run by scripts/pre-commit\") are also stale. The hook now runs only `vitest related` on staged sources and uses TEST_CMD only as an on/off switch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "27-28",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0132 says no test is selected for a change to `vitest.config.ts`, but that file ends in `.ts`, so it lands in STAGED_SOURCE and goes to `vitest related`. vitest's default forceRerunTriggers (`**/{vitest,vite}.config.*/**`) then reruns every spec, so staging the config runs the full suite. That is the safe direction, but the ADR sentence is wrong.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0132's \"What the hook runs\" paragraph says a docs-only commit \"still runs lint ... and typecheck, as before\". Before this PR, lint was gated on STAGED_SOURCE, so a docs-only commit ran no lint. Only typecheck is \"as before\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "89-100",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`git diff --cached --name-only` without `-z` C-quotes names that contain non-ASCII characters (under the default core.quotePath), `\"`, `\\` or control characters, for example `\"caf\\303\\251.test.ts\"`. Such a name ends in `\"`, so the extension grep drops it from STAGED_SOURCE and its related tests never run. Lint now gets every staged file, so it receives a path that does not exist. Reading with `-z` fixes both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/pre-commit.test.ts",
+      "line": "19, 119-126",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test fixture's LINT_CMD (`pnpm exec biome check`) leaves out `--no-errors-on-unmatched`. The hook now relies on that flag for docs-only commits, so nothing would catch it being dropped from project.env. Separately, the \"blocks the commit when a related test fails\" test only asserts a non-zero status, so an earlier crash in the hook would also pass it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/pre-commit",
+      "line": "7-8, 115-118",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above RELATED_TEST_CMD restates the STAGED_SOURCE condition and repeats the header's \"never TEST_CMD\" caveat. The only fact not stated elsewhere is that an empty TEST_CMD still turns tests off. Keep that fact and the decision reference, and drop the rest.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0132's *Tests* paragraph walks through each test case of src/core/pre-commit.test.ts and will drift as the tests change. It could keep only the setup fact: a temp repo with a logging `pnpm` stub.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8709541,
+  "duration_ms": 200493,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 9434,
+    "cache_read": 197888,
+    "cache_creation": 45818,
+    "total": 253150
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 30893,
+      "cache_read": 833418,
+      "cache_creation": 125849,
+      "cost_usd": 1.5514826
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 12353,
+      "cache_read": 242105,
+      "cache_creation": 68662,
+      "cost_usd": 0.3194715
+    }
+  ],
+  "permission_denials": []
+}
