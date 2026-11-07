@@ -2903,13 +2903,17 @@ export function withScratchGitDir<TResult>(
 }
 
 /**
- * Characters that render as nothing or reorder what follows them: zero-width
- * spaces and joiners, directional marks, embeddings, overrides and isolates,
- * invisible operators and the byte-order mark. Dropped, not spaced, so one
- * cannot split a closing keyword past `CLOSING_REFERENCE`.
+ * Characters that render as nothing or reorder what follows them: the soft
+ * hyphen, the combining grapheme joiner, the Hangul fillers, the Mongolian
+ * vowel separator, zero-width spaces and joiners, directional marks,
+ * embeddings, overrides and isolates, invisible operators, variation
+ * selectors, the byte-order mark, and the tag block, which spells out text
+ * no one sees and is how instructions get hidden from AI reviewers. Dropped,
+ * not spaced, so one cannot split a closing keyword past `CLOSING_REFERENCE`.
  */
 const INVISIBLE_FORMAT_CHARS =
-  /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: each is dropped alone, combining ones included
+  /[\u00ad\u034f\u061c\u115f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
 
 /** A terminal escape sequence (CSI, 7-bit or 8-bit), dropped whole so no `[31m` is left. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
@@ -2917,11 +2921,11 @@ const ANSI_ESCAPE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
 
 /**
  * A GitHub closing keyword followed by an issue reference, `#n`,
- * `owner/repo#n` or an issue or pull URL: on the default branch's commit a
- * squash writes, GitHub closes the issue it names.
+ * `owner/repo#n`, `GH-n` or an issue or pull URL: on the default branch's
+ * commit a squash writes, GitHub closes the issue it names.
  */
 const CLOSING_REFERENCE =
-  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:(?:[\w.-]+\/[\w.-]+)?#\d+|https?:\/\/\S+\/(?:issues|pull)\/\d+)/i;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:(?:[\w.-]+\/[\w.-]+)?#\d+|GH-\d+|https?:\/\/\S+\/(?:issues|pull)\/\d+)/i;
 
 /**
  * A line as a title can carry it: escape sequences and invisible format

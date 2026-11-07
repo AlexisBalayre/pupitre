@@ -20,12 +20,14 @@
     That is where GitHub acts on closing keywords, so a session could close any issue the repo
     holds by naming it, and where a terminal shows the subject on every `git log`. The body's
     fence (decision 26) does not reach a title, so the subject is scrubbed instead: terminal
-    escape sequences and the characters that render as nothing or reorder text (zero-width
-    spaces and joiners, directional marks, bidi embeddings, overrides and isolates, the
-    byte-order mark) are dropped, then `sanitizeReason` spaces out C0 and C1 controls and makes
-    it one line. Dropping before the check means an invisible character cannot split a keyword
+    escape sequences and the characters that render as nothing or reorder text (the soft hyphen,
+    the combining grapheme joiner, the Hangul fillers, the Mongolian vowel separator, zero-width
+    spaces and joiners, directional marks, bidi embeddings, overrides and isolates, invisible
+    operators, variation selectors, the byte-order mark, and the tag block, which spells out text
+    no one sees and is how instructions get hidden from AI reviewers) are dropped, then
+    `sanitizeReason` spaces out C0 and C1 controls and makes it one line. Dropping before the check means an invisible character cannot split a keyword
     past it. A subject that still holds a closing keyword (`close`, `fix`, `resolve` in any
-    tense and case) followed by an issue reference (`#n`, `owner/repo#n` or an issue or pull URL)
+    tense and case) followed by an issue reference (`#n`, `owner/repo#n`, `GH-n` or an issue or pull URL)
     is not used: the goal is the title. The goal is scrubbed the same way but not checked for
     keywords, since the operator wrote it and decision 26 already titled PRs from it. Both
     subject reads, this one and the body's list, run with replace refs and the commit graph off,
@@ -41,7 +43,8 @@
     Tests: a one-commit session's PR is titled with its subject; a subject over 72 characters
     falls back to the goal; a goal over 72 characters is cut at a word boundary; a gate-written
     merge commit is not chosen, and a non-merge commit whose message reads `Merge main into …` is;
-    a subject with an ANSI escape, a C0 and a C1 control, a bidi override and a zero-width space
-    comes out scrubbed; a subject naming an issue to close, a zero-width-split one included,
-    falls back to the goal; the read pins replace refs and the commit graph off; a re-gate
+    a subject with an ANSI escape, a C0 and a C1 control, a bidi override, a zero-width space,
+    the other blank characters and a line spelled in tag characters comes out scrubbed; a subject
+    naming an issue to close, by `GH-n` too and with a zero-width or tag character splitting the
+    keyword, falls back to the goal; the read pins replace refs and the commit graph off; a re-gate
     rewrites the title by the rule.
