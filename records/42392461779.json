@@ -1,0 +1,111 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T16:46:54.376Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42392461779",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42392461779",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a6443356d623c586f1a6adcf1e83bc5b3c47ad71",
+  "source": "pr",
+  "pr_number": 248,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/test/helpers/land.mock.ts",
+      "line": "8-12, 35-43",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The helper is not a test file to pup's own debt scan, so the merge gate would count two new debt items and refuse this PR without --accept-debt. isTestFile only matches *.test.ts, and SKIPPED_DIRS does not skip src/test/. (1) Dead export: `export const GIT_ENV` is used only inside this file and imported nowhere. (2) Duplication: the six lines `id: 'fake'` through the lint stage of `passingAdapter` also appear in merge-gate.test.ts:222-227, fix-round.test.ts:137-142, init.test.ts:45-50 and audit.test.ts:17-22. Before the split every copy was in a test file, so the block was excluded (decision 39). With one copy in land.mock.ts, all five copies count, about 30 lines.",
+      "body": "**Moving the fixtures into `src/test/helpers/land.mock.ts` makes pup's own debt scan count them, and the merge gate would refuse this PR without `--accept-debt`.**\n\n`isTestFile` (`src/adapters/typescript-source.utils.ts:37-39`) only matches `/\\.test\\.[cm]?[jt]sx?$/`, and `SKIPPED_DIRS` (`src/adapters/typescript.adapter.ts:54-62`) does not include `src/test/`, so this helper is measured like production code. That has two effects:\n\n1. **New dead export.** `findDeadExports` (`typescript-debt.utils.ts:120`) counts a name as used only when another file imports it. `GIT_ENV` is used only by `sh` in this file; all three shards import `BRANCH, commitIn, ORIGIN_URL, PR_URL, passingAdapter, SESSION_ID, sh` and never `GIT_ENV`:\n   ```ts\n   export const GIT_ENV: NodeJS.ProcessEnv = {\n   ```\n   The file is new, so the dead export has no baseline entry and the stage flags it.\n2. **Duplication goes up.** `findDuplication` compares 6-line windows (`DUPLICATION_WINDOW_LINES = 6`) after trimming and dropping lines that are only punctuation. The window `id: 'fake'` → `detect` → `gateCommands` → build/test/lint stages of `passingAdapter` (`land.mock.ts:36-41`) also appears in `merge-gate.test.ts:222-227`, `fix-round.test.ts:137-142`, `init.test.ts:45-50` and `audit.test.ts:17-22`. A block is excluded only when every copy is in a test file (`typescript-debt.utils.ts:213`: `if (occurrences.every(({ file }) => isTestFile(file)))`). With one copy now outside a test file, all five occurrences count: about 30 duplicated lines.\n\nAny flagged debt without `--accept-debt` refuses the merge (decision 17; `merge-gate.service.ts:1894`, `if (flaggedDebt.length > 0 && !req.acceptDebt) return refuseGate(...)`). The `isTestFile` JSDoc names this cost, and testing.md says a shared helper is never a way around the gate.\n\n**Fix:** drop `export` from `GIT_ENV`, and either keep `passingAdapter` in each shard (where repeating it is excluded test-only duplication) or change it so its 6-line window no longer matches the other test files' copies.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a6443356d623c586f1a6adcf1e83bc5b3c47ad71/src/test/helpers/land.mock.ts#L8-L43",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-squash.test.ts",
+      "line": "221-436",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The shard file names do not match what is in them. land-refusals.test.ts holds five tests that land successfully: 'fast-forwards main, removes the worktree and branch…', 'lands a PR GitHub merged at the head a re-gate pinned', 'keeps a regressed baseline…', 'lands a session whose worktree and branch are already gone' and 'lands a rebase merge of a two-commit pin onto a moved main'. Meanwhile land-squash.test.ts holds 'waits, when asked, for a merge lock…' and refusals that have nothing to do with squash ('refuses with no adapter', 'refuses a merge that opened no PR', \"refuses a PR url outside origin's repo\"), and land.test.ts holds the squash refusal 'refuses a squash of a pin that conflicts with the moved main'. Someone adding or looking for a test would pick the wrong file. Either regroup the tests by theme or use neutral shard names.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "64-190",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "About 130 lines of non-mock setup are now copied in all three shards (land.test.ts ~64-190, land-refusals.test.ts ~64-205, land-squash.test.ts ~61-217): the beforeEach building repo/origin/worktree/session, afterEach, seedPrMerge, mergeOnGitHub, fakeGh, land, mainSha, hasTrackingRef, landedEvents, expectNothingChanged, refusal. Unlike vi.mock these need not be per file, so any fixture change now takes three identical edits; consider a setupLandFixture() returning a context, or at least a note that the copies must stay in sync.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "112",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This comment still says the land's real git and gh work lives in one file: `// The land's own git and gh work is land.test.ts's, against a real repo.` After this PR, most of that work (the squash and rebase tree checks, the lock wait, the branch and worktree refusals, the signal kills) is in land-squash.test.ts and land-refusals.test.ts. Someone following the comment to see what covers the mocked `landSession` will land in the file that mostly holds the steering tests. Suggested wording: `// The land's own git and gh work is in land*.test.ts, against a real repo.`",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.130581200000001,
+  "duration_ms": 345511,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 9799,
+    "cache_read": 185056,
+    "cache_creation": 40438,
+    "total": 235303
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 128,
+      "output": 46425,
+      "cache_read": 3410468,
+      "cache_creation": 246934,
+      "cost_usd": 2.9670896000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 5967,
+      "cache_read": 137846,
+      "cache_creation": 35994,
+      "cost_usd": 0.16349160000000001
+    }
+  ],
+  "permission_denials": []
+}
