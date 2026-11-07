@@ -1,0 +1,131 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:36:29.766Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381918225",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381918225",
+  "actor": "AlexisBalayre",
+  "commit_sha": "359ddc2253d804e0c839af514d7713bbf11c6362",
+  "source": "pr",
+  "pr_number": 226,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2068-2082",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A Ctrl-C during the listing leaves the worktree mid-rebase because the abort is skipped. A Ctrl-C during the abort, or during the rebase itself, is swallowed and can turn into a merge that lands.",
+      "body": "**A Ctrl-C at the wrong moment either strands the worktree mid-rebase or is lost and ends in a merge.**\n\nWhile `gateAndMerge` holds the merge lock, `withMergeLock` installs no-op handlers for SIGINT, SIGTERM and SIGHUP (`LOCK_SIGNALS`, around L894-895). So the only sign of an operator's Ctrl-C is a synchronous git child that died of it. A catch that treats git's failure as an answer must call `rethrowIfKilled` (`src/core/git-diff.client.ts` L454-458), as `mergeTargetInto` already does at L1894 and L1899. The new rebase-stop handling gets this wrong in two opposite ways.\n\n1. **The listing rethrows before the abort runs.** If `ls-files --unmerged` is killed, `rethrowIfKilled(listing)` (L2072-2074) throws before `rebase --abort` (L2076).\n   - Nothing further out cleans up the session worktree: `runMergeGate`'s `finally` and `withMergeLock`'s `finally` only release the sandbox, scratch checkout and lock.\n   - The worktree is left mid-rebase, with HEAD detached and an unmerged README.\n   - The PR's own test comment says a failing listing \"must not leave the worktree mid-rebase\", but the test only covers a plain `Error`.\n\n2. **A killed abort, or a killed rebase, now leads to a merge.** The abort's bare `catch {}` (L2077-2079) predates this PR, but it used to lead only to `return failed()`.\n   - Now, when `adrIndexOnly` is true, a Ctrl-C during `rebase --abort` is swallowed and `mergeTargetInto` runs (L2080-2082).\n   - With HEAD still detached, `symbolic-ref` exits 1, so `head` is undefined. The branch is compare-and-swapped onto the merge commit, and fresh-base passes (L2100-2106). The gate then goes on to fast-forward, and the interrupt is lost.\n   - The rebase's own `error` is never checked for a signal either, so a rebase killed after it wrote the README-only unmerged index takes the same route.\n\nAn interrupt that used to end in a refusal can now end in a landed merge. That is the false-success direction `rethrowIfKilled` exists to prevent.\n\nThe suggested fix records each failure, always runs the abort first (rethrowing only a killed abort), and then rethrows a killed listing or rebase before any merge is attempted. One behaviour change: a Ctrl-C during the rebase now unwinds instead of recording a refusal, which matches `rethrowIfKilled`'s documented intent.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/359ddc2253d804e0c839af514d7713bbf11c6362/src/core/merge-gate.service.ts#L2068-L2082",
+      "suggestion": "      let adrIndexOnly = false;\n      let listingFailure: unknown;\n      try {\n        const unmerged = runGit(worktree, ['ls-files', '--unmerged', '-z'], pinned);\n        adrIndexOnly = ADR_INDEX_CONFLICT.test(unmerged.split('\\0').filter(Boolean).join('\\0'));\n      } catch (listing) {\n        listingFailure = listing;\n      }\n      try {\n        runGit(worktree, ['rebase', '--abort'], pinned);\n      } catch (aborting) {\n        rethrowIfKilled(aborting);\n        // nothing to abort — the rebase never started\n      }\n      // After the abort, so an interrupt leaves no stopped rebase behind and is\n      // never read as a stop the gate can merge past.\n      rethrowIfKilled(listingFailure);\n      rethrowIfKilled(error);"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2062-2067",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new comment above the rebase-stop handling narrates what the code does, and its \"regenerated over the merged tree\" clause repeats what `ADR_INDEX_CONFLICT`'s and `mergeTargetInto`'s JSDoc already say (AGENTS.md §Comments). Keep the `--continue` reason and \"Read before the abort, which clears it\", and trim the middle sentence to something like \"a stop confined to the ADR index\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0133-a-rebase-that-stops-only-on-the-adr-index-falls.md",
+      "line": "37-38",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The last Tests paragraph has an unwrapped line of about 160 characters with two sentences joined on it, where the rest of this ADR and its siblings wrap at about 90. Re-wrap it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2080-2095",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refused` packs three states into `string | undefined`: `''` means no merge was attempted, `undefined` means it merged, and a string means it refused. The `refused && ...` tail of the fail message depends on `''` being falsy, and the same name has only two states in the open-PR branch at L2040. Using `undefined` for \"not attempted\", or building the suffix separately, would read more plainly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2071",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`unmerged.split('\\0').filter(Boolean).join('\\0')` only strips the trailing NUL from the `ls-files -z` output; `unmerged.replace(/\\0$/, '')` does the same more directly.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "docs/adr/0120-fresh-base-regenerates-a-conflicted-adr-index-in-the.md",
+      "line": "30-31, 81-82",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADR 0120 still says an index-only conflict at a rebase stop 'keeps the plain refusal', which decision 133 now reverses; the PR added only an `Amended by` header line.",
+      "refutation": "docs/adr/README.md L19-21 says a landed decision is amended by appending an amendment section or by adding a new decision that links back through `Amends:`, and that a later change \"does not rewrite the landed text\". The PR takes the new-decision route: 0133 declares `Amends: 0008, 0105, 0120`, and each amended ADR gets an `Amended by:` back-reference. That matches existing practice; 0008's body, for example, was never rewritten for 0088 or 0105. Editing 0120's body would break house process."
+    }
+  ],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3077381000000003,
+  "duration_ms": 310765,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11372,
+    "cache_read": 299718,
+    "cache_creation": 48361,
+    "total": 359465
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 82,
+      "output": 41744,
+      "cache_read": 1067800,
+      "cache_creation": 167033,
+      "cost_usd": 2.029016
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 8561,
+      "cache_read": 220016,
+      "cache_creation": 68417,
+      "cost_usd": 0.2787221
+    }
+  ],
+  "permission_denials": []
+}
