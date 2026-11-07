@@ -346,7 +346,7 @@ describe('runGateChild', () => {
     await group.gone();
   }, 15_000);
 
-  // Decision 132. The case that ran for three days: vitest stops a worker with
+  // Decision 136. The case that ran for three days: vitest stops a worker with
   // SIGTERM, which pup forwards and gives a grace, then SIGKILLs it 500 ms
   // later, before the grace ends.
   it('takes a child that ignores SIGTERM down with a pup killed inside its grace', {
